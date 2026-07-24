@@ -23,9 +23,32 @@ struct AppSettingsView: View {
     @AppStorage(SettingsKeys.gitRefreshDelay)
     private var gitRefreshDelay = 420
 
+    @EnvironmentObject private var updater: UpdaterModel
+
     var body: some View {
         TabView {
             Form {
+                Section("Updates") {
+                    Toggle(
+                        "Check for updates automatically",
+                        isOn: $updater.automaticallyChecksForUpdates
+                    )
+                    .disabled(!updater.isConfigured)
+
+                    LabeledContent("Version", value: updater.currentVersion)
+
+                    Button("Check Now…") {
+                        updater.checkForUpdates()
+                    }
+                    .disabled(!updater.canCheckForUpdates)
+
+                    if !updater.isConfigured {
+                        Text("Updates are only available in a packaged Vibra.app.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Keyboard") {
                     Toggle("Enable cmux-style shortcuts", isOn: $cmuxShortcutsEnabled)
                     Text("Shortcuts are captured before the terminal receives the key event.")

@@ -5,3 +5,5 @@
 /dist
 *.xcresult
 xcuserdata/
+# An exported backup of the Sparkle EdDSA private key must never be committed.
+sparkle-private-key*.txt

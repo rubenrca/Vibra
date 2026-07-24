@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibra — a native macOS workspace for agentic coding</title>
+<meta name="description" content="Vibra keeps terminal sessions, projects, and coding agents in one focused macOS workspace.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --fg: #16150f;
+    --muted: #6d6a5d;
+    --line: rgba(22, 21, 15, 0.12);
+    --accent: #16150f;
+    --accent-fg: #fbfbfa;
+    --card: rgba(22, 21, 15, 0.035);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121211;
+      --fg: #eceae2;
+      --muted: #9a978a;
+      --line: rgba(236, 234, 226, 0.14);
+      --accent: #eceae2;
+      --accent-fg: #121211;
+      --card: rgba(236, 234, 226, 0.05);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 44rem; margin: 0 auto; padding: 9vh 1.5rem 6rem; }
+  h1 {
+    font-size: clamp(2.4rem, 7vw, 3.4rem);
+    letter-spacing: -0.035em;
+    line-height: 1.05;
+    margin: 0 0 0.6rem;
+  }
+  .tagline { font-size: 1.15rem; color: var(--muted); margin: 0 0 2.5rem; max-width: 32rem; }
+  .download { display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: center; margin-bottom: 0.9rem; }
+  .button {
+    display: inline-block;
+    background: var(--accent);
+    color: var(--accent-fg);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 1rem;
+    padding: 0.85rem 1.6rem;
+    border-radius: 10px;
+    transition: opacity 0.15s ease;
+  }
+  .button:hover { opacity: 0.82; }
+  .meta { color: var(--muted); font-size: 0.9rem; }
+  h2 {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--muted);
+    margin: 3.2rem 0 0.9rem;
+    font-weight: 600;
+  }
+  ul { padding-left: 1.15rem; margin: 0; }
+  li { margin-bottom: 0.35rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 1.1rem 1.3rem;
+  }
+  ol { padding-left: 1.3rem; margin: 0.4rem 0 0; }
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.88em;
+    background: var(--card);
+    padding: 0.12em 0.4em;
+    border-radius: 5px;
+  }
+  a { color: inherit; }
+  footer {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 0.88rem;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Vibra</h1>
+  <p class="tagline">A fast, native macOS workspace for agentic coding. Terminal sessions, projects, and coding agents in one place.</p>
+
+  <div class="download">
+    <a class="button" id="download" href="https://github.com/rubenrca/Vibra/releases/latest">Download for macOS</a>
+    <span class="meta" id="meta">Universal · macOS 14 or newer</span>
+  </div>
+  <p class="meta">Vibra updates itself: new versions are offered inside the app.</p>
+
+  <h2>Opening it the first time</h2>
+  <div class="card">
+    <p style="margin:0">Vibra is not yet notarized by Apple, so macOS blocks the first launch. To allow it:</p>
+    <ol>
+      <li>Open the disk image and drag <strong>Vibra</strong> to Applications.</li>
+      <li>Launch it once and dismiss the warning.</li>
+      <li>Go to <strong>System Settings → Privacy &amp; Security</strong>, scroll down, and click <strong>Open Anyway</strong>.</li>
+    </ol>
+    <p class="meta" style="margin:0.9rem 0 0">This is only needed once. Updates installed by Vibra itself are not blocked.</p>
+  </div>
+
+  <h2>Requirements</h2>
+  <ul>
+    <li>macOS 14 or newer</li>
+    <li>Apple Silicon or Intel</li>
+  </ul>
+
+  <h2>Building from source</h2>
+  <p style="margin:0.4rem 0 0">Clone the repository and run <code>swift run Vibra</code>. See the <a href="https://github.com/rubenrca/Vibra">README</a> for details.</p>
+
+  <footer>
+    MIT licensed · <a href="https://github.com/rubenrca/Vibra">Source</a> · <a href="https://github.com/rubenrca/Vibra/releases">All releases</a>
+  </footer>
+</main>
+
+<script>
+// The appcast is the single source of truth for what the current release is, so
+// the page reads it instead of carrying a version number that goes stale.
+fetch('appcast.xml', { cache: 'no-cache' })
+  .then(function (response) {
+    if (!response.ok) throw new Error(response.status);
+    return response.text();
+  })
+  .then(function (text) {
+    var feed = new DOMParser().parseFromString(text, 'application/xml');
+    var item = feed.querySelector('item');
+    var enclosure = item && item.querySelector('enclosure');
+    if (!enclosure) throw new Error('no enclosure');
+
+    // generate_appcast writes shortVersionString as a child element of the
+    // item, and falls back to titling the item with the version itself.
+    var sparkleNS = 'http://www.andymatuschak.org/xml-namespaces/sparkle';
+    var shortVersion = item.getElementsByTagNameNS(sparkleNS, 'shortVersionString')[0];
+    var title = item.querySelector('title');
+    var version = (shortVersion && shortVersion.textContent.trim()) ||
+      (title && title.textContent.trim().replace(/^Vibra\s*/, '')) || '';
+
+    var url = enclosure.getAttribute('url');
+    var length = parseInt(enclosure.getAttribute('length'), 10);
+
+    document.getElementById('download').href = url;
+    document.getElementById('download').textContent =
+      version ? 'Download Vibra ' + version : 'Download Vibra';
+
+    var size = length ? ' · ' + (length / 1048576).toFixed(1) + ' MB' : '';
+    document.getElementById('meta').textContent = 'Universal · macOS 14 or newer' + size;
+  })
+  .catch(function () {
+    // Leave the link pointing at the releases page: still correct, just less direct.
+  });
+</script>
+</body>
+</html>

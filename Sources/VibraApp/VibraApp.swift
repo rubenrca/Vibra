@@ -6,6 +6,8 @@ struct VibraApp: App {
     @NSApplicationDelegateAdaptor(VibraApplicationDelegate.self)
     private var applicationDelegate
 
+    @StateObject private var updater = UpdaterModel()
+
     init() {
         UserDefaults.standard.register(defaults: SettingsKeys.defaults)
     }
@@ -17,11 +19,12 @@ struct VibraApp: App {
         .defaultSize(width: 1080, height: 720)
         .windowStyle(.hiddenTitleBar)
         .commands {
-            VibraCommands()
+            VibraCommands(updater: updater)
         }
 
         Settings {
             AppSettingsView()
+                .environmentObject(updater)
         }
         .windowResizability(.contentSize)
     }
@@ -54,7 +57,16 @@ extension Notification.Name {
 private struct VibraCommands: Commands {
     @FocusedObject private var workspace: WorkspaceStore?
 
+    @ObservedObject var updater: UpdaterModel
+
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                updater.checkForUpdates()
+            }
+            .disabled(!updater.canCheckForUpdates)
+        }
+
         CommandGroup(replacing: .appSettings) {
             SettingsLink {
                 Text("Settings…")
