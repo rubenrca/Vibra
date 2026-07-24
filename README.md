@@ -7,8 +7,8 @@ workspace. It is an independent implementation powered by `libghostty`.
 
 ## Status
 
-Version `0.1.0` established the application and terminal foundation. Current
-development builds provide:
+Version `0.1.0` established the application and terminal foundation. Version
+`0.2.0` is the first published build. It provides:
 
 - native SwiftUI/AppKit application shell;
 - project workspaces and long-lived terminal tabs;
