@@ -1,0 +1,7 @@
+.DS_Store
+/.build
+/.swiftpm
+/Vibra.app
+/dist
+*.xcresult
+xcuserdata/
