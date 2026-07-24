@@ -1,0 +1,26 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Vibra</title>
+        <item>
+            <title>0.2.0</title>
+            <pubDate>Fri, 24 Jul 2026 15:28:08 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.0</link>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<ul>
+  <li>Add in-app updates over Sparkle, checked daily and on demand.</li>
+  <li>Publish signed universal disk images through GitHub Releases.</li>
+  <li>Add a download page and update feed served from GitHub Pages.</li>
+  <li>Add an event-driven Git changes sidebar.</li>
+  <li>Render bounded unified diffs with native SwiftUI views.</li>
+  <li>Add stage and unstage actions for individual files and the repository.</li>
+  <li>Render terminal tabs from the state of the session they own.</li>
+  <li>Reduce the visible brand treatment to a text-only application name.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.0/Vibra-0.2.0.dmg" length="11899054" type="application/octet-stream" sparkle:edSignature="9TyCqLk1Kvu/RUzJ6cvdajj7BMdf2RsZaAmI+Wsb6+d6nfEErlm57MHpvT0gaIL1rXPQnBWoTsBFMH+w88rqBw=="/>
+        </item>
+    </channel>
+</rss>
