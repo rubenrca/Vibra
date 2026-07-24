@@ -326,19 +326,7 @@ private struct SessionHeader: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 3) {
                         ForEach(Array(project.tabs.enumerated()), id: \.element.id) { index, tab in
-                            SessionTab(
-                                tab: tab,
-                                selected: project.selectedTabID == tab.id,
-                                defaultTitle: project.tabs.count == 1
-                                    ? "Terminal"
-                                    : "Terminal \(index + 1)",
-                                select: {
-                                    store.selectTab(tab.id, in: project.id)
-                                },
-                                close: {
-                                    store.closeTab(tab.id, in: project.id)
-                                }
-                            )
+                            sessionTab(tab, index: index, in: project)
                         }
                     }
                     .padding(.horizontal, 8)
@@ -368,36 +356,76 @@ private struct SessionHeader: View {
         .frame(height: VibraLayout.panelHeaderHeight)
         .background(.bar)
     }
+
+    @ViewBuilder
+    private func sessionTab(
+        _ tab: TerminalTab,
+        index: Int,
+        in project: VibraProject
+    ) -> some View {
+        let selected = project.selectedTabID == tab.id
+        let defaultTitle = project.tabs.count == 1 ? "Terminal" : "Terminal \(index + 1)"
+        let select = { store.selectTab(tab.id, in: project.id) }
+        let close = { store.closeTab(tab.id, in: project.id) }
+
+        // A tab always owns at least one session, so the reported title is the
+        // normal path. The fallback keeps a tab that somehow lost its sessions
+        // visible — and closable — instead of trapping the whole header.
+        if let session = tab.selectedSession ?? tab.sessions.first {
+            SessionTab(
+                state: session.state,
+                selected: selected,
+                defaultTitle: defaultTitle,
+                select: select,
+                close: close
+            )
+        } else {
+            SessionTabButton(
+                title: defaultTitle,
+                selected: selected,
+                select: select,
+                close: close
+            )
+        }
+    }
 }
 
+/// Tracks the session's reported title so the tab relabels itself as the shell
+/// changes it. Kept separate from the button so the header can still draw a tab
+/// that has no session to observe.
 private struct SessionTab: View {
-    let tab: TerminalTab
+    @ObservedObject var state: TerminalViewState
     let selected: Bool
     let defaultTitle: String
     let select: () -> Void
     let close: () -> Void
 
-    @ObservedObject private var state: TerminalViewState
-    @State private var hovering = false
-
-    init(
-        tab: TerminalTab,
-        selected: Bool,
-        defaultTitle: String,
-        select: @escaping () -> Void,
-        close: @escaping () -> Void
-    ) {
-        self.tab = tab
-        self.selected = selected
-        self.defaultTitle = defaultTitle
-        self.select = select
-        self.close = close
-        _state = ObservedObject(wrappedValue: tab.selectedSession!.state)
+    var body: some View {
+        SessionTabButton(
+            title: title,
+            selected: selected,
+            select: select,
+            close: close
+        )
     }
+
+    private var title: String {
+        let reported = state.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reported.isEmpty || reported == "Terminal" ? defaultTitle : reported
+    }
+}
+
+private struct SessionTabButton: View {
+    let title: String
+    let selected: Bool
+    let select: () -> Void
+    let close: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 7) {
-            Text(tabTitle)
+            Text(title)
                 .font(.system(size: 11.5, weight: selected ? .medium : .regular))
                 .lineLimit(1)
                 .frame(maxWidth: 160)
@@ -435,13 +463,8 @@ private struct SessionTab: View {
         .animation(.easeOut(duration: 0.12), value: hovering)
         .animation(.easeOut(duration: 0.12), value: selected)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Terminal \(tabTitle)")
+        .accessibilityLabel("Terminal \(title)")
         .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private var tabTitle: String {
-        let reported = state.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return reported.isEmpty || reported == "Terminal" ? defaultTitle : reported
     }
 }
 

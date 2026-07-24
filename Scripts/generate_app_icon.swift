@@ -24,6 +24,18 @@ if fileManager.fileExists(atPath: outputURL.path) {
 }
 try fileManager.createDirectory(at: outputURL, withIntermediateDirectories: true)
 
+/// macOS lays every Dock icon out on the same grid: the rounded body covers
+/// 824 pt of a 1024 pt canvas, leaving a 100 pt margin, and casts a soft
+/// shadow biased downwards. Measured against Terminal.icns and Notes.icns,
+/// whose bodies are exactly 824x824 and whose shadows reach 87 pt above and
+/// 72 pt below the canvas edge. Drawing full-bleed instead makes the icon
+/// render ~24% larger than every neighbour.
+let canvasReference: CGFloat = 1024
+let bodyFraction: CGFloat = 824 / canvasReference
+let cornerFraction: CGFloat = 185.4 / 824
+let shadowBlurFraction: CGFloat = 20 / canvasReference
+let shadowOffsetFraction: CGFloat = 7.5 / canvasReference
+
 let variants: [(name: String, pixels: Int)] = [
     ("icon_16x16.png", 16),
     ("icon_16x16@2x.png", 32),
@@ -54,21 +66,36 @@ for variant in variants {
     }
 
     let size = CGFloat(variant.pixels)
-    let destination = NSRect(x: 0, y: 0, width: size, height: size)
+    let canvas = NSRect(x: 0, y: 0, width: size, height: size)
+    let body = canvas.insetBy(
+        dx: size * (1 - bodyFraction) / 2,
+        dy: size * (1 - bodyFraction) / 2
+    )
+    let corner = body.width * cornerFraction
     let source = NSRect(origin: .zero, size: sourceImage.size)
 
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = context
     context.imageInterpolation = .high
     NSColor.clear.setFill()
-    destination.fill()
-    NSBezierPath(
-        roundedRect: destination,
-        xRadius: size * 0.2237,
-        yRadius: size * 0.2237
-    ).addClip()
+    canvas.fill()
+
+    // Cast the shadow from an opaque stand-in first: clipping the artwork and
+    // shadowing it in one pass would blur the shadow through the artwork's own
+    // alpha instead of around the body's silhouette.
+    NSGraphicsContext.saveGraphicsState()
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.32)
+    shadow.shadowBlurRadius = size * shadowBlurFraction
+    shadow.shadowOffset = NSSize(width: 0, height: -size * shadowOffsetFraction)
+    shadow.set()
+    NSColor.black.setFill()
+    NSBezierPath(roundedRect: body, xRadius: corner, yRadius: corner).fill()
+    NSGraphicsContext.restoreGraphicsState()
+
+    NSBezierPath(roundedRect: body, xRadius: corner, yRadius: corner).addClip()
     sourceImage.draw(
-        in: destination,
+        in: body,
         from: source,
         operation: .sourceOver,
         fraction: 1
