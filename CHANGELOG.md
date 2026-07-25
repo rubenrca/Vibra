@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 — 2026-07-25
+
+- Add cmux-style workspaces with independent terminal tabs inside each workspace.
+- Show coding-agent activity in the sidebar, including ready, working, attention, and finished states.
+- Add optional Codex lifecycle hooks with a transcript-based fallback for status detection.
+- Add collapsible inline Git diffs while keeping the expanded in-app diff viewer.
+- Align terminal typography and spacing more closely with the user's Ghostty configuration.
+- Reduce background polling, transcript reads, and unnecessary SwiftUI updates.
+
 ## 0.2.0 — 2026-07-24
 
 - Add in-app updates over Sparkle, checked daily and on demand.
