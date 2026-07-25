@@ -6,6 +6,7 @@ final class GitSidebarModel: ObservableObject {
     @Published private(set) var branch = ""
     @Published private(set) var changes: [GitFileChange] = []
     @Published private(set) var selectedChangeID: String?
+    @Published private(set) var expandedChangeID: String?
     @Published private(set) var diffLines: [DiffLine] = []
     @Published private(set) var isRefreshing = false
     @Published private(set) var isLoadingDiff = false
@@ -42,6 +43,7 @@ final class GitSidebarModel: ObservableObject {
         branch = ""
         changes = []
         selectedChangeID = nil
+        expandedChangeID = nil
         diffLines = []
         errorMessage = nil
         operationMessage = nil
@@ -85,10 +87,12 @@ final class GitSidebarModel: ObservableObject {
 
                 if !snapshot.changes.contains(where: { $0.id == self.selectedChangeID }) {
                     self.selectedChangeID = nil
+                    self.expandedChangeID = nil
                     self.isDiffPresented = false
                     self.diffLines = []
                 }
-                if snapshotChanged, self.isDiffPresented {
+                if snapshotChanged,
+                   self.isDiffPresented || self.expandedChangeID != nil {
                     self.loadSelectedDiff()
                 }
             case .failure(let error):
@@ -96,6 +100,7 @@ final class GitSidebarModel: ObservableObject {
                 self.branch = ""
                 self.changes = []
                 self.selectedChangeID = nil
+                self.expandedChangeID = nil
                 self.diffLines = []
                 self.errorMessage = error.localizedDescription
                 self.isDiffPresented = false
@@ -111,15 +116,38 @@ final class GitSidebarModel: ObservableObject {
     }
 
     func present(_ change: GitFileChange) {
-        selectedChangeID = change.id
-        operationMessage = nil
+        presentModal(change)
+    }
+
+    func toggleInline(_ change: GitFileChange) {
+        if expandedChangeID == change.id {
+            expandedChangeID = nil
+            guard !isDiffPresented else { return }
+            selectedChangeID = nil
+            diffTask?.cancel()
+            diffLines = []
+            isLoadingDiff = false
+            return
+        }
+
+        expandedChangeID = change.id
+        select(change)
+    }
+
+    func presentModal(_ change: GitFileChange) {
+        if expandedChangeID != change.id {
+            expandedChangeID = nil
+        }
+        select(change)
         isDiffPresented = true
-        loadSelectedDiff()
     }
 
     func dismissDiff() {
         isDiffPresented = false
+        guard expandedChangeID == nil else { return }
+        selectedChangeID = nil
         diffTask?.cancel()
+        diffLines = []
         isLoadingDiff = false
     }
 
@@ -170,6 +198,13 @@ final class GitSidebarModel: ObservableObject {
                 self.errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func select(_ change: GitFileChange) {
+        operationMessage = nil
+        guard selectedChangeID != change.id else { return }
+        selectedChangeID = change.id
+        loadSelectedDiff()
     }
 
     private func loadSelectedDiff() {

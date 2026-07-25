@@ -22,6 +22,8 @@ struct AppSettingsView: View {
     private var gitAutoRefreshEnabled = true
     @AppStorage(SettingsKeys.gitRefreshDelay)
     private var gitRefreshDelay = 420
+    @State private var codexStatusInstalled = CodexStatusIntegration.isInstalled()
+    @State private var codexStatusMessage: String?
 
     @EnvironmentObject private var updater: UpdaterModel
 
@@ -56,6 +58,25 @@ struct AppSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Agent Activity") {
+                    LabeledContent("Codex status") {
+                        Text(codexStatusInstalled ? "Connected" : "Basic detection")
+                            .foregroundStyle(codexStatusInstalled ? Color.green : .secondary)
+                    }
+                    Button(codexStatusInstalled ? "Reinstall Status Hooks" : "Install Status Hooks") {
+                        installCodexStatusHooks()
+                    }
+                    if let codexStatusMessage {
+                        Text(codexStatusMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Hooks distinguish idle, working, attention, and finished states.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Git Changes") {
                     Toggle("Refresh automatically", isOn: $gitAutoRefreshEnabled)
                     Picker("Refresh interval", selection: $gitRefreshDelay) {
@@ -72,7 +93,17 @@ struct AppSettingsView: View {
             ShortcutReferenceView()
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
         }
-        .frame(width: 520, height: 390)
+        .frame(width: 520, height: 470)
+    }
+
+    private func installCodexStatusHooks() {
+        do {
+            try CodexStatusIntegration.install()
+            codexStatusInstalled = true
+            codexStatusMessage = "Installed. Start a new Codex session and use /hooks to trust it."
+        } catch {
+            codexStatusMessage = error.localizedDescription
+        }
     }
 }
 
@@ -169,7 +200,11 @@ struct KeyboardShortcutMonitor: NSViewRepresentable {
         func install() {
             guard monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard let self,
+                guard let self else { return event }
+                if event.window === self.window {
+                    self.store?.observeTerminalKeyEvent(event)
+                }
+                guard
                       UserDefaults.standard.bool(forKey: SettingsKeys.cmuxShortcutsEnabled),
                       self.handle(event) else { return event }
                 return nil

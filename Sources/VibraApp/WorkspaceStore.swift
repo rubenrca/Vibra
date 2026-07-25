@@ -12,13 +12,11 @@ struct TerminalTab: Identifiable {
     var selectedSession: TerminalSession? {
         sessions.first { $0.id == selectedSessionID }
     }
-
 }
 
-struct VibraProject: Identifiable {
+struct TerminalWorkspace: Identifiable {
     let id: UUID
     var name: String
-    var rootPath: String
     var tabs: [TerminalTab]
     var selectedTabID: UUID?
 
@@ -32,6 +30,56 @@ struct VibraProject: Identifiable {
 
     var allSessions: [TerminalSession] {
         tabs.flatMap(\.sessions)
+    }
+
+    @MainActor var agentActivity: AgentActivity {
+        let activities = allSessions.map { $0.agentActivity }
+        if let attention = activities.first(where: {
+            if case .needsAttention = $0 { true } else { false }
+        }) { return attention }
+        if let running = activities.first(where: {
+            if case .running = $0 { true } else { false }
+        }) { return running }
+        if let selectedActivity = selectedSession?.agentActivity,
+           selectedActivity != .idle {
+            return selectedActivity
+        }
+        if let finished = activities.compactMap({ activity -> AgentActivity? in
+            if case .finished = activity { return activity }
+            return nil
+        }).max(by: { lhs, rhs in
+            guard case .finished(_, _, let leftDate) = lhs,
+                  case .finished(_, _, let rightDate) = rhs else { return false }
+            return leftDate < rightDate
+        }) { return finished }
+        if let ready = activities.first(where: {
+            if case .ready = $0 { true } else { false }
+        }) { return ready }
+        return .idle
+    }
+}
+
+struct VibraProject: Identifiable {
+    let id: UUID
+    var name: String
+    var rootPath: String
+    var workspaces: [TerminalWorkspace]
+    var selectedWorkspaceID: UUID?
+
+    var selectedWorkspace: TerminalWorkspace? {
+        workspaces.first { $0.id == selectedWorkspaceID }
+    }
+
+    var selectedTab: TerminalTab? {
+        selectedWorkspace?.selectedTab
+    }
+
+    var selectedSession: TerminalSession? {
+        selectedTab?.selectedSession
+    }
+
+    var allSessions: [TerminalSession] {
+        workspaces.flatMap(\.allSessions)
     }
 }
 
@@ -64,6 +112,9 @@ final class WorkspaceStore: ObservableObject {
     }()
 
     private var hiddenSessionPump: Timer?
+    private var agentActivityTimer: Timer?
+    private var isRefreshingAgentActivity = false
+    private var lastWorkspaceActivities: [UUID: AgentActivity] = [:]
 
     init() {
         restoreWorkspace()
@@ -76,6 +127,8 @@ final class WorkspaceStore: ObservableObject {
             )
         }
         refreshSessionVisibility()
+        lastWorkspaceActivities = workspaceActivitySnapshot()
+        startAgentActivityMonitoring()
         saveWorkspace()
     }
 
@@ -85,6 +138,10 @@ final class WorkspaceStore: ObservableObject {
 
     var selectedTab: TerminalTab? {
         selectedProject?.selectedTab
+    }
+
+    var selectedWorkspace: TerminalWorkspace? {
+        selectedProject?.selectedWorkspace
     }
 
     var selectedSession: TerminalSession? {
@@ -102,11 +159,25 @@ final class WorkspaceStore: ObservableObject {
         saveWorkspace()
     }
 
+    func selectWorkspace(_ id: UUID, in projectID: UUID) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
+              projects[projectIndex].workspaces.contains(where: { $0.id == id })
+        else { return }
+        projects[projectIndex].selectedWorkspaceID = id
+        selectedProjectID = projectID
+        refreshSessionVisibility()
+        saveWorkspace()
+    }
+
     func selectTab(_ id: UUID, in projectID: UUID) {
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
-              projects[projectIndex].tabs.contains(where: { $0.id == id })
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.tabs.contains(where: { $0.id == id })
+              })
         else { return }
-        projects[projectIndex].selectedTabID = id
+        projects[projectIndex].selectedWorkspaceID = projects[projectIndex]
+            .workspaces[workspaceIndex].id
+        projects[projectIndex].workspaces[workspaceIndex].selectedTabID = id
         selectedProjectID = projectID
         refreshSessionVisibility()
         saveWorkspace()
@@ -114,12 +185,22 @@ final class WorkspaceStore: ObservableObject {
 
     func focusSession(_ id: UUID, in projectID: UUID) {
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
-              let tabIndex = projects[projectIndex].tabs.firstIndex(where: {
-                  $0.sessions.contains(where: { $0.id == id })
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.tabs.contains(where: { tab in
+                      tab.sessions.contains(where: { $0.id == id })
+                  })
+              }),
+              let tabIndex = projects[projectIndex].workspaces[workspaceIndex]
+                .tabs.firstIndex(where: {
+                    $0.sessions.contains(where: { $0.id == id })
               })
         else { return }
-        projects[projectIndex].selectedTabID = projects[projectIndex].tabs[tabIndex].id
-        projects[projectIndex].tabs[tabIndex].selectedSessionID = id
+        projects[projectIndex].selectedWorkspaceID = projects[projectIndex]
+            .workspaces[workspaceIndex].id
+        projects[projectIndex].workspaces[workspaceIndex].selectedTabID = projects[projectIndex]
+            .workspaces[workspaceIndex].tabs[tabIndex].id
+        projects[projectIndex].workspaces[workspaceIndex]
+            .tabs[tabIndex].selectedSessionID = id
         selectedProjectID = projectID
         refreshSessionVisibility()
         saveWorkspace()
@@ -162,17 +243,21 @@ final class WorkspaceStore: ObservableObject {
         }
 
         let projectID = UUID()
-        let tab = makeTab(workingDirectory: path, projectID: projectID)
         let name = normalizedURL.lastPathComponent.isEmpty
             ? normalizedURL.path
             : normalizedURL.lastPathComponent
+        let workspace = makeWorkspace(
+            name: name,
+            workingDirectory: path,
+            projectID: projectID
+        )
         projects.append(
             VibraProject(
                 id: projectID,
                 name: name,
                 rootPath: path,
-                tabs: [tab],
-                selectedTabID: tab.id
+                workspaces: [workspace],
+                selectedWorkspaceID: workspace.id
             )
         )
         selectedProjectID = projectID
@@ -212,35 +297,68 @@ final class WorkspaceStore: ObservableObject {
               let projectIndex = projects.firstIndex(where: { $0.id == projectID })
         else { return }
 
+        if projects[projectIndex].selectedWorkspace == nil {
+            let workspace = makeWorkspace(
+                name: projects[projectIndex].name,
+                workingDirectory: projects[projectIndex].rootPath,
+                projectID: projectID
+            )
+            projects[projectIndex].workspaces.append(workspace)
+            projects[projectIndex].selectedWorkspaceID = workspace.id
+            refreshSessionVisibility()
+            saveWorkspace()
+            return
+        }
+
+        guard let workspaceID = projects[projectIndex].selectedWorkspaceID,
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.id == workspaceID
+              }) else { return }
+
         let directory = projects[projectIndex].selectedSession?.workingDirectory
             ?? projects[projectIndex].rootPath
         let tab = makeTab(workingDirectory: directory, projectID: projectID)
-        projects[projectIndex].tabs.append(tab)
-        projects[projectIndex].selectedTabID = tab.id
+        projects[projectIndex].workspaces[workspaceIndex].tabs.append(tab)
+        projects[projectIndex].workspaces[workspaceIndex].selectedTabID = tab.id
         refreshSessionVisibility()
         saveWorkspace()
     }
 
     func newWorkspace() {
-        let panel = NSOpenPanel()
-        panel.title = "Open a workspace"
-        panel.prompt = "Open Workspace"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = selectedProject.map {
-            URL(fileURLWithPath: $0.rootPath).deletingLastPathComponent()
-        } ?? FileManager.default.homeDirectoryForCurrentUser
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        addProject(at: url)
+        guard let projectID = selectedProjectID,
+              let projectIndex = projects.firstIndex(where: { $0.id == projectID })
+        else {
+            chooseProject()
+            return
+        }
+        let existingNames = Set(projects[projectIndex].workspaces.map(\.name))
+        var number = 2
+        while existingNames.contains("Workspace \(number)") { number += 1 }
+        let workspace = makeWorkspace(
+            name: projects[projectIndex].workspaces.isEmpty
+                ? projects[projectIndex].name
+                : "Workspace \(number)",
+            workingDirectory: projects[projectIndex].rootPath,
+            projectID: projectID
+        )
+        projects[projectIndex].workspaces.append(workspace)
+        projects[projectIndex].selectedWorkspaceID = workspace.id
+        refreshSessionVisibility()
+        saveWorkspace()
     }
 
     func splitSelected(_ axis: WorkspaceSplitAxis) {
         guard let projectID = selectedProjectID,
               let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
-              let tabID = projects[projectIndex].selectedTabID,
-              let tabIndex = projects[projectIndex].tabs.firstIndex(where: { $0.id == tabID }),
-              let selected = projects[projectIndex].tabs[tabIndex].selectedSession
+              let workspaceID = projects[projectIndex].selectedWorkspaceID,
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.id == workspaceID
+              }),
+              let tabID = projects[projectIndex].workspaces[workspaceIndex].selectedTabID,
+              let tabIndex = projects[projectIndex].workspaces[workspaceIndex]
+                .tabs.firstIndex(where: { $0.id == tabID }),
+              let selected = projects[projectIndex].workspaces[workspaceIndex]
+                .tabs[tabIndex].selectedSession
         else { return }
 
         let session = makeSession(
@@ -252,10 +370,16 @@ final class WorkspaceStore: ObservableObject {
             first: .terminal(selected.id),
             second: .terminal(session.id)
         )
-        projects[projectIndex].tabs[tabIndex].sessions.append(session)
-        projects[projectIndex].tabs[tabIndex].layout = projects[projectIndex]
-            .tabs[tabIndex].layout.replacingTerminal(selected.id, with: replacement)
-        projects[projectIndex].tabs[tabIndex].selectedSessionID = session.id
+        projects[projectIndex].workspaces[workspaceIndex].tabs[tabIndex]
+            .sessions.append(session)
+        projects[projectIndex].workspaces[workspaceIndex].tabs[tabIndex].layout = projects[
+            projectIndex
+        ].workspaces[workspaceIndex].tabs[tabIndex].layout.replacingTerminal(
+            selected.id,
+            with: replacement
+        )
+        projects[projectIndex].workspaces[workspaceIndex]
+            .tabs[tabIndex].selectedSessionID = session.id
         refreshSessionVisibility()
         saveWorkspace()
     }
@@ -263,15 +387,30 @@ final class WorkspaceStore: ObservableObject {
     func focusAdjacentPane(_ offset: Int) {
         guard let projectID = selectedProjectID,
               let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
-              let tabID = projects[projectIndex].selectedTabID,
-              let tabIndex = projects[projectIndex].tabs.firstIndex(where: { $0.id == tabID }),
-              let selectedID = projects[projectIndex].tabs[tabIndex].selectedSessionID
+              let workspaceID = projects[projectIndex].selectedWorkspaceID,
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.id == workspaceID
+              }),
+              let tabID = projects[projectIndex].workspaces[workspaceIndex].selectedTabID,
+              let tabIndex = projects[projectIndex].workspaces[workspaceIndex]
+                .tabs.firstIndex(where: { $0.id == tabID }),
+              let selectedID = projects[projectIndex].workspaces[workspaceIndex]
+                .tabs[tabIndex].selectedSessionID
         else { return }
-        let ids = projects[projectIndex].tabs[tabIndex].layout.terminalIDs
+        let ids = projects[projectIndex].workspaces[workspaceIndex]
+            .tabs[tabIndex].layout.terminalIDs
         guard ids.count > 1, let selectedIndex = ids.firstIndex(of: selectedID) else { return }
         let target = max(0, min(ids.count - 1, selectedIndex + offset))
         guard target != selectedIndex else { return }
         focusSession(ids[target], in: projectID)
+    }
+
+    func observeTerminalKeyEvent(_ event: NSEvent) {
+        guard event.keyCode == 36 || event.keyCode == 76,
+              let session = selectedSession,
+              event.window?.firstResponder === session.terminalView
+        else { return }
+        session.noteUserSubmittedInput()
     }
 
     func closeSelectedSession() {
@@ -283,27 +422,41 @@ final class WorkspaceStore: ObservableObject {
 
     func closeSession(_ sessionID: UUID, in projectID: UUID) {
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
-              let tabIndex = projects[projectIndex].tabs.firstIndex(where: {
-                  $0.sessions.contains(where: { $0.id == sessionID })
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.tabs.contains(where: { tab in
+                      tab.sessions.contains(where: { $0.id == sessionID })
+                  })
               }),
-              let sessionIndex = projects[projectIndex].tabs[tabIndex]
+              let tabIndex = projects[projectIndex].workspaces[workspaceIndex]
+                .tabs.firstIndex(where: {
+                    $0.sessions.contains(where: { $0.id == sessionID })
+              }),
+              let sessionIndex = projects[projectIndex].workspaces[workspaceIndex].tabs[tabIndex]
                 .sessions.firstIndex(where: { $0.id == sessionID })
         else { return }
 
-        let session = projects[projectIndex].tabs[tabIndex].sessions.remove(at: sessionIndex)
+        let session = projects[projectIndex].workspaces[workspaceIndex]
+            .tabs[tabIndex].sessions.remove(at: sessionIndex)
         session.shutdown()
 
-        guard let newLayout = projects[projectIndex].tabs[tabIndex]
+        guard let newLayout = projects[projectIndex].workspaces[workspaceIndex].tabs[tabIndex]
             .layout.removingTerminal(sessionID) else {
-            closeTab(at: tabIndex, in: projectIndex, shutdownSessions: false)
+            closeTab(
+                at: tabIndex,
+                in: workspaceIndex,
+                projectIndex: projectIndex,
+                shutdownSessions: false
+            )
             refreshSessionVisibility()
             saveWorkspace()
             return
         }
 
-        projects[projectIndex].tabs[tabIndex].layout = newLayout
-        if projects[projectIndex].tabs[tabIndex].selectedSessionID == sessionID {
-            projects[projectIndex].tabs[tabIndex].selectedSessionID = newLayout.terminalIDs.first
+        projects[projectIndex].workspaces[workspaceIndex].tabs[tabIndex].layout = newLayout
+        if projects[projectIndex].workspaces[workspaceIndex]
+            .tabs[tabIndex].selectedSessionID == sessionID {
+            projects[projectIndex].workspaces[workspaceIndex]
+                .tabs[tabIndex].selectedSessionID = newLayout.terminalIDs.first
         }
         refreshSessionVisibility()
         saveWorkspace()
@@ -311,9 +464,36 @@ final class WorkspaceStore: ObservableObject {
 
     func closeTab(_ tabID: UUID, in projectID: UUID) {
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
-              let tabIndex = projects[projectIndex].tabs.firstIndex(where: { $0.id == tabID })
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.tabs.contains(where: { $0.id == tabID })
+              }),
+              let tabIndex = projects[projectIndex].workspaces[workspaceIndex]
+                .tabs.firstIndex(where: { $0.id == tabID })
         else { return }
-        closeTab(at: tabIndex, in: projectIndex, shutdownSessions: true)
+        closeTab(
+            at: tabIndex,
+            in: workspaceIndex,
+            projectIndex: projectIndex,
+            shutdownSessions: true
+        )
+        refreshSessionVisibility()
+        saveWorkspace()
+    }
+
+    func closeWorkspace(_ workspaceID: UUID, in projectID: UUID) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.id == workspaceID
+              })
+        else { return }
+        let removed = projects[projectIndex].workspaces.remove(at: workspaceIndex)
+        removed.allSessions.forEach { $0.shutdown() }
+        if projects[projectIndex].selectedWorkspaceID == removed.id {
+            let workspaces = projects[projectIndex].workspaces
+            projects[projectIndex].selectedWorkspaceID = workspaces.isEmpty
+                ? nil
+                : workspaces[min(workspaceIndex, workspaces.count - 1)].id
+        }
         refreshSessionVisibility()
         saveWorkspace()
     }
@@ -321,24 +501,29 @@ final class WorkspaceStore: ObservableObject {
     func saveWorkspace() {
         var snapshot = WorkspaceSnapshot(
             projects: projects.map { project in
-                let tabSnapshots = project.tabs.map { tab in
-                    TabSnapshot(
-                        id: tab.id,
-                        sessions: tab.sessions.map(sessionSnapshot),
-                        selectedSessionID: tab.selectedSessionID,
-                        layout: tab.layout
+                let workspaceSnapshots = project.workspaces.map { workspace in
+                    TerminalWorkspaceSnapshot(
+                        id: workspace.id,
+                        name: workspace.name,
+                        tabs: workspace.tabs.map(tabSnapshot),
+                        selectedTabID: workspace.selectedTabID
                     )
+                }
+                let selectedWorkspace = workspaceSnapshots.first {
+                    $0.id == project.selectedWorkspaceID
                 }
                 return ProjectSnapshot(
                     id: project.id,
                     name: project.name,
                     rootPath: project.rootPath,
-                    sessions: tabSnapshots.flatMap(\.sessions),
+                    sessions: workspaceSnapshots.flatMap { $0.tabs }.flatMap(\.sessions),
                     selectedSessionID: project.selectedSession?.id,
                     visibleSessionIDs: project.selectedTab?.layout.terminalIDs,
                     splitAxis: project.selectedTab?.layout.rootAxis,
-                    tabs: tabSnapshots,
-                    selectedTabID: project.selectedTabID
+                    tabs: selectedWorkspace?.tabs,
+                    selectedTabID: selectedWorkspace?.selectedTabID,
+                    workspaces: workspaceSnapshots,
+                    selectedWorkspaceID: project.selectedWorkspaceID
                 )
             },
             selectedProjectID: selectedProjectID
@@ -358,6 +543,8 @@ final class WorkspaceStore: ObservableObject {
         saveWorkspace()
         hiddenSessionPump?.invalidate()
         hiddenSessionPump = nil
+        agentActivityTimer?.invalidate()
+        agentActivityTimer = nil
         allSessions.forEach { $0.shutdown() }
     }
 
@@ -368,6 +555,20 @@ final class WorkspaceStore: ObservableObject {
             sessions: [session],
             selectedSessionID: session.id,
             layout: .terminal(session.id)
+        )
+    }
+
+    private func makeWorkspace(
+        name: String,
+        workingDirectory: String,
+        projectID: UUID
+    ) -> TerminalWorkspace {
+        let tab = makeTab(workingDirectory: workingDirectory, projectID: projectID)
+        return TerminalWorkspace(
+            id: UUID(),
+            name: name,
+            tabs: [tab],
+            selectedTabID: tab.id
         )
     }
 
@@ -391,18 +592,37 @@ final class WorkspaceStore: ObservableObject {
         )
     }
 
+    private func tabSnapshot(_ tab: TerminalTab) -> TabSnapshot {
+        TabSnapshot(
+            id: tab.id,
+            sessions: tab.sessions.map(sessionSnapshot),
+            selectedSessionID: tab.selectedSessionID,
+            layout: tab.layout
+        )
+    }
+
     private func closeTab(
         at tabIndex: Int,
-        in projectIndex: Int,
+        in workspaceIndex: Int,
+        projectIndex: Int,
         shutdownSessions: Bool
     ) {
-        let removed = projects[projectIndex].tabs.remove(at: tabIndex)
+        let removed = projects[projectIndex].workspaces[workspaceIndex]
+            .tabs.remove(at: tabIndex)
         if shutdownSessions { removed.sessions.forEach { $0.shutdown() } }
-        if projects[projectIndex].selectedTabID == removed.id {
-            let tabs = projects[projectIndex].tabs
-            projects[projectIndex].selectedTabID = tabs.isEmpty
+        if projects[projectIndex].workspaces[workspaceIndex].selectedTabID == removed.id {
+            let tabs = projects[projectIndex].workspaces[workspaceIndex].tabs
+            projects[projectIndex].workspaces[workspaceIndex].selectedTabID = tabs.isEmpty
                 ? nil
                 : tabs[min(tabIndex, tabs.count - 1)].id
+        }
+        guard projects[projectIndex].workspaces[workspaceIndex].tabs.isEmpty else { return }
+        let removedWorkspace = projects[projectIndex].workspaces.remove(at: workspaceIndex)
+        if projects[projectIndex].selectedWorkspaceID == removedWorkspace.id {
+            let workspaces = projects[projectIndex].workspaces
+            projects[projectIndex].selectedWorkspaceID = workspaces.isEmpty
+                ? nil
+                : workspaces[min(workspaceIndex, workspaces.count - 1)].id
         }
     }
 
@@ -415,41 +635,33 @@ final class WorkspaceStore: ObservableObject {
                 guard FileManager.default.fileExists(atPath: savedProject.rootPath) else {
                     return nil
                 }
-                let tabs = (savedProject.tabs ?? []).compactMap { savedTab -> TerminalTab? in
-                    let sessions = savedTab.sessions.map { savedSession in
-                        makeSession(
-                            id: savedSession.id,
-                            workingDirectory: FileManager.default.fileExists(
-                                atPath: savedSession.workingDirectory
-                            ) ? savedSession.workingDirectory : savedProject.rootPath,
+                let workspaces = (savedProject.workspaces ?? []).compactMap {
+                    savedWorkspace -> TerminalWorkspace? in
+                    let tabs = savedWorkspace.tabs.compactMap { savedTab in
+                        restoreTab(
+                            savedTab,
+                            rootPath: savedProject.rootPath,
                             projectID: savedProject.id
                         )
                     }
-                    guard !sessions.isEmpty else { return nil }
-                    let sessionIDs = Set(sessions.map(\.id))
-                    let layout = Set(savedTab.layout.terminalIDs).isSubset(of: sessionIDs)
-                        ? savedTab.layout
-                        : PaneLayoutSnapshot.joining(
-                            sessions.map { .terminal($0.id) },
-                            axis: .horizontal
-                        )
-                    return TerminalTab(
-                        id: savedTab.id,
-                        sessions: sessions,
-                        selectedSessionID: sessions.contains(where: {
-                            $0.id == savedTab.selectedSessionID
-                        }) ? savedTab.selectedSessionID : sessions.first?.id,
-                        layout: layout
+                    guard !tabs.isEmpty else { return nil }
+                    return TerminalWorkspace(
+                        id: savedWorkspace.id,
+                        name: savedWorkspace.name,
+                        tabs: tabs,
+                        selectedTabID: tabs.contains(where: {
+                            $0.id == savedWorkspace.selectedTabID
+                        }) ? savedWorkspace.selectedTabID : tabs.first?.id
                     )
                 }
                 return VibraProject(
                     id: savedProject.id,
                     name: savedProject.name,
                     rootPath: savedProject.rootPath,
-                    tabs: tabs,
-                    selectedTabID: tabs.contains(where: {
-                        $0.id == savedProject.selectedTabID
-                    }) ? savedProject.selectedTabID : tabs.first?.id
+                    workspaces: workspaces,
+                    selectedWorkspaceID: workspaces.contains(where: {
+                        $0.id == savedProject.selectedWorkspaceID
+                    }) ? savedProject.selectedWorkspaceID : workspaces.first?.id
                 )
             }
             selectedProjectID = projects.contains(where: {
@@ -461,6 +673,38 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    private func restoreTab(
+        _ savedTab: TabSnapshot,
+        rootPath: String,
+        projectID: UUID
+    ) -> TerminalTab? {
+        let sessions = savedTab.sessions.map { savedSession in
+            makeSession(
+                id: savedSession.id,
+                workingDirectory: FileManager.default.fileExists(
+                    atPath: savedSession.workingDirectory
+                ) ? savedSession.workingDirectory : rootPath,
+                projectID: projectID
+            )
+        }
+        guard !sessions.isEmpty else { return nil }
+        let sessionIDs = Set(sessions.map(\.id))
+        let layout = Set(savedTab.layout.terminalIDs).isSubset(of: sessionIDs)
+            ? savedTab.layout
+            : PaneLayoutSnapshot.joining(
+                sessions.map { .terminal($0.id) },
+                axis: .horizontal
+            )
+        return TerminalTab(
+            id: savedTab.id,
+            sessions: sessions,
+            selectedSessionID: sessions.contains(where: {
+                $0.id == savedTab.selectedSessionID
+            }) ? savedTab.selectedSessionID : sessions.first?.id,
+            layout: layout
+        )
+    }
+
     private func refreshSessionVisibility() {
         let visibleIDs = Set(selectedTab?.layout.terminalIDs ?? [])
         for session in allSessions {
@@ -470,7 +714,7 @@ final class WorkspaceStore: ObservableObject {
         let hasHiddenSessions = allSessions.contains { !$0.isVisible && !$0.isClosed }
         if hasHiddenSessions, hiddenSessionPump == nil {
             hiddenSessionPump = Timer.scheduledTimer(
-                withTimeInterval: 0.2,
+                withTimeInterval: 0.35,
                 repeats: true
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
@@ -484,6 +728,73 @@ final class WorkspaceStore: ObservableObject {
             hiddenSessionPump?.invalidate()
             hiddenSessionPump = nil
         }
+    }
+
+    private func startAgentActivityMonitoring() {
+        guard agentActivityTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.4, repeats: true) {
+            [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.refreshAgentActivity()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        agentActivityTimer = timer
+        Task { await refreshAgentActivity() }
+    }
+
+    private func refreshAgentActivity() async {
+        guard !isRefreshingAgentActivity else { return }
+        isRefreshingAgentActivity = true
+        defer { isRefreshingAgentActivity = false }
+
+        let sessionsByPID = Dictionary(
+            uniqueKeysWithValues: allSessions.compactMap { session in
+                session.terminalView.foregroundPid.map { ($0, session.id) }
+            }
+        )
+        let pids = Set(sessionsByPID.keys)
+        let runtime = await Task.detached(priority: .utility) {
+            let processes = AgentProcessProbe.snapshots(for: pids)
+            let agentSessionIDs = Set<UUID>(processes.compactMap { pid, snapshot in
+                guard CodingAgent.detect(commandLine: snapshot.commandLine) != nil else {
+                    return nil
+                }
+                return sessionsByPID[pid]
+            })
+            let lifecycle = Dictionary(
+                uniqueKeysWithValues: agentSessionIDs.compactMap { sessionID in
+                    AgentLifecycleStore.snapshot(for: sessionID).map { (sessionID, $0) }
+                }
+            )
+            return (processes, lifecycle)
+        }.value
+
+        let sessionsByID = Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id, $0) })
+        for (pid, sessionID) in sessionsByPID {
+            sessionsByID[sessionID]?.updateForegroundProcess(
+                runtime.0[pid],
+                lifecycle: runtime.1[sessionID]
+            )
+        }
+        let sessionsWithoutProcess = Set(sessionsByID.keys).subtracting(sessionsByPID.values)
+        for sessionID in sessionsWithoutProcess {
+            sessionsByID[sessionID]?.updateForegroundProcess(
+                nil,
+                lifecycle: runtime.1[sessionID]
+            )
+        }
+        let activities = workspaceActivitySnapshot()
+        if activities != lastWorkspaceActivities {
+            lastWorkspaceActivities = activities
+            objectWillChange.send()
+        }
+    }
+
+    private func workspaceActivitySnapshot() -> [UUID: AgentActivity] {
+        Dictionary(uniqueKeysWithValues: projects.flatMap { project in
+            project.workspaces.map { ($0.id, $0.agentActivity) }
+        })
     }
 
     private static func workspaceURL(createDirectory: Bool = true) throws -> URL {

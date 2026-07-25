@@ -1,8 +1,9 @@
 import AppKit
+import Combine
 import GhosttyTerminal
 
 @MainActor
-final class TerminalSession: Identifiable {
+final class TerminalSession: ObservableObject, Identifiable {
     let id: UUID
     let state: TerminalViewState
     let terminalView: TerminalView
@@ -10,24 +11,28 @@ final class TerminalSession: Identifiable {
 
     var onExit: ((TerminalSession) -> Void)?
 
+    @Published private(set) var agentActivity: AgentActivity = .idle
+
     private(set) var isVisible = false
     private(set) var isClosed = false
+    private var missedAgentPolls = 0
+    private var detectedAgent: CodingAgent?
+    private var latestAgentActivityAt = Date.distantPast
+    private var cancellables: Set<AnyCancellable> = []
 
     init(id: UUID = UUID(), workingDirectory: String) {
         self.id = id
         initialWorkingDirectory = workingDirectory
+        AgentLifecycleStore.clear(id)
 
         let configuration = TerminalConfiguration { builder in
-            builder.withFontSize(13)
-            builder.withWindowPaddingX(10)
-            builder.withWindowPaddingY(8)
-            builder.withCursorStyle(.block)
-            builder.withCursorStyleBlink(true)
             builder.withCustom("scrollback-limit", "1048576")
             builder.withCustom("macos-option-as-alt", "true")
         }
+        let configSource: TerminalController.ConfigSource = GhosttyConfigLocator.path()
+            .map(TerminalController.ConfigSource.file) ?? .none
         let state = TerminalViewState(
-            configSource: .none,
+            configSource: configSource,
             terminalConfiguration: configuration
         )
         self.state = state
@@ -50,6 +55,16 @@ final class TerminalSession: Identifiable {
             guard let self, !self.isClosed else { return }
             self.onExit?(self)
         }
+
+        state.$lastDesktopNotificationAt
+            .dropFirst()
+            .compactMap { $0 }
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.handleDesktopNotification()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     var title: String {
@@ -78,6 +93,105 @@ final class TerminalSession: Identifiable {
         state.controller.tick()
     }
 
+    func updateForegroundProcess(
+        _ snapshot: ForegroundProcessSnapshot?,
+        lifecycle: AgentLifecycleSnapshot?
+    ) {
+        guard !isClosed else { return }
+        let detected = CodingAgent.detect(
+            commandLine: snapshot?.commandLine ?? "",
+            title: ""
+        )
+
+        if let detected {
+            detectedAgent = detected
+            missedAgentPolls = 0
+            let transcriptLifecycle = snapshot?.lifecycle
+            let newestLifecycle = [lifecycle, transcriptLifecycle]
+                .compactMap { $0 }
+                .max { $0.observedAt < $1.observedAt }
+            if let newestLifecycle,
+               newestLifecycle.observedAt > latestAgentActivityAt {
+                apply(newestLifecycle, agent: detected)
+                return
+            }
+            if agentActivity.agent != detected {
+                agentActivity = .ready(agent: detected)
+            }
+            return
+        }
+
+        guard agentActivity.agent != nil else { return }
+        missedAgentPolls += 1
+        guard missedAgentPolls >= 2 else { return }
+        missedAgentPolls = 0
+
+        switch agentActivity {
+        case .ready(let agent),
+             .running(let agent, _),
+             .needsAttention(let agent, _):
+            let succeeded = state.lastCommandExitCode.map { $0 == 0 }
+            agentActivity = .finished(agent: agent, succeeded: succeeded, at: Date())
+        case .idle, .finished:
+            break
+        }
+        detectedAgent = nil
+    }
+
+    func noteUserSubmittedInput() {
+        guard let agent = detectedAgent else { return }
+        switch agentActivity {
+        case .running(let current, _) where current == agent:
+            break
+        default:
+            let now = Date()
+            latestAgentActivityAt = now
+            agentActivity = .running(agent: agent, since: now)
+        }
+    }
+
+    private func handleDesktopNotification() {
+        let body = state.lastDesktopNotificationBody?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let notificationText = [state.lastDesktopNotificationTitle, body]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        guard let agent = agentActivity.agent
+            ?? CodingAgent.detect(commandLine: "", title: notificationText) else { return }
+        let normalized = notificationText.lowercased()
+        if normalized.contains("approval")
+            || normalized.contains("question")
+            || normalized.contains("input")
+            || normalized.contains("waiting") {
+            latestAgentActivityAt = Date()
+            agentActivity = .needsAttention(
+                agent: agent,
+                message: body?.isEmpty == false ? body : nil
+            )
+        } else {
+            latestAgentActivityAt = Date()
+            agentActivity = .finished(agent: agent, succeeded: nil, at: Date())
+        }
+    }
+
+    private func apply(_ lifecycle: AgentLifecycleSnapshot, agent: CodingAgent) {
+        latestAgentActivityAt = lifecycle.observedAt
+        let state = lifecycle.state
+        switch state {
+        case .ready:
+            agentActivity = .ready(agent: agent)
+        case .working:
+            if case .running(let current, _) = agentActivity, current == agent { return }
+            agentActivity = .running(agent: agent, since: Date())
+        case .needsAttention:
+            agentActivity = .needsAttention(agent: agent, message: nil)
+        case .finished:
+            agentActivity = .finished(agent: agent, succeeded: nil, at: Date())
+        case .inactive:
+            agentActivity = .idle
+        }
+    }
+
     func shutdown() {
         guard !isClosed else { return }
         isClosed = true
@@ -87,5 +201,7 @@ final class TerminalSession: Identifiable {
         terminalView.delegate = nil
         terminalView.controller = nil
         onExit = nil
+        cancellables.removeAll()
+        AgentLifecycleStore.clear(id)
     }
 }

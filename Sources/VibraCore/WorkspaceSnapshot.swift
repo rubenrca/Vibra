@@ -39,6 +39,8 @@ public struct ProjectSnapshot: Codable, Equatable, Identifiable, Sendable {
 
     public var tabs: [TabSnapshot]?
     public var selectedTabID: UUID?
+    public var workspaces: [TerminalWorkspaceSnapshot]?
+    public var selectedWorkspaceID: UUID?
 
     public init(
         id: UUID = UUID(),
@@ -49,7 +51,9 @@ public struct ProjectSnapshot: Codable, Equatable, Identifiable, Sendable {
         visibleSessionIDs: [UUID]? = nil,
         splitAxis: WorkspaceSplitAxis? = nil,
         tabs: [TabSnapshot]? = nil,
-        selectedTabID: UUID? = nil
+        selectedTabID: UUID? = nil,
+        workspaces: [TerminalWorkspaceSnapshot]? = nil,
+        selectedWorkspaceID: UUID? = nil
     ) {
         self.id = id
         self.name = name
@@ -60,23 +64,50 @@ public struct ProjectSnapshot: Codable, Equatable, Identifiable, Sendable {
         self.splitAxis = splitAxis
         self.tabs = tabs
         self.selectedTabID = selectedTabID
+        self.workspaces = workspaces
+        self.selectedWorkspaceID = selectedWorkspaceID
         normalizeSelection()
     }
 
     public mutating func normalizeSelection() {
-        if tabs?.isEmpty != false {
-            tabs = migrateLegacyTabs()
-        }
-
-        if var normalizedTabs = tabs {
-            for index in normalizedTabs.indices {
-                normalizedTabs[index].normalizeSelection()
+        if workspaces?.isEmpty != false {
+            var migratedTabs = tabs
+            if migratedTabs?.isEmpty != false {
+                migratedTabs = migrateLegacyTabs()
             }
-            tabs = normalizedTabs
+            if var migratedTabs {
+                for index in migratedTabs.indices {
+                    migratedTabs[index].normalizeSelection()
+                }
+                migratedTabs.removeAll(where: { $0.sessions.isEmpty })
+                if !migratedTabs.isEmpty {
+                    let selectedTabID = migratedTabs.contains(where: {
+                        $0.id == self.selectedTabID
+                    }) ? self.selectedTabID : migratedTabs.first(where: {
+                        $0.sessions.contains(where: { $0.id == selectedSessionID })
+                    })?.id ?? migratedTabs[0].id
+                    workspaces = [
+                        TerminalWorkspaceSnapshot(
+                            name: name,
+                            tabs: migratedTabs,
+                            selectedTabID: selectedTabID
+                        ),
+                    ]
+                }
+            }
         }
-        tabs?.removeAll(where: { $0.sessions.isEmpty })
 
-        guard let tabs, !tabs.isEmpty else {
+        if var normalizedWorkspaces = workspaces {
+            for index in normalizedWorkspaces.indices {
+                normalizedWorkspaces[index].normalizeSelection()
+            }
+            normalizedWorkspaces.removeAll(where: { $0.tabs.isEmpty })
+            workspaces = normalizedWorkspaces
+        }
+
+        guard let workspaces, !workspaces.isEmpty else {
+            self.workspaces = []
+            selectedWorkspaceID = nil
             self.tabs = []
             selectedTabID = nil
             sessions = []
@@ -86,17 +117,25 @@ public struct ProjectSnapshot: Codable, Equatable, Identifiable, Sendable {
             return
         }
 
-        if !tabs.contains(where: { $0.id == selectedTabID }) {
-            selectedTabID = tabs.first(where: {
-                $0.sessions.contains(where: { $0.id == selectedSessionID })
-            })?.id ?? tabs[0].id
+        if !workspaces.contains(where: { $0.id == selectedWorkspaceID }) {
+            selectedWorkspaceID = workspaces.first(where: { workspace in
+                workspace.tabs.contains(where: { tab in
+                    tab.sessions.contains(where: { $0.id == selectedSessionID })
+                })
+            })?.id ?? workspaces[0].id
         }
 
-        let selectedTab = tabs.first { $0.id == selectedTabID } ?? tabs[0]
-        sessions = tabs.flatMap(\.sessions)
+        let selectedWorkspace = workspaces.first { $0.id == selectedWorkspaceID }
+            ?? workspaces[0]
+        let selectedTab = selectedWorkspace.tabs.first {
+            $0.id == selectedWorkspace.selectedTabID
+        } ?? selectedWorkspace.tabs[0]
+        sessions = workspaces.flatMap { $0.tabs }.flatMap(\.sessions)
         selectedSessionID = selectedTab.selectedSessionID
         visibleSessionIDs = selectedTab.layout.terminalIDs
         splitAxis = selectedTab.layout.rootAxis
+        tabs = selectedWorkspace.tabs
+        selectedTabID = selectedWorkspace.selectedTabID
     }
 
     private func migrateLegacyTabs() -> [TabSnapshot] {
@@ -136,6 +175,40 @@ public struct ProjectSnapshot: Codable, Equatable, Identifiable, Sendable {
             }
         }
         return migrated
+    }
+}
+
+public struct TerminalWorkspaceSnapshot: Codable, Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public var name: String
+    public var tabs: [TabSnapshot]
+    public var selectedTabID: UUID?
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        tabs: [TabSnapshot],
+        selectedTabID: UUID?
+    ) {
+        self.id = id
+        self.name = name
+        self.tabs = tabs
+        self.selectedTabID = selectedTabID
+        normalizeSelection()
+    }
+
+    public mutating func normalizeSelection() {
+        for index in tabs.indices {
+            tabs[index].normalizeSelection()
+        }
+        tabs.removeAll(where: { $0.sessions.isEmpty })
+        guard !tabs.isEmpty else {
+            selectedTabID = nil
+            return
+        }
+        if !tabs.contains(where: { $0.id == selectedTabID }) {
+            selectedTabID = tabs[0].id
+        }
     }
 }
 

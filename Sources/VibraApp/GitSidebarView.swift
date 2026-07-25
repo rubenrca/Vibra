@@ -15,8 +15,9 @@ struct GitSidebarView: View {
             Divider()
             content
         }
-        .frame(width: 320)
+        .frame(width: model.expandedChangeID == nil ? 320 : 540)
         .background(.regularMaterial)
+        .animation(.easeOut(duration: 0.2), value: model.expandedChangeID)
         .onAppear { syncFileTree() }
         .onChange(of: model.repositoryRoot) { _, _ in syncFileTree() }
         .onChange(of: model.changes) { _, _ in
@@ -88,17 +89,16 @@ struct GitSidebarView: View {
             )
         } else {
             ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(GitChangeTreeNode.makeTree(from: model.changes)) { node in
-                        GitChangeTreeNodeView(
-                            node: node,
-                            depth: 0,
+                LazyVStack(spacing: 8) {
+                    ForEach(model.changes) { change in
+                        InlineGitDiffCard(
+                            change: change,
                             repositoryRoot: model.repositoryRoot,
                             model: model
                         )
                     }
                 }
-                .padding(6)
+                .padding(8)
             }
         }
     }
@@ -172,6 +172,158 @@ struct GitSidebarView: View {
         fileTree.sync(root: root)
     }
 
+}
+
+private struct InlineGitDiffCard: View {
+    let change: GitFileChange
+    let repositoryRoot: String
+    @ObservedObject var model: GitSidebarModel
+    @State private var hovering = false
+
+    private var expanded: Bool { model.expandedChangeID == change.id }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            if expanded {
+                Divider()
+                actionBar
+                Divider()
+                GitDiffLinesView(
+                    model: model,
+                    axes: .horizontal,
+                    minimumCodeWidth: 680,
+                    minimumHeight: 110
+                )
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.48))
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(Color.primary.opacity(expanded ? 0.052 : hovering ? 0.038 : 0.024))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.primary.opacity(expanded ? 0.15 : 0.09), lineWidth: 1)
+        }
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.16), value: expanded)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .contextMenu {
+            if change.hasWorktreeChanges {
+                Button("Stage") {
+                    ensureSelected()
+                    model.stageSelected()
+                }
+            }
+            if change.hasStagedChanges {
+                Button("Unstage") {
+                    ensureSelected()
+                    model.unstageSelected()
+                }
+            }
+            Divider()
+            Button("Open Large Diff") { model.presentModal(change) }
+            Button("Reveal in Finder") { reveal() }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 4) {
+            Button { model.toggleInline(change) } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Text(change.compactStatus)
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(statusColor)
+                        .frame(width: 18)
+                    Text(change.path)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 6)
+                    changeStats
+                }
+                .padding(.leading, 11)
+                .frame(maxWidth: .infinity, minHeight: 46)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button { model.presentModal(change) } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Open Large Diff")
+            .padding(.trailing, 7)
+        }
+    }
+
+    private var actionBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(change.path, forType: .string)
+            } label: {
+                Label("Copy path", systemImage: "doc.on.doc")
+            }
+            .help("Copy Path")
+
+            Button(action: reveal) {
+                Label("Reveal", systemImage: "arrow.up.forward.square")
+            }
+            .help("Reveal in Finder")
+
+            Spacer(minLength: 0)
+
+            if change.hasStagedChanges {
+                Button("Unstage") { model.unstageSelected() }
+            }
+            if change.hasWorktreeChanges {
+                Button("Stage") { model.stageSelected() }
+            }
+        }
+        .font(.system(size: 10, weight: .medium))
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+    }
+
+    private var changeStats: some View {
+        HStack(spacing: 6) {
+            if change.additions > 0 { Text("+\(change.additions)").foregroundStyle(.green) }
+            if change.deletions > 0 { Text("−\(change.deletions)").foregroundStyle(.red) }
+        }
+        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+        .padding(.horizontal, 7)
+        .frame(height: 24)
+        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 4))
+    }
+
+    private var statusColor: Color {
+        if change.isConflict { return .orange }
+        if change.isUntracked { return .blue }
+        if change.hasStagedChanges { return .green }
+        return .orange
+    }
+
+    private func ensureSelected() {
+        if model.selectedChangeID != change.id {
+            model.toggleInline(change)
+        }
+    }
+
+    private func reveal() {
+        let path = (repositoryRoot as NSString).appendingPathComponent(change.path)
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
 }
 
 private struct RepositoryFileTreeView: View {
@@ -642,33 +794,12 @@ struct GitDiffModalView: View {
             fileHeader
             if fileExpanded {
                 Divider().overlay(Color.white.opacity(0.08))
-                Group {
-                    if model.isLoadingDiff {
-                        ProgressView().controlSize(.small)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if presentedLines.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: "doc.text").foregroundStyle(.tertiary)
-                            Text("No textual diff to display.")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        ScrollView([.horizontal, .vertical]) {
-                            LazyVStack(alignment: .leading, spacing: 0) {
-                                ForEach(presentedLines) { presented in
-                                    if let omitted = presented.omittedLines {
-                                        omittedRow(omitted, fallback: presented.line.text)
-                                    } else {
-                                        diffRow(presented.line)
-                                    }
-                                }
-                            }
-                            .fixedSize(horizontal: true, vertical: false)
-                        }
-                        .defaultScrollAnchor(.topLeading)
-                    }
-                }
+                GitDiffLinesView(
+                    model: model,
+                    axes: [.horizontal, .vertical],
+                    minimumCodeWidth: 860,
+                    minimumHeight: 180
+                )
                 .background(Color(red: 0.025, green: 0.027, blue: 0.030))
             }
         }
@@ -733,6 +864,67 @@ struct GitDiffModalView: View {
         .background(Color.white.opacity(0.075))
     }
 
+    private func stat(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .foregroundStyle(color)
+    }
+
+    private func actionButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(.secondary)
+    }
+
+    private var displayRoot: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if model.repositoryRoot == home { return "~" }
+        if model.repositoryRoot.hasPrefix(home + "/") {
+            return "~/" + model.repositoryRoot.dropFirst(home.count + 1)
+        }
+        return model.repositoryRoot
+    }
+
+}
+
+private struct GitDiffLinesView: View {
+    @ObservedObject var model: GitSidebarModel
+    let axes: Axis.Set
+    let minimumCodeWidth: CGFloat
+    let minimumHeight: CGFloat
+
+    var body: some View {
+        Group {
+            if model.isLoadingDiff {
+                ProgressView().controlSize(.small)
+                    .frame(maxWidth: .infinity, minHeight: minimumHeight)
+            } else if presentedLines.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "doc.text").foregroundStyle(.tertiary)
+                    Text("No textual diff to display.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: minimumHeight)
+            } else {
+                ScrollView(axes) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(presentedLines) { presented in
+                            if let omitted = presented.omittedLines {
+                                omittedRow(omitted, fallback: presented.line.text)
+                            } else {
+                                diffRow(presented.line)
+                            }
+                        }
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                .defaultScrollAnchor(.topLeading)
+            }
+        }
+    }
+
     private func diffRow(_ line: DiffLine) -> some View {
         HStack(spacing: 0) {
             Rectangle()
@@ -746,7 +938,7 @@ struct GitDiffModalView: View {
             Text(verbatim: displayText(line))
                 .foregroundStyle(lineColor(line.kind))
                 .padding(.trailing, 16)
-                .frame(minWidth: 860, maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: minimumCodeWidth, maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }
         .font(.system(size: 11.5, design: .monospaced))
@@ -763,8 +955,13 @@ struct GitDiffModalView: View {
         .font(.system(size: 10.5, design: .monospaced))
         .foregroundStyle(.secondary)
         .padding(.leading, 88)
-        .frame(minWidth: 960, maxWidth: .infinity, minHeight: 28, alignment: .leading)
-        .background(Color.white.opacity(0.035))
+        .frame(
+            minWidth: minimumCodeWidth + 100,
+            maxWidth: .infinity,
+            minHeight: 28,
+            alignment: .leading
+        )
+        .background(Color.primary.opacity(0.035))
     }
 
     private func lineNumber(_ value: Int?) -> some View {
@@ -774,19 +971,6 @@ struct GitDiffModalView: View {
             .frame(width: 46, alignment: .trailing)
             .padding(.trailing, 8)
             .background(Color.black.opacity(0.08))
-    }
-
-    private func stat(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-            .foregroundStyle(color)
-    }
-
-    private func actionButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .tint(.secondary)
     }
 
     private func displayText(_ line: DiffLine) -> String {
@@ -822,7 +1006,7 @@ struct GitDiffModalView: View {
         switch kind {
         case .addition: Color.green.opacity(0.16)
         case .deletion: Color.red.opacity(0.14)
-        case .hunk: Color.white.opacity(0.035)
+        case .hunk: Color.primary.opacity(0.035)
         default: .clear
         }
     }
@@ -833,15 +1017,6 @@ struct GitDiffModalView: View {
         case .deletion: .red
         default: .clear
         }
-    }
-
-    private var displayRoot: String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if model.repositoryRoot == home { return "~" }
-        if model.repositoryRoot.hasPrefix(home + "/") {
-            return "~/" + model.repositoryRoot.dropFirst(home.count + 1)
-        }
-        return model.repositoryRoot
     }
 
     private var presentedLines: [PresentedDiffLine] {

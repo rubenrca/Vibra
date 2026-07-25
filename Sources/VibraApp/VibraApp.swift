@@ -80,7 +80,7 @@ private struct VibraCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: .command)
 
-            Button("New Terminal") {
+            Button("New Tab") {
                 workspace?.newSession()
             }
             .keyboardShortcut("t", modifiers: .command)

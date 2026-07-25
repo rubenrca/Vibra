@@ -71,83 +71,214 @@ private struct ProjectSidebar: View {
         VStack(spacing: 0) {
             Color.clear.frame(height: VibraLayout.panelHeaderHeight)
             ScrollView {
-                LazyVStack(spacing: 4) {
+                LazyVStack(alignment: .leading, spacing: 13) {
                     ForEach(store.projects) { project in
-                        projectRow(project)
+                        ProjectSidebarSection(project: project, store: store)
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 7)
+                .padding(.top, 5)
+                .padding(.bottom, 14)
             }
             Spacer(minLength: 0)
             Button {
-                store.chooseProject()
+                store.newWorkspace()
             } label: {
-                Label("Open Project", systemImage: "plus")
-                    .font(.system(size: 12, weight: .medium))
+                Label("New workspace", systemImage: "plus")
+                    .font(.system(size: 12, weight: .semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
-                    .frame(height: 32)
+                    .frame(height: 34)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .padding(8)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+            .padding(7)
         }
-        .frame(width: 216)
-        .background(.ultraThinMaterial)
+        .frame(width: 242)
+        .background(.thinMaterial)
+    }
+}
+
+private struct ProjectSidebarSection: View {
+    let project: VibraProject
+    @ObservedObject var store: WorkspaceStore
+    @State private var hoveringHeader = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            projectHeader
+            ForEach(project.workspaces) { workspace in
+                SidebarWorkspaceRow(
+                    workspace: workspace,
+                    selected: store.selectedProjectID == project.id
+                        && project.selectedWorkspaceID == workspace.id,
+                    store: store,
+                    select: { store.selectWorkspace(workspace.id, in: project.id) },
+                    close: { store.closeWorkspace(workspace.id, in: project.id) }
+                )
+            }
+        }
     }
 
-    private func projectRow(_ project: VibraProject) -> some View {
-        let selected = store.selectedProjectID == project.id
-        return HStack(spacing: 3) {
+    private var projectHeader: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+            Text(project.name)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
             Button {
                 store.selectProject(project.id)
+                store.newWorkspace()
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: selected ? "folder.fill" : "folder")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(selected ? VibraPalette.accent : .secondary)
-                        .frame(width: 16)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(project.name)
-                            .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Text("\(project.tabs.count) \(project.tabs.count == 1 ? "tab" : "tabs")")
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.tertiary)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
+                Image(systemName: "plus")
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 18, height: 18)
             }
             .buttonStyle(.plain)
-            .frame(maxWidth: .infinity)
-
-            Button {
-                store.closeProject(project.id)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .semibold))
-                    .frame(width: 20, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Close \(project.name)")
+            .opacity(hoveringHeader ? 0.8 : 0)
+            .help("New workspace in \(project.name)")
         }
-        .padding(.leading, 9)
-        .padding(.trailing, 5)
-        .frame(height: 40)
-        .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(selected ? Color.primary.opacity(0.075) : .clear)
-        }
+        .padding(.horizontal, 9)
+        .frame(height: 24)
+        .contentShape(Rectangle())
+        .onTapGesture { store.selectProject(project.id) }
+        .onHover { hoveringHeader = $0 }
         .contextMenu {
             Button("Close Project", role: .destructive) {
                 store.closeProject(project.id)
             }
+        }
+    }
+
+}
+
+private struct SidebarWorkspaceRow: View {
+    let workspace: TerminalWorkspace
+    let selected: Bool
+    @ObservedObject var store: WorkspaceStore
+    let select: () -> Void
+    let close: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            SidebarActivityGlyph(activity: workspace.agentActivity, selected: selected)
+                .frame(width: 15)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(workspace.name)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(selected ? Color.white : .primary)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.system(size: 9.75, weight: .regular))
+                    .foregroundStyle(selected ? Color.white.opacity(0.72) : detailColor)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 18, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(selected ? Color.white.opacity(0.72) : .secondary)
+            .opacity(hovering ? 1 : 0)
+        }
+        .padding(.leading, 9)
+        .padding(.trailing, 6)
+        .frame(height: 47)
+        .background {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(
+                    selected
+                        ? VibraPalette.accent
+                        : hovering ? Color.primary.opacity(0.055) : .clear
+                )
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .onTapGesture(perform: select)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.12), value: selected)
+        .contextMenu {
+            Button("New tab") {
+                select()
+                store.newSession()
+            }
+            Divider()
+            Button("Close workspace", role: .destructive, action: close)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(workspace.name), \(detail)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var detail: String {
+        let tabCount = workspace.tabs.count
+        let tabs = "\(tabCount) \(tabCount == 1 ? "tab" : "tabs")"
+        switch workspace.agentActivity {
+        case .idle:
+            return tabs
+        case .ready(let agent):
+            return "\(agent.displayName) idle · \(tabs)"
+        case .running(let agent, _):
+            return "\(agent.displayName) working · \(tabs)"
+        case .needsAttention(let agent, _):
+            return "\(agent.displayName) needs attention · \(tabs)"
+        case .finished(let agent, let succeeded, _):
+            return succeeded == false
+                ? "\(agent.displayName) error · \(tabs)"
+                : "\(agent.displayName) finished · \(tabs)"
+        }
+    }
+
+    private var detailColor: Color {
+        switch workspace.agentActivity {
+        case .idle: .secondary
+        case .ready: .secondary
+        case .running: VibraPalette.accent
+        case .needsAttention: .orange
+        case .finished(_, let succeeded, _): succeeded == false ? .red : .green
+        }
+    }
+}
+
+private struct SidebarActivityGlyph: View {
+    let activity: AgentActivity
+    let selected: Bool
+
+    var body: some View {
+        switch activity {
+        case .idle:
+            Image(systemName: "terminal")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(selected ? Color.white.opacity(0.68) : .secondary)
+        case .ready:
+            Image(systemName: "pause.circle.fill")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(selected ? Color.white.opacity(0.78) : .secondary)
+        case .running:
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.72)
+                .tint(selected ? .white : VibraPalette.accent)
+        case .needsAttention:
+            Image(systemName: "bell.badge.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(selected ? Color.white : .orange)
+        case .finished(_, let succeeded, _):
+            Image(systemName: succeeded == false ? "xmark.circle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(selected ? Color.white : succeeded == false ? .red : .green)
         }
     }
 }
@@ -323,15 +454,57 @@ private struct SessionHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             if let project = store.selectedProject {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 3) {
-                        ForEach(Array(project.tabs.enumerated()), id: \.element.id) { index, tab in
-                            sessionTab(tab, index: index, in: project)
-                        }
+                HStack(spacing: 7) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(project.name)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .lineLimit(1)
+                        .frame(maxWidth: 120)
+                    if let workspace = project.selectedWorkspace,
+                       project.workspaces.count > 1 {
+                        Text("/")
+                            .foregroundStyle(.tertiary)
+                        Text(workspace.name)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(maxWidth: 100)
                     }
-                    .padding(.horizontal, 8)
                 }
+                .padding(.leading, 2)
 
+                Divider()
+                    .frame(height: 18)
+
+                if let workspace = project.selectedWorkspace {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 3) {
+                            ForEach(Array(workspace.tabs.enumerated()), id: \.element.id) {
+                                index, tab in
+                                headerTab(tab, index: index, in: workspace, project: project)
+                            }
+
+                            Button {
+                                store.newSession()
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .frame(width: 24, height: 24)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .background(
+                                Color.primary.opacity(0.045),
+                                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            )
+                            .help("New terminal tab")
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
             }
             Spacer(minLength: 0)
             if store.selectedProject != nil {
@@ -352,36 +525,37 @@ private struct SessionHeader: View {
             }
         }
         .padding(.trailing, 10)
-        .padding(.leading, store.selectedProject == nil ? 78 : 0)
+        .padding(.leading, store.isProjectSidebarVisible ? 9 : 78)
         .frame(height: VibraLayout.panelHeaderHeight)
         .background(.bar)
     }
 
     @ViewBuilder
-    private func sessionTab(
+    private func headerTab(
         _ tab: TerminalTab,
         index: Int,
-        in project: VibraProject
+        in workspace: TerminalWorkspace,
+        project: VibraProject
     ) -> some View {
-        let selected = project.selectedTabID == tab.id
-        let defaultTitle = project.tabs.count == 1 ? "Terminal" : "Terminal \(index + 1)"
+        let selected = workspace.selectedTabID == tab.id
+        let fallbackTitle = workspace.tabs.count == 1 ? "Terminal" : "Terminal \(index + 1)"
         let select = { store.selectTab(tab.id, in: project.id) }
         let close = { store.closeTab(tab.id, in: project.id) }
 
-        // A tab always owns at least one session, so the reported title is the
-        // normal path. The fallback keeps a tab that somehow lost its sessions
-        // visible — and closable — instead of trapping the whole header.
         if let session = tab.selectedSession ?? tab.sessions.first {
-            SessionTab(
-                state: session.state,
+            HeaderTerminalTab(
+                session: session,
+                fallbackTitle: fallbackTitle,
+                paneCount: tab.sessions.count,
                 selected: selected,
-                defaultTitle: defaultTitle,
                 select: select,
                 close: close
             )
         } else {
-            SessionTabButton(
-                title: defaultTitle,
+            HeaderTerminalTabButton(
+                title: fallbackTitle,
+                activity: .idle,
+                paneCount: 0,
                 selected: selected,
                 select: select,
                 close: close
@@ -390,19 +564,37 @@ private struct SessionHeader: View {
     }
 }
 
-/// Tracks the session's reported title so the tab relabels itself as the shell
-/// changes it. Kept separate from the button so the header can still draw a tab
-/// that has no session to observe.
-private struct SessionTab: View {
-    @ObservedObject var state: TerminalViewState
+private struct HeaderTerminalTab: View {
+    @ObservedObject var session: TerminalSession
+    @ObservedObject private var state: TerminalViewState
+    let fallbackTitle: String
+    let paneCount: Int
     let selected: Bool
-    let defaultTitle: String
     let select: () -> Void
     let close: () -> Void
 
+    init(
+        session: TerminalSession,
+        fallbackTitle: String,
+        paneCount: Int,
+        selected: Bool,
+        select: @escaping () -> Void,
+        close: @escaping () -> Void
+    ) {
+        self.session = session
+        _state = ObservedObject(wrappedValue: session.state)
+        self.fallbackTitle = fallbackTitle
+        self.paneCount = paneCount
+        self.selected = selected
+        self.select = select
+        self.close = close
+    }
+
     var body: some View {
-        SessionTabButton(
+        HeaderTerminalTabButton(
             title: title,
+            activity: session.agentActivity,
+            paneCount: paneCount,
             selected: selected,
             select: select,
             close: close
@@ -411,12 +603,14 @@ private struct SessionTab: View {
 
     private var title: String {
         let reported = state.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return reported.isEmpty || reported == "Terminal" ? defaultTitle : reported
+        return reported.isEmpty || reported == "Terminal" ? fallbackTitle : reported
     }
 }
 
-private struct SessionTabButton: View {
+private struct HeaderTerminalTabButton: View {
     let title: String
+    let activity: AgentActivity
+    let paneCount: Int
     let selected: Bool
     let select: () -> Void
     let close: () -> Void
@@ -424,25 +618,31 @@ private struct SessionTabButton: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 6) {
+            HeaderTabActivityGlyph(activity: activity, selected: selected)
             Text(title)
-                .font(.system(size: 11.5, weight: selected ? .medium : .regular))
+                .font(.system(size: 11, weight: selected ? .semibold : .regular))
                 .lineLimit(1)
-                .frame(maxWidth: 160)
+                .frame(maxWidth: 145)
+            if paneCount > 1 {
+                Text("\(paneCount)")
+                    .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
             Button(action: close) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .semibold))
-                    .frame(width: 18, height: 20)
+                    .font(.system(size: 7.5, weight: .bold))
+                    .frame(width: 17, height: 20)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .opacity(hovering || selected ? 0.72 : 0)
         }
-        .padding(.leading, 10)
-        .padding(.trailing, 4)
-        .frame(minWidth: 92)
-        .frame(height: 30)
+        .padding(.leading, 9)
+        .padding(.trailing, 3)
+        .frame(minWidth: 88)
+        .frame(height: 28)
         .background {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(
@@ -453,9 +653,9 @@ private struct SessionTabButton: View {
         }
         .overlay(alignment: .bottom) {
             Capsule()
-                .fill(selected ? VibraPalette.accent.opacity(0.9) : .clear)
+                .fill(selected ? VibraPalette.accent : .clear)
                 .frame(height: 2)
-                .padding(.horizontal, 9)
+                .padding(.horizontal, 8)
         }
         .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
         .onTapGesture(perform: select)
@@ -463,8 +663,40 @@ private struct SessionTabButton: View {
         .animation(.easeOut(duration: 0.12), value: hovering)
         .animation(.easeOut(duration: 0.12), value: selected)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Terminal \(title)")
+        .accessibilityLabel("Terminal tab \(title)")
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+private struct HeaderTabActivityGlyph: View {
+    let activity: AgentActivity
+    let selected: Bool
+
+    var body: some View {
+        switch activity {
+        case .idle:
+            Image(systemName: "terminal")
+                .font(.system(size: 8.5, weight: .medium))
+                .foregroundStyle(.secondary)
+        case .ready:
+            Circle()
+                .fill(Color.secondary.opacity(0.7))
+                .frame(width: 6, height: 6)
+        case .running:
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.56)
+                .frame(width: 9, height: 9)
+                .tint(selected ? VibraPalette.accent : .secondary)
+        case .needsAttention:
+            Circle()
+                .fill(Color.orange)
+                .frame(width: 7, height: 7)
+        case .finished(_, let succeeded, _):
+            Image(systemName: succeeded == false ? "xmark.circle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(succeeded == false ? Color.red : .green)
+        }
     }
 }
 
@@ -493,10 +725,20 @@ private struct EmptyWorkspaceView: View {
 }
 
 enum VibraPalette {
-    static let accent = Color(red: 0.49, green: 0.36, blue: 0.96)
+    static let accent = Color(
+        nsColor: NSColor(name: nil) { appearance in
+            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return NSColor(
+                srgbRed: 0,
+                green: dark ? 145.0 / 255.0 : 136.0 / 255.0,
+                blue: 1,
+                alpha: 1
+            )
+        }
+    )
     static let canvas = Color(nsColor: .windowBackgroundColor)
 }
 
 enum VibraLayout {
-    static let panelHeaderHeight: CGFloat = 44
+    static let panelHeaderHeight: CGFloat = 40
 }

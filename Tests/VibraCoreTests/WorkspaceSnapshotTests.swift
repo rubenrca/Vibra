@@ -75,6 +75,8 @@ import Testing
     #expect(restored.projects[0].splitAxis == nil)
     #expect(restored.projects[0].tabs?.count == 1)
     #expect(restored.projects[0].tabs?[0].layout == .terminal(sessionID))
+    #expect(restored.projects[0].workspaces?.count == 1)
+    #expect(restored.projects[0].workspaces?[0].tabs.count == 1)
 }
 
 @Test func legacySessionsMigrateToTabsAndPreserveSplitGroup() {
@@ -94,6 +96,52 @@ import Testing
     #expect(project.tabs?.first?.layout.terminalIDs == [first.id, second.id])
     #expect(project.tabs?.last?.layout == .terminal(third.id))
     #expect(project.selectedTabID == project.tabs?.first?.id)
+    #expect(project.workspaces?.count == 1)
+    #expect(project.workspaces?.first?.tabs.count == 2)
+}
+
+@Test func workspacesKeepIndependentTabSelections() throws {
+    let firstSession = SessionSnapshot(workingDirectory: "/tmp/repo")
+    let secondSession = SessionSnapshot(workingDirectory: "/tmp/repo")
+    let firstTab = TabSnapshot(
+        sessions: [firstSession],
+        selectedSessionID: firstSession.id,
+        layout: .terminal(firstSession.id)
+    )
+    let secondTab = TabSnapshot(
+        sessions: [secondSession],
+        selectedSessionID: secondSession.id,
+        layout: .terminal(secondSession.id)
+    )
+    let firstWorkspace = TerminalWorkspaceSnapshot(
+        name: "Review",
+        tabs: [firstTab],
+        selectedTabID: firstTab.id
+    )
+    let secondWorkspace = TerminalWorkspaceSnapshot(
+        name: "Implementation",
+        tabs: [secondTab],
+        selectedTabID: secondTab.id
+    )
+    let project = ProjectSnapshot(
+        name: "Repo",
+        rootPath: "/tmp/repo",
+        sessions: [],
+        selectedSessionID: secondSession.id,
+        workspaces: [firstWorkspace, secondWorkspace],
+        selectedWorkspaceID: secondWorkspace.id
+    )
+
+    #expect(project.workspaces?.count == 2)
+    #expect(project.selectedWorkspaceID == secondWorkspace.id)
+    #expect(project.tabs?.map(\.id) == [secondTab.id])
+    #expect(project.selectedSessionID == secondSession.id)
+    #expect(Set(project.sessions.map(\.id)) == Set([firstSession.id, secondSession.id]))
+
+    let data = try JSONEncoder().encode(project)
+    var restored = try JSONDecoder().decode(ProjectSnapshot.self, from: data)
+    restored.normalizeSelection()
+    #expect(restored == project)
 }
 
 @Test func paneTreeSplitsAndCollapsesWithoutCreatingTabs() throws {
