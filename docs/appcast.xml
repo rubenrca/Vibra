@@ -3,24 +3,22 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.2.0</title>
-            <pubDate>Fri, 24 Jul 2026 15:28:08 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.0</link>
-            <sparkle:version>4</sparkle:version>
-            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <title>0.2.1</title>
+            <pubDate>Sat, 25 Jul 2026 12:38:17 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.1</link>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Add in-app updates over Sparkle, checked daily and on demand.</li>
-  <li>Publish signed universal disk images through GitHub Releases.</li>
-  <li>Add a download page and update feed served from GitHub Pages.</li>
-  <li>Add an event-driven Git changes sidebar.</li>
-  <li>Render bounded unified diffs with native SwiftUI views.</li>
-  <li>Add stage and unstage actions for individual files and the repository.</li>
-  <li>Render terminal tabs from the state of the session they own.</li>
-  <li>Reduce the visible brand treatment to a text-only application name.</li>
+  <li>Add cmux-style workspaces with independent terminal tabs inside each workspace.</li>
+  <li>Show coding-agent activity in the sidebar, including ready, working, attention, and finished states.</li>
+  <li>Add optional Codex lifecycle hooks with a transcript-based fallback for status detection.</li>
+  <li>Add collapsible inline Git diffs while keeping the expanded in-app diff viewer.</li>
+  <li>Align terminal typography and spacing more closely with the user's Ghostty configuration.</li>
+  <li>Reduce background polling, transcript reads, and unnecessary SwiftUI updates.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.0/Vibra-0.2.0.dmg" length="11899054" type="application/octet-stream" sparkle:edSignature="9TyCqLk1Kvu/RUzJ6cvdajj7BMdf2RsZaAmI+Wsb6+d6nfEErlm57MHpvT0gaIL1rXPQnBWoTsBFMH+w88rqBw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.1/Vibra-0.2.1.dmg" length="12215322" type="application/octet-stream" sparkle:edSignature="RZqGEY/hShoB3DztolEAy5FPUvbjqFY6FoC94pXSS65F2+WYApUQrNoUOVprTcuMc+A4qYVjOlMloXaUXcORCQ=="/>
         </item>
     </channel>
 </rss>
