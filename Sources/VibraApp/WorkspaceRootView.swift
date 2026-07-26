@@ -725,17 +725,7 @@ private struct EmptyWorkspaceView: View {
 }
 
 enum VibraPalette {
-    static let accent = Color(
-        nsColor: NSColor(name: nil) { appearance in
-            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            return NSColor(
-                srgbRed: 0,
-                green: dark ? 145.0 / 255.0 : 136.0 / 255.0,
-                blue: 1,
-                alpha: 1
-            )
-        }
-    )
+    static let accent = Color(red: 0.49, green: 0.36, blue: 0.96)
     static let canvas = Color(nsColor: .windowBackgroundColor)
 }
 
