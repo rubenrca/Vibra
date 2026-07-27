@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 — 2026-07-27
+
+- Redesign terminal workspace navigation with a resizable terminal sidebar.
+- Organize vertical tabs into folders, with create, rename, remove, and drag-and-drop.
+- Clarify tab shortcuts: ⌘N for a new tab, ⌘T for a nested terminal tab, ⇧⌘N for a new window, and ⌘O to open a directory.
+- Show branch, path, and nested-tab count in the terminal sidebar.
+- Restore the Vibra purple accent color.
+
 ## 0.2.1 — 2026-07-25
 
 - Add cmux-style workspaces with independent terminal tabs inside each workspace.
