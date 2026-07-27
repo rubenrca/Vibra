@@ -3,21 +3,21 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.2.2</title>
-            <pubDate>Mon, 27 Jul 2026 12:38:07 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.2</link>
-            <sparkle:version>11</sparkle:version>
-            <sparkle:shortVersionString>0.2.2</sparkle:shortVersionString>
+            <title>0.2.3</title>
+            <pubDate>Mon, 27 Jul 2026 14:50:35 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.3</link>
+            <sparkle:version>14</sparkle:version>
+            <sparkle:shortVersionString>0.2.3</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Redesign terminal workspace navigation with a resizable terminal sidebar.</li>
-  <li>Organize vertical tabs into folders, with create, rename, remove, and drag-and-drop.</li>
-  <li>Clarify tab shortcuts: ⌘N for a new tab, ⌘T for a nested terminal tab, ⇧⌘N for a new window, and ⌘O to open a directory.</li>
-  <li>Show branch, path, and nested-tab count in the terminal sidebar.</li>
-  <li>Restore the Vibra purple accent color.</li>
+  <li>Unify app chrome and terminal under one surface: Ghostty config by default (Match Ghostty), with Catalog and Vibra as options.</li>
+  <li>Drive sidebars, headers, and accents from the same resolved Ghostty/catalog/Vibra colors as the terminal.</li>
+  <li>Add an Appearance settings tab with font, cursor, background opacity, and 485 catalog themes.</li>
+  <li>Apply appearance changes live to open terminal sessions.</li>
+  <li>Fix duplicate menu bar items caused by registering commands on multiple window groups.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.2/Vibra-0.2.2.dmg" length="12360589" type="application/octet-stream" sparkle:edSignature="DK+S8LZfgn1K/Kfw5GMzbOcNiB4OolQGY9jyo8dCNFhWjgSBFBrfsVd5l6WvGxqsVv/ASPDija2q32ic5AxyDg=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.3/Vibra-0.2.3.dmg" length="13144021" type="application/octet-stream" sparkle:edSignature="5Ylq+Z29aqdLl1A51JATUw/0qYuuOHVf4XXuqt2TQem6m61fyaHJVt5HriFHmVP0HhxZaJY/jZ1cJ3rMeXepCQ=="/>
         </item>
     </channel>
 </rss>
