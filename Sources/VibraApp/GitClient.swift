@@ -64,6 +64,13 @@ enum GitClient {
     private static let statusOutputLimit = 16 * 1024 * 1024
     private static let diffOutputLimit = 3 * 1024 * 1024
 
+    nonisolated static func branch(from path: String) -> String? {
+        let result = run(["branch", "--show-current"], in: path)
+        guard result.status == 0 else { return nil }
+        let branch = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return branch.isEmpty ? nil : branch
+    }
+
     nonisolated static func snapshot(from path: String) throws -> GitRepositorySnapshot {
         let topLevel = run(["rev-parse", "--show-toplevel"], in: path)
         guard topLevel.status == 0 else {

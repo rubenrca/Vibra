@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+enum VibraWindowID {
+    static let terminal = "terminal"
+}
+
 @main
 struct VibraApp: App {
     @NSApplicationDelegateAdaptor(VibraApplicationDelegate.self)
@@ -22,6 +26,15 @@ struct VibraApp: App {
             VibraCommands(updater: updater)
         }
 
+        WindowGroup("Terminal", id: VibraWindowID.terminal) {
+            WorkspaceRootView(mode: .terminal)
+        }
+        .defaultSize(width: 900, height: 620)
+        .windowStyle(.hiddenTitleBar)
+        .commands {
+            VibraCommands(updater: updater)
+        }
+
         Settings {
             AppSettingsView()
                 .environmentObject(updater)
@@ -31,31 +44,15 @@ struct VibraApp: App {
 }
 
 final class VibraApplicationDelegate: NSObject, NSApplicationDelegate {
-    private var applicationShortcutMonitor: Any?
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        applicationShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
-            event in
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                .subtracting([.capsLock, .numericPad, .function])
-            guard flags == [.command],
-                  event.charactersIgnoringModifiers?.lowercased() == "r",
-                  event.window?.identifier?.rawValue != "com_apple_SwiftUI_Settings_window"
-            else { return event }
-            NotificationCenter.default.post(name: .showGitSidebarRequested, object: nil)
-            return nil
-        }
     }
-}
-
-extension Notification.Name {
-    static let showGitSidebarRequested = Notification.Name("showGitSidebarRequested")
 }
 
 private struct VibraCommands: Commands {
     @FocusedObject private var workspace: WorkspaceStore?
+    @Environment(\.openWindow) private var openWindow
 
     @ObservedObject var updater: UpdaterModel
 
@@ -75,19 +72,24 @@ private struct VibraCommands: Commands {
         }
 
         CommandGroup(replacing: .newItem) {
-            Button("New Workspace") {
+            Button("New Tab") {
                 workspace?.newWorkspace()
             }
             .keyboardShortcut("n", modifiers: .command)
 
-            Button("New Tab") {
+            Button("New Terminal Tab") {
                 workspace?.newSession()
             }
             .keyboardShortcut("t", modifiers: .command)
             .disabled(workspace?.selectedProject == nil)
 
-            Button("Open Project…") {
-                workspace?.chooseProject()
+            Button("New Terminal Window") {
+                openWindow(id: VibraWindowID.terminal)
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+
+            Button("Open Folder in New Tab…") {
+                workspace?.chooseFolder()
             }
             .keyboardShortcut("o", modifiers: .command)
         }
@@ -117,8 +119,8 @@ private struct VibraCommands: Commands {
         }
 
         CommandGroup(after: .sidebar) {
-            Button("Toggle Project Sidebar") {
-                workspace?.toggleProjectSidebar()
+            Button("Toggle Terminal Sidebar") {
+                workspace?.toggleTerminalSidebar()
             }
             .keyboardShortcut("b", modifiers: .command)
 

@@ -83,6 +83,19 @@ struct VibraProject: Identifiable {
     }
 }
 
+struct LocatedTerminalWorkspace: Identifiable {
+    let projectID: UUID
+    let workspace: TerminalWorkspace
+
+    var id: UUID { workspace.id }
+}
+
+struct TerminalWorkspaceFolder: Identifiable {
+    let project: VibraProject
+
+    var id: UUID { project.id }
+}
+
 enum RightSidebarMode: String {
     case files
     case changes
@@ -92,7 +105,7 @@ enum RightSidebarMode: String {
 final class WorkspaceStore: ObservableObject {
     @Published private(set) var projects: [VibraProject] = []
     @Published private(set) var selectedProjectID: UUID?
-    @Published private(set) var isProjectSidebarVisible: Bool = {
+    @Published private(set) var isTerminalSidebarVisible: Bool = {
         guard UserDefaults.standard.object(forKey: SettingsKeys.projectSidebarVisible) != nil else {
             return true
         }
@@ -115,16 +128,23 @@ final class WorkspaceStore: ObservableObject {
     private var agentActivityTimer: Timer?
     private var isRefreshingAgentActivity = false
     private var lastWorkspaceActivities: [UUID: AgentActivity] = [:]
+    private let persistsWorkspace: Bool
 
-    init() {
-        restoreWorkspace()
-        if let launchDirectory = Self.launchDirectory() {
+    init(restoresWorkspace: Bool = true) {
+        persistsWorkspace = restoresWorkspace
+        if restoresWorkspace {
+            restoreWorkspace()
+        }
+        if restoresWorkspace, let launchDirectory = Self.launchDirectory() {
             addProject(at: launchDirectory, persist: false)
         } else if projects.isEmpty {
             addProject(
                 at: URL(fileURLWithPath: FileManager.default.homeDirectoryForCurrentUser.path),
                 persist: false
             )
+        }
+        if !restoresWorkspace {
+            isGitSidebarVisible = false
         }
         refreshSessionVisibility()
         lastWorkspaceActivities = workspaceActivitySnapshot()
@@ -150,6 +170,30 @@ final class WorkspaceStore: ObservableObject {
 
     var allSessions: [TerminalSession] {
         projects.flatMap(\.allSessions)
+    }
+
+    var tabCount: Int {
+        projects.reduce(0) { $0 + $1.workspaces.count }
+    }
+
+    var ungroupedWorkspaces: [LocatedTerminalWorkspace] {
+        projects.filter { $0.name.isEmpty }.flatMap { project in
+            project.workspaces.map { workspace in
+                LocatedTerminalWorkspace(projectID: project.id, workspace: workspace)
+            }
+        }
+    }
+
+    var workspaceFolders: [TerminalWorkspaceFolder] {
+        projects.filter { !$0.name.isEmpty }.map(TerminalWorkspaceFolder.init(project:))
+    }
+
+    var sidebarWorkspaces: [LocatedTerminalWorkspace] {
+        ungroupedWorkspaces + workspaceFolders.flatMap { folder in
+            folder.project.workspaces.map {
+                LocatedTerminalWorkspace(projectID: folder.id, workspace: $0)
+            }
+        }
     }
 
     func selectProject(_ id: UUID) {
@@ -206,10 +250,10 @@ final class WorkspaceStore: ObservableObject {
         saveWorkspace()
     }
 
-    func toggleProjectSidebar() {
-        isProjectSidebarVisible.toggle()
+    func toggleTerminalSidebar() {
+        isTerminalSidebarVisible.toggle()
         UserDefaults.standard.set(
-            isProjectSidebarVisible,
+            isTerminalSidebarVisible,
             forKey: SettingsKeys.projectSidebarVisible
         )
     }
@@ -234,45 +278,24 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func addProject(at url: URL, persist: Bool = true) {
-        let normalizedURL = url.standardizedFileURL
-        let path = normalizedURL.path
-
-        if let existing = projects.first(where: { $0.rootPath == path }) {
-            selectProject(existing.id)
-            return
-        }
-
-        let projectID = UUID()
-        let name = normalizedURL.lastPathComponent.isEmpty
-            ? normalizedURL.path
-            : normalizedURL.lastPathComponent
-        let workspace = makeWorkspace(
-            name: name,
-            workingDirectory: path,
-            projectID: projectID
+        addWorkspace(
+            workingDirectory: url.standardizedFileURL.path,
+            persist: persist
         )
-        projects.append(
-            VibraProject(
-                id: projectID,
-                name: name,
-                rootPath: path,
-                workspaces: [workspace],
-                selectedWorkspaceID: workspace.id
-            )
-        )
-        selectedProjectID = projectID
-        refreshSessionVisibility()
-        if persist { saveWorkspace() }
     }
 
-    func chooseProject() {
+    func chooseFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Open a project"
-        panel.prompt = "Open Project"
+        panel.title = "Open a folder in a new tab"
+        panel.prompt = "Open Folder"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.directoryURL = selectedProject.map { URL(fileURLWithPath: $0.rootPath) }
+        panel.directoryURL = selectedProject.map {
+            let projectURL = URL(fileURLWithPath: $0.rootPath).standardizedFileURL
+            let parentURL = projectURL.deletingLastPathComponent()
+            return parentURL.path.isEmpty ? projectURL : parentURL
+        }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         addProject(at: url)
     }
@@ -291,30 +314,19 @@ final class WorkspaceStore: ObservableObject {
         saveWorkspace()
     }
 
-    /// Creates a new terminal tab. Splits are panes inside this tab.
+    /// Creates a horizontal terminal tab inside the selected vertical tab.
     func newSession() {
+        selectedSession?.refreshWorkingDirectory()
         guard let projectID = selectedProjectID,
-              let projectIndex = projects.firstIndex(where: { $0.id == projectID })
-        else { return }
-
-        if projects[projectIndex].selectedWorkspace == nil {
-            let workspace = makeWorkspace(
-                name: projects[projectIndex].name,
-                workingDirectory: projects[projectIndex].rootPath,
-                projectID: projectID
-            )
-            projects[projectIndex].workspaces.append(workspace)
-            projects[projectIndex].selectedWorkspaceID = workspace.id
-            refreshSessionVisibility()
-            saveWorkspace()
-            return
-        }
-
-        guard let workspaceID = projects[projectIndex].selectedWorkspaceID,
+              let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
+              let workspaceID = projects[projectIndex].selectedWorkspaceID,
               let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
                   $0.id == workspaceID
-              }) else { return }
-
+              })
+        else {
+            newWorkspace()
+            return
+        }
         let directory = projects[projectIndex].selectedSession?.workingDirectory
             ?? projects[projectIndex].rootPath
         let tab = makeTab(workingDirectory: directory, projectID: projectID)
@@ -324,27 +336,98 @@ final class WorkspaceStore: ObservableObject {
         saveWorkspace()
     }
 
+    /// Creates an ungrouped vertical tab in the active terminal directory.
     func newWorkspace() {
-        guard let projectID = selectedProjectID,
-              let projectIndex = projects.firstIndex(where: { $0.id == projectID })
-        else {
-            chooseProject()
+        selectedSession?.refreshWorkingDirectory()
+        let directory = selectedSession?.workingDirectory
+            ?? FileManager.default.homeDirectoryForCurrentUser.path
+        addWorkspace(workingDirectory: directory, persist: true)
+    }
+
+    func createFolder(named rawName: String, containing requestedWorkspaceID: UUID? = nil) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let workspaceID = requestedWorkspaceID ?? selectedWorkspace?.id
+        guard !name.isEmpty, let workspaceID,
+              let projectIndex = projects.firstIndex(where: {
+                  $0.workspaces.contains(where: { $0.id == workspaceID })
+              }),
+              let workspace = projects[projectIndex].workspaces.first(where: {
+                  $0.id == workspaceID
+              })
+        else { return }
+
+        if let existing = projects.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }) {
+            moveWorkspace(workspaceID, to: existing.id)
             return
         }
-        let existingNames = Set(projects[projectIndex].workspaces.map(\.name))
-        var number = 2
-        while existingNames.contains("Workspace \(number)") { number += 1 }
-        let workspace = makeWorkspace(
-            name: projects[projectIndex].workspaces.isEmpty
-                ? projects[projectIndex].name
-                : "Workspace \(number)",
-            workingDirectory: projects[projectIndex].rootPath,
-            projectID: projectID
+
+        let folder = VibraProject(
+            id: UUID(),
+            name: name,
+            rootPath: workspace.selectedSession?.workingDirectory
+                ?? FileManager.default.homeDirectoryForCurrentUser.path,
+            workspaces: [],
+            selectedWorkspaceID: nil
         )
-        projects[projectIndex].workspaces.append(workspace)
-        projects[projectIndex].selectedWorkspaceID = workspace.id
+        projects.append(folder)
+        moveWorkspace(workspaceID, to: folder.id)
+    }
+
+    func renameFolder(_ projectID: UUID, to rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let projectIndex = projects.firstIndex(where: { $0.id == projectID })
+        else { return }
+        projects[projectIndex].name = name
+        saveWorkspace()
+    }
+
+    func moveWorkspace(_ workspaceID: UUID, to targetProjectID: UUID) {
+        guard let sourceProjectIndex = projects.firstIndex(where: {
+            $0.workspaces.contains(where: { $0.id == workspaceID })
+        }),
+              let sourceWorkspaceIndex = projects[sourceProjectIndex].workspaces.firstIndex(
+                where: { $0.id == workspaceID }
+              ),
+              projects.contains(where: { $0.id == targetProjectID })
+        else { return }
+
+        if projects[sourceProjectIndex].id == targetProjectID {
+            selectWorkspace(workspaceID, in: targetProjectID)
+            return
+        }
+
+        let workspace = projects[sourceProjectIndex].workspaces.remove(at: sourceWorkspaceIndex)
+        workspace.allSessions.forEach { bindSession($0, to: targetProjectID) }
+        if projects[sourceProjectIndex].workspaces.isEmpty {
+            projects.remove(at: sourceProjectIndex)
+        } else if projects[sourceProjectIndex].selectedWorkspaceID == workspaceID {
+            projects[sourceProjectIndex].selectedWorkspaceID = projects[sourceProjectIndex]
+                .workspaces.first?.id
+        }
+
+        guard let targetProjectIndex = projects.firstIndex(where: { $0.id == targetProjectID })
+        else { return }
+        projects[targetProjectIndex].workspaces.append(workspace)
+        projects[targetProjectIndex].selectedWorkspaceID = workspace.id
+        selectedProjectID = targetProjectID
         refreshSessionVisibility()
         saveWorkspace()
+    }
+
+    func moveWorkspaceToUngrouped(_ workspaceID: UUID) {
+        let projectID = ensureUngroupedProject()
+        moveWorkspace(workspaceID, to: projectID)
+    }
+
+    func deleteFolder(_ projectID: UUID) {
+        guard let project = projects.first(where: { $0.id == projectID && !$0.name.isEmpty })
+        else { return }
+        for workspaceID in project.workspaces.map(\.id) {
+            moveWorkspaceToUngrouped(workspaceID)
+        }
     }
 
     func splitSelected(_ axis: WorkspaceSplitAxis) {
@@ -361,6 +444,7 @@ final class WorkspaceStore: ObservableObject {
                 .tabs[tabIndex].selectedSession
         else { return }
 
+        selected.refreshWorkingDirectory()
         let session = makeSession(
             workingDirectory: selected.workingDirectory,
             projectID: projectID
@@ -494,11 +578,18 @@ final class WorkspaceStore: ObservableObject {
                 ? nil
                 : workspaces[min(workspaceIndex, workspaces.count - 1)].id
         }
+        if projects[projectIndex].workspaces.isEmpty {
+            projects.remove(at: projectIndex)
+            if selectedProjectID == projectID {
+                selectedProjectID = projects.first?.id
+            }
+        }
         refreshSessionVisibility()
         saveWorkspace()
     }
 
     func saveWorkspace() {
+        guard persistsWorkspace else { return }
         var snapshot = WorkspaceSnapshot(
             projects: projects.map { project in
                 let workspaceSnapshots = project.workspaces.map { workspace in
@@ -548,6 +639,41 @@ final class WorkspaceStore: ObservableObject {
         allSessions.forEach { $0.shutdown() }
     }
 
+    private func ensureUngroupedProject() -> UUID {
+        if let project = projects.first(where: { $0.name.isEmpty }) {
+            return project.id
+        }
+        let project = VibraProject(
+            id: UUID(),
+            name: "",
+            rootPath: FileManager.default.homeDirectoryForCurrentUser.path,
+            workspaces: [],
+            selectedWorkspaceID: nil
+        )
+        projects.insert(project, at: 0)
+        return project.id
+    }
+
+    private func addWorkspace(
+        workingDirectory: String,
+        persist: Bool
+    ) {
+        let projectID = ensureUngroupedProject()
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
+        let directoryURL = URL(fileURLWithPath: workingDirectory).standardizedFileURL
+        let name = directoryURL.lastPathComponent.isEmpty ? "Terminal" : directoryURL.lastPathComponent
+        let workspace = makeWorkspace(
+            name: name,
+            workingDirectory: directoryURL.path,
+            projectID: projectID
+        )
+        projects[projectIndex].workspaces.append(workspace)
+        projects[projectIndex].selectedWorkspaceID = workspace.id
+        selectedProjectID = projectID
+        refreshSessionVisibility()
+        if persist { saveWorkspace() }
+    }
+
     private func makeTab(workingDirectory: String, projectID: UUID) -> TerminalTab {
         let session = makeSession(workingDirectory: workingDirectory, projectID: projectID)
         return TerminalTab(
@@ -578,10 +704,14 @@ final class WorkspaceStore: ObservableObject {
         projectID: UUID
     ) -> TerminalSession {
         let session = TerminalSession(id: id, workingDirectory: workingDirectory)
+        bindSession(session, to: projectID)
+        return session
+    }
+
+    private func bindSession(_ session: TerminalSession, to projectID: UUID) {
         session.onExit = { [weak self] session in
             self?.closeSession(session.id, in: projectID)
         }
-        return session
     }
 
     private func sessionSnapshot(_ session: TerminalSession) -> SessionSnapshot {
@@ -624,6 +754,13 @@ final class WorkspaceStore: ObservableObject {
                 ? nil
                 : workspaces[min(workspaceIndex, workspaces.count - 1)].id
         }
+        if projects[projectIndex].workspaces.isEmpty {
+            let projectID = projects[projectIndex].id
+            projects.remove(at: projectIndex)
+            if selectedProjectID == projectID {
+                selectedProjectID = projects.first?.id
+            }
+        }
     }
 
     private func restoreWorkspace() {
@@ -631,7 +768,10 @@ final class WorkspaceStore: ObservableObject {
             let data = try Data(contentsOf: Self.workspaceURL(createDirectory: false))
             var snapshot = try JSONDecoder().decode(WorkspaceSnapshot.self, from: data)
             snapshot.normalizeSelection()
-            projects = snapshot.projects.compactMap { savedProject in
+            let migrateLegacyProjects = !UserDefaults.standard.bool(
+                forKey: SettingsKeys.tabFolderModelMigrated
+            )
+            projects = snapshot.projects.compactMap { savedProject -> VibraProject? in
                 guard FileManager.default.fileExists(atPath: savedProject.rootPath) else {
                     return nil
                 }
@@ -645,9 +785,16 @@ final class WorkspaceStore: ObservableObject {
                         )
                     }
                     guard !tabs.isEmpty else { return nil }
+                    let workingDirectory = tabs.first?.selectedSession?.workingDirectory
+                    let inferredName = workingDirectory.map {
+                        URL(fileURLWithPath: $0).lastPathComponent
+                    }
+                    let workspaceName = savedWorkspace.name.isEmpty
+                        ? (inferredName.flatMap { $0.isEmpty ? nil : $0 } ?? "Terminal")
+                        : savedWorkspace.name
                     return TerminalWorkspace(
                         id: savedWorkspace.id,
-                        name: savedWorkspace.name,
+                        name: workspaceName,
                         tabs: tabs,
                         selectedTabID: tabs.contains(where: {
                             $0.id == savedWorkspace.selectedTabID
@@ -656,7 +803,7 @@ final class WorkspaceStore: ObservableObject {
                 }
                 return VibraProject(
                     id: savedProject.id,
-                    name: savedProject.name,
+                    name: migrateLegacyProjects ? "" : savedProject.name,
                     rootPath: savedProject.rootPath,
                     workspaces: workspaces,
                     selectedWorkspaceID: workspaces.contains(where: {
@@ -667,6 +814,9 @@ final class WorkspaceStore: ObservableObject {
             selectedProjectID = projects.contains(where: {
                 $0.id == snapshot.selectedProjectID
             }) ? snapshot.selectedProjectID : projects.first?.id
+            if migrateLegacyProjects {
+                UserDefaults.standard.set(true, forKey: SettingsKeys.tabFolderModelMigrated)
+            }
         } catch {
             projects = []
             selectedProjectID = nil
@@ -747,6 +897,8 @@ final class WorkspaceStore: ObservableObject {
         guard !isRefreshingAgentActivity else { return }
         isRefreshingAgentActivity = true
         defer { isRefreshingAgentActivity = false }
+
+        allSessions.forEach { $0.refreshWorkingDirectory() }
 
         let sessionsByPID = Dictionary(
             uniqueKeysWithValues: allSessions.compactMap { session in

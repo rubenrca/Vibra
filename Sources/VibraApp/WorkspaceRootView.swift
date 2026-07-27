@@ -3,38 +3,78 @@ import GhosttyTerminal
 import SwiftUI
 import VibraCore
 
+enum WorkspaceWindowMode {
+    case project
+    case terminal
+}
+
 struct WorkspaceRootView: View {
-    @StateObject private var store = WorkspaceStore()
+    @Environment(\.openWindow) private var openWindow
+    @StateObject private var store: WorkspaceStore
     @StateObject private var gitModel = GitSidebarModel()
+    @State private var terminalSidebarWidth: CGFloat
+    @State private var sidebarDragOriginWidth: CGFloat?
+    private let mode: WorkspaceWindowMode
+
+    init(mode: WorkspaceWindowMode = .project) {
+        self.mode = mode
+        let savedWidth = UserDefaults.standard.double(forKey: SettingsKeys.terminalSidebarWidth)
+        _terminalSidebarWidth = State(initialValue: savedWidth > 0 ? savedWidth : 270)
+        _store = StateObject(
+            wrappedValue: WorkspaceStore(restoresWorkspace: mode == .project)
+        )
+    }
 
     var body: some View {
         HStack(spacing: 0) {
-            if store.isProjectSidebarVisible {
-                ProjectSidebar(store: store)
-                Divider()
+            if store.isTerminalSidebarVisible {
+                HStack(spacing: 0) {
+                    TerminalSidebar(store: store)
+                        .frame(width: terminalSidebarWidth)
+                    sidebarDivider
+                }
+                .transition(.move(edge: .leading).combined(with: .opacity))
             }
-            WorkspaceDetail(store: store, gitModel: gitModel)
-            if store.isGitSidebarVisible, let project = store.selectedProject {
-                Divider()
-                GitSidebarView(
-                    fallbackRoot: project.rootPath,
-                    session: project.selectedSession,
-                    store: store,
-                    model: gitModel
-                )
+            WorkspaceDetail(
+                store: store,
+                gitModel: gitModel
+            )
+            if store.isGitSidebarVisible,
+               let project = store.selectedProject {
+                HStack(spacing: 0) {
+                    Divider()
+                    GitSidebarView(
+                        fallbackRoot: project.rootPath,
+                        session: project.selectedSession,
+                        store: store,
+                        model: gitModel
+                    )
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
+        .animation(
+            .spring(response: 0.34, dampingFraction: 0.9),
+            value: store.isTerminalSidebarVisible
+        )
+        .animation(
+            .spring(response: 0.34, dampingFraction: 0.9),
+            value: store.isGitSidebarVisible
+        )
         .frame(minWidth: 760, minHeight: 500)
         .background(VibraPalette.canvas)
         .background {
-            KeyboardShortcutMonitor(store: store)
+            KeyboardShortcutMonitor(
+                store: store,
+                newTerminalWindow: { openWindow(id: VibraWindowID.terminal) }
+            )
                 .frame(width: 0, height: 0)
         }
         .background {
             if let project = store.selectedProject,
                let session = project.selectedSession {
                 GitContextSync(
-                    state: session.state,
+                    session: session,
                     fallbackRoot: project.rootPath,
                     model: gitModel
                 )
@@ -51,9 +91,6 @@ struct WorkspaceRootView: View {
         }
         .animation(.easeOut(duration: 0.16), value: gitModel.isDiffPresented)
         .focusedSceneObject(store)
-        .onReceive(NotificationCenter.default.publisher(for: .showGitSidebarRequested)) { _ in
-            store.toggleGitSidebar()
-        }
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.willTerminateNotification
@@ -61,194 +98,458 @@ struct WorkspaceRootView: View {
         ) { _ in
             store.shutdownAll()
         }
+        .onDisappear {
+            store.shutdownAll()
+        }
+    }
+
+    private var sidebarDivider: some View {
+        Divider()
+            .overlay {
+                Color.clear
+                    .frame(width: 8)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { value in
+                                if sidebarDragOriginWidth == nil {
+                                    sidebarDragOriginWidth = terminalSidebarWidth
+                                }
+                                let origin = sidebarDragOriginWidth ?? terminalSidebarWidth
+                                terminalSidebarWidth = min(max(origin + value.translation.width, 190), 420)
+                            }
+                            .onEnded { _ in
+                                sidebarDragOriginWidth = nil
+                                UserDefaults.standard.set(
+                                    Double(terminalSidebarWidth),
+                                    forKey: SettingsKeys.terminalSidebarWidth
+                                )
+                            }
+                    )
+            }
     }
 }
 
-private struct ProjectSidebar: View {
+private struct TerminalSidebar: View {
     @ObservedObject var store: WorkspaceStore
+    @State private var isCreatingFolder = false
+    @State private var folderName = ""
+    @State private var folderTargetWorkspaceID: UUID?
+    @State private var isUngroupedDropTargeted = false
+    @FocusState private var isFolderNameFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: VibraLayout.panelHeaderHeight)
+            Divider()
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 13) {
-                    ForEach(store.projects) { project in
-                        ProjectSidebarSection(project: project, store: store)
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    VStack(spacing: 1) {
+                        ForEach(store.ungroupedWorkspaces) { located in
+                            SidebarWorkspaceRow(
+                                located: located,
+                                store: store,
+                                createFolder: { beginCreatingFolder(containing: located.id) }
+                            )
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 2)
+                    .background {
+                        if isUngroupedDropTargeted {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(VibraPalette.sidebarSelection.opacity(0.09))
+                        }
+                    }
+                    .dropDestination(for: String.self) { items, _ in
+                        guard let value = items.first, let id = UUID(uuidString: value) else {
+                            return false
+                        }
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                            store.moveWorkspaceToUngrouped(id)
+                        }
+                        return true
+                    } isTargeted: { targeted in
+                        withAnimation(.easeOut(duration: 0.14)) {
+                            isUngroupedDropTargeted = targeted
+                        }
+                    }
+
+                    if isCreatingFolder {
+                        newFolderField
+                    }
+
+                    ForEach(store.workspaceFolders) { folder in
+                        SidebarWorkspaceFolder(
+                            folder: folder,
+                            store: store,
+                            createFolder: { beginCreatingFolder(containing: $0) }
+                        )
                     }
                 }
-                .padding(.horizontal, 7)
-                .padding(.top, 5)
-                .padding(.bottom, 14)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+                .animation(
+                    .spring(response: 0.3, dampingFraction: 0.88),
+                    value: store.sidebarWorkspaces.map(\.id)
+                )
             }
-            Spacer(minLength: 0)
-            Button {
-                store.newWorkspace()
-            } label: {
-                Label("New workspace", systemImage: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .frame(height: 34)
-                    .contentShape(Rectangle())
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("New Folder with Selected Tab…") {
+                    beginCreatingFolder(containing: store.selectedWorkspace?.id)
+                }
+                .disabled(store.selectedWorkspace == nil)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background(.thinMaterial)
+    }
+
+    private var newFolderField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "folder")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+            TextField("Folder name", text: $folderName)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .focused($isFolderNameFocused)
+                .onSubmit(commitFolder)
+                .onExitCommand(perform: cancelFolder)
+            Button(action: cancelFolder) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
-            .padding(7)
         }
-        .frame(width: 242)
-        .background(.thinMaterial)
+        .padding(.horizontal, 9)
+        .frame(height: 32)
+        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func beginCreatingFolder(containing workspaceID: UUID?) {
+        guard let workspaceID else { return }
+        folderName = ""
+        folderTargetWorkspaceID = workspaceID
+        isCreatingFolder = true
+        DispatchQueue.main.async { isFolderNameFocused = true }
+    }
+
+    private func commitFolder() {
+        store.createFolder(named: folderName, containing: folderTargetWorkspaceID)
+        cancelFolder()
+    }
+
+    private func cancelFolder() {
+        folderName = ""
+        folderTargetWorkspaceID = nil
+        isFolderNameFocused = false
+        isCreatingFolder = false
     }
 }
 
-private struct ProjectSidebarSection: View {
-    let project: VibraProject
+private struct SidebarWorkspaceFolder: View {
+    let folder: TerminalWorkspaceFolder
     @ObservedObject var store: WorkspaceStore
-    @State private var hoveringHeader = false
+    let createFolder: (UUID) -> Void
+    @State private var isExpanded = true
+    @State private var isRenaming = false
+    @State private var name = ""
+    @State private var isDropTargeted = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            projectHeader
-            ForEach(project.workspaces) { workspace in
-                SidebarWorkspaceRow(
-                    workspace: workspace,
-                    selected: store.selectedProjectID == project.id
-                        && project.selectedWorkspaceID == workspace.id,
-                    store: store,
-                    select: { store.selectWorkspace(workspace.id, in: project.id) },
-                    close: { store.closeWorkspace(workspace.id, in: project.id) }
-                )
+        VStack(spacing: 1) {
+            folderHeader
+            if isExpanded {
+                ForEach(folder.project.workspaces) { workspace in
+                    SidebarWorkspaceRow(
+                        located: LocatedTerminalWorkspace(
+                            projectID: folder.id,
+                            workspace: workspace
+                        ),
+                        store: store,
+                        createFolder: { createFolder(workspace.id) }
+                    )
+                    .padding(.leading, 12)
+                }
             }
         }
+        .background {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(VibraPalette.sidebarSelection.opacity(0.1))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(VibraPalette.sidebarSelection.opacity(0.35), lineWidth: 1)
+                    }
+            }
+        }
+        .dropDestination(for: String.self) { items, _ in
+            guard let value = items.first, let id = UUID(uuidString: value) else { return false }
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                store.moveWorkspace(id, to: folder.id)
+                isExpanded = true
+            }
+            return true
+        } isTargeted: { targeted in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isDropTargeted = targeted
+                if targeted { isExpanded = true }
+            }
+        }
+        .scaleEffect(isDropTargeted ? 1.006 : 1, anchor: .center)
     }
 
-    private var projectHeader: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "folder.fill")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 14)
-            Text(project.name)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Button {
-                store.selectProject(project.id)
-                store.newWorkspace()
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 9, weight: .semibold))
-                    .frame(width: 18, height: 18)
+    private var folderHeader: some View {
+        HStack(spacing: 5) {
+            Button { isExpanded.toggle() } label: {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 12)
             }
             .buttonStyle(.plain)
-            .opacity(hoveringHeader ? 0.8 : 0)
-            .help("New workspace in \(project.name)")
+
+            Image(systemName: isExpanded ? "folder.fill" : "folder")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            if isRenaming {
+                TextField("Folder name", text: $name)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .onSubmit(commitRename)
+            } else {
+                Text(folder.project.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+            Text("\(folder.project.workspaces.count)")
+                .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 9)
-        .frame(height: 24)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .frame(height: 35)
         .contentShape(Rectangle())
-        .onTapGesture { store.selectProject(project.id) }
-        .onHover { hoveringHeader = $0 }
+        .onTapGesture { if !isRenaming { isExpanded.toggle() } }
         .contextMenu {
-            Button("Close Project", role: .destructive) {
-                store.closeProject(project.id)
+            if let selectedWorkspaceID = store.selectedWorkspace?.id {
+                Button("New Folder with Selected Tab…") {
+                    createFolder(selectedWorkspaceID)
+                }
+                Divider()
+            }
+            Button("Rename") {
+                name = folder.project.name
+                isRenaming = true
+            }
+            Button("Remove folder") {
+                store.deleteFolder(folder.id)
             }
         }
     }
 
+    private func commitRename() {
+        store.renameFolder(folder.id, to: name)
+        isRenaming = false
+    }
 }
 
 private struct SidebarWorkspaceRow: View {
-    let workspace: TerminalWorkspace
-    let selected: Bool
+    let located: LocatedTerminalWorkspace
     @ObservedObject var store: WorkspaceStore
-    let select: () -> Void
-    let close: () -> Void
-
+    let createFolder: () -> Void
+    @ObservedObject private var session: TerminalSession
     @State private var hovering = false
+    @State private var branchName: String?
+
+    init(
+        located: LocatedTerminalWorkspace,
+        store: WorkspaceStore,
+        createFolder: @escaping () -> Void
+    ) {
+        self.located = located
+        self.store = store
+        self.createFolder = createFolder
+        let session = located.workspace.selectedSession
+            ?? located.workspace.tabs[0].sessions[0]
+        _session = ObservedObject(wrappedValue: session)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                SidebarActivityGlyph(activity: session.agentActivity, selected: selected)
+                    .frame(width: 14, height: 14)
+                Text(title)
+                    .font(.system(size: 12.25, weight: .semibold))
+                    .foregroundStyle(selected ? Color.white : .primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Button {
+                    store.closeWorkspace(located.id, in: located.projectID)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .opacity(hovering ? 0.78 : 0)
+            }
+
+            if let activitySummary {
+                Text(activitySummary)
+                    .font(.system(size: 10.25, weight: .regular))
+                    .foregroundStyle(selected ? Color.white.opacity(0.82) : .secondary)
+                    .lineLimit(1)
+            }
+
+            Text(metadataLine)
+                .font(.system(size: 9.25, weight: .medium, design: .monospaced))
+                .foregroundStyle(
+                    selected ? Color.white.opacity(0.68) : Color.secondary.opacity(0.65)
+                )
+                .lineLimit(1)
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 7)
+        .padding(.vertical, 8)
+        .frame(minHeight: activitySummary == nil ? 48 : 63)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(
+                    selected
+                        ? VibraPalette.sidebarSelection
+                        : hovering ? Color.primary.opacity(0.045) : .clear
+                )
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .onTapGesture { store.selectWorkspace(located.id, in: located.projectID) }
+        .onHover { hovering = $0 }
+        .task(id: session.workingDirectory) {
+            let directory = session.workingDirectory
+            branchName = await Task.detached {
+                GitClient.branch(from: directory)
+            }.value
+        }
+        .draggable(located.id.uuidString) {
+            SidebarWorkspaceDragPreview(
+                title: title,
+                detail: metadataLine,
+                activity: session.agentActivity
+            )
+        }
+        .contextMenu {
+            Button("New Folder with This Tab…", action: createFolder)
+            Divider()
+            if !currentFolderName.isEmpty {
+                Button("Remove from folder") {
+                    store.moveWorkspaceToUngrouped(located.id)
+                }
+            }
+            if !store.workspaceFolders.isEmpty {
+                Menu("Move to folder") {
+                    ForEach(store.workspaceFolders) { folder in
+                        Button(folder.project.name) {
+                            store.moveWorkspace(located.id, to: folder.id)
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("Close tab", role: .destructive) {
+                store.closeWorkspace(located.id, in: located.projectID)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.spring(response: 0.24, dampingFraction: 0.9), value: selected)
+    }
+
+    private var selected: Bool { store.selectedWorkspace?.id == located.id }
+
+    private var currentFolderName: String {
+        store.workspaceFolders.first(where: { $0.id == located.projectID })?.project.name ?? ""
+    }
+
+    private var title: String {
+        let directoryName = URL(fileURLWithPath: session.workingDirectory).lastPathComponent
+        return directoryName.isEmpty ? located.workspace.name : directoryName
+    }
+
+    private var abbreviatedPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = session.workingDirectory
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
+    }
+
+    private var terminalTabCountLabel: String {
+        let count = located.workspace.tabs.count
+        return "\(count) \(count == 1 ? "surface" : "surfaces")"
+    }
+
+    private var metadataLine: String {
+        [branchName, abbreviatedPath, terminalTabCountLabel]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: "  ·  ")
+    }
+
+    private var activitySummary: String? {
+        switch session.agentActivity {
+        case .idle:
+            let sessionTitle = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sessionTitle.isEmpty, sessionTitle != "Terminal", sessionTitle != title else {
+                return nil
+            }
+            return sessionTitle
+        case .ready:
+            return "Agent ready"
+        case .running:
+            return "Agent working"
+        case .needsAttention:
+            return "Waiting for your input"
+        case .finished(_, let succeeded, _):
+            return succeeded == false ? "Command failed" : "Agent finished"
+        }
+    }
+}
+
+private struct SidebarWorkspaceDragPreview: View {
+    let title: String
+    let detail: String
+    let activity: AgentActivity
 
     var body: some View {
         HStack(spacing: 8) {
-            SidebarActivityGlyph(activity: workspace.agentActivity, selected: selected)
-                .frame(width: 15)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(workspace.name)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(selected ? Color.white : .primary)
+            SidebarActivityGlyph(activity: activity, selected: false)
+                .frame(width: 14, height: 14)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 Text(detail)
-                    .font(.system(size: 9.75, weight: .regular))
-                    .foregroundStyle(selected ? Color.white.opacity(0.72) : detailColor)
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .frame(width: 18, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(selected ? Color.white.opacity(0.72) : .secondary)
-            .opacity(hovering ? 1 : 0)
         }
-        .padding(.leading, 9)
-        .padding(.trailing, 6)
-        .frame(height: 47)
-        .background {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(
-                    selected
-                        ? VibraPalette.accent
-                        : hovering ? Color.primary.opacity(0.055) : .clear
-                )
+        .padding(.horizontal, 11)
+        .frame(width: 220, height: 48)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .onTapGesture(perform: select)
-        .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: hovering)
-        .animation(.easeOut(duration: 0.12), value: selected)
-        .contextMenu {
-            Button("New tab") {
-                select()
-                store.newSession()
-            }
-            Divider()
-            Button("Close workspace", role: .destructive, action: close)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(workspace.name), \(detail)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private var detail: String {
-        let tabCount = workspace.tabs.count
-        let tabs = "\(tabCount) \(tabCount == 1 ? "tab" : "tabs")"
-        switch workspace.agentActivity {
-        case .idle:
-            return tabs
-        case .ready(let agent):
-            return "\(agent.displayName) idle · \(tabs)"
-        case .running(let agent, _):
-            return "\(agent.displayName) working · \(tabs)"
-        case .needsAttention(let agent, _):
-            return "\(agent.displayName) needs attention · \(tabs)"
-        case .finished(let agent, let succeeded, _):
-            return succeeded == false
-                ? "\(agent.displayName) error · \(tabs)"
-                : "\(agent.displayName) finished · \(tabs)"
-        }
-    }
-
-    private var detailColor: Color {
-        switch workspace.agentActivity {
-        case .idle: .secondary
-        case .ready: .secondary
-        case .running: VibraPalette.accent
-        case .needsAttention: .orange
-        case .finished(_, let succeeded, _): succeeded == false ? .red : .green
-        }
+        .shadow(color: Color.black.opacity(0.24), radius: 12, y: 5)
     }
 }
 
@@ -259,22 +560,26 @@ private struct SidebarActivityGlyph: View {
     var body: some View {
         switch activity {
         case .idle:
-            Image(systemName: "terminal")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(selected ? Color.white.opacity(0.68) : .secondary)
+            Circle()
+                .fill(selected ? Color.white.opacity(0.58) : Color.secondary.opacity(0.55))
+                .frame(width: 5, height: 5)
         case .ready:
-            Image(systemName: "pause.circle.fill")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(selected ? Color.white.opacity(0.78) : .secondary)
+            Circle()
+                .fill(selected ? Color.white.opacity(0.78) : Color.secondary)
+                .frame(width: 6, height: 6)
         case .running:
-            ProgressView()
-                .controlSize(.mini)
-                .scaleEffect(0.72)
-                .tint(selected ? .white : VibraPalette.accent)
+            Circle()
+                .fill(selected ? Color.white : Color.green)
+                .frame(width: 6, height: 6)
         case .needsAttention:
-            Image(systemName: "bell.badge.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(selected ? Color.white : .orange)
+            Circle()
+                .fill(selected ? Color.white : Color.blue)
+                .frame(width: 13, height: 13)
+                .overlay {
+                    Text("1")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundStyle(selected ? VibraPalette.sidebarSelection : Color.white)
+                }
         case .finished(_, let succeeded, _):
             Image(systemName: succeeded == false ? "xmark.circle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 11, weight: .semibold))
@@ -289,7 +594,10 @@ private struct WorkspaceDetail: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SessionHeader(store: store, gitModel: gitModel)
+            SessionHeader(
+                store: store,
+                gitModel: gitModel
+            )
             Divider()
             terminalCanvas
         }
@@ -300,15 +608,15 @@ private struct WorkspaceDetail: View {
     private var terminalCanvas: some View {
         if store.projects.isEmpty {
             EmptyWorkspaceView(
-                title: "Open a project",
-                detail: "Choose a folder to start a terminal workspace.",
-                buttonTitle: "Open Project",
-                action: store.chooseProject
+                title: "No tabs",
+                detail: "Create a tab or open a folder to begin.",
+                buttonTitle: "New Tab",
+                action: store.newWorkspace
             )
         } else if store.selectedSession == nil {
             EmptyWorkspaceView(
                 title: "No terminal sessions",
-                detail: "Start a session in \(store.selectedProject?.name ?? "this project").",
+                detail: "Start a terminal in the selected tab.",
                 buttonTitle: "New Terminal",
                 action: store.newSession
             )
@@ -453,57 +761,30 @@ private struct SessionHeader: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if let project = store.selectedProject {
-                HStack(spacing: 7) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Text(project.name)
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .lineLimit(1)
-                        .frame(maxWidth: 120)
-                    if let workspace = project.selectedWorkspace,
-                       project.workspaces.count > 1 {
-                        Text("/")
-                            .foregroundStyle(.tertiary)
-                        Text(workspace.name)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .frame(maxWidth: 100)
-                    }
-                }
-                .padding(.leading, 2)
-
-                Divider()
-                    .frame(height: 18)
-
-                if let workspace = project.selectedWorkspace {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 3) {
-                            ForEach(Array(workspace.tabs.enumerated()), id: \.element.id) {
-                                index, tab in
-                                headerTab(tab, index: index, in: workspace, project: project)
-                            }
-
-                            Button {
-                                store.newSession()
-                            } label: {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .frame(width: 24, height: 24)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
-                            .background(
-                                Color.primary.opacity(0.045),
-                                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            )
-                            .help("New terminal tab")
+            if let project = store.selectedProject,
+               let workspace = project.selectedWorkspace {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 3) {
+                        ForEach(Array(workspace.tabs.enumerated()), id: \.element.id) {
+                            index, tab in
+                            horizontalTab(tab, index: index, workspace: workspace, project: project)
                         }
-                        .padding(.vertical, 4)
+
+                        Button(action: store.newSession) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 9, weight: .semibold))
+                                .frame(width: 24, height: 24)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .background(
+                            Color.primary.opacity(0.045),
+                            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        )
+                        .help("New terminal tab · ⌘T")
                     }
+                    .padding(.vertical, 4)
                 }
             }
             Spacer(minLength: 0)
@@ -525,46 +806,32 @@ private struct SessionHeader: View {
             }
         }
         .padding(.trailing, 10)
-        .padding(.leading, store.isProjectSidebarVisible ? 9 : 78)
+        .padding(.leading, store.isTerminalSidebarVisible ? 9 : 78)
         .frame(height: VibraLayout.panelHeaderHeight)
         .background(.bar)
     }
 
     @ViewBuilder
-    private func headerTab(
+    private func horizontalTab(
         _ tab: TerminalTab,
         index: Int,
-        in workspace: TerminalWorkspace,
+        workspace: TerminalWorkspace,
         project: VibraProject
     ) -> some View {
-        let selected = workspace.selectedTabID == tab.id
-        let fallbackTitle = workspace.tabs.count == 1 ? "Terminal" : "Terminal \(index + 1)"
-        let select = { store.selectTab(tab.id, in: project.id) }
-        let close = { store.closeTab(tab.id, in: project.id) }
-
         if let session = tab.selectedSession ?? tab.sessions.first {
-            HeaderTerminalTab(
+            HeaderHorizontalTab(
                 session: session,
-                fallbackTitle: fallbackTitle,
+                fallbackTitle: workspace.tabs.count == 1 ? "Terminal" : "Terminal \(index + 1)",
                 paneCount: tab.sessions.count,
-                selected: selected,
-                select: select,
-                close: close
-            )
-        } else {
-            HeaderTerminalTabButton(
-                title: fallbackTitle,
-                activity: .idle,
-                paneCount: 0,
-                selected: selected,
-                select: select,
-                close: close
+                selected: workspace.selectedTabID == tab.id,
+                select: { store.selectTab(tab.id, in: project.id) },
+                close: { store.closeTab(tab.id, in: project.id) }
             )
         }
     }
 }
 
-private struct HeaderTerminalTab: View {
+private struct HeaderHorizontalTab: View {
     @ObservedObject var session: TerminalSession
     @ObservedObject private var state: TerminalViewState
     let fallbackTitle: String
@@ -572,6 +839,7 @@ private struct HeaderTerminalTab: View {
     let selected: Bool
     let select: () -> Void
     let close: () -> Void
+    @State private var hovering = false
 
     init(
         session: TerminalSession,
@@ -591,35 +859,8 @@ private struct HeaderTerminalTab: View {
     }
 
     var body: some View {
-        HeaderTerminalTabButton(
-            title: title,
-            activity: session.agentActivity,
-            paneCount: paneCount,
-            selected: selected,
-            select: select,
-            close: close
-        )
-    }
-
-    private var title: String {
-        let reported = state.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return reported.isEmpty || reported == "Terminal" ? fallbackTitle : reported
-    }
-}
-
-private struct HeaderTerminalTabButton: View {
-    let title: String
-    let activity: AgentActivity
-    let paneCount: Int
-    let selected: Bool
-    let select: () -> Void
-    let close: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
         HStack(spacing: 6) {
-            HeaderTabActivityGlyph(activity: activity, selected: selected)
+            HeaderTabActivityGlyph(activity: session.agentActivity, selected: selected)
             Text(title)
                 .font(.system(size: 11, weight: selected ? .semibold : .regular))
                 .lineLimit(1)
@@ -633,7 +874,6 @@ private struct HeaderTerminalTabButton: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 7.5, weight: .bold))
                     .frame(width: 17, height: 20)
-                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
@@ -645,11 +885,7 @@ private struct HeaderTerminalTabButton: View {
         .frame(height: 28)
         .background {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(
-                    selected
-                        ? Color.primary.opacity(0.085)
-                        : hovering ? Color.primary.opacity(0.04) : .clear
-                )
+                .fill(selected ? Color.primary.opacity(0.085) : hovering ? Color.primary.opacity(0.04) : .clear)
         }
         .overlay(alignment: .bottom) {
             Capsule()
@@ -662,9 +898,11 @@ private struct HeaderTerminalTabButton: View {
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .animation(.easeOut(duration: 0.12), value: selected)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Terminal tab \(title)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var title: String {
+        let reported = state.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reported.isEmpty || reported == "Terminal" ? fallbackTitle : reported
     }
 }
 
@@ -726,6 +964,7 @@ private struct EmptyWorkspaceView: View {
 
 enum VibraPalette {
     static let accent = Color(red: 0.49, green: 0.36, blue: 0.96)
+    static let sidebarSelection = accent
     static let canvas = Color(nsColor: .windowBackgroundColor)
 }
 

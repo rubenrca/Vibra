@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import GhosttyTerminal
 
 @MainActor
@@ -12,6 +13,7 @@ final class TerminalSession: ObservableObject, Identifiable {
     var onExit: ((TerminalSession) -> Void)?
 
     @Published private(set) var agentActivity: AgentActivity = .idle
+    @Published private(set) var liveWorkingDirectory: String
 
     private(set) var isVisible = false
     private(set) var isClosed = false
@@ -23,6 +25,7 @@ final class TerminalSession: ObservableObject, Identifiable {
     init(id: UUID = UUID(), workingDirectory: String) {
         self.id = id
         initialWorkingDirectory = workingDirectory
+        liveWorkingDirectory = workingDirectory
         AgentLifecycleStore.clear(id)
 
         let configuration = TerminalConfiguration { builder in
@@ -73,10 +76,24 @@ final class TerminalSession: ObservableObject, Identifiable {
     }
 
     var workingDirectory: String {
-        guard let reported = state.workingDirectory, !reported.isEmpty else {
-            return initialWorkingDirectory
+        liveWorkingDirectory
+    }
+
+    func refreshWorkingDirectory() {
+        let resolved: String?
+        if let pid = terminalView.foregroundPid {
+            resolved = ProcessWorkingDirectoryProbe.directory(for: pid)
+        } else if let reported = state.workingDirectory, !reported.isEmpty {
+            resolved = reported
+        } else {
+            resolved = nil
         }
-        return reported
+
+        guard let resolved,
+              FileManager.default.fileExists(atPath: resolved),
+              resolved != liveWorkingDirectory
+        else { return }
+        liveWorkingDirectory = resolved
     }
 
     func setVisible(_ visible: Bool) {
@@ -203,5 +220,30 @@ final class TerminalSession: ObservableObject, Identifiable {
         onExit = nil
         cancellables.removeAll()
         AgentLifecycleStore.clear(id)
+    }
+}
+
+enum ProcessWorkingDirectoryProbe {
+    nonisolated static func directory(for pid: pid_t) -> String? {
+        var info = proc_vnodepathinfo()
+        let expectedSize = MemoryLayout<proc_vnodepathinfo>.stride
+        let result = proc_pidinfo(
+            pid,
+            PROC_PIDVNODEPATHINFO,
+            0,
+            &info,
+            Int32(expectedSize)
+        )
+        guard result == Int32(expectedSize) else { return nil }
+
+        return withUnsafePointer(to: &info.pvi_cdir.vip_path) { pathPointer in
+            pathPointer.withMemoryRebound(
+                to: CChar.self,
+                capacity: Int(MAXPATHLEN)
+            ) { characters in
+                let path = String(cString: characters)
+                return path.isEmpty ? nil : path
+            }
+        }
     }
 }

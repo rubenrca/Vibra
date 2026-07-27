@@ -2,6 +2,18 @@ import Foundation
 import Testing
 @testable import VibraApp
 
+@Test func processWorkingDirectoryProbeReadsTheLiveDirectory() throws {
+    let reported = try #require(
+        ProcessWorkingDirectoryProbe.directory(
+            for: pid_t(ProcessInfo.processInfo.processIdentifier)
+        )
+    )
+    #expect(
+        URL(fileURLWithPath: reported).standardizedFileURL
+            == URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL
+    )
+}
+
 @Test func gitClientLoadsChangesDiffsAndStagesFiles() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("vibra-git-tests-\(UUID().uuidString)")
@@ -30,6 +42,7 @@ import Testing
 
     var snapshot = try GitClient.snapshot(from: root.path)
     #expect(snapshot.branch == "main")
+    #expect(GitClient.branch(from: root.path) == "main")
     #expect(snapshot.changes.map(\.path) == ["tracked.swift", "untracked.txt"])
 
     let trackedChange = try #require(

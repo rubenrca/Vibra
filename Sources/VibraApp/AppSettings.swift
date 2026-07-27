@@ -3,10 +3,12 @@ import SwiftUI
 
 enum SettingsKeys {
     static let projectSidebarVisible = "projectSidebarVisible"
+    static let terminalSidebarWidth = "terminalSidebarWidth"
     static let gitSidebarVisible = "gitSidebarVisible"
     static let cmuxShortcutsEnabled = "cmuxShortcutsEnabled"
     static let gitAutoRefreshEnabled = "gitAutoRefreshEnabled"
     static let gitRefreshDelay = "gitRefreshDelay"
+    static let tabFolderModelMigrated = "tabFolderModelMigrated"
 
     @MainActor static let defaults: [String: Any] = [
         cmuxShortcutsEnabled: true,
@@ -109,9 +111,11 @@ struct AppSettingsView: View {
 
 private struct ShortcutReferenceView: View {
     private let groups: [(String, [(String, String)])] = [
-        ("Workspaces", [
-            ("New workspace", "⌘N"),
+        ("Terminals", [
+            ("New sidebar tab", "⌘N"),
             ("New terminal tab", "⌘T"),
+            ("New terminal window", "⇧⌘N"),
+            ("Open directory in new tab", "⌘O"),
             ("Close focused pane", "⌘W"),
         ]),
         ("Panes", [
@@ -120,7 +124,7 @@ private struct ShortcutReferenceView: View {
             ("Focus adjacent pane", "⌥⌘←  →  ↑  ↓"),
         ]),
         ("Sidebars", [
-            ("Toggle projects", "⌘B"),
+            ("Toggle terminals", "⌘B"),
             ("Toggle right sidebar", "⌘R"),
         ]),
     ]
@@ -164,9 +168,10 @@ private struct ShortcutReferenceView: View {
 
 struct KeyboardShortcutMonitor: NSViewRepresentable {
     let store: WorkspaceStore
+    let newTerminalWindow: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(store: store)
+        Coordinator(store: store, newTerminalWindow: newTerminalWindow)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -180,6 +185,7 @@ struct KeyboardShortcutMonitor: NSViewRepresentable {
 
     func updateNSView(_ view: NSView, context: Context) {
         context.coordinator.store = store
+        context.coordinator.newTerminalWindow = newTerminalWindow
         context.coordinator.window = view.window
     }
 
@@ -191,10 +197,12 @@ struct KeyboardShortcutMonitor: NSViewRepresentable {
     final class Coordinator {
         weak var store: WorkspaceStore?
         weak var window: NSWindow?
+        var newTerminalWindow: () -> Void
         private var monitor: Any?
 
-        init(store: WorkspaceStore) {
+        init(store: WorkspaceStore, newTerminalWindow: @escaping () -> Void) {
             self.store = store
+            self.newTerminalWindow = newTerminalWindow
         }
 
         func install() {
@@ -229,7 +237,8 @@ struct KeyboardShortcutMonitor: NSViewRepresentable {
                 case "t": store.newSession()
                 case "d": store.splitSelected(.horizontal)
                 case "w": store.closeSelectedSession()
-                case "b": store.toggleProjectSidebar()
+                case "b": store.toggleTerminalSidebar()
+                case "r": store.toggleGitSidebar()
                 default: return false
                 }
                 return true
@@ -237,6 +246,7 @@ struct KeyboardShortcutMonitor: NSViewRepresentable {
 
             if flags == [.command, .shift] {
                 switch key {
+                case "n": newTerminalWindow()
                 case "d": store.splitSelected(.vertical)
                 default: return false
                 }

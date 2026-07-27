@@ -1057,14 +1057,14 @@ private struct PresentedDiffLine: Identifiable {
 }
 
 struct GitContextSync: View {
-    @ObservedObject var state: TerminalViewState
+    @ObservedObject var session: TerminalSession
     let fallbackRoot: String
     @ObservedObject var model: GitSidebarModel
 
     var body: some View {
         Color.clear
-            .onAppear { sync(state.workingDirectory) }
-            .onChange(of: state.workingDirectory) { _, directory in sync(directory) }
+            .onAppear { sync(session.workingDirectory) }
+            .onChange(of: session.liveWorkingDirectory) { _, directory in sync(directory) }
     }
 
     private func sync(_ directory: String?) {

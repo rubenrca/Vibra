@@ -144,6 +144,47 @@ import Testing
     #expect(restored == project)
 }
 
+@Test func verticalTabsRetainTheirHorizontalTabsAcrossRestoration() throws {
+    let looseSession = SessionSnapshot(workingDirectory: "/tmp")
+    let groupedSession = SessionSnapshot(workingDirectory: "/tmp/repo")
+    let looseTab = TabSnapshot(
+        sessions: [looseSession],
+        selectedSessionID: looseSession.id,
+        layout: .terminal(looseSession.id)
+    )
+    let groupedTab = TabSnapshot(
+        sessions: [groupedSession],
+        selectedSessionID: groupedSession.id,
+        layout: .terminal(groupedSession.id)
+    )
+    let firstVerticalTab = TerminalWorkspaceSnapshot(
+        name: "Vibra",
+        tabs: [looseTab],
+        selectedTabID: looseTab.id
+    )
+    let secondVerticalTab = TerminalWorkspaceSnapshot(
+        name: "Backend",
+        tabs: [groupedTab],
+        selectedTabID: groupedTab.id
+    )
+    let project = ProjectSnapshot(
+        name: "",
+        rootPath: "/tmp",
+        sessions: [],
+        selectedSessionID: groupedSession.id,
+        workspaces: [firstVerticalTab, secondVerticalTab],
+        selectedWorkspaceID: secondVerticalTab.id
+    )
+
+    let data = try JSONEncoder().encode(project)
+    var restored = try JSONDecoder().decode(ProjectSnapshot.self, from: data)
+    restored.normalizeSelection()
+
+    #expect(restored.workspaces?.map(\.name) == ["Vibra", "Backend"])
+    #expect(restored.workspaces?.first?.tabs.map(\.id) == [looseTab.id])
+    #expect(restored.workspaces?.last?.tabs.map(\.id) == [groupedTab.id])
+}
+
 @Test func paneTreeSplitsAndCollapsesWithoutCreatingTabs() throws {
     let first = UUID()
     let second = UUID()

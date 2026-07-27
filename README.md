@@ -11,7 +11,7 @@ Version `0.1.0` established the application and terminal foundation. Version
 `0.2.0` is the first published build. It provides:
 
 - native SwiftUI/AppKit application shell;
-- project workspaces and long-lived terminal tabs;
+- long-lived terminal tabs with optional folders for organization;
 - `libghostty` terminal rendering;
 - explicit visible/background session lifecycle;
 - workspace restoration;
@@ -123,9 +123,11 @@ The first build downloads the prebuilt GhosttyKit binary used by
 
 ## Shortcuts
 
-- `⌘T`: new terminal
+- `⌘N`: new tab in the active terminal directory
+- `⌘T`: new terminal tab inside the selected tab
+- `⇧⌘N`: new terminal window
+- `⌘O`: open a directory in a new tab
 - `⌘W`: close the selected terminal
-- `⌘O`: open a project
 - `⇧⌘G`: toggle the Git sidebar
 
 ## Principles
