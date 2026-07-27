@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.3 — 2026-07-27
+
 - Unify app chrome and terminal under one surface: Ghostty config by default (Match Ghostty), with Catalog and Vibra as options.
 - Drive sidebars, headers, and accents from the same resolved Ghostty/catalog/Vibra colors as the terminal.
 - Add an Appearance settings tab with font, cursor, background opacity, and 485 catalog themes.
