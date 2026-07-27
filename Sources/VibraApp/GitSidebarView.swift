@@ -8,15 +8,16 @@ struct GitSidebarView: View {
     @ObservedObject var store: WorkspaceStore
     @ObservedObject var model: GitSidebarModel
     @StateObject private var fileTree = RepositoryFileTreeModel()
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+            Divider().overlay(chrome.foreground.opacity(0.12))
             content
         }
         .frame(width: model.expandedChangeID == nil ? 320 : 540)
-        .background(.regularMaterial)
+        .background(chrome.background)
         .animation(.easeOut(duration: 0.2), value: model.expandedChangeID)
         .onAppear { syncFileTree() }
         .onChange(of: model.repositoryRoot) { _, _ in syncFileTree() }
@@ -163,7 +164,7 @@ struct GitSidebarView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(selected ? VibraPalette.accent : .secondary)
+        .foregroundStyle(selected ? chrome.accent : .secondary)
         .help(mode == .files ? "Repository Files" : "Git Changes")
     }
 
@@ -381,6 +382,7 @@ private struct RepositoryFileNodeView: View {
     let depth: Int
     @ObservedObject var treeModel: RepositoryFileTreeModel
     @ObservedObject var gitModel: GitSidebarModel
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         VStack(spacing: 1) {
@@ -417,7 +419,7 @@ private struct RepositoryFileNodeView: View {
                         }
                         .font(.system(size: 8.5, weight: .medium, design: .monospaced))
                     } else if node.isDirectory, hasChangedDescendants {
-                        Circle().fill(VibraPalette.accent).frame(width: 4, height: 4)
+                        Circle().fill(chrome.accent).frame(width: 4, height: 4)
                     }
                 }
                 .padding(.leading, CGFloat(depth * 13) + 3)
@@ -582,6 +584,7 @@ private struct GitChangeTreeNodeView: View {
     let depth: Int
     let repositoryRoot: String
     @ObservedObject var model: GitSidebarModel
+    @Environment(\.appChrome) private var chrome
     @State private var expanded = true
 
     var body: some View {
@@ -613,7 +616,7 @@ private struct GitChangeTreeNodeView: View {
                     .frame(width: 10)
                 Image(systemName: expanded ? "folder.fill" : "folder")
                     .font(.system(size: 11))
-                    .foregroundStyle(VibraPalette.accent.opacity(0.82))
+                    .foregroundStyle(chrome.accent.opacity(0.82))
                     .frame(width: 15)
                 Text(node.name)
                     .font(.system(size: 11.5, weight: .medium))
@@ -697,30 +700,31 @@ private struct GitChangeTreeNodeView: View {
 
 struct GitDiffModalView: View {
     @ObservedObject var model: GitSidebarModel
+    @Environment(\.appChrome) private var chrome
     @FocusState private var receivesKeyboardInput: Bool
     @State private var fileExpanded = true
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.72)
+            Color.black.opacity(chrome.isDark ? 0.46 : 0.22)
                 .ignoresSafeArea()
                 .onTapGesture { model.dismissDiff() }
 
             VStack(spacing: 0) {
                 workspaceHeader
-                Divider().overlay(Color.white.opacity(0.09))
+                Divider().overlay(chrome.foreground.opacity(0.11))
                 reviewHeader
                 diffCard
                     .padding(.horizontal, 22)
                     .padding(.bottom, 22)
             }
-            .background(Color(red: 0.045, green: 0.047, blue: 0.052))
+            .background(chrome.elevated)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                    .stroke(chrome.foreground.opacity(0.16), lineWidth: 1)
             }
-            .shadow(color: .black.opacity(0.58), radius: 42, y: 20)
+            .shadow(color: chrome.background.mix(with: .black, amount: 0.62).opacity(0.62), radius: 34, y: 16)
             .frame(maxWidth: 1180, maxHeight: 820)
             .padding(22)
         }
@@ -793,20 +797,21 @@ struct GitDiffModalView: View {
         VStack(spacing: 0) {
             fileHeader
             if fileExpanded {
-                Divider().overlay(Color.white.opacity(0.08))
+                Divider().overlay(chrome.foreground.opacity(0.09))
                 GitDiffLinesView(
                     model: model,
                     axes: [.horizontal, .vertical],
                     minimumCodeWidth: 860,
                     minimumHeight: 180
                 )
-                .background(Color(red: 0.025, green: 0.027, blue: 0.030))
+                .background(chrome.background)
             }
         }
+        .background(chrome.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                .stroke(chrome.foreground.opacity(0.12), lineWidth: 1)
         }
     }
 
@@ -840,7 +845,7 @@ struct GitDiffModalView: View {
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 28)
-                .background(Color.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 4))
+                .background(chrome.foreground.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                 Button {
                     let path = (model.repositoryRoot as NSString)
                         .appendingPathComponent(change.path)
@@ -861,7 +866,7 @@ struct GitDiffModalView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 52)
-        .background(Color.white.opacity(0.075))
+        .background(chrome.foreground.opacity(0.065))
     }
 
     private func stat(_ text: String, color: Color) -> some View {
@@ -874,7 +879,7 @@ struct GitDiffModalView: View {
         Button(title, action: action)
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .tint(.secondary)
+            .tint(chrome.accent)
     }
 
     private var displayRoot: String {
@@ -893,6 +898,7 @@ private struct GitDiffLinesView: View {
     let axes: Axis.Set
     let minimumCodeWidth: CGFloat
     let minimumHeight: CGFloat
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         Group {
@@ -953,7 +959,7 @@ private struct GitDiffLinesView: View {
             Text(count > 0 ? "\(count) unmodified lines" : fallback)
         }
         .font(.system(size: 10.5, design: .monospaced))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(chrome.foreground.opacity(0.62))
         .padding(.leading, 88)
         .frame(
             minWidth: minimumCodeWidth + 100,
@@ -961,16 +967,16 @@ private struct GitDiffLinesView: View {
             minHeight: 28,
             alignment: .leading
         )
-        .background(Color.primary.opacity(0.035))
+        .background(chrome.foreground.opacity(0.035))
     }
 
     private func lineNumber(_ value: Int?) -> some View {
         Text(value.map(String.init) ?? "")
             .font(.system(size: 9.5, design: .monospaced))
-            .foregroundStyle(.quaternary)
+            .foregroundStyle(chrome.foreground.opacity(0.38))
             .frame(width: 46, alignment: .trailing)
             .padding(.trailing, 8)
-            .background(Color.black.opacity(0.08))
+            .background(chrome.foreground.opacity(0.045))
     }
 
     private func displayText(_ line: DiffLine) -> String {
@@ -994,11 +1000,11 @@ private struct GitDiffLinesView: View {
 
     private func lineColor(_ kind: DiffLineKind) -> Color {
         switch kind {
-        case .metadata: .secondary
-        case .hunk: VibraPalette.accent
+        case .metadata: chrome.foreground.opacity(0.62)
+        case .hunk: chrome.accent
         case .addition: .green
         case .deletion: .red
-        case .context: .primary
+        case .context: chrome.foreground
         }
     }
 
@@ -1006,7 +1012,7 @@ private struct GitDiffLinesView: View {
         switch kind {
         case .addition: Color.green.opacity(0.16)
         case .deletion: Color.red.opacity(0.14)
-        case .hunk: Color.primary.opacity(0.035)
+        case .hunk: chrome.accent.opacity(0.075)
         default: .clear
         }
     }

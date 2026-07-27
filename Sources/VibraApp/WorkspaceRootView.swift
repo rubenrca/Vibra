@@ -10,6 +10,8 @@ enum WorkspaceWindowMode {
 
 struct WorkspaceRootView: View {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject private var chromeTheme = ChromeThemeController.shared
     @StateObject private var store: WorkspaceStore
     @StateObject private var gitModel = GitSidebarModel()
     @State private var terminalSidebarWidth: CGFloat
@@ -31,6 +33,7 @@ struct WorkspaceRootView: View {
                 HStack(spacing: 0) {
                     TerminalSidebar(store: store)
                         .frame(width: terminalSidebarWidth)
+                        .background(chromeTheme.theme.background)
                     sidebarDivider
                 }
                 .transition(.move(edge: .leading).combined(with: .opacity))
@@ -42,7 +45,7 @@ struct WorkspaceRootView: View {
             if store.isGitSidebarVisible,
                let project = store.selectedProject {
                 HStack(spacing: 0) {
-                    Divider()
+                    Divider().overlay(chromeTheme.theme.foreground.opacity(0.12))
                     GitSidebarView(
                         fallbackRoot: project.rootPath,
                         session: project.selectedSession,
@@ -62,7 +65,8 @@ struct WorkspaceRootView: View {
             value: store.isGitSidebarVisible
         )
         .frame(minWidth: 760, minHeight: 500)
-        .background(VibraPalette.canvas)
+        .background(chromeTheme.theme.background)
+        .environment(\.appChrome, chromeTheme.theme)
         .background {
             KeyboardShortcutMonitor(
                 store: store,
@@ -91,6 +95,10 @@ struct WorkspaceRootView: View {
         }
         .animation(.easeOut(duration: 0.16), value: gitModel.isDiffPresented)
         .focusedSceneObject(store)
+        .onAppear { chromeTheme.refresh(colorScheme: colorScheme) }
+        .onChange(of: colorScheme) { _, scheme in
+            chromeTheme.refresh(colorScheme: scheme)
+        }
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.willTerminateNotification
@@ -132,6 +140,7 @@ struct WorkspaceRootView: View {
 
 private struct TerminalSidebar: View {
     @ObservedObject var store: WorkspaceStore
+    @Environment(\.appChrome) private var chrome
     @State private var isCreatingFolder = false
     @State private var folderName = ""
     @State private var folderTargetWorkspaceID: UUID?
@@ -158,7 +167,7 @@ private struct TerminalSidebar: View {
                     .background {
                         if isUngroupedDropTargeted {
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(VibraPalette.sidebarSelection.opacity(0.09))
+                                .fill(chrome.selection.opacity(0.09))
                         }
                     }
                     .dropDestination(for: String.self) { items, _ in
@@ -203,7 +212,7 @@ private struct TerminalSidebar: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .background(.thinMaterial)
+        .background(chrome.background)
     }
 
     private var newFolderField: some View {
@@ -252,6 +261,7 @@ private struct TerminalSidebar: View {
 private struct SidebarWorkspaceFolder: View {
     let folder: TerminalWorkspaceFolder
     @ObservedObject var store: WorkspaceStore
+    @Environment(\.appChrome) private var chrome
     let createFolder: (UUID) -> Void
     @State private var isExpanded = true
     @State private var isRenaming = false
@@ -278,10 +288,10 @@ private struct SidebarWorkspaceFolder: View {
         .background {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(VibraPalette.sidebarSelection.opacity(0.1))
+                    .fill(chrome.selection.opacity(0.1))
                     .overlay {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(VibraPalette.sidebarSelection.opacity(0.35), lineWidth: 1)
+                            .stroke(chrome.selection.opacity(0.35), lineWidth: 1)
                     }
             }
         }
@@ -361,6 +371,7 @@ private struct SidebarWorkspaceFolder: View {
 private struct SidebarWorkspaceRow: View {
     let located: LocatedTerminalWorkspace
     @ObservedObject var store: WorkspaceStore
+    @Environment(\.appChrome) private var chrome
     let createFolder: () -> Void
     @ObservedObject private var session: TerminalSession
     @State private var hovering = false
@@ -423,7 +434,7 @@ private struct SidebarWorkspaceRow: View {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(
                     selected
-                        ? VibraPalette.sidebarSelection
+                        ? chrome.selection
                         : hovering ? Color.primary.opacity(0.045) : .clear
                 )
         }
@@ -556,6 +567,7 @@ private struct SidebarWorkspaceDragPreview: View {
 private struct SidebarActivityGlyph: View {
     let activity: AgentActivity
     let selected: Bool
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         switch activity {
@@ -578,7 +590,7 @@ private struct SidebarActivityGlyph: View {
                 .overlay {
                     Text("1")
                         .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .foregroundStyle(selected ? VibraPalette.sidebarSelection : Color.white)
+                        .foregroundStyle(selected ? chrome.selection : Color.white)
                 }
         case .finished(_, let succeeded, _):
             Image(systemName: succeeded == false ? "xmark.circle.fill" : "checkmark.circle.fill")
@@ -591,6 +603,7 @@ private struct SidebarActivityGlyph: View {
 private struct WorkspaceDetail: View {
     @ObservedObject var store: WorkspaceStore
     @ObservedObject var gitModel: GitSidebarModel
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         VStack(spacing: 0) {
@@ -601,7 +614,7 @@ private struct WorkspaceDetail: View {
             Divider()
             terminalCanvas
         }
-        .background(VibraPalette.canvas)
+        .background(chrome.background)
     }
 
     @ViewBuilder
@@ -758,6 +771,7 @@ private struct TerminalPane: View {
 private struct SessionHeader: View {
     @ObservedObject var store: WorkspaceStore
     @ObservedObject var gitModel: GitSidebarModel
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         HStack(spacing: 8) {
@@ -808,7 +822,7 @@ private struct SessionHeader: View {
         .padding(.trailing, 10)
         .padding(.leading, store.isTerminalSidebarVisible ? 9 : 78)
         .frame(height: VibraLayout.panelHeaderHeight)
-        .background(.bar)
+        .background(chrome.elevated)
     }
 
     @ViewBuilder
@@ -834,6 +848,7 @@ private struct SessionHeader: View {
 private struct HeaderHorizontalTab: View {
     @ObservedObject var session: TerminalSession
     @ObservedObject private var state: TerminalViewState
+    @Environment(\.appChrome) private var chrome
     let fallbackTitle: String
     let paneCount: Int
     let selected: Bool
@@ -889,7 +904,7 @@ private struct HeaderHorizontalTab: View {
         }
         .overlay(alignment: .bottom) {
             Capsule()
-                .fill(selected ? VibraPalette.accent : .clear)
+                .fill(selected ? chrome.accent : .clear)
                 .frame(height: 2)
                 .padding(.horizontal, 8)
         }
@@ -909,6 +924,7 @@ private struct HeaderHorizontalTab: View {
 private struct HeaderTabActivityGlyph: View {
     let activity: AgentActivity
     let selected: Bool
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         switch activity {
@@ -925,7 +941,7 @@ private struct HeaderTabActivityGlyph: View {
                 .controlSize(.mini)
                 .scaleEffect(0.56)
                 .frame(width: 9, height: 9)
-                .tint(selected ? VibraPalette.accent : .secondary)
+                .tint(selected ? chrome.accent : .secondary)
         case .needsAttention:
             Circle()
                 .fill(Color.orange)
@@ -943,6 +959,7 @@ private struct EmptyWorkspaceView: View {
     let detail: String
     let buttonTitle: String
     let action: () -> Void
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         VStack(spacing: 14) {
@@ -956,16 +973,10 @@ private struct EmptyWorkspaceView: View {
             Button(buttonTitle, action: action)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .tint(VibraPalette.accent)
+                .tint(chrome.accent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-}
-
-enum VibraPalette {
-    static let accent = Color(red: 0.49, green: 0.36, blue: 0.96)
-    static let sidebarSelection = accent
-    static let canvas = Color(nsColor: .windowBackgroundColor)
 }
 
 enum VibraLayout {

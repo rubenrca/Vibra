@@ -129,6 +129,8 @@ final class WorkspaceStore: ObservableObject {
     private var isRefreshingAgentActivity = false
     private var lastWorkspaceActivities: [UUID: AgentActivity] = [:]
     private let persistsWorkspace: Bool
+    /// Stored as nonisolated so `deinit` can remove it without hopping to the main actor.
+    nonisolated(unsafe) private var appearanceObserver: NSObjectProtocol?
 
     init(restoresWorkspace: Bool = true) {
         persistsWorkspace = restoresWorkspace
@@ -149,7 +151,14 @@ final class WorkspaceStore: ObservableObject {
         refreshSessionVisibility()
         lastWorkspaceActivities = workspaceActivitySnapshot()
         startAgentActivityMonitoring()
+        observeTerminalAppearanceChanges()
         saveWorkspace()
+    }
+
+    deinit {
+        if let appearanceObserver {
+            NotificationCenter.default.removeObserver(appearanceObserver)
+        }
     }
 
     var selectedProject: VibraProject? {
@@ -712,6 +721,23 @@ final class WorkspaceStore: ObservableObject {
         session.onExit = { [weak self] session in
             self?.closeSession(session.id, in: projectID)
         }
+    }
+
+    private func observeTerminalAppearanceChanges() {
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: .terminalAppearanceDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.applyTerminalAppearanceToAllSessions()
+            }
+        }
+    }
+
+    private func applyTerminalAppearanceToAllSessions() {
+        TerminalAppearanceApplier.apply(TerminalAppearance.current, to: allSessions)
     }
 
     private func sessionSnapshot(_ session: TerminalSession) -> SessionSnapshot {

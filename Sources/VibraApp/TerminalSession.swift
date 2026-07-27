@@ -28,15 +28,11 @@ final class TerminalSession: ObservableObject, Identifiable {
         liveWorkingDirectory = workingDirectory
         AgentLifecycleStore.clear(id)
 
-        let configuration = TerminalConfiguration { builder in
-            builder.withCustom("scrollback-limit", "1048576")
-            builder.withCustom("macos-option-as-alt", "true")
-        }
-        let configSource: TerminalController.ConfigSource = GhosttyConfigLocator.path()
-            .map(TerminalController.ConfigSource.file) ?? .none
+        let appearance = TerminalAppearance.current
         let state = TerminalViewState(
-            configSource: configSource,
-            terminalConfiguration: configuration
+            configSource: appearance.configSource,
+            theme: appearance.terminalTheme,
+            terminalConfiguration: appearance.terminalConfiguration
         )
         self.state = state
 
@@ -100,6 +96,14 @@ final class TerminalSession: ObservableObject, Identifiable {
         guard !isClosed, isVisible != visible else { return }
         isVisible = visible
         terminalView.setSurfaceVisible(visible)
+    }
+
+    /// Reconfigures colors, font, and cursor without recreating the PTY.
+    /// Base config file (Ghostty) is fixed at session creation.
+    func applyAppearance(_ appearance: TerminalAppearance) {
+        guard !isClosed else { return }
+        state.setTheme(appearance.terminalTheme)
+        state.setTerminalConfiguration(appearance.terminalConfiguration)
     }
 
     /// The current libghostty wrapper suppresses wakeups for an occluded

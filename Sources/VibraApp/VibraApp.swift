@@ -14,6 +14,7 @@ struct VibraApp: App {
 
     init() {
         UserDefaults.standard.register(defaults: SettingsKeys.defaults)
+        TerminalAppearance.migrateToMatchGhosttyIfNeeded()
     }
 
     var body: some Scene {
@@ -22,6 +23,8 @@ struct VibraApp: App {
         }
         .defaultSize(width: 1080, height: 720)
         .windowStyle(.hiddenTitleBar)
+        // Register commands once for the whole app. Attaching the same
+        // Commands builder to multiple WindowGroups duplicates every menu item.
         .commands {
             VibraCommands(updater: updater)
         }
@@ -31,13 +34,11 @@ struct VibraApp: App {
         }
         .defaultSize(width: 900, height: 620)
         .windowStyle(.hiddenTitleBar)
-        .commands {
-            VibraCommands(updater: updater)
-        }
 
         Settings {
             AppSettingsView()
                 .environmentObject(updater)
+                .environment(\.appChrome, ChromeThemeController.shared.theme)
         }
         .windowResizability(.contentSize)
     }
@@ -47,6 +48,8 @@ final class VibraApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Safe to read appearance now that NSApplication is fully up.
+        ChromeThemeController.shared.refresh()
     }
 }
 
@@ -62,13 +65,6 @@ private struct VibraCommands: Commands {
                 updater.checkForUpdates()
             }
             .disabled(!updater.canCheckForUpdates)
-        }
-
-        CommandGroup(replacing: .appSettings) {
-            SettingsLink {
-                Text("Settings…")
-            }
-            .keyboardShortcut(",", modifiers: .command)
         }
 
         CommandGroup(replacing: .newItem) {

@@ -1,4 +1,6 @@
 import AppKit
+import GhosttyTerminal
+import GhosttyTheme
 import SwiftUI
 
 enum SettingsKeys {
@@ -10,10 +12,31 @@ enum SettingsKeys {
     static let gitRefreshDelay = "gitRefreshDelay"
     static let tabFolderModelMigrated = "tabFolderModelMigrated"
 
+    static let terminalThemeSource = "terminalThemeSource"
+    static let terminalThemeDark = "terminalThemeDark"
+    static let terminalThemeLight = "terminalThemeLight"
+    static let terminalFontFamily = "terminalFontFamily"
+    static let terminalFontSize = "terminalFontSize"
+    static let terminalCursorStyle = "terminalCursorStyle"
+    static let terminalCursorBlink = "terminalCursorBlink"
+    static let terminalBackgroundOpacity = "terminalBackgroundOpacity"
+    static let terminalLoadGhosttyConfig = "terminalLoadGhosttyConfig"
+    static let terminalMatchAppMigrated = "terminalMatchAppMigrated"
+    static let terminalMatchGhosttyMigrated = "terminalMatchGhosttyMigrated"
+
     @MainActor static let defaults: [String: Any] = [
         cmuxShortcutsEnabled: true,
         gitAutoRefreshEnabled: true,
         gitRefreshDelay: 420,
+        terminalThemeSource: TerminalAppearance.ThemeSource.ghostty.rawValue,
+        terminalThemeDark: TerminalAppearance.defaultDarkThemeName,
+        terminalThemeLight: TerminalAppearance.defaultLightThemeName,
+        terminalFontFamily: "",
+        terminalFontSize: TerminalAppearance.defaultFontSize,
+        terminalCursorStyle: TerminalAppearance.CursorStyleSetting.block.rawValue,
+        terminalCursorBlink: true,
+        terminalBackgroundOpacity: 1.0,
+        terminalLoadGhosttyConfig: true,
     ]
 }
 
@@ -92,10 +115,13 @@ struct AppSettingsView: View {
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
 
+            AppearanceSettingsView()
+                .tabItem { Label("Appearance", systemImage: "paintpalette") }
+
             ShortcutReferenceView()
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
         }
-        .frame(width: 520, height: 470)
+        .frame(width: 560, height: 560)
     }
 
     private func installCodexStatusHooks() {
@@ -108,6 +134,435 @@ struct AppSettingsView: View {
         }
     }
 }
+
+// MARK: - Appearance
+
+private struct AppearanceSettingsView: View {
+    @ObservedObject private var chromeTheme = ChromeThemeController.shared
+    @State private var appearance = TerminalAppearance.current
+    @State private var themeQuery = ""
+    @State private var themePickerTarget: ThemePickerTarget = .dark
+
+    private enum ThemePickerTarget: String, CaseIterable, Identifiable {
+        case dark
+        case light
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .dark: "Dark"
+            case .light: "Light"
+            }
+        }
+    }
+
+    private var ghosttyConfigPath: String? {
+        GhosttyConfigLocator.path()
+    }
+
+    private var filteredThemes: [GhosttyThemeDefinition] {
+        let query = themeQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if query.isEmpty {
+            return GhosttyThemeCatalog.allThemes
+        }
+        return GhosttyThemeCatalog.search(query)
+    }
+
+    private var featuredThemes: [GhosttyThemeDefinition] {
+        TerminalAppearance.featuredThemeNames.compactMap { GhosttyThemeCatalog.theme(named: $0) }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Color source", selection: $appearance.themeSource) {
+                    ForEach(TerminalAppearance.ThemeSource.allCases) { source in
+                        Text(source.title).tag(source)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Toggle("Load Ghostty config file as base", isOn: $appearance.loadGhosttyConfig)
+                if let ghosttyConfigPath {
+                    Text(ghosttyConfigPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                } else {
+                    Text("No Ghostty config found. Vibra will use built-in defaults for the base layer.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Theme source")
+            } footer: {
+                Text(appearance.themeSource.detail)
+            }
+
+            if appearance.themeSource == .ghostty {
+                Section("Ghostty surface") {
+                    HStack(spacing: 14) {
+                        chromePreviewSwatch(
+                            title: "Dark",
+                            theme: AppChromeTheme.resolve(appearance: appearance, colorScheme: .dark)
+                        )
+                        chromePreviewSwatch(
+                            title: "Light",
+                            theme: AppChromeTheme.resolve(appearance: appearance, colorScheme: .light)
+                        )
+                    }
+                    .padding(.vertical, 4)
+                    Text("Sidebars, headers, and the terminal all use this surface.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if appearance.themeSource == .vibra {
+                Section("Vibra surface") {
+                    HStack(spacing: 14) {
+                        vibraPreviewSwatch(title: "Dark", configuration: TerminalAppearance.vibraDarkConfiguration)
+                        vibraPreviewSwatch(title: "Light", configuration: TerminalAppearance.vibraLightConfiguration)
+                    }
+                    .padding(.vertical, 4)
+                    Text("Built-in purple surface when you do not want Ghostty colors on the chrome.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if appearance.themeSource == .catalog {
+                Section("Active themes") {
+                    themeSummaryRow(
+                        title: "Dark appearance",
+                        name: appearance.darkThemeName,
+                        definition: appearance.darkDefinition()
+                    ) {
+                        themePickerTarget = .dark
+                    }
+                    themeSummaryRow(
+                        title: "Light appearance",
+                        name: appearance.lightThemeName,
+                        definition: appearance.lightDefinition()
+                    ) {
+                        themePickerTarget = .light
+                    }
+                }
+
+                Section {
+                    Picker("Editing", selection: $themePickerTarget) {
+                        ForEach(ThemePickerTarget.allCases) { target in
+                            Text(target.title).tag(target)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    TextField("Search \(GhosttyThemeCatalog.allThemes.count) themes", text: $themeQuery)
+                        .textFieldStyle(.roundedBorder)
+
+                    if themeQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        themeChipRow(title: "Popular", themes: featuredThemes)
+                    }
+
+                    themeList
+                } header: {
+                    Text("Theme catalog")
+                }
+            }
+
+            Section("Typography") {
+                HStack {
+                    TextField("Font family", text: $appearance.fontFamily)
+                        .textFieldStyle(.roundedBorder)
+                    Menu("Presets") {
+                        Button("System default") {
+                            appearance.fontFamily = ""
+                        }
+                        Divider()
+                        ForEach(TerminalAppearance.suggestedFontFamilies, id: \.self) { family in
+                            Button(family) {
+                                appearance.fontFamily = family
+                            }
+                        }
+                    }
+                }
+                Text("Leave empty to keep the font from Ghostty config or the system default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Text("Font size")
+                    Spacer()
+                    Text("\(Int(appearance.fontSize.rounded())) pt")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(
+                    value: $appearance.fontSize,
+                    in: TerminalAppearance.minFontSize...TerminalAppearance.maxFontSize,
+                    step: 1
+                )
+            }
+
+            Section("Cursor") {
+                Picker("Style", selection: $appearance.cursorStyle) {
+                    ForEach(TerminalAppearance.CursorStyleSetting.allCases) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                Toggle("Blink", isOn: $appearance.cursorBlink)
+            }
+
+            Section("Background") {
+                HStack {
+                    Text("Opacity")
+                    Spacer()
+                    Text("\(Int((appearance.backgroundOpacity * 100).rounded()))%")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(value: $appearance.backgroundOpacity, in: 0.2...1, step: 0.05)
+                Text("Values below 100% enable a translucent terminal surface.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onChange(of: appearance) { _, newValue in
+            newValue.write()
+        }
+    }
+
+    @ViewBuilder
+    private var themeList: some View {
+        let themes = filteredThemes
+        if themes.isEmpty {
+            Text("No themes match “\(themeQuery)”.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 8)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(themes) { theme in
+                        themeRow(theme)
+                    }
+                }
+            }
+            .frame(minHeight: 180, maxHeight: 220)
+        }
+    }
+
+    private func themeChipRow(title: String, themes: [GhosttyThemeDefinition]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(themes) { theme in
+                        Button {
+                            selectTheme(theme)
+                        } label: {
+                            HStack(spacing: 6) {
+                                ThemeSwatch(theme: theme, size: 14)
+                                Text(theme.name)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(
+                                Color.primary.opacity(isSelected(theme) ? 0.12 : 0.05),
+                                in: Capsule()
+                            )
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(
+                                        isSelected(theme)
+                                            ? chromeTheme.theme.accent.opacity(0.8)
+                                            : Color.clear,
+                                        lineWidth: 1
+                                    )
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func themeSummaryRow(
+        title: String,
+        name: String,
+        definition: GhosttyThemeDefinition?,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if let definition {
+                    ThemeSwatch(theme: definition, size: 22)
+                } else {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.secondary.opacity(0.2))
+                        .frame(width: 22, height: 22)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(name)
+                        .font(.system(size: 12, weight: .medium))
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func themeRow(_ theme: GhosttyThemeDefinition) -> some View {
+        Button {
+            selectTheme(theme)
+        } label: {
+            HStack(spacing: 10) {
+                ThemeSwatch(theme: theme, size: 20)
+                Text(theme.name)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                Spacer()
+                if isSelected(theme) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(chromeTheme.theme.accent)
+                        .font(.system(size: 13))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                Color.primary.opacity(isSelected(theme) ? 0.08 : 0),
+                in: RoundedRectangle(cornerRadius: 6)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func isSelected(_ theme: GhosttyThemeDefinition) -> Bool {
+        switch themePickerTarget {
+        case .dark: appearance.darkThemeName == theme.name
+        case .light: appearance.lightThemeName == theme.name
+        }
+    }
+
+    private func selectTheme(_ theme: GhosttyThemeDefinition) {
+        switch themePickerTarget {
+        case .dark:
+            appearance.darkThemeName = theme.name
+        case .light:
+            appearance.lightThemeName = theme.name
+        }
+        if appearance.themeSource != .catalog {
+            appearance.themeSource = .catalog
+        }
+    }
+
+    private func vibraPreviewSwatch(title: String, configuration: TerminalConfiguration) -> some View {
+        let bg = colorFromConfiguration(configuration, keyPrefix: "background = ") ?? .black
+        let fg = colorFromConfiguration(configuration, keyPrefix: "foreground = ") ?? .white
+        let accent = colorFromConfiguration(configuration, keyPrefix: "cursor-color = ")
+            ?? Color(vibraHex: VibraBrand.accentHex)
+            ?? VibraBrand.accent
+        return surfacePreviewSwatch(title: title, background: bg, foreground: fg, accent: accent)
+    }
+
+    private func chromePreviewSwatch(title: String, theme: AppChromeTheme) -> some View {
+        surfacePreviewSwatch(
+            title: title,
+            background: theme.background,
+            foreground: theme.foreground,
+            accent: theme.accent
+        )
+    }
+
+    private func surfacePreviewSwatch(
+        title: String,
+        background: Color,
+        foreground: Color,
+        accent: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(background)
+                HStack(spacing: 5) {
+                    Capsule().fill(accent).frame(width: 10, height: 4)
+                    Capsule().fill(foreground.opacity(0.85)).frame(width: 28, height: 4)
+                    Capsule().fill(foreground.opacity(0.35)).frame(width: 16, height: 4)
+                }
+                .padding(10)
+            }
+            .frame(height: 52)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func colorFromConfiguration(
+        _ configuration: TerminalConfiguration,
+        keyPrefix: String
+    ) -> Color? {
+        guard let line = configuration.rendered
+            .split(separator: "\n")
+            .map(String.init)
+            .first(where: { $0.hasPrefix(keyPrefix) })
+        else { return nil }
+        let value = String(line.dropFirst(keyPrefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Color(vibraHex: value)
+    }
+}
+
+private struct ThemeSwatch: View {
+    let theme: GhosttyThemeDefinition
+    var size: CGFloat = 20
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                .fill(Color(vibraHex: theme.background) ?? .black)
+            HStack(spacing: size * 0.08) {
+                ForEach(accentIndices, id: \.self) { index in
+                    Circle()
+                        .fill(Color(vibraHex: theme.palette[index] ?? theme.foreground) ?? .white)
+                        .frame(width: size * 0.18, height: size * 0.18)
+                }
+            }
+        }
+        .frame(width: size * 1.55, height: size)
+        .overlay(
+            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+        )
+    }
+
+    private var accentIndices: [Int] { [1, 2, 4, 5] }
+}
+
+
 
 private struct ShortcutReferenceView: View {
     private let groups: [(String, [(String, String)])] = [

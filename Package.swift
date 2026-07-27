@@ -27,6 +27,7 @@ let package = Package(
             dependencies: [
                 "VibraCore",
                 .product(name: "GhosttyTerminal", package: "libghostty-spm"),
+                .product(name: "GhosttyTheme", package: "libghostty-spm"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             // Sparkle ships as a framework that Scripts/package_app.sh copies into
