@@ -3,22 +3,21 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.2.1</title>
-            <pubDate>Sat, 25 Jul 2026 12:38:17 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.1</link>
-            <sparkle:version>7</sparkle:version>
-            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
+            <title>0.2.2</title>
+            <pubDate>Mon, 27 Jul 2026 12:38:07 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.2</link>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>0.2.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Add cmux-style workspaces with independent terminal tabs inside each workspace.</li>
-  <li>Show coding-agent activity in the sidebar, including ready, working, attention, and finished states.</li>
-  <li>Add optional Codex lifecycle hooks with a transcript-based fallback for status detection.</li>
-  <li>Add collapsible inline Git diffs while keeping the expanded in-app diff viewer.</li>
-  <li>Align terminal typography and spacing more closely with the user's Ghostty configuration.</li>
-  <li>Reduce background polling, transcript reads, and unnecessary SwiftUI updates.</li>
+  <li>Redesign terminal workspace navigation with a resizable terminal sidebar.</li>
+  <li>Organize vertical tabs into folders, with create, rename, remove, and drag-and-drop.</li>
+  <li>Clarify tab shortcuts: ⌘N for a new tab, ⌘T for a nested terminal tab, ⇧⌘N for a new window, and ⌘O to open a directory.</li>
+  <li>Show branch, path, and nested-tab count in the terminal sidebar.</li>
+  <li>Restore the Vibra purple accent color.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.1/Vibra-0.2.1.dmg" length="12215322" type="application/octet-stream" sparkle:edSignature="RZqGEY/hShoB3DztolEAy5FPUvbjqFY6FoC94pXSS65F2+WYApUQrNoUOVprTcuMc+A4qYVjOlMloXaUXcORCQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.2/Vibra-0.2.2.dmg" length="12360589" type="application/octet-stream" sparkle:edSignature="DK+S8LZfgn1K/Kfw5GMzbOcNiB4OolQGY9jyo8dCNFhWjgSBFBrfsVd5l6WvGxqsVv/ASPDija2q32ic5AxyDg=="/>
         </item>
     </channel>
 </rss>
