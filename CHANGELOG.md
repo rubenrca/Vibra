@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+## 0.2.4 — 2026-07-31
+
 - Open the current project or a selected file in an external IDE (Cursor, VS Code, Zed, Windsurf, Xcode, and others).
 - Prefer a default editor in Settings → General; reach it from the session header, File menu (⇧⌘E), and context menus.
+- Polish sidebar geometry and resizing.
 
 ## 0.2.3 — 2026-07-27
 
