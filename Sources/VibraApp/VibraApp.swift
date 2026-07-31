@@ -88,6 +88,15 @@ private struct VibraCommands: Commands {
                 workspace?.chooseFolder()
             }
             .keyboardShortcut("o", modifiers: .command)
+
+            Divider()
+
+            Button(openInEditorMenuTitle) {
+                openSelectedProjectInEditor()
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(workspace?.selectedProject == nil
+                || ExternalEditorLauncher.installedEditors().isEmpty)
         }
 
         CommandGroup(replacing: .saveItem) {}
@@ -112,6 +121,12 @@ private struct VibraCommands: Commands {
             }
             .keyboardShortcut("w", modifiers: .command)
             .disabled(workspace?.selectedSession == nil)
+
+            Button("Close Workspace") {
+                workspace?.closeSelectedWorkspace()
+            }
+            .keyboardShortcut("w", modifiers: [.command, .shift])
+            .disabled(workspace?.selectedWorkspace == nil)
         }
 
         CommandGroup(after: .sidebar) {
@@ -148,5 +163,17 @@ private struct VibraCommands: Commands {
             }
             .keyboardShortcut(.downArrow, modifiers: [.command, .option])
         }
+    }
+
+    private var openInEditorMenuTitle: String {
+        if let preferred = ExternalEditorLauncher.resolvedEditor() {
+            return "Open Project in \(preferred.shortName)"
+        }
+        return "Open Project in Editor"
+    }
+
+    private func openSelectedProjectInEditor() {
+        guard let path = workspace?.selectedProject?.rootPath else { return }
+        _ = try? ExternalEditorLauncher.open(path: path)
     }
 }

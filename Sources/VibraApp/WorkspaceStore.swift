@@ -205,6 +205,25 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    /// Selects a workspace by its visible left-sidebar position. This mirrors
+    /// cmux's vertical workspace navigation while keeping terminal tabs scoped
+    /// to the selected workspace.
+    func selectWorkspace(at sidebarIndex: Int) {
+        guard sidebarWorkspaces.indices.contains(sidebarIndex) else { return }
+        let workspace = sidebarWorkspaces[sidebarIndex]
+        selectWorkspace(workspace.id, in: workspace.projectID)
+    }
+
+    func selectAdjacentWorkspace(_ offset: Int) {
+        let workspaces = sidebarWorkspaces
+        guard !workspaces.isEmpty, offset != 0 else { return }
+        let currentIndex = workspaces.firstIndex { $0.id == selectedWorkspace?.id } ?? 0
+        let targetIndex = (currentIndex + offset % workspaces.count + workspaces.count)
+            % workspaces.count
+        let target = workspaces[targetIndex]
+        selectWorkspace(target.id, in: target.projectID)
+    }
+
     func selectProject(_ id: UUID) {
         guard projects.contains(where: { $0.id == id }) else { return }
         selectedProjectID = id
@@ -219,6 +238,18 @@ final class WorkspaceStore: ObservableObject {
         projects[projectIndex].selectedWorkspaceID = id
         selectedProjectID = projectID
         refreshSessionVisibility()
+        saveWorkspace()
+    }
+
+    func renameWorkspace(_ id: UUID, in projectID: UUID, to rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.id == id
+              })
+        else { return }
+        projects[projectIndex].workspaces[workspaceIndex].name = name
         saveWorkspace()
     }
 
@@ -595,6 +626,13 @@ final class WorkspaceStore: ObservableObject {
         }
         refreshSessionVisibility()
         saveWorkspace()
+    }
+
+    func closeSelectedWorkspace() {
+        guard let projectID = selectedProjectID, let workspaceID = selectedWorkspace?.id else {
+            return
+        }
+        closeWorkspace(workspaceID, in: projectID)
     }
 
     func saveWorkspace() {

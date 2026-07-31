@@ -6,10 +6,12 @@ import SwiftUI
 enum SettingsKeys {
     static let projectSidebarVisible = "projectSidebarVisible"
     static let terminalSidebarWidth = "terminalSidebarWidth"
+    static let gitSidebarWidth = "gitSidebarWidth"
     static let gitSidebarVisible = "gitSidebarVisible"
     static let cmuxShortcutsEnabled = "cmuxShortcutsEnabled"
     static let gitAutoRefreshEnabled = "gitAutoRefreshEnabled"
     static let gitRefreshDelay = "gitRefreshDelay"
+    static let preferredExternalEditor = "preferredExternalEditor"
     static let tabFolderModelMigrated = "tabFolderModelMigrated"
 
     static let terminalThemeSource = "terminalThemeSource"
@@ -111,6 +113,8 @@ struct AppSettingsView: View {
                     }
                     .disabled(!gitAutoRefreshEnabled)
                 }
+
+                ExternalEditorSettingsSection()
             }
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
@@ -131,6 +135,53 @@ struct AppSettingsView: View {
             codexStatusMessage = "Installed. Start a new Codex session and use /hooks to trust it."
         } catch {
             codexStatusMessage = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - External editor
+
+private struct ExternalEditorSettingsSection: View {
+    @State private var preferredRaw: String = {
+        UserDefaults.standard.string(forKey: SettingsKeys.preferredExternalEditor) ?? ""
+    }()
+    @State private var installed: [InstalledExternalEditor] = ExternalEditorLauncher.installedEditors()
+
+    var body: some View {
+        Section {
+            if installed.isEmpty {
+                Text("No supported editor found. Install Cursor, VS Code, Zed, Windsurf, or Xcode.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker("Preferred editor", selection: $preferredRaw) {
+                    Text("First available").tag("")
+                    ForEach(installed) { editor in
+                        Text(editor.displayName).tag(editor.kind.rawValue)
+                    }
+                }
+                .onChange(of: preferredRaw) { _, newValue in
+                    if newValue.isEmpty {
+                        ExternalEditorLauncher.setPreferredKind(nil)
+                    } else if let kind = KnownExternalEditor(rawValue: newValue) {
+                        ExternalEditorLauncher.setPreferredKind(kind)
+                    }
+                }
+            }
+        } header: {
+            Text("External Editor")
+        } footer: {
+            Text("Used by Open in Editor in the session header, File menu, and context menus.")
+        }
+        .onAppear {
+            installed = ExternalEditorLauncher.installedEditors()
+            preferredRaw = UserDefaults.standard.string(forKey: SettingsKeys.preferredExternalEditor) ?? ""
+            // Drop a stale preference if that app was uninstalled.
+            if !preferredRaw.isEmpty,
+               !installed.contains(where: { $0.kind.rawValue == preferredRaw }) {
+                preferredRaw = ""
+                ExternalEditorLauncher.setPreferredKind(nil)
+            }
         }
     }
 }
@@ -567,7 +618,7 @@ private struct ThemeSwatch: View {
 private struct ShortcutReferenceView: View {
     private let groups: [(String, [(String, String)])] = [
         ("Terminals", [
-            ("New sidebar tab", "⌘N"),
+            ("New workspace", "⌘N"),
             ("New terminal tab", "⌘T"),
             ("New terminal window", "⇧⌘N"),
             ("Open directory in new tab", "⌘O"),
@@ -578,9 +629,17 @@ private struct ShortcutReferenceView: View {
             ("Split down", "⇧⌘D"),
             ("Focus adjacent pane", "⌥⌘←  →  ↑  ↓"),
         ]),
+        ("Workspaces", [
+            ("Close selected workspace", "⇧⌘W"),
+            ("Jump to workspace", "⌘1–9"),
+            ("Previous / next workspace", "⌃⌘[  ]"),
+        ]),
         ("Sidebars", [
             ("Toggle terminals", "⌘B"),
             ("Toggle right sidebar", "⌘R"),
+        ]),
+        ("Project", [
+            ("Open in editor", "⇧⌘E"),
         ]),
     ]
 
@@ -694,6 +753,15 @@ struct KeyboardShortcutMonitor: NSViewRepresentable {
                 case "w": store.closeSelectedSession()
                 case "b": store.toggleTerminalSidebar()
                 case "r": store.toggleGitSidebar()
+                case "1": store.selectWorkspace(at: 0)
+                case "2": store.selectWorkspace(at: 1)
+                case "3": store.selectWorkspace(at: 2)
+                case "4": store.selectWorkspace(at: 3)
+                case "5": store.selectWorkspace(at: 4)
+                case "6": store.selectWorkspace(at: 5)
+                case "7": store.selectWorkspace(at: 6)
+                case "8": store.selectWorkspace(at: 7)
+                case "9": store.selectWorkspace(at: store.tabCount - 1)
                 default: return false
                 }
                 return true
@@ -703,6 +771,16 @@ struct KeyboardShortcutMonitor: NSViewRepresentable {
                 switch key {
                 case "n": newTerminalWindow()
                 case "d": store.splitSelected(.vertical)
+                case "w": store.closeSelectedWorkspace()
+                default: return false
+                }
+                return true
+            }
+
+            if flags == [.command, .control] {
+                switch key {
+                case "[": store.selectAdjacentWorkspace(-1)
+                case "]": store.selectAdjacentWorkspace(1)
                 default: return false
                 }
                 return true

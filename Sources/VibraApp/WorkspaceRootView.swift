@@ -15,46 +15,59 @@ struct WorkspaceRootView: View {
     @StateObject private var store: WorkspaceStore
     @StateObject private var gitModel = GitSidebarModel()
     @State private var terminalSidebarWidth: CGFloat
+    @State private var gitSidebarWidth: CGFloat
     @State private var sidebarDragOriginWidth: CGFloat?
+    @State private var gitSidebarDragOriginWidth: CGFloat?
     private let mode: WorkspaceWindowMode
 
     init(mode: WorkspaceWindowMode = .project) {
         self.mode = mode
         let savedWidth = UserDefaults.standard.double(forKey: SettingsKeys.terminalSidebarWidth)
+        let savedGitWidth = UserDefaults.standard.double(forKey: SettingsKeys.gitSidebarWidth)
         _terminalSidebarWidth = State(initialValue: savedWidth > 0 ? savedWidth : 270)
+        _gitSidebarWidth = State(initialValue: savedGitWidth > 0 ? savedGitWidth : 420)
         _store = StateObject(
             wrappedValue: WorkspaceStore(restoresWorkspace: mode == .project)
         )
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            if store.isTerminalSidebarVisible {
-                HStack(spacing: 0) {
+        ZStack(alignment: .top) {
+            HStack(spacing: VibraLayout.panelGap) {
+                if store.isTerminalSidebarVisible {
                     TerminalSidebar(store: store)
                         .frame(width: terminalSidebarWidth)
-                        .background(chromeTheme.theme.background)
-                    sidebarDivider
+                        .overlay(alignment: .trailing) { sidebarDivider }
+                        .transition(.move(edge: .leading).combined(with: .opacity))
                 }
-                .transition(.move(edge: .leading).combined(with: .opacity))
-            }
-            WorkspaceDetail(
-                store: store,
-                gitModel: gitModel
-            )
-            if store.isGitSidebarVisible,
-               let project = store.selectedProject {
-                HStack(spacing: 0) {
-                    Divider().overlay(chromeTheme.theme.foreground.opacity(0.12))
+                WorkspaceDetail(store: store)
+                    .vibraContentPanel()
+                    .padding(.vertical, VibraLayout.contentInset)
+                if store.isGitSidebarVisible,
+                   let project = store.selectedProject {
                     GitSidebarView(
                         fallbackRoot: project.rootPath,
                         session: project.selectedSession,
                         store: store,
                         model: gitModel
                     )
+                    .frame(width: effectiveGitSidebarWidth)
+                    .vibraContentPanel()
+                    .padding(.vertical, VibraLayout.contentInset)
+                    .overlay(alignment: .leading) { gitSidebarDivider }
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
-                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
+            .padding(.top, VibraLayout.windowChromeHeight)
+            .padding(.leading, store.isTerminalSidebarVisible ? 0 : VibraLayout.contentInset)
+            .padding(.trailing, VibraLayout.contentInset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            SessionHeader(
+                store: store,
+                sidebarWidth: store.isTerminalSidebarVisible ? terminalSidebarWidth : nil
+            )
+            .zIndex(1)
         }
         .animation(
             .spring(response: 0.34, dampingFraction: 0.9),
@@ -64,8 +77,13 @@ struct WorkspaceRootView: View {
             .spring(response: 0.34, dampingFraction: 0.9),
             value: store.isGitSidebarVisible
         )
-        .frame(minWidth: 760, minHeight: 500)
-        .background(chromeTheme.theme.background)
+        .frame(minWidth: store.isGitSidebarVisible ? 980 : 760, minHeight: 500)
+        .background(chromeTheme.theme.recessed)
+        // The titlebar is hidden, but macOS still reserves its height unless
+        // the root view explicitly consumes the top safe-area inset. The
+        // window chrome above then occupies that space instead of leaving a
+        // blank strip over the panels.
+        .ignoresSafeArea(.container, edges: .top)
         .environment(\.appChrome, chromeTheme.theme)
         .background {
             KeyboardShortcutMonitor(
@@ -111,29 +129,72 @@ struct WorkspaceRootView: View {
         }
     }
 
+    private var effectiveGitSidebarWidth: CGFloat {
+        gitSidebarWidth + (gitModel.expandedChangeID == nil ? 0 : 140)
+    }
+
     private var sidebarDivider: some View {
-        Divider()
-            .overlay {
-                Color.clear
-                    .frame(width: 8)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 1)
-                            .onChanged { value in
-                                if sidebarDragOriginWidth == nil {
-                                    sidebarDragOriginWidth = terminalSidebarWidth
-                                }
-                                let origin = sidebarDragOriginWidth ?? terminalSidebarWidth
-                                terminalSidebarWidth = min(max(origin + value.translation.width, 190), 420)
-                            }
-                            .onEnded { _ in
-                                sidebarDragOriginWidth = nil
-                                UserDefaults.standard.set(
-                                    Double(terminalSidebarWidth),
-                                    forKey: SettingsKeys.terminalSidebarWidth
-                                )
-                            }
-                    )
+        Color.clear
+            .frame(width: 10)
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(chromeTheme.theme.quietBorder)
+                    .frame(width: 1)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if sidebarDragOriginWidth == nil {
+                            sidebarDragOriginWidth = terminalSidebarWidth
+                        }
+                        let origin = sidebarDragOriginWidth ?? terminalSidebarWidth
+                        terminalSidebarWidth = min(max(origin + value.translation.width, 208), 380)
+                    }
+                    .onEnded { _ in
+                        sidebarDragOriginWidth = nil
+                        UserDefaults.standard.set(
+                            Double(terminalSidebarWidth),
+                            forKey: SettingsKeys.terminalSidebarWidth
+                        )
+                    }
+            )
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+    }
+
+    private var gitSidebarDivider: some View {
+        Color.clear
+            .frame(width: 10)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if gitSidebarDragOriginWidth == nil {
+                            gitSidebarDragOriginWidth = gitSidebarWidth
+                        }
+                        let origin = gitSidebarDragOriginWidth ?? gitSidebarWidth
+                        gitSidebarWidth = min(max(origin - value.translation.width, 300), 680)
+                    }
+                    .onEnded { _ in
+                        gitSidebarDragOriginWidth = nil
+                        UserDefaults.standard.set(
+                            Double(gitSidebarWidth),
+                            forKey: SettingsKeys.gitSidebarWidth
+                        )
+                    }
+            )
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
             }
     }
 }
@@ -149,10 +210,10 @@ private struct TerminalSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Color.clear.frame(height: VibraLayout.panelHeaderHeight)
-            Divider()
+            sidebarHeader
+            Divider().overlay(chrome.quietBorder)
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
+                LazyVStack(alignment: .leading, spacing: 4) {
                     VStack(spacing: 1) {
                         ForEach(store.ungroupedWorkspaces) { located in
                             SidebarWorkspaceRow(
@@ -163,11 +224,15 @@ private struct TerminalSidebar: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.bottom, 2)
+                    .padding(.bottom, store.workspaceFolders.isEmpty ? 0 : 4)
                     .background {
                         if isUngroupedDropTargeted {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(chrome.selection.opacity(0.09))
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(chrome.workspaceSelection)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .stroke(chrome.strongBorder, lineWidth: 1)
+                                }
                         }
                     }
                     .dropDestination(for: String.self) { items, _ in
@@ -196,7 +261,7 @@ private struct TerminalSidebar: View {
                         )
                     }
                 }
-                .padding(.horizontal, 6)
+                .padding(.horizontal, 5)
                 .padding(.vertical, 6)
                 .animation(
                     .spring(response: 0.3, dampingFraction: 0.88),
@@ -212,7 +277,35 @@ private struct TerminalSidebar: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .background(chrome.background)
+        .background(chrome.panel)
+    }
+
+    private var sidebarHeader: some View {
+        HStack(spacing: 8) {
+            Text("Workspaces")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(chrome.secondaryForeground)
+
+            Spacer(minLength: 0)
+
+            Text("\(store.tabCount)")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(chrome.secondaryForeground.opacity(0.7))
+
+            Button(action: store.newWorkspace) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(chrome.secondaryForeground)
+            .background(chrome.workspaceHover, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .help("New workspace · ⌘N")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: VibraLayout.panelHeaderHeight)
+        .background(chrome.panelHeader)
     }
 
     private var newFolderField: some View {
@@ -234,7 +327,7 @@ private struct TerminalSidebar: View {
         }
         .padding(.horizontal, 9)
         .frame(height: 32)
-        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 6))
+        .background(chrome.workspaceSelection, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func beginCreatingFolder(containing workspaceID: UUID?) {
@@ -269,7 +362,7 @@ private struct SidebarWorkspaceFolder: View {
     @State private var isDropTargeted = false
 
     var body: some View {
-        VStack(spacing: 1) {
+        VStack(spacing: 2) {
             folderHeader
             if isExpanded {
                 ForEach(folder.project.workspaces) { workspace in
@@ -281,17 +374,17 @@ private struct SidebarWorkspaceFolder: View {
                         store: store,
                         createFolder: { createFolder(workspace.id) }
                     )
-                    .padding(.leading, 12)
+                    .padding(.leading, 8)
                 }
             }
         }
         .background {
             if isDropTargeted {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(chrome.selection.opacity(0.1))
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(chrome.workspaceSelection)
                     .overlay {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(chrome.selection.opacity(0.35), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(chrome.strongBorder, lineWidth: 1)
                     }
             }
         }
@@ -308,7 +401,6 @@ private struct SidebarWorkspaceFolder: View {
                 if targeted { isExpanded = true }
             }
         }
-        .scaleEffect(isDropTargeted ? 1.006 : 1, anchor: .center)
     }
 
     private var folderHeader: some View {
@@ -321,8 +413,8 @@ private struct SidebarWorkspaceFolder: View {
             .buttonStyle(.plain)
 
             Image(systemName: isExpanded ? "folder.fill" : "folder")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(chrome.secondaryForeground)
 
             if isRenaming {
                 TextField("Folder name", text: $name)
@@ -331,18 +423,18 @@ private struct SidebarWorkspaceFolder: View {
                     .onSubmit(commitRename)
             } else {
                 Text(folder.project.name)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10.5, weight: .semibold))
                     .lineLimit(1)
             }
 
             Spacer(minLength: 4)
             Text("\(folder.project.workspaces.count)")
-                .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(chrome.secondaryForeground.opacity(0.72))
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 7)
-        .frame(height: 35)
+        .foregroundStyle(chrome.secondaryForeground)
+        .padding(.horizontal, 8)
+        .frame(height: 27)
         .contentShape(Rectangle())
         .onTapGesture { if !isRenaming { isExpanded.toggle() } }
         .contextMenu {
@@ -376,6 +468,9 @@ private struct SidebarWorkspaceRow: View {
     @ObservedObject private var session: TerminalSession
     @State private var hovering = false
     @State private var branchName: String?
+    @State private var isRenaming = false
+    @State private var renameDraft = ""
+    @FocusState private var isRenameFocused: Bool
 
     init(
         located: LocatedTerminalWorkspace,
@@ -392,13 +487,26 @@ private struct SidebarWorkspaceRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
+            HStack(spacing: 7) {
                 SidebarActivityGlyph(activity: session.agentActivity, selected: selected)
                     .frame(width: 14, height: 14)
-                Text(title)
-                    .font(.system(size: 12.25, weight: .semibold))
-                    .foregroundStyle(selected ? Color.white : .primary)
-                    .lineLimit(1)
+
+                if isRenaming {
+                    TextField("Workspace name", text: $renameDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.25, weight: .semibold))
+                        .focused($isRenameFocused)
+                        .onSubmit(commitRename)
+                        .onExitCommand(perform: cancelRename)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Text(title)
+                        .font(.system(size: 12.25, weight: .semibold))
+                        .foregroundStyle(chrome.foreground.opacity(selected ? 1 : 0.92))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 Spacer(minLength: 0)
                 Button {
                     store.closeWorkspace(located.id, in: located.projectID)
@@ -408,38 +516,53 @@ private struct SidebarWorkspaceRow: View {
                         .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
-                .opacity(hovering ? 0.78 : 0)
+                .foregroundStyle(chrome.secondaryForeground)
+                .opacity(hovering && !isRenaming ? 0.78 : 0)
             }
 
             if let activitySummary {
                 Text(activitySummary)
-                    .font(.system(size: 10.25, weight: .regular))
-                    .foregroundStyle(selected ? Color.white.opacity(0.82) : .secondary)
+                    .font(.system(size: 10.25, weight: .medium))
+                    .foregroundStyle(chrome.secondaryForeground.opacity(selected ? 0.95 : 0.82))
                     .lineLimit(1)
             }
 
             Text(metadataLine)
-                .font(.system(size: 9.25, weight: .medium, design: .monospaced))
-                .foregroundStyle(
-                    selected ? Color.white.opacity(0.68) : Color.secondary.opacity(0.65)
-                )
+                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(chrome.secondaryForeground.opacity(selected ? 0.92 : 0.72))
                 .lineLimit(1)
         }
         .padding(.leading, 10)
         .padding(.trailing, 7)
-        .padding(.vertical, 8)
-        .frame(minHeight: activitySummary == nil ? 48 : 63)
+        .padding(.vertical, activitySummary == nil ? 6 : 7)
+        .frame(minHeight: activitySummary == nil ? 45 : 59)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(
                     selected
-                        ? chrome.selection
-                        : hovering ? Color.primary.opacity(0.045) : .clear
+                        ? chrome.workspaceSelection
+                        : hovering ? chrome.workspaceHover : .clear
                 )
+                .overlay(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(chrome.accent)
+                        .frame(width: 2)
+                        .padding(.vertical, 8)
+                        .opacity(selected ? 0.64 : 0)
+                }
         }
-        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-        .onTapGesture { store.selectWorkspace(located.id, in: located.projectID) }
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .onTapGesture {
+            if !isRenaming {
+                store.selectWorkspace(located.id, in: located.projectID)
+            }
+        }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                beginRename()
+            }
+        )
         .onHover { hovering = $0 }
         .task(id: session.workingDirectory) {
             let directory = session.workingDirectory
@@ -455,7 +578,9 @@ private struct SidebarWorkspaceRow: View {
             )
         }
         .contextMenu {
+            Button("Rename workspace", action: beginRename)
             Button("New Folder with This Tab…", action: createFolder)
+            openInEditorContextMenuItems(path: session.workingDirectory)
             Divider()
             if !currentFolderName.isEmpty {
                 Button("Remove from folder") {
@@ -472,7 +597,7 @@ private struct SidebarWorkspaceRow: View {
                 }
             }
             Divider()
-            Button("Close tab", role: .destructive) {
+            Button("Close workspace", role: .destructive) {
                 store.closeWorkspace(located.id, in: located.projectID)
             }
         }
@@ -487,8 +612,10 @@ private struct SidebarWorkspaceRow: View {
     }
 
     private var title: String {
+        let customName = located.workspace.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !customName.isEmpty { return customName }
         let directoryName = URL(fileURLWithPath: session.workingDirectory).lastPathComponent
-        return directoryName.isEmpty ? located.workspace.name : directoryName
+        return directoryName.isEmpty ? "Terminal" : directoryName
     }
 
     private var abbreviatedPath: String {
@@ -501,12 +628,12 @@ private struct SidebarWorkspaceRow: View {
 
     private var terminalTabCountLabel: String {
         let count = located.workspace.tabs.count
-        return "\(count) \(count == 1 ? "surface" : "surfaces")"
+        return count > 1 ? "\(count) surfaces" : ""
     }
 
     private var metadataLine: String {
         [branchName, abbreviatedPath, terminalTabCountLabel]
-            .compactMap { value in
+            .compactMap { value -> String? in
                 guard let value, !value.isEmpty else { return nil }
                 return value
             }
@@ -530,6 +657,24 @@ private struct SidebarWorkspaceRow: View {
         case .finished(_, let succeeded, _):
             return succeeded == false ? "Command failed" : "Agent finished"
         }
+    }
+
+    private func beginRename() {
+        store.selectWorkspace(located.id, in: located.projectID)
+        renameDraft = title
+        isRenaming = true
+        DispatchQueue.main.async { isRenameFocused = true }
+    }
+
+    private func commitRename() {
+        store.renameWorkspace(located.id, in: located.projectID, to: renameDraft)
+        cancelRename()
+    }
+
+    private func cancelRename() {
+        renameDraft = ""
+        isRenameFocused = false
+        isRenaming = false
     }
 }
 
@@ -573,48 +718,101 @@ private struct SidebarActivityGlyph: View {
         switch activity {
         case .idle:
             Circle()
-                .fill(selected ? Color.white.opacity(0.58) : Color.secondary.opacity(0.55))
+                .fill(chrome.secondaryForeground.opacity(selected ? 0.86 : 0.68))
                 .frame(width: 5, height: 5)
         case .ready:
             Circle()
-                .fill(selected ? Color.white.opacity(0.78) : Color.secondary)
+                .fill(chrome.foreground.opacity(selected ? 0.8 : 0.6))
                 .frame(width: 6, height: 6)
         case .running:
             Circle()
-                .fill(selected ? Color.white : Color.green)
+                .fill(chrome.accent)
                 .frame(width: 6, height: 6)
         case .needsAttention:
             Circle()
-                .fill(selected ? Color.white : Color.blue)
+                .fill(Color.orange)
                 .frame(width: 13, height: 13)
                 .overlay {
                     Text("1")
                         .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .foregroundStyle(selected ? chrome.selection : Color.white)
+                        .foregroundStyle(chrome.recessed)
                 }
         case .finished(_, let succeeded, _):
             Image(systemName: succeeded == false ? "xmark.circle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(selected ? Color.white : succeeded == false ? .red : .green)
+                .foregroundStyle(succeeded == false ? .red : .green)
         }
     }
 }
 
 private struct WorkspaceDetail: View {
     @ObservedObject var store: WorkspaceStore
-    @ObservedObject var gitModel: GitSidebarModel
     @Environment(\.appChrome) private var chrome
 
     var body: some View {
         VStack(spacing: 0) {
-            SessionHeader(
-                store: store,
-                gitModel: gitModel
-            )
-            Divider()
+            terminalHeader
+
+            Rectangle()
+                .fill(chrome.quietBorder)
+                .frame(height: 1)
+
             terminalCanvas
         }
-        .background(chrome.background)
+        .background(chrome.panel)
+    }
+
+    private var terminalHeader: some View {
+        HStack(spacing: 8) {
+            terminalTabs
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: VibraLayout.panelHeaderHeight)
+        .background(chrome.panelHeader)
+    }
+
+    @ViewBuilder
+    private var terminalTabs: some View {
+        if let project = store.selectedProject,
+           let workspace = project.selectedWorkspace {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 3) {
+                    ForEach(Array(workspace.tabs.enumerated()), id: \.element.id) {
+                        index, tab in
+                        horizontalTab(tab, index: index, workspace: workspace, project: project)
+                    }
+
+                    WindowChromeButton(
+                        systemImage: "plus",
+                        help: "New terminal tab · ⌘T",
+                        action: store.newSession
+                    )
+                }
+                .padding(.vertical, 5)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+        }
+    }
+
+    @ViewBuilder
+    private func horizontalTab(
+        _ tab: TerminalTab,
+        index: Int,
+        workspace: TerminalWorkspace,
+        project: VibraProject
+    ) -> some View {
+        if let session = tab.selectedSession ?? tab.sessions.first {
+            HeaderHorizontalTab(
+                session: session,
+                fallbackTitle: workspace.tabs.count == 1 ? "Terminal" : "Terminal \(index + 1)",
+                paneCount: tab.sessions.count,
+                selected: workspace.selectedTabID == tab.id,
+                select: { store.selectTab(tab.id, in: project.id) },
+                close: { store.closeTab(tab.id, in: project.id) }
+            )
+        }
     }
 
     @ViewBuilder
@@ -635,13 +833,14 @@ private struct WorkspaceDetail: View {
             )
         } else {
             TerminalCanvas(store: store)
-            .padding(2)
+                .padding((store.selectedTab?.sessions.count ?? 1) > 1 ? 3 : 0)
         }
     }
 }
 
 private struct TerminalCanvas: View {
     @ObservedObject var store: WorkspaceStore
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         ZStack {
@@ -650,6 +849,7 @@ private struct TerminalCanvas: View {
                 splitLayout(project)
             }
         }
+        .background(chrome.recessed)
     }
 
     private var hiddenSessions: some View {
@@ -676,6 +876,7 @@ private struct TerminalCanvas: View {
                 layout: tab.layout,
                 sessions: tab.sessions,
                 selectedSessionID: tab.selectedSessionID,
+                usesPaneChrome: tab.sessions.count > 1,
                 focus: { store.focusSession($0, in: project.id) }
             )
         }
@@ -686,7 +887,9 @@ private struct PaneTreeView: View {
     let layout: PaneLayoutSnapshot
     let sessions: [TerminalSession]
     let selectedSessionID: UUID?
+    let usesPaneChrome: Bool
     let focus: (UUID) -> Void
+    @Environment(\.appChrome) private var chrome
 
     var body: some View {
         content(layout)
@@ -702,6 +905,7 @@ private struct PaneTreeView: View {
                 TerminalPane(
                     session: session,
                     focused: session.id == selectedSessionID,
+                    framed: usesPaneChrome,
                     focus: { focus(session.id) }
                 )
                 .id(id)
@@ -714,16 +918,18 @@ private struct PaneTreeView: View {
                             layout: first,
                             sessions: sessions,
                             selectedSessionID: selectedSessionID,
+                            usesPaneChrome: usesPaneChrome,
                             focus: focus
                         )
                         PaneTreeView(
                             layout: second,
                             sessions: sessions,
                             selectedSessionID: selectedSessionID,
+                            usesPaneChrome: usesPaneChrome,
                             focus: focus
                         )
                     }
-                    .background(Color.primary.opacity(0.18))
+                    .background(chrome.quietBorder)
                 )
             }
             return AnyView(
@@ -732,16 +938,18 @@ private struct PaneTreeView: View {
                         layout: first,
                         sessions: sessions,
                         selectedSessionID: selectedSessionID,
+                        usesPaneChrome: usesPaneChrome,
                         focus: focus
                     )
                     PaneTreeView(
                         layout: second,
                         sessions: sessions,
                         selectedSessionID: selectedSessionID,
+                        usesPaneChrome: usesPaneChrome,
                         focus: focus
                     )
                 }
-                .background(Color.primary.opacity(0.18))
+                .background(chrome.quietBorder)
             )
         }
     }
@@ -750,17 +958,43 @@ private struct PaneTreeView: View {
 private struct TerminalPane: View {
     let session: TerminalSession
     let focused: Bool
+    let framed: Bool
     let focus: () -> Void
     @ObservedObject private var state: TerminalViewState
+    @Environment(\.appChrome) private var chrome
 
-    init(session: TerminalSession, focused: Bool, focus: @escaping () -> Void) {
+    init(
+        session: TerminalSession,
+        focused: Bool,
+        framed: Bool,
+        focus: @escaping () -> Void
+    ) {
         self.session = session
         self.focused = focused
+        self.framed = framed
         self.focus = focus
         _state = ObservedObject(wrappedValue: session.state)
     }
 
     var body: some View {
+        Group {
+            if framed {
+                terminalSurface
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(
+                                focused ? chrome.accent.opacity(0.62) : chrome.quietBorder,
+                                lineWidth: focused ? 1.25 : 1
+                            )
+                    }
+            } else {
+                terminalSurface
+            }
+        }
+    }
+
+    private var terminalSurface: some View {
         TerminalSurfaceHost(session: session, isVisible: true, isFocused: focused)
             .onChange(of: state.isFocused) { _, isFocused in
                 if isFocused && !focused { focus() }
@@ -770,78 +1004,101 @@ private struct TerminalPane: View {
 
 private struct SessionHeader: View {
     @ObservedObject var store: WorkspaceStore
-    @ObservedObject var gitModel: GitSidebarModel
     @Environment(\.appChrome) private var chrome
+    let sidebarWidth: CGFloat?
 
     var body: some View {
-        HStack(spacing: 8) {
-            if let project = store.selectedProject,
-               let workspace = project.selectedWorkspace {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 3) {
-                        ForEach(Array(workspace.tabs.enumerated()), id: \.element.id) {
-                            index, tab in
-                            horizontalTab(tab, index: index, workspace: workspace, project: project)
-                        }
+        HStack(spacing: 0) {
+            windowControls
+                .frame(
+                    width: sidebarWidth ?? VibraLayout.collapsedChromeControlsWidth,
+                    alignment: .leading
+                )
+                .overlay(alignment: .trailing) {
+                    Rectangle()
+                        .fill(chrome.quietBorder)
+                        .frame(width: 1)
+                }
 
-                        Button(action: store.newSession) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 9, weight: .semibold))
-                                .frame(width: 24, height: 24)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .background(
-                            Color.primary.opacity(0.045),
-                            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        )
-                        .help("New terminal tab · ⌘T")
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
             Spacer(minLength: 0)
-            if store.selectedProject != nil {
-                Button {
-                    store.showGitSidebar()
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("+\(gitModel.additions)").foregroundStyle(.green)
-                        Text("−\(gitModel.deletions)").foregroundStyle(.red)
-                    }
-                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    .padding(.horizontal, 7)
-                    .frame(height: 24)
-                    .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 6))
+
+            HStack(spacing: 8) {
+                if let project = store.selectedProject {
+                    OpenInEditorButton(path: project.rootPath, compact: true)
                 }
-                .buttonStyle(.plain)
-                .help("Open Git Changes · Toggle sidebar with ⌘R")
+
+                WindowChromeButton(
+                    systemImage: "sidebar.right",
+                    help: "Toggle Git Sidebar · ⌘R",
+                    disabled: store.selectedProject == nil,
+                    action: store.toggleGitSidebar
+                )
             }
+            .padding(.trailing, 10)
         }
-        .padding(.trailing, 10)
-        .padding(.leading, store.isTerminalSidebarVisible ? 9 : 78)
-        .frame(height: VibraLayout.panelHeaderHeight)
-        .background(chrome.elevated)
+        .frame(height: VibraLayout.windowChromeHeight)
+        .background(chrome.panelHeader)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(chrome.quietBorder)
+                .frame(height: 1)
+        }
     }
 
-    @ViewBuilder
-    private func horizontalTab(
-        _ tab: TerminalTab,
-        index: Int,
-        workspace: TerminalWorkspace,
-        project: VibraProject
-    ) -> some View {
-        if let session = tab.selectedSession ?? tab.sessions.first {
-            HeaderHorizontalTab(
-                session: session,
-                fallbackTitle: workspace.tabs.count == 1 ? "Terminal" : "Terminal \(index + 1)",
-                paneCount: tab.sessions.count,
-                selected: workspace.selectedTabID == tab.id,
-                select: { store.selectTab(tab.id, in: project.id) },
-                close: { store.closeTab(tab.id, in: project.id) }
+    private var windowControls: some View {
+        HStack(spacing: 2) {
+            WindowChromeButton(
+                systemImage: store.isTerminalSidebarVisible ? "sidebar.left" : "sidebar.right",
+                help: "Toggle Terminal Sidebar · ⌘B",
+                action: store.toggleTerminalSidebar
             )
+
+            WindowChromeButton(
+                systemImage: "chevron.left",
+                help: "Previous workspace · ⌃⌘[",
+                disabled: store.tabCount < 2,
+                action: { store.selectAdjacentWorkspace(-1) }
+            )
+
+            WindowChromeButton(
+                systemImage: "chevron.right",
+                help: "Next workspace · ⌃⌘]",
+                disabled: store.tabCount < 2,
+                action: { store.selectAdjacentWorkspace(1) }
+            )
+
+            Spacer(minLength: 0)
         }
+        .padding(.leading, 76)
+        .padding(.trailing, 8)
+    }
+}
+
+private struct WindowChromeButton: View {
+    let systemImage: String
+    let help: String
+    var disabled = false
+    let action: () -> Void
+    @Environment(\.appChrome) private var chrome
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(chrome.secondaryForeground.opacity(disabled ? 0.35 : 0.9))
+        .background(
+            hovering && !disabled ? chrome.workspaceHover : .clear,
+            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+        )
+        .disabled(disabled)
+        .help(help)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 
@@ -878,6 +1135,7 @@ private struct HeaderHorizontalTab: View {
             HeaderTabActivityGlyph(activity: session.agentActivity, selected: selected)
             Text(title)
                 .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                .foregroundStyle(chrome.foreground.opacity(selected ? 1 : 0.78))
                 .lineLimit(1)
                 .frame(maxWidth: 145)
             if paneCount > 1 {
@@ -892,23 +1150,21 @@ private struct HeaderHorizontalTab: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .opacity(hovering || selected ? 0.72 : 0)
+            .opacity(hovering ? 0.72 : 0)
         }
         .padding(.leading, 9)
         .padding(.trailing, 3)
         .frame(minWidth: 88)
         .frame(height: 28)
         .background {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(selected ? Color.primary.opacity(0.085) : hovering ? Color.primary.opacity(0.04) : .clear)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(selected ? chrome.workspaceSelection : hovering ? chrome.workspaceHover : .clear)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(selected ? chrome.quietBorder : .clear, lineWidth: 1)
+                }
         }
-        .overlay(alignment: .bottom) {
-            Capsule()
-                .fill(selected ? chrome.accent : .clear)
-                .frame(height: 2)
-                .padding(.horizontal, 8)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .onTapGesture(perform: select)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
@@ -979,6 +1235,39 @@ private struct EmptyWorkspaceView: View {
     }
 }
 
+private struct VibraContentPanelModifier: ViewModifier {
+    @Environment(\.appChrome) private var chrome
+
+    func body(content: Content) -> some View {
+        content
+            .background(chrome.panel)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: VibraLayout.contentCornerRadius,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: VibraLayout.contentCornerRadius,
+                    style: .continuous
+                )
+                .strokeBorder(chrome.quietBorder, lineWidth: 1)
+            }
+    }
+}
+
+private extension View {
+    func vibraContentPanel() -> some View {
+        modifier(VibraContentPanelModifier())
+    }
+}
+
 enum VibraLayout {
     static let panelHeaderHeight: CGFloat = 40
+    static let windowChromeHeight: CGFloat = 32
+    static let collapsedChromeControlsWidth: CGFloat = 158
+    static let contentCornerRadius: CGFloat = 10
+    static let contentInset: CGFloat = 8
+    static let panelGap: CGFloat = 8
 }

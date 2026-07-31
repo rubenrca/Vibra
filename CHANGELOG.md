@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Open the current project or a selected file in an external IDE (Cursor, VS Code, Zed, Windsurf, Xcode, and others).
+- Prefer a default editor in Settings → General; reach it from the session header, File menu (⇧⌘E), and context menus.
+
 ## 0.2.3 — 2026-07-27
 
 - Unify app chrome and terminal under one surface: Ghostty config by default (Match Ghostty), with Catalog and Vibra as options.

@@ -123,12 +123,15 @@ The first build downloads the prebuilt GhosttyKit binary used by
 
 ## Shortcuts
 
-- `⌘N`: new tab in the active terminal directory
+- `⌘N`: new workspace in the active terminal directory
 - `⌘T`: new terminal tab inside the selected tab
 - `⇧⌘N`: new terminal window
 - `⌘O`: open a directory in a new tab
 - `⌘W`: close the selected terminal
-- `⇧⌘G`: toggle the Git sidebar
+- `⇧⌘W`: close the selected workspace
+- `⌘1`–`⌘8`: jump to a workspace; `⌘9` jumps to the last one
+- `⌃⌘[` / `⌃⌘]`: previous / next workspace
+- `⌘R`: toggle the Git sidebar
 
 ## Principles
 

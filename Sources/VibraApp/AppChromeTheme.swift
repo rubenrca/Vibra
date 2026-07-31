@@ -26,6 +26,42 @@ struct AppChromeTheme: Equatable, Sendable, Identifiable {
             : background.mix(with: .black, amount: 0.04)
     }
 
+    /// Quiet, theme-derived surfaces used to separate the application's chrome
+    /// without imposing a second visual theme on top of Ghostty.
+    var panel: Color {
+        isDark
+            ? background.mix(with: .white, amount: 0.022)
+            : background.mix(with: .black, amount: 0.018)
+    }
+
+    var panelHeader: Color {
+        isDark
+            ? background.mix(with: .white, amount: 0.045)
+            : background.mix(with: .black, amount: 0.035)
+    }
+
+    var recessed: Color {
+        isDark
+            ? background.mix(with: .black, amount: 0.14)
+            : background.mix(with: .black, amount: 0.055)
+    }
+
+    var quietBorder: Color {
+        foreground.opacity(isDark ? 0.105 : 0.14)
+    }
+
+    var strongBorder: Color {
+        foreground.opacity(isDark ? 0.17 : 0.2)
+    }
+
+    var workspaceSelection: Color {
+        foreground.opacity(isDark ? 0.105 : 0.085)
+    }
+
+    var workspaceHover: Color {
+        foreground.opacity(isDark ? 0.052 : 0.04)
+    }
+
     var secondaryForeground: Color {
         foreground.opacity(isDark ? 0.62 : 0.58)
     }

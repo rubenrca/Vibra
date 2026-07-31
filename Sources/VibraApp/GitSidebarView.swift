@@ -13,11 +13,10 @@ struct GitSidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(chrome.foreground.opacity(0.12))
+            Divider().overlay(chrome.quietBorder)
             content
         }
-        .frame(width: model.expandedChangeID == nil ? 320 : 540)
-        .background(chrome.background)
+        .background(chrome.panel)
         .animation(.easeOut(duration: 0.2), value: model.expandedChangeID)
         .onAppear { syncFileTree() }
         .onChange(of: model.repositoryRoot) { _, _ in syncFileTree() }
@@ -70,6 +69,7 @@ struct GitSidebarView: View {
         }
         .padding(.horizontal, 11)
         .frame(height: VibraLayout.panelHeaderHeight)
+        .background(chrome.panelHeader)
     }
 
     @ViewBuilder
@@ -90,7 +90,7 @@ struct GitSidebarView: View {
             )
         } else {
             ScrollView {
-                LazyVStack(spacing: 8) {
+                LazyVStack(spacing: 0) {
                     ForEach(model.changes) { change in
                         InlineGitDiffCard(
                             change: change,
@@ -99,7 +99,6 @@ struct GitSidebarView: View {
                         )
                     }
                 }
-                .padding(8)
             }
         }
     }
@@ -158,8 +157,8 @@ struct GitSidebarView: View {
                 .font(.system(size: 9.5, weight: .semibold))
                 .frame(width: 23, height: 23)
                 .background(
-                    selected ? Color.primary.opacity(0.09) : .clear,
-                    in: RoundedRectangle(cornerRadius: 5)
+                    selected ? chrome.workspaceSelection : .clear,
+                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
                 )
                 .contentShape(Rectangle())
         }
@@ -180,6 +179,7 @@ private struct InlineGitDiffCard: View {
     let repositoryRoot: String
     @ObservedObject var model: GitSidebarModel
     @State private var hovering = false
+    @Environment(\.appChrome) private var chrome
 
     private var expanded: Bool { model.expandedChangeID == change.id }
 
@@ -196,15 +196,15 @@ private struct InlineGitDiffCard: View {
                     minimumCodeWidth: 680,
                     minimumHeight: 110
                 )
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.48))
+                .background(chrome.recessed)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .background(Color.primary.opacity(expanded ? 0.052 : hovering ? 0.038 : 0.024))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.primary.opacity(expanded ? 0.15 : 0.09), lineWidth: 1)
+        .background(expanded ? chrome.workspaceSelection.opacity(0.55) : hovering ? chrome.workspaceHover : .clear)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(chrome.quietBorder)
+                .frame(height: 1)
         }
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.16), value: expanded)
@@ -224,6 +224,9 @@ private struct InlineGitDiffCard: View {
             }
             Divider()
             Button("Open Large Diff") { model.presentModal(change) }
+            openInEditorContextMenuItems(
+                path: (repositoryRoot as NSString).appendingPathComponent(change.path)
+            )
             Button("Reveal in Finder") { reveal() }
         }
     }
@@ -247,8 +250,8 @@ private struct InlineGitDiffCard: View {
                     Spacer(minLength: 6)
                     changeStats
                 }
-                .padding(.leading, 11)
-                .frame(maxWidth: .infinity, minHeight: 46)
+                .padding(.leading, 10)
+                .frame(maxWidth: .infinity, minHeight: 42)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -429,6 +432,7 @@ private struct RepositoryFileNodeView: View {
             }
             .buttonStyle(.plain)
             .contextMenu {
+                openInEditorContextMenuItems(path: node.path)
                 Button("Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([
                         URL(fileURLWithPath: node.path)
@@ -673,6 +677,9 @@ private struct GitChangeTreeNodeView: View {
                 }
             }
             Divider()
+            openInEditorContextMenuItems(
+                path: (repositoryRoot as NSString).appendingPathComponent(change.path)
+            )
             Button("Reveal in Finder") { reveal(change) }
         }
     }
@@ -846,6 +853,11 @@ struct GitDiffModalView: View {
                 .padding(.horizontal, 10)
                 .frame(height: 28)
                 .background(chrome.foreground.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                OpenInEditorButton(
+                    path: (model.repositoryRoot as NSString)
+                        .appendingPathComponent(change.path),
+                    compact: true
+                )
                 Button {
                     let path = (model.repositoryRoot as NSString)
                         .appendingPathComponent(change.path)
