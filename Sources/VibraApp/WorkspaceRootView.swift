@@ -16,8 +16,8 @@ struct WorkspaceRootView: View {
     @StateObject private var gitModel = GitSidebarModel()
     @State private var terminalSidebarWidth: CGFloat
     @State private var gitSidebarWidth: CGFloat
-    @State private var sidebarDragOriginWidth: CGFloat?
-    @State private var gitSidebarDragOriginWidth: CGFloat?
+    @GestureState private var sidebarDragTranslation: CGFloat = 0
+    @GestureState private var gitSidebarDragTranslation: CGFloat = 0
     private let mode: WorkspaceWindowMode
 
     init(mode: WorkspaceWindowMode = .project) {
@@ -36,7 +36,9 @@ struct WorkspaceRootView: View {
             HStack(spacing: VibraLayout.panelGap) {
                 if store.isTerminalSidebarVisible {
                     TerminalSidebar(store: store)
-                        .frame(width: terminalSidebarWidth)
+                        .frame(width: effectiveTerminalSidebarWidth)
+                        .vibraContentPanel()
+                        .padding(.vertical, VibraLayout.contentInset)
                         .overlay(alignment: .trailing) { sidebarDivider }
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
@@ -59,13 +61,15 @@ struct WorkspaceRootView: View {
                 }
             }
             .padding(.top, VibraLayout.windowChromeHeight)
-            .padding(.leading, store.isTerminalSidebarVisible ? 0 : VibraLayout.contentInset)
+            .padding(.leading, VibraLayout.contentInset)
             .padding(.trailing, VibraLayout.contentInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             SessionHeader(
                 store: store,
-                sidebarWidth: store.isTerminalSidebarVisible ? terminalSidebarWidth : nil
+                sidebarWidth: store.isTerminalSidebarVisible
+                    ? effectiveTerminalSidebarWidth + VibraLayout.contentInset
+                    : nil
             )
             .zIndex(1)
         }
@@ -130,31 +134,31 @@ struct WorkspaceRootView: View {
     }
 
     private var effectiveGitSidebarWidth: CGFloat {
-        gitSidebarWidth + (gitModel.expandedChangeID == nil ? 0 : 140)
+        clampedGitSidebarWidth(gitSidebarWidth - gitSidebarDragTranslation)
+            + (gitModel.expandedChangeID == nil ? 0 : 140)
+    }
+
+    private var effectiveTerminalSidebarWidth: CGFloat {
+        clampedTerminalSidebarWidth(terminalSidebarWidth + sidebarDragTranslation)
     }
 
     private var sidebarDivider: some View {
         Color.clear
             .frame(width: 10)
-            .overlay(alignment: .trailing) {
-                Rectangle()
-                    .fill(chromeTheme.theme.quietBorder)
-                    .frame(width: 1)
-            }
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        if sidebarDragOriginWidth == nil {
-                            sidebarDragOriginWidth = terminalSidebarWidth
-                        }
-                        let origin = sidebarDragOriginWidth ?? terminalSidebarWidth
-                        terminalSidebarWidth = min(max(origin + value.translation.width, 208), 380)
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .updating($sidebarDragTranslation) { value, translation, transaction in
+                        transaction.animation = nil
+                        translation = value.translation.width
                     }
-                    .onEnded { _ in
-                        sidebarDragOriginWidth = nil
+                    .onEnded { value in
+                        let width = clampedTerminalSidebarWidth(
+                            terminalSidebarWidth + value.translation.width
+                        )
+                        terminalSidebarWidth = width
                         UserDefaults.standard.set(
-                            Double(terminalSidebarWidth),
+                            Double(width),
                             forKey: SettingsKeys.terminalSidebarWidth
                         )
                     }
@@ -173,18 +177,18 @@ struct WorkspaceRootView: View {
             .frame(width: 10)
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        if gitSidebarDragOriginWidth == nil {
-                            gitSidebarDragOriginWidth = gitSidebarWidth
-                        }
-                        let origin = gitSidebarDragOriginWidth ?? gitSidebarWidth
-                        gitSidebarWidth = min(max(origin - value.translation.width, 300), 680)
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .updating($gitSidebarDragTranslation) { value, translation, transaction in
+                        transaction.animation = nil
+                        translation = value.translation.width
                     }
-                    .onEnded { _ in
-                        gitSidebarDragOriginWidth = nil
+                    .onEnded { value in
+                        let width = clampedGitSidebarWidth(
+                            gitSidebarWidth - value.translation.width
+                        )
+                        gitSidebarWidth = width
                         UserDefaults.standard.set(
-                            Double(gitSidebarWidth),
+                            Double(width),
                             forKey: SettingsKeys.gitSidebarWidth
                         )
                     }
@@ -196,6 +200,14 @@ struct WorkspaceRootView: View {
                     NSCursor.pop()
                 }
             }
+    }
+
+    private func clampedTerminalSidebarWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, 208), 380)
+    }
+
+    private func clampedGitSidebarWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, 300), 680)
     }
 }
 
@@ -1014,11 +1026,6 @@ private struct SessionHeader: View {
                     width: sidebarWidth ?? VibraLayout.collapsedChromeControlsWidth,
                     alignment: .leading
                 )
-                .overlay(alignment: .trailing) {
-                    Rectangle()
-                        .fill(chrome.quietBorder)
-                        .frame(width: 1)
-                }
 
             Spacer(minLength: 0)
 
