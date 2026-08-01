@@ -144,6 +144,35 @@ import Testing
     #expect(restored == project)
 }
 
+@Test func workspaceTitleSourceSurvivesSnapshotRoundTrip() throws {
+    let session = SessionSnapshot(title: "Terminal", workingDirectory: "/tmp")
+    let tab = TabSnapshot(
+        sessions: [session],
+        selectedSessionID: session.id,
+        layout: .terminal(session.id)
+    )
+    let workspace = TerminalWorkspaceSnapshot(
+        name: "Nueva tarea",
+        titleSource: .automatic,
+        tabs: [tab],
+        selectedTabID: tab.id
+    )
+    let project = ProjectSnapshot(
+        name: "",
+        rootPath: "/tmp",
+        sessions: [session],
+        selectedSessionID: session.id,
+        workspaces: [workspace],
+        selectedWorkspaceID: workspace.id
+    )
+
+    let snapshot = WorkspaceSnapshot(projects: [project], selectedProjectID: project.id)
+    let data = try JSONEncoder().encode(snapshot)
+    let restored = try JSONDecoder().decode(WorkspaceSnapshot.self, from: data)
+
+    #expect(restored.projects.first?.workspaces?.first?.titleSource == .automatic)
+}
+
 @Test func verticalTabsRetainTheirHorizontalTabsAcrossRestoration() throws {
     let looseSession = SessionSnapshot(workingDirectory: "/tmp")
     let groupedSession = SessionSnapshot(workingDirectory: "/tmp/repo")

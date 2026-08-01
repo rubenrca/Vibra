@@ -57,6 +57,7 @@ frameworks_dir="$contents_dir/Frameworks"
 plist="$contents_dir/Info.plist"
 entitlements="$repo_root/Resources/Vibra.entitlements"
 icon_source="$repo_root/Resources/AppIcon.png"
+agent_marks_source="$repo_root/Sources/VibraApp/Resources/AgentMarks"
 iconset_dir="$repo_root/.build/Vibra.iconset"
 icon_file="$resources_dir/Vibra.icns"
 dmg_path="$repo_root/dist/Vibra.dmg"
@@ -97,11 +98,13 @@ fi
 
 binaries=()
 sparkle_source=
+resource_bundle_source=
 for arch in $archs; do
   print "building Vibra ($configuration, $arch)"
   swift build --package-path "$repo_root" -c "$configuration" --arch "$arch" --product Vibra
   bin_path=$(swift build --package-path "$repo_root" -c "$configuration" --arch "$arch" --show-bin-path)
   binaries+=("$bin_path/Vibra")
+  resource_bundle_source="$bin_path/Vibra_VibraApp.bundle"
   # Every slice gets the same framework: the XCFramework SwiftPM downloads
   # already carries a fat arm64+x86_64 Sparkle, so there is nothing to merge.
   sparkle_source="$bin_path/Sparkle.framework"
@@ -114,6 +117,12 @@ fi
 
 rm -rf "$app_dir"
 mkdir -p "$macos_dir" "$resources_dir" "$frameworks_dir"
+if [[ -d $resource_bundle_source ]]; then
+  ditto "$resource_bundle_source" "$resources_dir/Vibra_VibraApp.bundle"
+elif [[ -d $agent_marks_source ]]; then
+  # This supports package builds made before SwiftPM resource bundles existed.
+  ditto "$agent_marks_source" "$resources_dir/AgentMarks"
+fi
 
 if (( ${#binaries} > 1 )); then
   lipo -create "${binaries[@]}" -output "$macos_dir/Vibra"

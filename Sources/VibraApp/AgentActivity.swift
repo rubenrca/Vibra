@@ -95,6 +95,7 @@ enum AgentActivity: Equatable, Sendable {
 struct ForegroundProcessSnapshot: Sendable {
     let commandLine: String
     let lifecycle: AgentLifecycleSnapshot?
+    let taskTitle: String?
 }
 
 enum AgentProcessProbe {
@@ -128,19 +129,21 @@ enum AgentProcessProbe {
             guard fields.count == 2, let pid = pid_t(fields[0]) else { return }
             result[pid] = ForegroundProcessSnapshot(
                 commandLine: String(fields[1]),
-                lifecycle: nil
+                lifecycle: nil,
+                taskTitle: nil
             )
         }
 
         let codexPIDs = Set(snapshots.compactMap { pid, snapshot in
             CodingAgent.detect(commandLine: snapshot.commandLine) == .codex ? pid : nil
         })
-        let transcriptLifecycle = CodexTranscriptProbe.lifecycle(for: codexPIDs)
-        for (pid, lifecycle) in transcriptLifecycle {
+        let transcriptMetadata = CodexTranscriptProbe.metadata(for: codexPIDs)
+        for (pid, metadata) in transcriptMetadata {
             guard let snapshot = snapshots[pid] else { continue }
             snapshots[pid] = ForegroundProcessSnapshot(
                 commandLine: snapshot.commandLine,
-                lifecycle: lifecycle
+                lifecycle: metadata.lifecycle,
+                taskTitle: metadata.taskTitle
             )
         }
         return snapshots
@@ -153,10 +156,16 @@ enum AgentProcessProbe {
 /// have not been installed. Hooks still take precedence when they are newer.
 enum CodexTranscriptProbe {
     private static let recentByteLimit: UInt64 = 512 * 1024
+    private static let initialPromptByteLimit: UInt64 = 128 * 1024
     private static let pathRefreshInterval: TimeInterval = 12
     private static let cache = ProbeCache()
 
-    static func lifecycle(for pids: Set<pid_t>) -> [pid_t: AgentLifecycleSnapshot] {
+    struct Metadata: Sendable {
+        let lifecycle: AgentLifecycleSnapshot?
+        let taskTitle: String?
+    }
+
+    static func metadata(for pids: Set<pid_t>) -> [pid_t: Metadata] {
         guard !pids.isEmpty else { return [:] }
         let paths: [pid_t: [URL]]
         if let cached = cache.paths(for: pids, maxAge: pathRefreshInterval) {
@@ -167,39 +176,53 @@ enum CodexTranscriptProbe {
             paths = discovered
         }
         return paths.reduce(into: [:]) { result, entry in
-            let lifecycle = entry.value.compactMap(cachedLifecycle(at:))
+            let metadata = entry.value.compactMap(cachedMetadata(at:))
+            let lifecycle = metadata.compactMap(\.lifecycle)
                 .max { $0.observedAt < $1.observedAt }
-            if let lifecycle { result[entry.key] = lifecycle }
+            let taskTitle = metadata.compactMap(\.taskTitle).first
+            if lifecycle != nil || taskTitle != nil {
+                result[entry.key] = Metadata(lifecycle: lifecycle, taskTitle: taskTitle)
+            }
         }
     }
 
     static func recentLifecycle(at url: URL) -> AgentLifecycleSnapshot? {
-        lifecycleUpdate(at: url, after: nil).lifecycle
+        transcriptUpdate(at: url, after: nil).lifecycle
     }
 
     static func cachedLifecycle(at url: URL) -> AgentLifecycleSnapshot? {
+        cachedMetadata(at: url)?.lifecycle
+    }
+
+    static func cachedTaskTitle(at url: URL) -> String? {
+        cachedMetadata(at: url)?.taskTitle
+    }
+
+    private static func cachedMetadata(at url: URL) -> Metadata? {
         let size = fileSize(at: url)
         let previous = cache.fileState(for: url)
         if previous?.size == size {
-            return previous?.lifecycle
+            return previous.map { Metadata(lifecycle: $0.lifecycle, taskTitle: $0.taskTitle) }
         }
-        let update = lifecycleUpdate(at: url, after: previous?.size)
+        let update = transcriptUpdate(at: url, after: previous?.size)
+        let initialTaskTitle = previous == nil ? firstTaskTitle(at: url) : nil
         let state = TranscriptFileState(
             size: update.size,
-            lifecycle: update.lifecycle ?? previous?.lifecycle
+            lifecycle: update.lifecycle ?? previous?.lifecycle,
+            taskTitle: previous?.taskTitle ?? initialTaskTitle ?? update.taskTitle
         )
         cache.store(fileState: state, for: url)
-        return state.lifecycle
+        return Metadata(lifecycle: state.lifecycle, taskTitle: state.taskTitle)
     }
 
-    private static func lifecycleUpdate(
+    private static func transcriptUpdate(
         at url: URL,
         after previousSize: UInt64?
-    ) -> (lifecycle: AgentLifecycleSnapshot?, size: UInt64) {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return (nil, 0) }
+    ) -> (lifecycle: AgentLifecycleSnapshot?, taskTitle: String?, size: UInt64) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return (nil, nil, 0) }
         defer { try? handle.close() }
 
-        guard let end = try? handle.seekToEnd() else { return (nil, 0) }
+        guard let end = try? handle.seekToEnd() else { return (nil, nil, 0) }
         let requestedStart = previousSize.flatMap { $0 <= end ? $0 : nil }
             ?? (end > recentByteLimit ? end - recentByteLimit : 0)
         let start = end - requestedStart > recentByteLimit
@@ -207,9 +230,18 @@ enum CodexTranscriptProbe {
             : requestedStart
         do {
             try handle.seek(toOffset: start)
-            guard let data = try handle.readToEnd(), !data.isEmpty else { return (nil, end) }
+            guard let data = try handle.readToEnd(), !data.isEmpty else {
+                return (nil, nil, end)
+            }
             var lines = data.split(separator: 0x0A, omittingEmptySubsequences: true)
             if start > 0, start != previousSize, !lines.isEmpty { lines.removeFirst() }
+
+            let taskTitle = lines.lazy.compactMap { line -> String? in
+                guard let event = try? JSONSerialization.jsonObject(with: Data(line))
+                    as? [String: Any]
+                else { return nil }
+                return Self.taskTitle(in: event)
+            }.first
 
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -228,13 +260,62 @@ enum CodexTranscriptProbe {
                         state: eventType == "task_started" ? .working : .finished,
                         observedAt: date
                     ),
+                    taskTitle,
                     end
                 )
             }
+            return (nil, taskTitle, end)
         } catch {
-            return (nil, end)
+            return (nil, nil, end)
         }
-        return (nil, end)
+    }
+
+    private static func taskTitle(in event: [String: Any]) -> String? {
+        guard let payload = event["payload"] as? [String: Any] else { return nil }
+
+        if event["type"] as? String == "event_msg",
+           payload["type"] as? String == "user_message",
+           let message = payload["message"] as? String {
+            return TaskTitleFormatter.title(from: message)
+        }
+
+        guard event["type"] as? String == "response_item",
+              payload["type"] as? String == "message",
+              payload["role"] as? String == "user"
+        else { return nil }
+
+        if let message = payload["content"] as? String {
+            return TaskTitleFormatter.title(from: message)
+        }
+        guard let content = payload["content"] as? [[String: Any]] else { return nil }
+        let text = content.compactMap { item -> String? in
+            guard let type = item["type"] as? String,
+                  type == "input_text" || type == "text"
+            else { return nil }
+            return item["text"] as? String
+        }.joined(separator: " ")
+        return TaskTitleFormatter.title(from: text)
+    }
+
+    /// When Vibra attaches to a long-running Codex session, the recent tail
+    /// may no longer include its opening prompt. Scan only the small leading
+    /// portion once, preserving the original task rather than a later follow-up.
+    private static func firstTaskTitle(at url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let count = Int(min(fileSize(at: url), initialPromptByteLimit))
+        guard count > 0,
+              let data = try? handle.read(upToCount: count),
+              !data.isEmpty
+        else { return nil }
+        return data.split(separator: 0x0A, omittingEmptySubsequences: true).lazy
+            .compactMap { line -> String? in
+                guard let event = try? JSONSerialization.jsonObject(with: Data(line))
+                    as? [String: Any]
+                else { return nil }
+                return Self.taskTitle(in: event)
+            }
+            .first
     }
 
     private static func fileSize(at url: URL) -> UInt64 {
@@ -282,6 +363,7 @@ enum CodexTranscriptProbe {
     private struct TranscriptFileState {
         let size: UInt64
         let lifecycle: AgentLifecycleSnapshot?
+        let taskTitle: String?
     }
 
     private final class ProbeCache: @unchecked Sendable {
@@ -320,6 +402,44 @@ enum CodexTranscriptProbe {
             files[url] = fileState
             lock.unlock()
         }
+    }
+}
+
+private enum TaskTitleFormatter {
+    private static let maximumLength = 58
+    private static let greetings: Set<String> = [
+        "hola", "hello", "hi", "hey", "buenas", "buen día", "buenos días",
+        "good morning", "good afternoon", "good evening",
+    ]
+    private static let technicalContextPrefixes = [
+        "<environment_context", "<permissions", "<collaboration_mode",
+        "<apps_instructions", "<plugins_instructions", "<skills_instructions",
+        "<multi_agent_mode",
+    ]
+
+    static func title(from rawPrompt: String) -> String? {
+        let compact = rawPrompt
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !compact.isEmpty else { return nil }
+
+        let normalized = compact.lowercased()
+        guard !technicalContextPrefixes.contains(where: { normalized.hasPrefix($0) }) else {
+            return nil
+        }
+        let greeting = normalized.trimmingCharacters(
+            in: .whitespacesAndNewlines.union(.punctuationCharacters)
+        )
+        guard !greetings.contains(greeting) else { return nil }
+
+        let characters = Array(compact)
+        guard characters.count > maximumLength else { return compact }
+
+        let prefix = String(characters.prefix(maximumLength))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return prefix + "…"
     }
 }
 

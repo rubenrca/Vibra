@@ -181,17 +181,23 @@ public struct ProjectSnapshot: Codable, Equatable, Identifiable, Sendable {
 public struct TerminalWorkspaceSnapshot: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
     public var name: String
+    /// Whether the name is maintained from the active coding task or was set
+    /// explicitly by the user. Optional for seamless decoding of 0.2.4 and
+    /// earlier workspace files.
+    public var titleSource: WorkspaceTitleSource?
     public var tabs: [TabSnapshot]
     public var selectedTabID: UUID?
 
     public init(
         id: UUID = UUID(),
         name: String,
+        titleSource: WorkspaceTitleSource? = nil,
         tabs: [TabSnapshot],
         selectedTabID: UUID?
     ) {
         self.id = id
         self.name = name
+        self.titleSource = titleSource
         self.tabs = tabs
         self.selectedTabID = selectedTabID
         normalizeSelection()
@@ -210,6 +216,11 @@ public struct TerminalWorkspaceSnapshot: Codable, Equatable, Identifiable, Senda
             selectedTabID = tabs[0].id
         }
     }
+}
+
+public enum WorkspaceTitleSource: String, Codable, Equatable, Sendable {
+    case automatic
+    case manual
 }
 
 public struct TabSnapshot: Codable, Equatable, Identifiable, Sendable {

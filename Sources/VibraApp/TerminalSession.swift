@@ -14,6 +14,9 @@ final class TerminalSession: ObservableObject, Identifiable {
 
     @Published private(set) var agentActivity: AgentActivity = .idle
     @Published private(set) var liveWorkingDirectory: String
+    /// A concise, local label extracted from the first Codex prompt in this
+    /// session. It remains after Codex returns to the shell.
+    @Published private(set) var taskTitle: String?
 
     private(set) var isVisible = false
     private(set) var isClosed = false
@@ -127,6 +130,9 @@ final class TerminalSession: ObservableObject, Identifiable {
         if let detected {
             detectedAgent = detected
             missedAgentPolls = 0
+            if detected == .codex, let taskTitle = snapshot?.taskTitle {
+                self.taskTitle = taskTitle
+            }
             let transcriptLifecycle = snapshot?.lifecycle
             let newestLifecycle = [lifecycle, transcriptLifecycle]
                 .compactMap { $0 }

@@ -236,6 +236,51 @@ private enum TestGitError: Error {
     #expect(CodexTranscriptProbe.cachedLifecycle(at: transcript)?.state == .working)
 }
 
+@Test func codexTranscriptProbeUsesTheFirstPromptAsTheTaskTitle() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vibra-codex-task-title-tests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let transcript = root.appendingPathComponent("rollout.jsonl")
+
+    try [
+        """
+        {"timestamp":"2026-08-01T11:18:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"Implement automatic task names for workspace tabs."}}
+        """,
+        """
+        {"timestamp":"2026-08-01T11:18:01.000Z","type":"event_msg","payload":{"type":"task_started"}}
+        """,
+        """
+        {"timestamp":"2026-08-01T11:19:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"Also improve the tooltip."}}
+        """,
+    ].joined(separator: "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+    #expect(CodexTranscriptProbe.cachedTaskTitle(at: transcript)
+        == "Implement automatic task names for workspace tabs.")
+}
+
+@Test func codexTranscriptProbeIgnoresContextBlocksAndGreetingPrompts() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vibra-codex-task-filter-tests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let transcript = root.appendingPathComponent("rollout.jsonl")
+
+    try [
+        """
+        {"timestamp":"2026-08-01T16:38:20.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context> internal runtime data"}]}}
+        """,
+        """
+        {"timestamp":"2026-08-01T16:38:22.000Z","type":"event_msg","payload":{"type":"user_message","message":"hola"}}
+        """,
+        """
+        {"timestamp":"2026-08-01T16:38:25.000Z","type":"event_msg","payload":{"type":"user_message","message":"revisa gh"}}
+        """,
+    ].joined(separator: "\n").write(to: transcript, atomically: true, encoding: .utf8)
+
+    #expect(CodexTranscriptProbe.cachedTaskTitle(at: transcript) == "revisa gh")
+}
+
 @MainActor
 @Test func inlineDiffAndModalPresentationRemainIndependent() {
     let change = GitFileChange(

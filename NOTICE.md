@@ -11,3 +11,12 @@ libghostty-spm, which redistributes schemes from
 
 Dependency copyright and license notices remain with their respective
 projects and are included by Swift Package Manager in source distributions.
+
+## Agent marks
+
+The compatibility marks in `Sources/VibraApp/Resources/AgentMarks` identify the coding agents
+Vibra can detect. OpenAI/Codex, Claude, Gemini, OpenCode, Amp, and Cursor
+marks are supplied by [Simple Icons](https://simpleicons.org/) (CC0-1.0).
+The Aider and Goose marks are sourced from their public upstream repositories.
+Their names and logos remain trademarks of their respective owners; their use
+here does not imply endorsement or affiliation.

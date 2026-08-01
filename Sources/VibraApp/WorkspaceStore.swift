@@ -17,6 +17,7 @@ struct TerminalTab: Identifiable {
 struct TerminalWorkspace: Identifiable {
     let id: UUID
     var name: String
+    var titleSource: WorkspaceTitleSource
     var tabs: [TerminalTab]
     var selectedTabID: UUID?
 
@@ -30,6 +31,10 @@ struct TerminalWorkspace: Identifiable {
 
     var allSessions: [TerminalSession] {
         tabs.flatMap(\.sessions)
+    }
+
+    @MainActor var suggestedTaskTitle: String? {
+        selectedSession?.taskTitle ?? allSessions.compactMap(\.taskTitle).first
     }
 
     @MainActor var agentActivity: AgentActivity {
@@ -250,6 +255,19 @@ final class WorkspaceStore: ObservableObject {
               })
         else { return }
         projects[projectIndex].workspaces[workspaceIndex].name = name
+        projects[projectIndex].workspaces[workspaceIndex].titleSource = .manual
+        saveWorkspace()
+    }
+
+    func useAutomaticWorkspaceTitle(_ id: UUID, in projectID: UUID) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.id == id
+              })
+        else { return }
+        projects[projectIndex].workspaces[workspaceIndex].titleSource = .automatic
+        let suggested = projects[projectIndex].workspaces[workspaceIndex].suggestedTaskTitle
+        projects[projectIndex].workspaces[workspaceIndex].name = suggested ?? "Nueva tarea"
         saveWorkspace()
     }
 
@@ -376,12 +394,18 @@ final class WorkspaceStore: ObservableObject {
         saveWorkspace()
     }
 
-    /// Creates an ungrouped vertical tab in the active terminal directory.
-    func newWorkspace() {
+    /// Creates a vertical tab in the active terminal directory. Supplying a
+    /// space keeps the new agent within that space instead of moving it into
+    /// the ungrouped local checkout.
+    func newWorkspace(in requestedProjectID: UUID? = nil) {
         selectedSession?.refreshWorkingDirectory()
         let directory = selectedSession?.workingDirectory
             ?? FileManager.default.homeDirectoryForCurrentUser.path
-        addWorkspace(workingDirectory: directory, persist: true)
+        addWorkspace(
+            workingDirectory: directory,
+            persist: true,
+            projectID: requestedProjectID
+        )
     }
 
     func createFolder(named rawName: String, containing requestedWorkspaceID: UUID? = nil) {
@@ -643,6 +667,7 @@ final class WorkspaceStore: ObservableObject {
                     TerminalWorkspaceSnapshot(
                         id: workspace.id,
                         name: workspace.name,
+                        titleSource: workspace.titleSource,
                         tabs: workspace.tabs.map(tabSnapshot),
                         selectedTabID: workspace.selectedTabID
                     )
@@ -703,14 +728,17 @@ final class WorkspaceStore: ObservableObject {
 
     private func addWorkspace(
         workingDirectory: String,
-        persist: Bool
+        persist: Bool,
+        projectID requestedProjectID: UUID? = nil
     ) {
-        let projectID = ensureUngroupedProject()
+        let projectID = requestedProjectID.flatMap { candidate in
+            projects.contains(where: { $0.id == candidate }) ? candidate : nil
+        } ?? ensureUngroupedProject()
         guard let projectIndex = projects.firstIndex(where: { $0.id == projectID }) else { return }
         let directoryURL = URL(fileURLWithPath: workingDirectory).standardizedFileURL
-        let name = directoryURL.lastPathComponent.isEmpty ? "Terminal" : directoryURL.lastPathComponent
         let workspace = makeWorkspace(
-            name: name,
+            name: "Nueva tarea",
+            titleSource: .automatic,
             workingDirectory: directoryURL.path,
             projectID: projectID
         )
@@ -733,6 +761,7 @@ final class WorkspaceStore: ObservableObject {
 
     private func makeWorkspace(
         name: String,
+        titleSource: WorkspaceTitleSource,
         workingDirectory: String,
         projectID: UUID
     ) -> TerminalWorkspace {
@@ -740,6 +769,7 @@ final class WorkspaceStore: ObservableObject {
         return TerminalWorkspace(
             id: UUID(),
             name: name,
+            titleSource: titleSource,
             tabs: [tab],
             selectedTabID: tab.id
         )
@@ -856,9 +886,14 @@ final class WorkspaceStore: ObservableObject {
                     let workspaceName = savedWorkspace.name.isEmpty
                         ? (inferredName.flatMap { $0.isEmpty ? nil : $0 } ?? "Terminal")
                         : savedWorkspace.name
+                    let titleSource = savedWorkspace.titleSource ?? inferredTitleSource(
+                        for: workspaceName,
+                        workingDirectory: workingDirectory
+                    )
                     return TerminalWorkspace(
                         id: savedWorkspace.id,
                         name: workspaceName,
+                        titleSource: titleSource,
                         tabs: tabs,
                         selectedTabID: tabs.contains(where: {
                             $0.id == savedWorkspace.selectedTabID
@@ -917,6 +952,16 @@ final class WorkspaceStore: ObservableObject {
             }) ? savedTab.selectedSessionID : sessions.first?.id,
             layout: layout
         )
+    }
+
+    private func inferredTitleSource(
+        for name: String,
+        workingDirectory: String?
+    ) -> WorkspaceTitleSource {
+        let directoryName = workingDirectory.map {
+            URL(fileURLWithPath: $0).lastPathComponent
+        }
+        return name == directoryName || name == "Terminal" ? .automatic : .manual
     }
 
     private func refreshSessionVisibility() {
@@ -1000,11 +1045,30 @@ final class WorkspaceStore: ObservableObject {
                 lifecycle: runtime.1[sessionID]
             )
         }
+        let didUpdateWorkspaceTitles = refreshAutomaticWorkspaceTitles()
+        if didUpdateWorkspaceTitles {
+            saveWorkspace()
+        }
         let activities = workspaceActivitySnapshot()
-        if activities != lastWorkspaceActivities {
+        if activities != lastWorkspaceActivities || didUpdateWorkspaceTitles {
             lastWorkspaceActivities = activities
             objectWillChange.send()
         }
+    }
+
+    private func refreshAutomaticWorkspaceTitles() -> Bool {
+        var didUpdate = false
+        for projectIndex in projects.indices {
+            for workspaceIndex in projects[projectIndex].workspaces.indices {
+                guard projects[projectIndex].workspaces[workspaceIndex].titleSource == .automatic,
+                      let title = projects[projectIndex].workspaces[workspaceIndex].suggestedTaskTitle,
+                      projects[projectIndex].workspaces[workspaceIndex].name != title
+                else { continue }
+                projects[projectIndex].workspaces[workspaceIndex].name = title
+                didUpdate = true
+            }
+        }
+        return didUpdate
     }
 
     private func workspaceActivitySnapshot() -> [UUID: AgentActivity] {

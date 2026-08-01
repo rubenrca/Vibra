@@ -30,6 +30,7 @@ let package = Package(
                 .product(name: "GhosttyTheme", package: "libghostty-spm"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
+            resources: [.process("Resources")],
             // Sparkle ships as a framework that Scripts/package_app.sh copies into
             // Contents/Frameworks. SwiftPM only adds an rpath to its own build
             // directory, which does not exist on a user's machine, so the bundle
