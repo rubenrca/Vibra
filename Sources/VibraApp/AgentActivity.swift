@@ -98,6 +98,101 @@ struct ForegroundProcessSnapshot: Sendable {
     let taskTitle: String?
 }
 
+struct TerminalProcess: Identifiable, Sendable {
+    let pid: pid_t
+    let name: String
+    let depth: Int
+
+    var id: pid_t { pid }
+}
+
+enum TerminalProcessTreeProbe {
+    nonisolated static func processes(rootedAt foregroundPID: pid_t?) -> [TerminalProcess] {
+        guard let foregroundPID else { return [] }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "pid=,ppid=,comm="]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return [] }
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let entries = String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap {
+            line -> ProcessEntry? in
+            let fields = line.split(maxSplits: 2, whereSeparator: \Character.isWhitespace)
+            guard fields.count == 3,
+                  let pid = pid_t(fields[0]),
+                  let parentPID = pid_t(fields[1])
+            else { return nil }
+            return ProcessEntry(pid: pid, parentPID: parentPID, command: String(fields[2]))
+        }
+        let entriesByPID = Dictionary(uniqueKeysWithValues: entries.map { ($0.pid, $0) })
+        guard entriesByPID[foregroundPID] != nil else { return [] }
+
+        let rootPID = shellAncestor(of: foregroundPID, entries: entriesByPID) ?? foregroundPID
+        let children = Dictionary(grouping: entries, by: \.parentPID)
+        var result: [TerminalProcess] = []
+        appendProcessTree(
+            rootPID,
+            depth: 0,
+            entries: entriesByPID,
+            children: children,
+            result: &result
+        )
+        return result
+    }
+
+    private struct ProcessEntry: Sendable {
+        let pid: pid_t
+        let parentPID: pid_t
+        let command: String
+
+        var name: String {
+            URL(fileURLWithPath: command).lastPathComponent
+        }
+    }
+
+    private nonisolated static func shellAncestor(
+        of pid: pid_t,
+        entries: [pid_t: ProcessEntry]
+    ) -> pid_t? {
+        var current = pid
+        var visited: Set<pid_t> = []
+        while let entry = entries[current], visited.insert(current).inserted {
+            let executable = entry.name.lowercased()
+            if ["sh", "bash", "zsh", "fish", "nu", "pwsh"].contains(executable) {
+                return current
+            }
+            guard entry.parentPID > 1 else { break }
+            current = entry.parentPID
+        }
+        return nil
+    }
+
+    private nonisolated static func appendProcessTree(
+        _ pid: pid_t,
+        depth: Int,
+        entries: [pid_t: ProcessEntry],
+        children: [pid_t: [ProcessEntry]],
+        result: inout [TerminalProcess]
+    ) {
+        guard result.count < 16, let entry = entries[pid] else { return }
+        result.append(TerminalProcess(pid: pid, name: entry.name, depth: depth))
+        for child in (children[pid] ?? []).sorted(by: { $0.pid < $1.pid }) {
+            appendProcessTree(
+                child.pid,
+                depth: depth + 1,
+                entries: entries,
+                children: children,
+                result: &result
+            )
+        }
+    }
+}
+
 enum AgentProcessProbe {
     static func snapshots(for pids: Set<pid_t>) -> [pid_t: ForegroundProcessSnapshot] {
         guard !pids.isEmpty else { return [:] }

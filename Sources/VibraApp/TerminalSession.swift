@@ -13,6 +13,7 @@ final class TerminalSession: ObservableObject, Identifiable {
     var onExit: ((TerminalSession) -> Void)?
 
     @Published private(set) var agentActivity: AgentActivity = .idle
+    @Published private(set) var foregroundProcessID: pid_t?
     @Published private(set) var liveWorkingDirectory: String
     /// A concise, local label extracted from the first Codex prompt in this
     /// session. It remains after Codex returns to the shell.
@@ -29,6 +30,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         self.id = id
         initialWorkingDirectory = workingDirectory
         liveWorkingDirectory = workingDirectory
+        foregroundProcessID = nil
         AgentLifecycleStore.clear(id)
 
         let appearance = TerminalAppearance.current
@@ -79,8 +81,12 @@ final class TerminalSession: ObservableObject, Identifiable {
     }
 
     func refreshWorkingDirectory() {
+        let foregroundPID = terminalView.foregroundPid
+        if foregroundProcessID != foregroundPID {
+            foregroundProcessID = foregroundPID
+        }
         let resolved: String?
-        if let pid = terminalView.foregroundPid {
+        if let pid = foregroundPID {
             resolved = ProcessWorkingDirectoryProbe.directory(for: pid)
         } else if let reported = state.workingDirectory, !reported.isEmpty {
             resolved = reported

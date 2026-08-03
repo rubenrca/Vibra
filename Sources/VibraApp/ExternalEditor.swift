@@ -233,12 +233,11 @@ enum ExternalEditorLauncher {
 
 // MARK: - SwiftUI helpers
 
-/// Codex-style pill: dark code glyph + chevron, menu of installed editors.
+/// Compact IDE launcher with a menu for choosing among installed editors.
 struct OpenInEditorButton: View {
     let path: String?
-    /// When true, only the icon pill (header). When false, includes a short label.
+    /// Preserved for call-site compatibility; the label remains intentionally generic.
     var compact: Bool = true
-    @Environment(\.colorScheme) private var colorScheme
     @State private var lastError: String?
     @State private var isHovering = false
 
@@ -307,58 +306,33 @@ struct OpenInEditorButton: View {
     }
 
     private var pillLabel: some View {
-        HStack(spacing: 6) {
-            // Dark code tile — same idea as Codex’s filled editor glyph.
-            ZStack {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(tileFill)
-                Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .font(.system(size: 8.5, weight: .bold))
-                    .foregroundStyle(tileGlyph)
-            }
-            .frame(width: 18, height: 18)
-
-            if !compact {
-                Text(preferred?.shortName ?? "Editor")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.primary.opacity(0.85))
-                    .lineLimit(1)
-            }
-
-            Image(systemName: "chevron.down")
-                .font(.system(size: 8, weight: .semibold))
-                .foregroundStyle(.secondary)
+        HStack(spacing: 4) {
+            Text("IDE")
+                .font(.system(size: 10.5, weight: .semibold))
+                .lineLimit(1)
+            Image(systemName: "arrow.up.right")
+                .font(.system(size: 9, weight: .bold))
         }
-        .padding(.leading, 5)
-        .padding(.trailing, 8)
-        .frame(height: 28)
-        .background(pillBackground, in: Capsule(style: .continuous))
+        .foregroundStyle(.primary.opacity(isHovering ? 0.96 : 0.78))
+        .padding(.horizontal, 8)
+        .frame(height: 24)
+        .background(pillBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         .overlay {
-            Capsule(style: .continuous)
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .strokeBorder(pillStroke, lineWidth: 1)
         }
-        .contentShape(Capsule(style: .continuous))
-    }
-
-    private var tileFill: Color {
-        colorScheme == .dark
-            ? Color.white.opacity(isHovering ? 0.92 : 0.86)
-            : Color.black.opacity(isHovering ? 0.88 : 0.82)
-    }
-
-    private var tileGlyph: Color {
-        colorScheme == .dark ? Color.black.opacity(0.88) : Color.white
+        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 
     private var pillBackground: Color {
         if isHovering {
-            return Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.06)
+            return Color.primary.opacity(0.1)
         }
-        return Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.035)
+        return Color.primary.opacity(0.045)
     }
 
     private var pillStroke: Color {
-        Color.primary.opacity(colorScheme == .dark ? 0.18 : 0.12)
+        Color.primary.opacity(0.13)
     }
 
     private var helpText: String {

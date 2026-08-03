@@ -102,14 +102,24 @@ struct TerminalWorkspaceFolder: Identifiable {
 }
 
 enum RightSidebarMode: String {
+    case session
     case files
     case changes
+}
+
+enum TabDropPosition {
+    case before
+    case after
 }
 
 @MainActor
 final class WorkspaceStore: ObservableObject {
     @Published private(set) var projects: [VibraProject] = []
     @Published private(set) var selectedProjectID: UUID?
+    @Published private var sidebarWorkspaceOrder: [UUID] = {
+        UserDefaults.standard.stringArray(forKey: SettingsKeys.sidebarTabOrder)?
+            .compactMap(UUID.init(uuidString:)) ?? []
+    }()
     @Published private(set) var isTerminalSidebarVisible: Bool = {
         guard UserDefaults.standard.object(forKey: SettingsKeys.projectSidebarVisible) != nil else {
             return true
@@ -124,9 +134,9 @@ final class WorkspaceStore: ObservableObject {
     }()
     @Published private(set) var rightSidebarMode: RightSidebarMode = {
         guard let value = UserDefaults.standard.string(forKey: "rightSidebarMode") else {
-            return .changes
+            return .session
         }
-        return RightSidebarMode(rawValue: value) ?? .changes
+        return RightSidebarMode(rawValue: value) ?? .session
     }()
 
     private var hiddenSessionPump: Timer?
@@ -152,6 +162,11 @@ final class WorkspaceStore: ObservableObject {
         }
         if !restoresWorkspace {
             isGitSidebarVisible = false
+        }
+        if !UserDefaults.standard.bool(forKey: SettingsKeys.rightSidebarContextMigrated) {
+            rightSidebarMode = .session
+            UserDefaults.standard.set(RightSidebarMode.session.rawValue, forKey: "rightSidebarMode")
+            UserDefaults.standard.set(true, forKey: SettingsKeys.rightSidebarContextMigrated)
         }
         refreshSessionVisibility()
         lastWorkspaceActivities = workspaceActivitySnapshot()
@@ -203,11 +218,45 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var sidebarWorkspaces: [LocatedTerminalWorkspace] {
-        ungroupedWorkspaces + workspaceFolders.flatMap { folder in
+        let workspaces = ungroupedWorkspaces + workspaceFolders.flatMap { folder in
             folder.project.workspaces.map {
                 LocatedTerminalWorkspace(projectID: folder.id, workspace: $0)
             }
         }
+        guard !sidebarWorkspaceOrder.isEmpty else { return workspaces }
+
+        let positions = Dictionary(
+            uniqueKeysWithValues: sidebarWorkspaceOrder.enumerated().map { ($0.element, $0.offset) }
+        )
+        return workspaces.enumerated()
+            .sorted { lhs, rhs in
+                let lhsPosition = positions[lhs.element.id] ?? .max
+                let rhsPosition = positions[rhs.element.id] ?? .max
+                return lhsPosition == rhsPosition
+                    ? lhs.offset < rhs.offset
+                    : lhsPosition < rhsPosition
+            }
+            .map(\.element)
+    }
+
+    func reorderSidebarWorkspace(
+        _ workspaceID: UUID,
+        relativeTo targetID: UUID,
+        position: TabDropPosition
+    ) {
+        guard workspaceID != targetID else { return }
+        var orderedIDs = sidebarWorkspaces.map(\.id)
+        guard let sourceIndex = orderedIDs.firstIndex(of: workspaceID) else { return }
+        orderedIDs.remove(at: sourceIndex)
+        guard let targetIndex = orderedIDs.firstIndex(of: targetID) else { return }
+
+        let insertionIndex = position == .after ? targetIndex + 1 : targetIndex
+        orderedIDs.insert(workspaceID, at: insertionIndex)
+        sidebarWorkspaceOrder = orderedIDs
+        UserDefaults.standard.set(
+            orderedIDs.map(\.uuidString),
+            forKey: SettingsKeys.sidebarTabOrder
+        )
     }
 
     /// Selects a workspace by its visible left-sidebar position. This mirrors
@@ -625,6 +674,31 @@ final class WorkspaceStore: ObservableObject {
             shutdownSessions: true
         )
         refreshSessionVisibility()
+        saveWorkspace()
+    }
+
+    func reorderTab(
+        _ tabID: UUID,
+        in projectID: UUID,
+        relativeTo targetID: UUID,
+        position: TabDropPosition
+    ) {
+        guard tabID != targetID,
+              let projectIndex = projects.firstIndex(where: { $0.id == projectID }),
+              let workspaceIndex = projects[projectIndex].workspaces.firstIndex(where: {
+                  $0.tabs.contains(where: { $0.id == tabID })
+                      && $0.tabs.contains(where: { $0.id == targetID })
+              })
+        else { return }
+
+        var tabs = projects[projectIndex].workspaces[workspaceIndex].tabs
+        guard let sourceIndex = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let tab = tabs.remove(at: sourceIndex)
+        guard let targetIndex = tabs.firstIndex(where: { $0.id == targetID }) else { return }
+
+        let insertionIndex = position == .after ? targetIndex + 1 : targetIndex
+        tabs.insert(tab, at: insertionIndex)
+        projects[projectIndex].workspaces[workspaceIndex].tabs = tabs
         saveWorkspace()
     }
 

@@ -5,9 +5,11 @@ import SwiftUI
 
 enum SettingsKeys {
     static let projectSidebarVisible = "projectSidebarVisible"
+    static let sidebarTabOrder = "sidebarTabOrder"
     static let terminalSidebarWidth = "terminalSidebarWidth"
     static let gitSidebarWidth = "gitSidebarWidth"
     static let gitSidebarVisible = "gitSidebarVisible"
+    static let rightSidebarContextMigrated = "rightSidebarContextMigrated"
     static let cmuxShortcutsEnabled = "cmuxShortcutsEnabled"
     static let gitAutoRefreshEnabled = "gitAutoRefreshEnabled"
     static let gitRefreshDelay = "gitRefreshDelay"
