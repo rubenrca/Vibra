@@ -3,19 +3,21 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.2.4</title>
-            <pubDate>Fri, 31 Jul 2026 11:24:51 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.4</link>
-            <sparkle:version>18</sparkle:version>
-            <sparkle:shortVersionString>0.2.4</sparkle:shortVersionString>
+            <title>0.2.5</title>
+            <pubDate>Mon, 03 Aug 2026 15:48:39 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.5</link>
+            <sparkle:version>22</sparkle:version>
+            <sparkle:shortVersionString>0.2.5</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Open the current project or a selected file in an external IDE (Cursor, VS Code, Zed, Windsurf, Xcode, and others).</li>
-  <li>Prefer a default editor in Settings → General; reach it from the session header, File menu (⇧⌘E), and context menus.</li>
-  <li>Polish sidebar geometry and resizing.</li>
+  <li>Simplify the terminal sidebar into a compact, route-aware tab list with drag-and-drop ordering.</li>
+  <li>Add drag-and-drop ordering for nested terminal tabs.</li>
+  <li>Add a session context view to the right sidebar with Git state and the active process tree.</li>
+  <li>Keep the Git branch and change summary visible across the right sidebar views.</li>
+  <li>Add a compact `IDE ↗` launcher in the window header.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.4/Vibra-0.2.4.dmg" length="13331833" type="application/octet-stream" sparkle:edSignature="inCwsF/dvGXBOpAbY9/0PvB9jlNz+TvfL0wDO6y/YjD9Z297b3aloktKrmTPHSPDzlOIg9R0w/bXG6Bq8VPKDQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.5/Vibra-0.2.5.dmg" length="13330516" type="application/octet-stream" sparkle:edSignature="rdsq94Pr6242s68hD7ZWOO9RqdRGcB+brKVAmW0l6cWuRscfCn4IJCvhZszhCVAvQPTUFMcC184OvWrgWmudDA=="/>
         </item>
     </channel>
 </rss>
