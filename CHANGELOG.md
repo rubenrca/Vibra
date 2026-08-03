@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.5 — 2026-08-03
+
+- Simplify the terminal sidebar into a compact, route-aware tab list with drag-and-drop ordering.
+- Add drag-and-drop ordering for nested terminal tabs.
+- Add a session context view to the right sidebar with Git state and the active process tree.
+- Keep the Git branch and change summary visible across the right sidebar views.
+- Add a compact `IDE ↗` launcher in the window header.
+
 ## 0.2.4 — 2026-07-31
 
 - Open the current project or a selected file in an external IDE (Cursor, VS Code, Zed, Windsurf, Xcode, and others).
