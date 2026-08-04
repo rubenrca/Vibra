@@ -92,17 +92,58 @@ struct GitSidebarView: View {
                 icon: model.repositoryRoot.isEmpty ? "arrow.triangle.branch" : "checkmark"
             )
         } else {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(model.changes) { change in
-                        InlineGitDiffCard(
-                            change: change,
-                            repositoryRoot: model.repositoryRoot,
-                            model: model
-                        )
+            VStack(spacing: 0) {
+                changesFilterBar
+                if model.filteredChanges.isEmpty {
+                    sidebarMessage("No changes match the filter.", icon: "line.3.horizontal.decrease")
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(model.filteredChanges) { change in
+                                InlineGitDiffCard(
+                                    change: change,
+                                    repositoryRoot: model.repositoryRoot,
+                                    model: model
+                                )
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    private var changesFilterBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal.decrease")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(chrome.secondaryForeground)
+            TextField(
+                "Filter changes",
+                text: Binding(
+                    get: { model.changesFilter },
+                    set: { model.changesFilter = $0 }
+                )
+            )
+            .textFieldStyle(.plain)
+            .font(.system(size: 11))
+            if !model.changesFilter.isEmpty {
+                Button {
+                    model.changesFilter = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(chrome.secondaryForeground)
+                }
+                .buttonStyle(.plain)
+                .help("Clear filter")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(chrome.panelHeader.opacity(0.65))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(chrome.quietBorder).frame(height: 1)
         }
     }
 
@@ -199,12 +240,22 @@ private struct SessionContextDetails: View {
     @ObservedObject var model: GitSidebarModel
     @Environment(\.appChrome) private var chrome
     @State private var processes: [TerminalProcess] = []
+    @State private var ports: [ListeningPort] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             ContextSection(title: "Session") {
                 ContextRow(label: "Agent", value: agentName)
-                ContextRow(label: "Path", value: displayPath, monospaced: true)
+                ContextRow(label: "Path", value: displayPath(session.workingDirectory), monospaced: true)
+                if !model.repositoryRoot.isEmpty,
+                   model.repositoryRoot != session.workingDirectory
+                {
+                    ContextRow(
+                        label: "Project",
+                        value: displayPath(model.repositoryRoot) + projectRootSuffix,
+                        monospaced: true
+                    )
+                }
             }
 
             ContextSection(title: "Git") {
@@ -239,13 +290,67 @@ private struct SessionContextDetails: View {
                     }
                 }
             }
+
+            ContextSection(title: "Ports") {
+                if ports.isEmpty {
+                    Text("No listening ports")
+                        .font(.system(size: 11))
+                        .foregroundStyle(chrome.secondaryForeground)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(ports) { port in
+                            Button {
+                                if let url = port.url {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "network")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(Color(red: 0.35, green: 0.65, blue: 1.0))
+                                    Text("\(port.port)")
+                                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(chrome.foreground)
+                                    Text(port.processName)
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(chrome.secondaryForeground)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    Image(systemName: "arrow.up.forward")
+                                        .font(.system(size: 9, weight: .medium))
+                                        .foregroundStyle(chrome.secondaryForeground.opacity(0.7))
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open http://localhost:\(port.port)")
+                            .contextMenu {
+                                Button("Open in Browser") {
+                                    if let url = port.url { NSWorkspace.shared.open(url) }
+                                }
+                                Button("Copy URL") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(
+                                        "http://localhost:\(port.port)",
+                                        forType: .string
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { session.refreshWorkingDirectory() }
         .task(id: session.foregroundProcessID) {
             let foregroundPID = session.foregroundProcessID
-            processes = await Task.detached(priority: .utility) {
+            let tree = await Task.detached(priority: .utility) {
                 TerminalProcessTreeProbe.processes(rootedAt: foregroundPID)
+            }.value
+            processes = tree
+            let pids = Set(tree.map(\.pid))
+            ports = await Task.detached(priority: .utility) {
+                SessionPortProbe.listeningPorts(for: pids)
             }.value
         }
     }
@@ -254,8 +359,16 @@ private struct SessionContextDetails: View {
         session.agentActivity.agent?.displayName ?? "Shell"
     }
 
-    private var displayPath: String {
-        let path = session.workingDirectory
+    private var projectRootSuffix: String {
+        switch model.panelRootSource {
+        case .project: " · project"
+        case .shell: " · auto"
+        case .foregroundWorktree: " · worktree"
+        case .fallback: ""
+        }
+    }
+
+    private func displayPath(_ path: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         if path == home { return "~" }
         if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
@@ -324,13 +437,20 @@ private struct InlineGitDiffCard: View {
                 Divider()
                 actionBar
                 Divider()
-                GitDiffLinesView(
-                    model: model,
-                    axes: .horizontal,
-                    minimumCodeWidth: 680,
-                    minimumHeight: 110
+                DiffLinesCanvas(
+                    lines: model.diffLines,
+                    layout: model.diffLayoutStyle,
+                    filePath: change.path,
+                    minimumCodeWidth: model.diffLayoutStyle == .split ? 280 : 420,
+                    minimumHeight: 160
                 )
+                .frame(minHeight: 180, maxHeight: 420)
                 .background(chrome.recessed)
+                .overlay {
+                    if model.isLoadingDiff, model.selectedChangeID == change.id {
+                        ProgressView().controlSize(.small)
+                    }
+                }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
@@ -357,7 +477,6 @@ private struct InlineGitDiffCard: View {
                 }
             }
             Divider()
-            Button("Open Large Diff") { model.presentModal(change) }
             openInEditorContextMenuItems(
                 path: (repositoryRoot as NSString).appendingPathComponent(change.path)
             )
@@ -366,57 +485,58 @@ private struct InlineGitDiffCard: View {
     }
 
     private var header: some View {
-        HStack(spacing: 4) {
-            Button { model.toggleInline(change) } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12)
-                    Text(change.compactStatus)
-                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                        .foregroundStyle(statusColor)
-                        .frame(width: 18)
-                    Text(change.path)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 6)
-                    changeStats
-                }
-                .padding(.leading, 10)
-                .frame(maxWidth: .infinity, minHeight: 42)
-                .contentShape(Rectangle())
+        Button { model.toggleInline(change) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                Text(change.compactStatus)
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(statusColor)
+                    .frame(width: 18)
+                Image(systemName: FileTypeIcon.systemImage(forFileName: change.fileName))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                Text(change.path)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 6)
+                changeStats
             }
-            .buttonStyle(.plain)
-
-            Button { model.presentModal(change) } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Open Large Diff")
-            .padding(.trailing, 7)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .help(expanded ? "Collapse diff" : "Show diff")
     }
 
     private var actionBar: some View {
         HStack(spacing: 8) {
+            sidebarLayoutPicker
+
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(change.path, forType: .string)
             } label: {
-                Label("Copy path", systemImage: "doc.on.doc")
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 10, weight: .medium))
             }
             .help("Copy Path")
 
             Button(action: reveal) {
-                Label("Reveal", systemImage: "arrow.up.forward.square")
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 10, weight: .medium))
             }
             .help("Reveal in Finder")
+
+            OpenInEditorButton(
+                path: (repositoryRoot as NSString).appendingPathComponent(change.path),
+                compact: true
+            )
 
             Spacer(minLength: 0)
 
@@ -430,8 +550,35 @@ private struct InlineGitDiffCard: View {
         .font(.system(size: 10, weight: .medium))
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .frame(height: 34)
+    }
+
+    private var sidebarLayoutPicker: some View {
+        HStack(spacing: 0) {
+            layoutChip("Unified", style: .unified)
+            layoutChip("Split", style: .split)
+        }
+        .background(chrome.foreground.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+
+    private func layoutChip(_ title: String, style: DiffLayoutStyle) -> some View {
+        let selected = model.diffLayoutStyle == style
+        return Button {
+            model.setDiffLayoutStyle(style)
+        } label: {
+            Text(title)
+                .font(.system(size: 9.5, weight: .medium))
+                .padding(.horizontal, 7)
+                .frame(height: 20)
+                .background(
+                    selected ? chrome.workspaceSelection : .clear,
+                    in: RoundedRectangle(cornerRadius: 4, style: .continuous)
+                )
+                .foregroundStyle(selected ? chrome.foreground : chrome.secondaryForeground)
+        }
+        .buttonStyle(.plain)
+        .help(style == .unified ? "Unified layout" : "Side-by-side layout")
     }
 
     private var changeStats: some View {
@@ -607,14 +754,7 @@ private struct RepositoryFileNodeView: View {
 
     private var fileIcon: String {
         if node.isDirectory { return isExpanded ? "folder.fill" : "folder" }
-        switch URL(fileURLWithPath: node.name).pathExtension.lowercased() {
-        case "swift": return "swift"
-        case "md": return "text.document"
-        case "json": return "curlybraces"
-        case "yml", "yaml": return "list.bullet.rectangle"
-        case "png", "jpg", "jpeg", "gif", "webp": return "photo"
-        default: return "doc"
-        }
+        return FileTypeIcon.systemImage(forFileName: node.name, isDirectory: false)
     }
 
     private var iconColor: Color {
@@ -777,7 +917,7 @@ private struct GitChangeTreeNodeView: View {
                     .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(statusColor(change))
                     .frame(width: 20)
-                Image(systemName: "doc")
+                Image(systemName: FileTypeIcon.systemImage(forFileName: change.fileName))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .frame(width: 13)
@@ -839,374 +979,6 @@ private struct GitChangeTreeNodeView: View {
     }
 }
 
-struct GitDiffModalView: View {
-    @ObservedObject var model: GitSidebarModel
-    @Environment(\.appChrome) private var chrome
-    @FocusState private var receivesKeyboardInput: Bool
-    @State private var fileExpanded = true
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(chrome.isDark ? 0.46 : 0.22)
-                .ignoresSafeArea()
-                .onTapGesture { model.dismissDiff() }
-
-            VStack(spacing: 0) {
-                workspaceHeader
-                Divider().overlay(chrome.foreground.opacity(0.11))
-                reviewHeader
-                diffCard
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 22)
-            }
-            .background(chrome.elevated)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(chrome.foreground.opacity(0.16), lineWidth: 1)
-            }
-            .shadow(color: chrome.background.mix(with: .black, amount: 0.62).opacity(0.62), radius: 34, y: 16)
-            .frame(maxWidth: 1180, maxHeight: 820)
-            .padding(22)
-        }
-        .focusable()
-        .focused($receivesKeyboardInput)
-        .onAppear { receivesKeyboardInput = true }
-        .onExitCommand { model.dismissDiff() }
-        .onKeyPress(.escape) {
-            model.dismissDiff()
-            return .handled
-        }
-    }
-
-    private var workspaceHeader: some View {
-        HStack(spacing: 10) {
-            Text(displayRoot)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.head)
-            Text(":")
-                .foregroundStyle(.tertiary)
-            Text(model.branch.isEmpty ? "HEAD" : model.branch)
-                .font(.system(size: 12, weight: .semibold))
-            Image(systemName: "doc")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            Text("\(model.changes.count)")
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(.secondary)
-            Text("·").foregroundStyle(.tertiary)
-            stat("+\(model.additions)", color: .green)
-            stat("−\(model.deletions)", color: .red)
-            Spacer(minLength: 0)
-            Button { model.dismissDiff() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Close Diff (Esc)")
-        }
-        .padding(.horizontal, 18)
-        .frame(height: 48)
-    }
-
-    private var reviewHeader: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "arrow.left.arrow.right")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-            Text("Uncommitted changes")
-                .font(.system(size: 14, weight: .semibold))
-            Spacer()
-            if let change = model.selectedChange {
-                if change.hasStagedChanges {
-                    actionButton("Unstage", action: model.unstageSelected)
-                }
-                if change.hasWorktreeChanges {
-                    actionButton("Stage", action: model.stageSelected)
-                }
-            }
-        }
-        .padding(.horizontal, 22)
-        .frame(height: 54)
-    }
-
-    private var diffCard: some View {
-        VStack(spacing: 0) {
-            fileHeader
-            if fileExpanded {
-                Divider().overlay(chrome.foreground.opacity(0.09))
-                GitDiffLinesView(
-                    model: model,
-                    axes: [.horizontal, .vertical],
-                    minimumCodeWidth: 860,
-                    minimumHeight: 180
-                )
-                .background(chrome.background)
-            }
-        }
-        .background(chrome.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(chrome.foreground.opacity(0.12), lineWidth: 1)
-        }
-    }
-
-    private var fileHeader: some View {
-        HStack(spacing: 10) {
-            Button { fileExpanded.toggle() } label: {
-                Image(systemName: fileExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 18, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            if let change = model.selectedChange {
-                Text(change.fileName)
-                    .font(.system(size: 13, weight: .medium))
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(change.path, forType: .string)
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Copy Path")
-                Spacer(minLength: 0)
-                HStack(spacing: 7) {
-                    stat("+\(change.additions)", color: .green)
-                    stat("−\(change.deletions)", color: .red)
-                }
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(chrome.foreground.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-                OpenInEditorButton(
-                    path: (model.repositoryRoot as NSString)
-                        .appendingPathComponent(change.path),
-                    compact: true
-                )
-                Button {
-                    let path = (model.repositoryRoot as NSString)
-                        .appendingPathComponent(change.path)
-                    NSWorkspace.shared.activateFileViewerSelecting([
-                        URL(fileURLWithPath: path)
-                    ])
-                } label: {
-                    Image(systemName: "arrow.up.forward.square")
-                        .font(.system(size: 12))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Reveal in Finder")
-            } else {
-                Text("Diff").font(.system(size: 13, weight: .medium))
-                Spacer()
-            }
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 52)
-        .background(chrome.foreground.opacity(0.065))
-    }
-
-    private func stat(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-            .foregroundStyle(color)
-    }
-
-    private func actionButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .tint(chrome.accent)
-    }
-
-    private var displayRoot: String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if model.repositoryRoot == home { return "~" }
-        if model.repositoryRoot.hasPrefix(home + "/") {
-            return "~/" + model.repositoryRoot.dropFirst(home.count + 1)
-        }
-        return model.repositoryRoot
-    }
-
-}
-
-private struct GitDiffLinesView: View {
-    @ObservedObject var model: GitSidebarModel
-    let axes: Axis.Set
-    let minimumCodeWidth: CGFloat
-    let minimumHeight: CGFloat
-    @Environment(\.appChrome) private var chrome
-
-    var body: some View {
-        Group {
-            if model.isLoadingDiff {
-                ProgressView().controlSize(.small)
-                    .frame(maxWidth: .infinity, minHeight: minimumHeight)
-            } else if presentedLines.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "doc.text").foregroundStyle(.tertiary)
-                    Text("No textual diff to display.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: minimumHeight)
-            } else {
-                ScrollView(axes) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(presentedLines) { presented in
-                            if let omitted = presented.omittedLines {
-                                omittedRow(omitted, fallback: presented.line.text)
-                            } else {
-                                diffRow(presented.line)
-                            }
-                        }
-                    }
-                    .fixedSize(horizontal: true, vertical: false)
-                }
-                .defaultScrollAnchor(.topLeading)
-            }
-        }
-    }
-
-    private func diffRow(_ line: DiffLine) -> some View {
-        HStack(spacing: 0) {
-            Rectangle()
-                .fill(accentColor(line.kind))
-                .frame(width: 3)
-            lineNumber(line.oldLine)
-            lineNumber(line.newLine)
-            Text(sign(for: line.kind))
-                .foregroundStyle(lineColor(line.kind))
-                .frame(width: 22)
-            Text(verbatim: displayText(line))
-                .foregroundStyle(lineColor(line.kind))
-                .padding(.trailing, 16)
-                .frame(minWidth: minimumCodeWidth, maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-        }
-        .font(.system(size: 11.5, design: .monospaced))
-        .frame(minHeight: 22)
-        .background(lineBackground(line.kind))
-    }
-
-    private func omittedRow(_ count: Int, fallback: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 10, weight: .semibold))
-            Text(count > 0 ? "\(count) unmodified lines" : fallback)
-        }
-        .font(.system(size: 10.5, design: .monospaced))
-        .foregroundStyle(chrome.foreground.opacity(0.62))
-        .padding(.leading, 88)
-        .frame(
-            minWidth: minimumCodeWidth + 100,
-            maxWidth: .infinity,
-            minHeight: 28,
-            alignment: .leading
-        )
-        .background(chrome.foreground.opacity(0.035))
-    }
-
-    private func lineNumber(_ value: Int?) -> some View {
-        Text(value.map(String.init) ?? "")
-            .font(.system(size: 9.5, design: .monospaced))
-            .foregroundStyle(chrome.foreground.opacity(0.38))
-            .frame(width: 46, alignment: .trailing)
-            .padding(.trailing, 8)
-            .background(chrome.foreground.opacity(0.045))
-    }
-
-    private func displayText(_ line: DiffLine) -> String {
-        switch line.kind {
-        case .addition, .deletion:
-            return String(line.text.dropFirst())
-        case .context where line.oldLine != nil:
-            return line.text.hasPrefix(" ") ? String(line.text.dropFirst()) : line.text
-        default:
-            return line.text.isEmpty ? " " : line.text
-        }
-    }
-
-    private func sign(for kind: DiffLineKind) -> String {
-        switch kind {
-        case .addition: "+"
-        case .deletion: "−"
-        default: ""
-        }
-    }
-
-    private func lineColor(_ kind: DiffLineKind) -> Color {
-        switch kind {
-        case .metadata: chrome.foreground.opacity(0.62)
-        case .hunk: chrome.accent
-        case .addition: .green
-        case .deletion: .red
-        case .context: chrome.foreground
-        }
-    }
-
-    private func lineBackground(_ kind: DiffLineKind) -> Color {
-        switch kind {
-        case .addition: Color.green.opacity(0.16)
-        case .deletion: Color.red.opacity(0.14)
-        case .hunk: chrome.accent.opacity(0.075)
-        default: .clear
-        }
-    }
-
-    private func accentColor(_ kind: DiffLineKind) -> Color {
-        switch kind {
-        case .addition: .green
-        case .deletion: .red
-        default: .clear
-        }
-    }
-
-    private var presentedLines: [PresentedDiffLine] {
-        var previousNewEnd = 0
-        var result: [PresentedDiffLine] = []
-        for line in model.diffLines {
-            if line.kind == .metadata { continue }
-            if line.kind == .hunk, let range = newRange(from: line.text) {
-                let omitted = max(0, range.start - previousNewEnd - 1)
-                result.append(
-                    PresentedDiffLine(
-                        id: line.id,
-                        line: line,
-                        omittedLines: omitted
-                    )
-                )
-                previousNewEnd = range.start + max(range.count, 1) - 1
-            } else {
-                result.append(PresentedDiffLine(id: line.id, line: line, omittedLines: nil))
-            }
-        }
-        return result
-    }
-
-    private func newRange(from hunk: String) -> (start: Int, count: Int)? {
-        guard let field = hunk.split(separator: " ").first(where: { $0.hasPrefix("+") })
-        else { return nil }
-        let values = field.dropFirst().split(separator: ",", maxSplits: 1)
-        guard let start = Int(values[0]) else { return nil }
-        return (start, values.count > 1 ? Int(values[1]) ?? 1 : 1)
-    }
-}
-
-private struct PresentedDiffLine: Identifiable {
-    let id: Int
-    let line: DiffLine
-    let omittedLines: Int?
-}
 
 struct GitContextSync: View {
     @ObservedObject var session: TerminalSession
@@ -1215,11 +987,38 @@ struct GitContextSync: View {
 
     var body: some View {
         Color.clear
-            .onAppear { sync(session.workingDirectory) }
-            .onChange(of: session.liveWorkingDirectory) { _, directory in sync(directory) }
+            .onAppear { sync() }
+            .onChange(of: session.liveWorkingDirectory) { _, _ in sync() }
+            .onChange(of: session.foregroundProcessID) { _, _ in sync() }
+            .task(id: session.id) {
+                // Periodic foreground cwd refresh so worktree re-root stays live.
+                while !Task.isCancelled {
+                    session.refreshWorkingDirectory()
+                    sync()
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
     }
 
-    private func sync(_ directory: String?) {
-        model.sync(root: directory.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackRoot)
+    private func sync() {
+        session.refreshWorkingDirectory()
+        let shell = session.workingDirectory
+        let foregroundDir: String?
+        if let pid = session.foregroundProcessID,
+           let foreground = ProcessWorkingDirectoryProbe.directory(for: pid),
+           !foreground.isEmpty,
+           foreground != shell
+        {
+            foregroundDir = foreground
+        } else {
+            foregroundDir = nil
+        }
+        let resolution = PanelRootResolver.resolve(
+            projectRoot: fallbackRoot,
+            shellDirectory: shell.isEmpty ? fallbackRoot : shell,
+            foregroundDirectory: foregroundDir,
+            gitTopLevel: { GitClient.repositoryTopLevel(from: $0) }
+        )
+        model.sync(root: resolution.root, source: resolution.source)
     }
 }

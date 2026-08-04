@@ -10,6 +10,10 @@ enum SettingsKeys {
     static let gitSidebarWidth = "gitSidebarWidth"
     static let gitSidebarVisible = "gitSidebarVisible"
     static let rightSidebarContextMigrated = "rightSidebarContextMigrated"
+    /// Remembered full-area diff layout: `unified` or `split`.
+    static let diffLayoutStyle = "diffLayoutStyle"
+    /// One-time migration of the default right-sidebar width toward a denser panel.
+    static let gitSidebarWidthNarrowed = "gitSidebarWidthNarrowed"
     static let cmuxShortcutsEnabled = "cmuxShortcutsEnabled"
     static let gitAutoRefreshEnabled = "gitAutoRefreshEnabled"
     static let gitRefreshDelay = "gitRefreshDelay"

@@ -282,7 +282,7 @@ private enum TestGitError: Error {
 }
 
 @MainActor
-@Test func inlineDiffAndModalPresentationRemainIndependent() {
+@Test func inlineDiffPresentationExpandsAndCollapsesInSidebar() {
     let change = GitFileChange(
         path: "Sources/App.swift",
         originalPath: nil,
@@ -302,18 +302,10 @@ private enum TestGitError: Error {
 
     model.presentModal(change)
     #expect(model.expandedChangeID == change.id)
-    #expect(model.isDiffPresented)
-    model.dismissDiff()
-    #expect(model.expandedChangeID == change.id)
-    #expect(model.selectedChangeID == change.id)
+    #expect(!model.isDiffPresented)
 
-    model.toggleInline(change)
-    #expect(model.expandedChangeID == nil)
-    #expect(model.selectedChangeID == nil)
-
-    model.presentModal(change)
-    #expect(model.expandedChangeID == nil)
     model.dismissDiff()
+    #expect(model.expandedChangeID == nil)
     #expect(model.selectedChangeID == nil)
 }
 

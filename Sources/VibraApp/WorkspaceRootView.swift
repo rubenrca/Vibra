@@ -23,9 +23,18 @@ struct WorkspaceRootView: View {
     init(mode: WorkspaceWindowMode = .project) {
         self.mode = mode
         let savedWidth = UserDefaults.standard.double(forKey: SettingsKeys.terminalSidebarWidth)
-        let savedGitWidth = UserDefaults.standard.double(forKey: SettingsKeys.gitSidebarWidth)
+        var savedGitWidth = UserDefaults.standard.double(forKey: SettingsKeys.gitSidebarWidth)
+        // One-time narrow of the previous 420pt default so the denser changes
+        // list leaves more room for the full-area center diff.
+        if !UserDefaults.standard.bool(forKey: SettingsKeys.gitSidebarWidthNarrowed) {
+            if savedGitWidth <= 0 || abs(savedGitWidth - 420) < 0.5 {
+                savedGitWidth = 300
+                UserDefaults.standard.set(300.0, forKey: SettingsKeys.gitSidebarWidth)
+            }
+            UserDefaults.standard.set(true, forKey: SettingsKeys.gitSidebarWidthNarrowed)
+        }
         _terminalSidebarWidth = State(initialValue: savedWidth > 0 ? savedWidth : 270)
-        _gitSidebarWidth = State(initialValue: savedGitWidth > 0 ? savedGitWidth : 420)
+        _gitSidebarWidth = State(initialValue: savedGitWidth > 0 ? savedGitWidth : 300)
         _store = StateObject(
             wrappedValue: WorkspaceStore(restoresWorkspace: mode == .project)
         )
@@ -109,12 +118,6 @@ struct WorkspaceRootView: View {
                 Color.clear.onAppear { gitModel.sync(root: project.rootPath) }
             }
         }
-        .overlay {
-            if gitModel.isDiffPresented {
-                GitDiffModalView(model: gitModel)
-                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
-            }
-        }
         .animation(.easeOut(duration: 0.16), value: gitModel.isDiffPresented)
         .focusedSceneObject(store)
         .onAppear { chromeTheme.refresh(colorScheme: colorScheme) }
@@ -135,7 +138,7 @@ struct WorkspaceRootView: View {
 
     private var effectiveGitSidebarWidth: CGFloat {
         clampedGitSidebarWidth(gitSidebarWidth - gitSidebarDragTranslation)
-            + (gitModel.expandedChangeID == nil ? 0 : 140)
+            + (gitModel.expandedChangeID == nil ? 0 : 160)
     }
 
     private var effectiveTerminalSidebarWidth: CGFloat {
@@ -207,7 +210,7 @@ struct WorkspaceRootView: View {
     }
 
     private func clampedGitSidebarWidth(_ width: CGFloat) -> CGFloat {
-        min(max(width, 300), 680)
+        min(max(width, 240), 560)
     }
 }
 

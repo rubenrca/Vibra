@@ -44,7 +44,7 @@ struct GitRepositorySnapshot: Equatable, Sendable {
     let changes: [GitFileChange]
 }
 
-enum DiffLineKind: Sendable {
+enum DiffLineKind: Equatable, Sendable {
     case metadata
     case hunk
     case addition
@@ -52,7 +52,7 @@ enum DiffLineKind: Sendable {
     case context
 }
 
-struct DiffLine: Identifiable, Sendable {
+struct DiffLine: Identifiable, Equatable, Sendable {
     let id: Int
     let text: String
     let kind: DiffLineKind
@@ -71,13 +71,23 @@ enum GitClient {
         return branch.isEmpty ? nil : branch
     }
 
-    nonisolated static func snapshot(from path: String) throws -> GitRepositorySnapshot {
+    /// Returns the repository top-level for `path`, or nil when not inside a git repo.
+    nonisolated static func repositoryTopLevel(from path: String) -> String? {
         let topLevel = run(["rev-parse", "--show-toplevel"], in: path)
-        guard topLevel.status == 0 else {
+        guard topLevel.status == 0 else { return nil }
+        let root = topLevel.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return root.isEmpty ? nil : root
+    }
+
+    /// Parses unified diff text into line models (testable without invoking git).
+    nonisolated static func parseDiffText(_ text: String) -> [DiffLine] {
+        makeDiffLines(text)
+    }
+
+    nonisolated static func snapshot(from path: String) throws -> GitRepositorySnapshot {
+        guard let root = repositoryTopLevel(from: path) else {
             throw GitClientError.notRepository
         }
-        let root = topLevel.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !root.isEmpty else { throw GitClientError.notRepository }
 
         let status = run(
             ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],

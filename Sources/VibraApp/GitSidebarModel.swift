@@ -12,7 +12,19 @@ final class GitSidebarModel: ObservableObject {
     @Published private(set) var isLoadingDiff = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var operationMessage: String?
+    /// Kept for compatibility with older presentation call sites; the improved
+    /// diff viewer lives inline in the right sidebar (expanded row), not center.
     @Published var isDiffPresented = false
+    @Published var changesFilter = ""
+    @Published var panelRootSource: PanelRootSource = .fallback
+    @Published var diffLayoutStyle: DiffLayoutStyle = {
+        if let raw = UserDefaults.standard.string(forKey: SettingsKeys.diffLayoutStyle),
+           let style = DiffLayoutStyle(rawValue: raw)
+        {
+            return style
+        }
+        return .unified
+    }()
 
     private var requestedRoot = ""
     private var watchedRoot = ""
@@ -30,7 +42,18 @@ final class GitSidebarModel: ObservableObject {
         changes.first { $0.id == selectedChangeID }
     }
 
-    func sync(root: String) {
+    var filteredChanges: [GitFileChange] {
+        ChangeListFilter.apply(changes, query: changesFilter)
+    }
+
+    func setDiffLayoutStyle(_ style: DiffLayoutStyle) {
+        guard diffLayoutStyle != style else { return }
+        diffLayoutStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: SettingsKeys.diffLayoutStyle)
+    }
+
+    func sync(root: String, source: PanelRootSource = .fallback) {
+        panelRootSource = source
         guard requestedRoot != root else { return }
         requestedRoot = root
         generation &+= 1
@@ -115,36 +138,42 @@ final class GitSidebarModel: ObservableObject {
         }
     }
 
+    /// Primary open path: expand the improved inline viewer in the right sidebar.
     func present(_ change: GitFileChange) {
-        presentModal(change)
+        expandInline(change)
     }
 
     func toggleInline(_ change: GitFileChange) {
         if expandedChangeID == change.id {
-            expandedChangeID = nil
-            guard !isDiffPresented else { return }
-            selectedChangeID = nil
-            diffTask?.cancel()
-            diffLines = []
-            isLoadingDiff = false
+            collapseInline()
             return
         }
+        expandInline(change)
+    }
 
-        expandedChangeID = change.id
-        select(change)
+    /// Backwards-compatible aliases — always expand in the sidebar.
+    func presentFullDiff(_ change: GitFileChange) {
+        expandInline(change)
     }
 
     func presentModal(_ change: GitFileChange) {
-        if expandedChangeID != change.id {
-            expandedChangeID = nil
-        }
-        select(change)
-        isDiffPresented = true
+        expandInline(change)
     }
 
     func dismissDiff() {
         isDiffPresented = false
-        guard expandedChangeID == nil else { return }
+        collapseInline()
+    }
+
+    private func expandInline(_ change: GitFileChange) {
+        expandedChangeID = change.id
+        isDiffPresented = false
+        select(change)
+    }
+
+    private func collapseInline() {
+        expandedChangeID = nil
+        isDiffPresented = false
         selectedChangeID = nil
         diffTask?.cancel()
         diffLines = []
