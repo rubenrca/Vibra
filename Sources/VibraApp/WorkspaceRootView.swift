@@ -1243,8 +1243,15 @@ private struct SessionHeader: View {
             Spacer(minLength: 0)
 
             HStack(spacing: 8) {
-                if let project = store.selectedProject {
-                    OpenInEditorButton(path: project.rootPath, compact: true)
+                if store.selectedProject != nil {
+                    // Prefer the active console cwd over project.rootPath.
+                    // Ungrouped projects pin rootPath to $HOME, which is wrong for IDE open.
+                    OpenInEditorButton(
+                        compact: true,
+                        hasPath: store.selectedSession != nil
+                            || store.selectedProject?.rootPath != nil,
+                        resolvePath: editorTargetPath
+                    )
                 }
 
                 WindowChromeButton(
@@ -1263,6 +1270,15 @@ private struct SessionHeader: View {
                 .fill(chrome.quietBorder)
                 .frame(height: 1)
         }
+    }
+
+    /// Directory the IDE button should open: live console cwd when available.
+    private func editorTargetPath() -> String? {
+        if let session = store.selectedSession {
+            session.refreshWorkingDirectory()
+            return session.workingDirectory
+        }
+        return store.selectedProject?.rootPath
     }
 
     private var windowControls: some View {

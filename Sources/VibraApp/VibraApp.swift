@@ -173,7 +173,12 @@ private struct VibraCommands: Commands {
     }
 
     private func openSelectedProjectInEditor() {
-        guard let path = workspace?.selectedProject?.rootPath else { return }
+        // Open the active console directory, not the project root (often $HOME
+        // for ungrouped tabs).
+        workspace?.selectedSession?.refreshWorkingDirectory()
+        guard let path = workspace?.selectedSession?.workingDirectory
+            ?? workspace?.selectedProject?.rootPath
+        else { return }
         _ = try? ExternalEditorLauncher.open(path: path)
     }
 }

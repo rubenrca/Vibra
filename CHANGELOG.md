@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix the header `IDE` button (and ⇧⌘E) so it opens the active console directory instead of the project root (often `$HOME` for ungrouped tabs).
+
 ## 0.2.5 — 2026-08-03
 
 - Simplify the terminal sidebar into a compact, route-aware tab list with drag-and-drop ordering.

@@ -235,11 +235,30 @@ enum ExternalEditorLauncher {
 
 /// Compact IDE launcher with a menu for choosing among installed editors.
 struct OpenInEditorButton: View {
-    let path: String?
+    /// Resolves the path at click time so callers can use a live terminal cwd.
+    private let resolvePath: () -> String?
+    /// Whether a target path is expected (avoids resolving during layout).
+    private let hasPath: Bool
     /// Preserved for call-site compatibility; the label remains intentionally generic.
     var compact: Bool = true
     @State private var lastError: String?
     @State private var isHovering = false
+
+    init(path: String?, compact: Bool = true) {
+        self.resolvePath = { path }
+        self.hasPath = path != nil
+        self.compact = compact
+    }
+
+    init(
+        compact: Bool = true,
+        hasPath: Bool = true,
+        resolvePath: @escaping () -> String?
+    ) {
+        self.resolvePath = resolvePath
+        self.hasPath = hasPath
+        self.compact = compact
+    }
 
     private var editors: [InstalledExternalEditor] {
         ExternalEditorLauncher.installedEditors()
@@ -250,7 +269,7 @@ struct OpenInEditorButton: View {
     }
 
     private var isEnabled: Bool {
-        path != nil && !editors.isEmpty
+        hasPath && !editors.isEmpty
     }
 
     var body: some View {
@@ -278,28 +297,26 @@ struct OpenInEditorButton: View {
 
     @ViewBuilder
     private var menuContent: some View {
-        if let path, !editors.isEmpty {
+        if !editors.isEmpty {
             if let preferred {
                 Button("Open in \(preferred.displayName)") {
-                    open(path, with: preferred)
+                    open(with: preferred)
                 }
                 if editors.count > 1 {
                     Divider()
                     ForEach(editors.filter { $0.id != preferred.id }) { editor in
                         Button(editor.displayName) {
-                            open(path, with: editor)
+                            open(with: editor)
                         }
                     }
                 }
             } else {
                 ForEach(editors) { editor in
                     Button(editor.displayName) {
-                        open(path, with: editor)
+                        open(with: editor)
                     }
                 }
             }
-        } else if path == nil {
-            Text("No project selected")
         } else {
             Text("No supported editor installed")
         }
@@ -336,7 +353,7 @@ struct OpenInEditorButton: View {
     }
 
     private var helpText: String {
-        if path == nil { return "Open project in editor" }
+        if !hasPath { return "Open folder in editor" }
         if editors.isEmpty {
             return "Install Cursor, VS Code, Zed, or another IDE to open projects"
         }
@@ -346,7 +363,11 @@ struct OpenInEditorButton: View {
         return "Open in editor"
     }
 
-    private func open(_ path: String, with editor: InstalledExternalEditor) {
+    private func open(with editor: InstalledExternalEditor) {
+        guard let path = resolvePath() else {
+            lastError = "No folder selected."
+            return
+        }
         do {
             try ExternalEditorLauncher.open(path: path, with: editor)
         } catch {
