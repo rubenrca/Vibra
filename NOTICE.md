@@ -18,7 +18,7 @@ The compatibility marks in `Sources/VibraApp/Resources/AgentMarks` identify the 
 Vibra can detect. OpenAI/Codex, Claude, Gemini, OpenCode, Amp, and Cursor
 marks are supplied by [Simple Icons](https://simpleicons.org/) (CC0-1.0).
 The Aider and Goose marks are sourced from their public upstream repositories.
-The Grok mark is the SpaceXAI symbol distributed by the official
-[Grok Build](https://github.com/xai-org/grok-build) project.
+The Grok mark is the current icon served by [Grok](https://grok.com),
+the xAI assistant.
 Their names and logos remain trademarks of their respective owners; their use
 here does not imply endorsement or affiliation.

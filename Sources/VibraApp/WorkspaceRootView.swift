@@ -895,7 +895,7 @@ private struct AgentBrandMark: View {
             if let agent, let brandImage = AgentMarkAsset.image(for: agent) {
                 Image(nsImage: brandImage)
                     .resizable()
-                    .renderingMode(.template)
+                    .renderingMode(agent == .grok ? .original : .template)
                     .scaledToFit()
                     .foregroundStyle(color)
                     .padding(0.5)
@@ -1195,14 +1195,10 @@ private struct TerminalPane: View {
     }
 
     private var terminalSurface: some View {
-        ZStack {
-            TerminalSurfaceHost(session: session, isVisible: true, isFocused: focused)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onChange(of: state.isFocused) { _, isFocused in
-                    if isFocused && !focused { focus() }
-                }
-            TerminalBlockOverlay(session: session)
-        }
+        TerminalSurfaceHost(session: session, isVisible: true, isFocused: focused)
+            .onChange(of: state.isFocused) { _, isFocused in
+                if isFocused && !focused { focus() }
+            }
     }
 }
 

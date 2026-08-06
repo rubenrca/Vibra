@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.7 — 2026-08-06
+
+- Restore the terminal's normal rendering by removing the experimental command-block overlay.
+- Replace the xAI mark with the current Grok icon in agent badges.
+
 ## 0.2.6 — 2026-08-06
 
 - Fix the header `IDE` button (and ⇧⌘E) so it opens the active console directory instead of the project root (often `$HOME` for ungrouped tabs).
