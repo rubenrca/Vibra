@@ -58,7 +58,6 @@ struct WorkspaceRootView: View {
                    let project = store.selectedProject {
                     GitSidebarView(
                         fallbackRoot: project.rootPath,
-                        session: project.selectedSession,
                         store: store,
                         model: gitModel
                     )
@@ -1223,10 +1222,14 @@ private struct TerminalPane: View {
     }
 
     private var terminalSurface: some View {
-        TerminalSurfaceHost(session: session, isVisible: true, isFocused: focused)
-            .onChange(of: state.isFocused) { _, isFocused in
-                if isFocused && !focused { focus() }
-            }
+        ZStack {
+            TerminalSurfaceHost(session: session, isVisible: true, isFocused: focused)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onChange(of: state.isFocused) { _, isFocused in
+                    if isFocused && !focused { focus() }
+                }
+            TerminalBlockOverlay(session: session)
+        }
     }
 }
 

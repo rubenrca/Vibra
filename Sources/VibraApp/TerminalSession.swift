@@ -18,12 +18,15 @@ final class TerminalSession: ObservableObject, Identifiable {
     /// A concise, local label extracted from the first Codex prompt in this
     /// session. It remains after Codex returns to the shell.
     @Published private(set) var taskTitle: String?
+    /// Commands submitted in this terminal, used by the in-pane block gutter.
+    @Published private(set) var historyBlocks: [TerminalHistoryBlock] = []
 
     private(set) var isVisible = false
     private(set) var isClosed = false
     private var missedAgentPolls = 0
     private var detectedAgent: CodingAgent?
     private var latestAgentActivityAt = Date.distantPast
+    private var nextHistoryBlockID = 0
     private var cancellables: Set<AnyCancellable> = []
 
     init(id: UUID = UUID(), workingDirectory: String) {
@@ -66,6 +69,20 @@ final class TerminalSession: ObservableObject, Identifiable {
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
                     self?.handleDesktopNotification()
+                }
+            }
+            .store(in: &cancellables)
+
+        state.$lastCommandDurationNanos
+            .dropFirst()
+            .compactMap { $0 }
+            .sink { [weak self] durationNanos in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.finishLatestHistoryBlock(
+                        exitCode: self.state.lastCommandExitCode,
+                        durationNanos: durationNanos
+                    )
                 }
             }
             .store(in: &cancellables)
@@ -172,6 +189,7 @@ final class TerminalSession: ObservableObject, Identifiable {
     }
 
     func noteUserSubmittedInput() {
+        registerHistoryBlock()
         guard let agent = detectedAgent else { return }
         switch agentActivity {
         case .running(let current, _) where current == agent:
@@ -181,6 +199,71 @@ final class TerminalSession: ObservableObject, Identifiable {
             latestAgentActivityAt = now
             agentActivity = .running(agent: agent, since: now)
         }
+    }
+
+    private func registerHistoryBlock() {
+        let block = TerminalHistoryBlock(
+            id: nextHistoryBlockID,
+            startedAt: Date(),
+            promptRow: currentPromptRow()
+        )
+        nextHistoryBlockID += 1
+        historyBlocks.append(block)
+
+        let maximumBlockCount = 160
+        if historyBlocks.count > maximumBlockCount {
+            historyBlocks.removeFirst(historyBlocks.count - maximumBlockCount)
+        }
+    }
+
+    private func finishLatestHistoryBlock(exitCode: Int?, durationNanos: UInt64) {
+        guard let index = historyBlocks.lastIndex(where: { !$0.isFinished }) else { return }
+        let blockID = historyBlocks[index].id
+        historyBlocks[index].finishedAt = Date()
+        historyBlocks[index].exitCode = exitCode
+        historyBlocks[index].durationNanos = durationNanos
+
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self,
+                  let endRow = self.currentPromptRow(),
+                  let blockIndex = self.historyBlocks.firstIndex(where: { $0.id == blockID })
+            else { return }
+            let startRow = self.historyBlocks[blockIndex].promptRow ?? endRow
+            self.historyBlocks[blockIndex].outputEndRow = max(startRow, endRow)
+        }
+    }
+
+    /// Resolves the cursor to an absolute terminal row before Return reaches Ghostty.
+    /// This keeps block markers attached to prompts as the viewport scrolls.
+    private func currentPromptRow() -> UInt64? {
+        guard let scrollbar = state.scrollbar,
+              scrollbar.len > 0,
+              terminalView.bounds.height > 0
+        else { return nil }
+
+        let cursorRect = terminalView.firstRect(
+            forCharacterRange: NSRange(location: 0, length: 0),
+            actualRange: nil
+        )
+        guard cursorRect.height > 0 else { return nil }
+
+        let localRect: NSRect
+        if let window = terminalView.window {
+            let windowRect = window.convertFromScreen(cursorRect)
+            localRect = terminalView.convert(windowRect, from: nil)
+        } else {
+            localRect = cursorRect
+        }
+
+        let yFromTop = max(0, terminalView.bounds.height - localRect.maxY)
+        let rowInViewport = Int((yFromTop / cursorRect.height).rounded(.down))
+        let lastVisibleRow = max(0, Int(scrollbar.len) - 1)
+        let clampedRow = max(0, min(lastVisibleRow, rowInViewport))
+        let liveViewportOffset = scrollbar.total > scrollbar.len
+            ? scrollbar.total - scrollbar.len
+            : 0
+        return liveViewportOffset + UInt64(clampedRow)
     }
 
     private func handleDesktopNotification() {

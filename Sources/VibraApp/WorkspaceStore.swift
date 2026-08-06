@@ -102,7 +102,6 @@ struct TerminalWorkspaceFolder: Identifiable {
 }
 
 enum RightSidebarMode: String {
-    case session
     case files
     case changes
 }
@@ -134,9 +133,9 @@ final class WorkspaceStore: ObservableObject {
     }()
     @Published private(set) var rightSidebarMode: RightSidebarMode = {
         guard let value = UserDefaults.standard.string(forKey: "rightSidebarMode") else {
-            return .session
+            return .changes
         }
-        return RightSidebarMode(rawValue: value) ?? .session
+        return RightSidebarMode(rawValue: value) ?? .changes
     }()
 
     private var hiddenSessionPump: Timer?
@@ -164,8 +163,8 @@ final class WorkspaceStore: ObservableObject {
             isGitSidebarVisible = false
         }
         if !UserDefaults.standard.bool(forKey: SettingsKeys.rightSidebarContextMigrated) {
-            rightSidebarMode = .session
-            UserDefaults.standard.set(RightSidebarMode.session.rawValue, forKey: "rightSidebarMode")
+            rightSidebarMode = .changes
+            UserDefaults.standard.set(RightSidebarMode.changes.rawValue, forKey: "rightSidebarMode")
             UserDefaults.standard.set(true, forKey: SettingsKeys.rightSidebarContextMigrated)
         }
         refreshSessionVisibility()

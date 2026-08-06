@@ -4,7 +4,6 @@ import SwiftUI
 
 struct GitSidebarView: View {
     let fallbackRoot: String
-    let session: TerminalSession?
     @ObservedObject var store: WorkspaceStore
     @ObservedObject var model: GitSidebarModel
     @StateObject private var fileTree = RepositoryFileTreeModel()
@@ -33,7 +32,6 @@ struct GitSidebarView: View {
                 .layoutPriority(1)
 
             Spacer(minLength: 0)
-            modeButton(.session, image: "info.circle")
             modeButton(.changes, image: "arrow.triangle.branch")
             modeButton(.files, image: "folder")
             if model.isRefreshing {
@@ -75,15 +73,13 @@ struct GitSidebarView: View {
 
     @ViewBuilder
     private var content: some View {
-        if store.rightSidebarMode == .session {
-            SessionContextSidebar(session: session, model: model)
-        } else if store.rightSidebarMode == .files {
+        if store.rightSidebarMode == .files {
             RepositoryFileTreeView(
                 treeModel: fileTree,
                 gitModel: model
             )
         } else if let error = model.errorMessage, model.repositoryRoot.isEmpty {
-            sidebarMessage(error, icon: "exclamationmark.triangle")
+            sidebarMessage(error)
         } else if model.changes.isEmpty, !model.isRefreshing {
             sidebarMessage(
                 model.repositoryRoot.isEmpty
@@ -163,11 +159,13 @@ struct GitSidebarView: View {
         .help(help)
     }
 
-    private func sidebarMessage(_ text: String, icon: String) -> some View {
+    private func sidebarMessage(_ text: String, icon: String? = nil) -> some View {
         VStack(spacing: 7) {
-            Image(systemName: icon)
-                .font(.system(size: 20, weight: .light))
-                .foregroundStyle(.tertiary)
+            if let icon {
+                Image(systemName: icon)
+                    .font(.system(size: 20, weight: .light))
+                    .foregroundStyle(.tertiary)
+            }
             Text(text)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -200,7 +198,6 @@ struct GitSidebarView: View {
 
     private func modeHelp(for mode: RightSidebarMode) -> String {
         switch mode {
-        case .session: "Session Context"
         case .files: "Repository Files"
         case .changes: "Git Changes"
         }
@@ -211,214 +208,6 @@ struct GitSidebarView: View {
         fileTree.sync(root: root)
     }
 
-}
-
-private struct SessionContextSidebar: View {
-    let session: TerminalSession?
-    @ObservedObject var model: GitSidebarModel
-    @Environment(\.appChrome) private var chrome
-
-    var body: some View {
-        ScrollView {
-            if let session {
-                SessionContextDetails(session: session, model: model)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 16)
-            } else {
-                Text("No active terminal session")
-                    .font(.system(size: 11))
-                    .foregroundStyle(chrome.secondaryForeground)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-            }
-        }
-    }
-}
-
-private struct SessionContextDetails: View {
-    @ObservedObject var session: TerminalSession
-    @ObservedObject var model: GitSidebarModel
-    @Environment(\.appChrome) private var chrome
-    @State private var processes: [TerminalProcess] = []
-    @State private var ports: [ListeningPort] = []
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            ContextSection(title: "Session") {
-                ContextRow(label: "Agent", value: agentName)
-                ContextRow(label: "Path", value: displayPath(session.workingDirectory), monospaced: true)
-                if !model.repositoryRoot.isEmpty,
-                   model.repositoryRoot != session.workingDirectory
-                {
-                    ContextRow(
-                        label: "Project",
-                        value: displayPath(model.repositoryRoot) + projectRootSuffix,
-                        monospaced: true
-                    )
-                }
-            }
-
-            ContextSection(title: "Git") {
-                Text(gitSummary)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(chrome.secondaryForeground)
-                    .lineLimit(2)
-            }
-
-            ContextSection(title: "Processes") {
-                if processes.isEmpty {
-                    Text("No active process")
-                        .font(.system(size: 11))
-                        .foregroundStyle(chrome.secondaryForeground)
-                } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(processes) { process in
-                            HStack(spacing: 8) {
-                                Text(process.name)
-                                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(chrome.foreground.opacity(
-                                        max(0.56, 0.9 - Double(process.depth) * 0.08)
-                                    ))
-                                    .padding(.leading, CGFloat(process.depth) * 17)
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                Text("\(process.pid)")
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(chrome.secondaryForeground.opacity(0.72))
-                            }
-                        }
-                    }
-                }
-            }
-
-            ContextSection(title: "Ports") {
-                if ports.isEmpty {
-                    Text("No listening ports")
-                        .font(.system(size: 11))
-                        .foregroundStyle(chrome.secondaryForeground)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(ports) { port in
-                            Button {
-                                if let url = port.url {
-                                    NSWorkspace.shared.open(url)
-                                }
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "network")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(Color(red: 0.35, green: 0.65, blue: 1.0))
-                                    Text("\(port.port)")
-                                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                                        .foregroundStyle(chrome.foreground)
-                                    Text(port.processName)
-                                        .font(.system(size: 10.5))
-                                        .foregroundStyle(chrome.secondaryForeground)
-                                        .lineLimit(1)
-                                    Spacer(minLength: 4)
-                                    Image(systemName: "arrow.up.forward")
-                                        .font(.system(size: 9, weight: .medium))
-                                        .foregroundStyle(chrome.secondaryForeground.opacity(0.7))
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .help("Open http://localhost:\(port.port)")
-                            .contextMenu {
-                                Button("Open in Browser") {
-                                    if let url = port.url { NSWorkspace.shared.open(url) }
-                                }
-                                Button("Copy URL") {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(
-                                        "http://localhost:\(port.port)",
-                                        forType: .string
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onAppear { session.refreshWorkingDirectory() }
-        .task(id: session.foregroundProcessID) {
-            let foregroundPID = session.foregroundProcessID
-            let tree = await Task.detached(priority: .utility) {
-                TerminalProcessTreeProbe.processes(rootedAt: foregroundPID)
-            }.value
-            processes = tree
-            let pids = Set(tree.map(\.pid))
-            ports = await Task.detached(priority: .utility) {
-                SessionPortProbe.listeningPorts(for: pids)
-            }.value
-        }
-    }
-
-    private var agentName: String {
-        session.agentActivity.agent?.displayName ?? "Shell"
-    }
-
-    private var projectRootSuffix: String {
-        switch model.panelRootSource {
-        case .project: " · project"
-        case .shell: " · auto"
-        case .foregroundWorktree: " · worktree"
-        case .fallback: ""
-        }
-    }
-
-    private func displayPath(_ path: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if path == home { return "~" }
-        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
-        return path
-    }
-
-    private var gitSummary: String {
-        guard !model.repositoryRoot.isEmpty else { return "Not a git repository" }
-        let branch = model.branch.isEmpty ? "Repository" : model.branch
-        guard !model.changes.isEmpty else { return "\(branch) · Working tree clean" }
-        return "\(branch) · \(model.changes.count) changed"
-    }
-}
-
-private struct ContextSection<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: Content
-    @Environment(\.appChrome) private var chrome
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(0.8)
-                .textCase(.uppercase)
-                .foregroundStyle(chrome.secondaryForeground.opacity(0.72))
-            content
-        }
-    }
-}
-
-private struct ContextRow: View {
-    let label: String
-    let value: String
-    var monospaced = false
-    @Environment(\.appChrome) private var chrome
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(chrome.secondaryForeground)
-                .frame(width: 62, alignment: .leading)
-            Text(value)
-                .font(.system(size: 11, weight: .medium, design: monospaced ? .monospaced : .default))
-                .foregroundStyle(chrome.foreground.opacity(0.86))
-                .lineLimit(1)
-                .truncationMode(.head)
-        }
-    }
 }
 
 private struct InlineGitDiffCard: View {
