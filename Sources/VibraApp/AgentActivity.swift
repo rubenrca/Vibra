@@ -9,6 +9,7 @@ enum CodingAgent: String, CaseIterable, Sendable {
     case goose
     case amp
     case cursor
+    case grok
 
     var displayName: String {
         switch self {
@@ -20,6 +21,7 @@ enum CodingAgent: String, CaseIterable, Sendable {
         case .goose: "Goose"
         case .amp: "Amp"
         case .cursor: "Cursor Agent"
+        case .grok: "Grok"
         }
     }
 
@@ -61,6 +63,9 @@ enum CodingAgent: String, CaseIterable, Sendable {
         }
         if executable == "cursor-agent" || command.contains("/cursor-agent") {
             return .cursor
+        }
+        if executable == "grok" || executable == "xai-grok-pager" {
+            return .grok
         }
 
         let normalizedTitle = title.lowercased()

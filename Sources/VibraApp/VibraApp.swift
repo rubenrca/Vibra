@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 enum VibraWindowID {
     static let terminal = "terminal"
@@ -44,12 +45,26 @@ struct VibraApp: App {
     }
 }
 
-final class VibraApplicationDelegate: NSObject, NSApplicationDelegate {
+final class VibraApplicationDelegate: NSObject, NSApplicationDelegate,
+    UNUserNotificationCenterDelegate
+{
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         // Safe to read appearance now that NSApplication is fully up.
         ChromeThemeController.shared.refresh()
+        if AgentCompletionNotifier.shared.isAvailable {
+            UNUserNotificationCenter.current().delegate = self
+            AgentCompletionNotifier.shared.requestAuthorizationIfEnabled()
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
     }
 }
 

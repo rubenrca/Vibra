@@ -102,8 +102,11 @@ private enum TestGitError: Error {
         commandLine: "/usr/bin/node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"
     ) == .claude)
     #expect(CodingAgent.detect(commandLine: "/Users/dev/.local/bin/opencode run") == .opencode)
+    #expect(CodingAgent.detect(commandLine: "/Users/dev/.local/bin/grok") == .grok)
+    #expect(CodingAgent.detect(commandLine: "/tmp/grok-build/target/release/xai-grok-pager") == .grok)
     #expect(CodingAgent.detect(commandLine: "/bin/zsh -l") == nil)
     #expect(CodingAgent.detect(commandLine: "", title: "Codex") == .codex)
+    #expect(CodingAgent.detect(commandLine: "", title: "Grok") == .grok)
 }
 
 @Test func ghosttyConfigLocatorPrefersXDGThenStandardLocations() throws {

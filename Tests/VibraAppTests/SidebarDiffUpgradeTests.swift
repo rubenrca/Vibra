@@ -2,6 +2,48 @@ import Foundation
 import Testing
 @testable import VibraApp
 
+// MARK: - Agent completion notifications
+
+@Test func agentCompletionTransitionOnlyEmitsForANewFinishedState() throws {
+    let finishedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let finished = AgentActivity.finished(
+        agent: .codex,
+        succeeded: true,
+        at: finishedAt
+    )
+    let event = try #require(
+        AgentCompletionEvent.transition(
+            from: .running(agent: .codex, since: finishedAt.addingTimeInterval(-20)),
+            to: finished
+        )
+    )
+    #expect(event.agent == .codex)
+    #expect(event.succeeded == true)
+    #expect(event.finishedAt == finishedAt)
+    #expect(AgentCompletionEvent.transition(from: finished, to: finished) == nil)
+    #expect(
+        AgentCompletionEvent.transition(
+            from: finished,
+            to: .ready(agent: .codex)
+        ) == nil
+    )
+}
+
+@Test func notificationsRequireARealApplicationBundle() {
+    #expect(
+        !AgentCompletionNotifier.isBundledApplication(
+            bundleURL: URL(fileURLWithPath: "/tmp/Vibra/.build/debug"),
+            bundleIdentifier: nil
+        )
+    )
+    #expect(
+        AgentCompletionNotifier.isBundledApplication(
+            bundleURL: URL(fileURLWithPath: "/Applications/Vibra.app"),
+            bundleIdentifier: "dev.vibra.app"
+        )
+    )
+}
+
 // MARK: - Panel root
 
 @Test func panelRootStaysPinnedDuringInRepoCd() {

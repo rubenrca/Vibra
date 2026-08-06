@@ -15,6 +15,7 @@ enum SettingsKeys {
     /// One-time migration of the default right-sidebar width toward a denser panel.
     static let gitSidebarWidthNarrowed = "gitSidebarWidthNarrowed"
     static let cmuxShortcutsEnabled = "cmuxShortcutsEnabled"
+    static let agentCompletionNotificationsEnabled = "agentCompletionNotificationsEnabled"
     static let gitAutoRefreshEnabled = "gitAutoRefreshEnabled"
     static let gitRefreshDelay = "gitRefreshDelay"
     static let preferredExternalEditor = "preferredExternalEditor"
@@ -34,6 +35,7 @@ enum SettingsKeys {
 
     @MainActor static let defaults: [String: Any] = [
         cmuxShortcutsEnabled: true,
+        agentCompletionNotificationsEnabled: true,
         gitAutoRefreshEnabled: true,
         gitRefreshDelay: 420,
         terminalThemeSource: TerminalAppearance.ThemeSource.ghostty.rawValue,
@@ -51,6 +53,8 @@ enum SettingsKeys {
 struct AppSettingsView: View {
     @AppStorage(SettingsKeys.cmuxShortcutsEnabled)
     private var cmuxShortcutsEnabled = true
+    @AppStorage(SettingsKeys.agentCompletionNotificationsEnabled)
+    private var agentCompletionNotificationsEnabled = true
     @AppStorage(SettingsKeys.gitAutoRefreshEnabled)
     private var gitAutoRefreshEnabled = true
     @AppStorage(SettingsKeys.gitRefreshDelay)
@@ -92,6 +96,15 @@ struct AppSettingsView: View {
                 }
 
                 Section("Agent Activity") {
+                    Toggle(
+                        "Notify when an agent finishes",
+                        isOn: $agentCompletionNotificationsEnabled
+                    )
+                    .onChange(of: agentCompletionNotificationsEnabled) { _, enabled in
+                        if enabled {
+                            AgentCompletionNotifier.shared.requestAuthorizationIfEnabled()
+                        }
+                    }
                     LabeledContent("Codex status") {
                         Text(codexStatusInstalled ? "Connected" : "Basic detection")
                             .foregroundStyle(codexStatusInstalled ? Color.green : .secondary)

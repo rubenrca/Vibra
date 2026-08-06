@@ -3,6 +3,7 @@
 /.swiftpm
 /Vibra.app
 /dist
+/graphify-out
 *.xcresult
 xcuserdata/
 # An exported backup of the Sparkle EdDSA private key must never be committed.

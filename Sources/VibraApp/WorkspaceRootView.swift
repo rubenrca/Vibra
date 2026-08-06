@@ -219,13 +219,32 @@ private struct TerminalSidebar: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 2) {
+            LazyVStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Text("Sessions")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(chrome.foreground.opacity(0.82))
+                    Spacer(minLength: 0)
+                    Text("\(store.sidebarWorkspaces.count)")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(chrome.secondaryForeground.opacity(0.9))
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(
+                            chrome.elevated.opacity(chrome.isDark ? 0.72 : 0.9),
+                            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        )
+                }
+                .padding(.leading, 5)
+                .padding(.trailing, 3)
+                .padding(.bottom, 1)
+
                 ForEach(store.sidebarWorkspaces) { located in
-                    SidebarTabRow(located: located, store: store)
+                    SidebarAgentRow(located: located, store: store)
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 9)
+            .padding(.top, 11)
+            .padding(.bottom, 12)
             .animation(
                 .spring(response: 0.26, dampingFraction: 0.9),
                 value: store.sidebarWorkspaces.map(\.id)
@@ -233,152 +252,6 @@ private struct TerminalSidebar: View {
         }
         .frame(maxWidth: .infinity)
         .background(chrome.panel)
-    }
-}
-
-private struct SidebarTabRow: View {
-    let located: LocatedTerminalWorkspace
-    @ObservedObject var store: WorkspaceStore
-    @Environment(\.appChrome) private var chrome
-    @ObservedObject private var session: TerminalSession
-    @State private var hovering = false
-    @State private var isDropTargeted = false
-    @State private var branchName: String?
-
-    init(located: LocatedTerminalWorkspace, store: WorkspaceStore) {
-        self.located = located
-        self.store = store
-        let session = located.workspace.selectedSession
-            ?? located.workspace.tabs[0].sessions[0]
-        _session = ObservedObject(wrappedValue: session)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(title)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(chrome.foreground.opacity(selected ? 1 : 0.88))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                if located.workspace.tabs.count > 1 {
-                    Text("\(located.workspace.tabs.count)")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(detailColor.opacity(0.9))
-                }
-
-                Button {
-                    store.closeWorkspace(located.id, in: located.projectID)
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .bold))
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(detailColor)
-                .opacity(hovering ? 0.84 : 0)
-            }
-
-            if let branchName {
-                Text(branchName)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(detailColor)
-                    .lineLimit(1)
-            }
-
-            Text(displayPath)
-                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                .foregroundStyle(detailColor.opacity(0.9))
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(minHeight: rowHeight)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(selected ? chrome.workspaceSelection : hovering ? chrome.workspaceHover : .clear)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(
-                            isDropTargeted
-                                ? chrome.accent.opacity(0.72)
-                                : chrome.quietBorder.opacity(selected ? 1 : 0),
-                            lineWidth: isDropTargeted ? 1 : 0.5
-                        )
-                }
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onTapGesture {
-            store.selectWorkspace(located.id, in: located.projectID)
-        }
-        .onHover { hovering = $0 }
-        .draggable(located.id.uuidString) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(chrome.foreground)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        }
-        .dropDestination(for: String.self) { items, location in
-            guard let value = items.first,
-                  let workspaceID = UUID(uuidString: value),
-                  workspaceID != located.id
-            else { return false }
-
-            let position: TabDropPosition = location.y > rowHeight / 2 ? .after : .before
-            withAnimation(.spring(response: 0.24, dampingFraction: 0.88)) {
-                store.reorderSidebarWorkspace(
-                    workspaceID,
-                    relativeTo: located.id,
-                    position: position
-                )
-            }
-            return true
-        } isTargeted: { targeted in
-            withAnimation(.easeOut(duration: 0.12)) {
-                isDropTargeted = targeted
-            }
-        }
-        .task(id: session.workingDirectory) {
-            let directory = session.workingDirectory
-            branchName = await Task.detached {
-                GitClient.branch(from: directory)
-            }.value
-        }
-        .contextMenu {
-            openInEditorContextMenuItems(path: session.workingDirectory)
-            Divider()
-            Button("Close tab", role: .destructive) {
-                store.closeWorkspace(located.id, in: located.projectID)
-            }
-        }
-        .help(title)
-        .accessibilityLabel(title)
-        .animation(.easeOut(duration: 0.12), value: hovering)
-        .animation(.spring(response: 0.24, dampingFraction: 0.9), value: selected)
-    }
-
-    private var selected: Bool { store.selectedWorkspace?.id == located.id }
-
-    private var rowHeight: CGFloat { branchName == nil ? 47 : 58 }
-
-    private var title: String {
-        displayPath
-    }
-
-    private var displayPath: String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let path = session.workingDirectory
-        if path == home { return "~" }
-        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
-        return path
-    }
-
-    private var detailColor: Color {
-        chrome.secondaryForeground.opacity(selected ? 0.92 : 1)
     }
 }
 
@@ -600,9 +473,9 @@ private struct SidebarAgentRow: View {
     let located: LocatedTerminalWorkspace
     @ObservedObject var store: WorkspaceStore
     @Environment(\.appChrome) private var chrome
-    let createSpace: () -> Void
     @ObservedObject private var session: TerminalSession
     @State private var hovering = false
+    @State private var isDropTargeted = false
     @State private var branchName: String?
     @State private var isRenaming = false
     @State private var renameDraft = ""
@@ -610,82 +483,131 @@ private struct SidebarAgentRow: View {
 
     init(
         located: LocatedTerminalWorkspace,
-        store: WorkspaceStore,
-        createSpace: @escaping () -> Void
+        store: WorkspaceStore
     ) {
         self.located = located
         self.store = store
-        self.createSpace = createSpace
         let session = located.workspace.selectedSession
             ?? located.workspace.tabs[0].sessions[0]
         _session = ObservedObject(wrappedValue: session)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                SidebarAgentBadge(activity: session.agentActivity, selected: selected)
-                    .frame(width: 20, height: 20)
+        HStack(alignment: .center, spacing: 10) {
+            SidebarAgentBadge(activity: workspaceActivity, selected: selected)
+                .frame(width: 18, height: 18)
+                .padding(5)
+                .background(
+                    selected
+                        ? chrome.accent.opacity(chrome.isDark ? 0.13 : 0.1)
+                        : chrome.foreground.opacity(chrome.isDark ? 0.035 : 0.025),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
 
-                if isRenaming {
-                    TextField("Agent name", text: $renameDraft)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: .semibold))
-                        .focused($isRenameFocused)
-                        .onSubmit(commitRename)
-                        .onExitCommand(perform: cancelRename)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Text(title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(chrome.foreground.opacity(selected ? 1 : 0.92))
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    if isRenaming {
+                        TextField("Session name", text: $renameDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .focused($isRenameFocused)
+                            .onSubmit(commitRename)
+                            .onExitCommand(perform: cancelRename)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text(title)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(chrome.foreground.opacity(selected ? 1 : 0.9))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+                    }
                 }
 
-                Spacer(minLength: 0)
+                HStack(spacing: 6) {
+                    if let activitySummary {
+                        Text(activitySummary)
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(activitySummaryColor)
+                            .lineLimit(1)
+
+                        metadataSeparator
+                    }
+
+                    if let branchName, !branchName.isEmpty {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 8, weight: .semibold))
+                        Text(branchName)
+                            .lineLimit(1)
+                    }
+
+                    if branchName?.isEmpty == false {
+                        metadataSeparator
+                    }
+
+                    Text(directoryLabel)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer(minLength: 3)
+
+                    if located.workspace.tabs.count > 1 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "rectangle.stack")
+                                .font(.system(size: 7.5, weight: .semibold))
+                            Text("\(located.workspace.tabs.count)")
+                        }
+                        .foregroundStyle(chrome.secondaryForeground.opacity(0.72))
+                    }
+                }
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(chrome.secondaryForeground.opacity(selected ? 0.82 : 0.62))
+            }
+        }
+        .padding(.leading, 9)
+        .padding(.trailing, 10)
+        .padding(.vertical, 9)
+        .frame(minHeight: rowHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .topTrailing) {
+            if hovering && !isRenaming {
                 Button {
                     store.closeWorkspace(located.id, in: located.projectID)
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
-                        .frame(width: 18, height: 18)
+                        .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(chrome.secondaryForeground)
-                .opacity(hovering && !isRenaming ? 0.78 : 0)
+                .foregroundStyle(chrome.secondaryForeground.opacity(0.78))
+                .background(
+                    chrome.elevated.opacity(0.94),
+                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                )
+                .padding(6)
+                .transition(.opacity.combined(with: .scale(scale: 0.92)))
             }
-
-            if let activitySummary {
-                Text(activitySummary)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(chrome.secondaryForeground.opacity(selected ? 0.92 : 0.76))
-                    .lineLimit(1)
-            }
-
-            Text(metadataLine)
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundStyle(chrome.secondaryForeground.opacity(selected ? 0.82 : 0.62))
-                .lineLimit(1)
         }
-        .padding(.leading, 11)
-        .padding(.trailing, 8)
-        .padding(.vertical, activitySummary == nil ? 7 : 8)
-        .frame(minHeight: activitySummary == nil ? 48 : 62)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(
                     selected
-                        ? chrome.workspaceSelection
-                        : hovering ? chrome.workspaceHover : .clear
+                        ? chrome.elevated.opacity(chrome.isDark ? 0.9 : 0.96)
+                        : hovering
+                            ? chrome.workspaceHover
+                            : chrome.elevated.opacity(chrome.isDark ? 0.22 : 0.32)
                 )
-                .overlay(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 1, style: .continuous)
-                        .fill(chrome.accent)
-                        .frame(width: 2)
-                        .padding(.vertical, 9)
-                        .opacity(selected ? 0.72 : 0)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(
+                            isDropTargeted
+                                ? chrome.accent.opacity(0.8)
+                                : selected
+                                    ? chrome.strongBorder.opacity(0.8)
+                                    : chrome.quietBorder.opacity(0.35),
+                            lineWidth: isDropTargeted ? 1 : 0.5
+                        )
                 }
         }
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -710,17 +632,36 @@ private struct SidebarAgentRow: View {
             SidebarWorkspaceDragPreview(
                 title: title,
                 detail: metadataLine,
-                activity: session.agentActivity
+                activity: workspaceActivity
             )
         }
+        .dropDestination(for: String.self) { items, location in
+            guard let value = items.first,
+                  let workspaceID = UUID(uuidString: value),
+                  workspaceID != located.id
+            else { return false }
+
+            let position: TabDropPosition = location.y > rowHeight / 2 ? .after : .before
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.88)) {
+                store.reorderSidebarWorkspace(
+                    workspaceID,
+                    relativeTo: located.id,
+                    position: position
+                )
+            }
+            return true
+        } isTargeted: { targeted in
+            withAnimation(.easeOut(duration: 0.12)) {
+                isDropTargeted = targeted
+            }
+        }
         .contextMenu {
-            Button("Rename agent", action: beginRename)
+            Button("Rename session", action: beginRename)
             if located.workspace.titleSource == .manual {
                 Button("Use task title automatically") {
                     store.useAutomaticWorkspaceTitle(located.id, in: located.projectID)
                 }
             }
-            Button("New Space with This Agent…", action: createSpace)
             openInEditorContextMenuItems(path: session.workingDirectory)
             Divider()
             if !currentSpaceName.isEmpty {
@@ -738,15 +679,23 @@ private struct SidebarAgentRow: View {
                 }
             }
             Divider()
-            Button("Close agent", role: .destructive) {
+            Button("Close session", role: .destructive) {
                 store.closeWorkspace(located.id, in: located.projectID)
             }
         }
+        .help("\(title)\n\(abbreviatedPath)")
+        .accessibilityLabel(accessibilityLabel)
         .animation(.easeOut(duration: 0.12), value: hovering)
         .animation(.spring(response: 0.24, dampingFraction: 0.9), value: selected)
+        .animation(.easeOut(duration: 0.12), value: isDropTargeted)
+        .animation(.easeOut(duration: 0.16), value: workspaceActivity)
     }
 
     private var selected: Bool { store.selectedWorkspace?.id == located.id }
+
+    private var workspaceActivity: AgentActivity { located.workspace.agentActivity }
+
+    private var rowHeight: CGFloat { 58 }
 
     private var currentSpaceName: String {
         store.workspaceFolders.first(where: { $0.id == located.projectID })?.project.name ?? ""
@@ -767,6 +716,10 @@ private struct SidebarAgentRow: View {
         return path
     }
 
+    private var directoryLabel: String {
+        abbreviatedPath
+    }
+
     private var terminalTabCountLabel: String {
         let count = located.workspace.tabs.count
         return count > 1 ? "\(count) surfaces" : ""
@@ -782,28 +735,48 @@ private struct SidebarAgentRow: View {
     }
 
     private var activitySummary: String? {
-        switch session.agentActivity {
+        switch workspaceActivity {
         case .idle:
-            let sessionTitle = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !sessionTitle.isEmpty,
-                  sessionTitle != "Terminal",
-                  sessionTitle != title,
-                  CodingAgent.detect(commandLine: "", title: sessionTitle) == nil
-            else {
-                return nil
-            }
-            return sessionTitle
-        case .ready(let agent):
-            return "\(agent.displayName) · Ready"
-        case .running(let agent, _):
-            return "\(agent.displayName) · Working"
-        case .needsAttention(let agent, _):
-            return "\(agent.displayName) · Needs input"
-        case .finished(let agent, let succeeded, _):
-            return succeeded == false
-                ? "\(agent.displayName) · Command failed"
-                : "\(agent.displayName) · Finished"
+            return nil
+        case .ready:
+            return "Ready"
+        case .running:
+            return "Working"
+        case .needsAttention:
+            return "Needs input"
+        case .finished(_, let succeeded, _):
+            return succeeded == false ? "Failed" : "Finished"
         }
+    }
+
+    private var metadataSeparator: some View {
+        Circle()
+            .fill(chrome.secondaryForeground.opacity(0.42))
+            .frame(width: 2.5, height: 2.5)
+    }
+
+    private var activitySummaryColor: Color {
+        switch workspaceActivity {
+        case .running:
+            chrome.accent.opacity(selected ? 1 : 0.88)
+        case .needsAttention:
+            Color.orange.opacity(selected ? 1 : 0.9)
+        case .finished(_, let succeeded, _):
+            succeeded == false
+                ? Color.red.opacity(0.92)
+                : Color.green.opacity(selected ? 0.9 : 0.76)
+        case .idle, .ready:
+            chrome.secondaryForeground.opacity(selected ? 0.92 : 0.76)
+        }
+    }
+
+    private var accessibilityLabel: String {
+        [title, activitySummary, branchName, abbreviatedPath]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: ", ")
     }
 
     private func beginRename() {
@@ -892,8 +865,8 @@ private struct SidebarAgentBadge: View {
         case .idle: nil
         case .ready: chrome.foreground.opacity(0.68)
         case .running: chrome.accent
-        case .needsAttention: chrome.accent
-        case .finished(_, let succeeded, _): succeeded == false ? .red : nil
+        case .needsAttention: .orange
+        case .finished(_, let succeeded, _): succeeded == false ? .red : .green
         }
     }
 
@@ -939,10 +912,9 @@ private struct AgentBrandMark: View {
 
 private enum AgentMarkAsset {
     static func image(for agent: CodingAgent) -> NSImage? {
-        guard let url = Bundle.module.url(
-            forResource: name(for: agent),
-            withExtension: "svg"
-        ) else { return nil }
+        let assetName = name(for: agent)
+        guard let url = Bundle.module.url(forResource: assetName, withExtension: "svg")
+            ?? Bundle.module.url(forResource: assetName, withExtension: "png") else { return nil }
         return NSImage(contentsOf: url)
     }
 
@@ -956,6 +928,7 @@ private enum AgentMarkAsset {
         case .goose: "goose"
         case .amp: "amp"
         case .cursor: "cursor"
+        case .grok: "grok"
         }
     }
 }
@@ -1392,14 +1365,18 @@ private struct HeaderHorizontalTab: View {
         HStack(spacing: 6) {
             HeaderTabAgentMark(activity: session.agentActivity, selected: selected)
             Text(title)
-                .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
                 .foregroundStyle(chrome.foreground.opacity(selected ? 1 : 0.78))
                 .lineLimit(1)
-                .frame(maxWidth: 145)
+                .frame(maxWidth: 156)
             if paneCount > 1 {
-                Text("\(paneCount)")
-                    .font(.system(size: 8.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 3) {
+                    Image(systemName: "square.split.2x1")
+                        .font(.system(size: 7.5, weight: .semibold))
+                    Text("\(paneCount)")
+                        .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                }
+                .foregroundStyle(chrome.secondaryForeground.opacity(0.75))
             }
             Button(action: close) {
                 Image(systemName: "xmark")
@@ -1413,10 +1390,14 @@ private struct HeaderHorizontalTab: View {
         .padding(.leading, 12)
         .padding(.trailing, 5)
         .frame(minWidth: 104)
-        .frame(height: 30)
+        .frame(height: 31)
         .background {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(selected ? chrome.workspaceSelection : hovering ? chrome.workspaceHover : .clear)
+                .fill(
+                    selected
+                        ? chrome.elevated.opacity(chrome.isDark ? 0.88 : 0.95)
+                        : hovering ? chrome.workspaceHover : .clear
+                )
                 .overlay {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .stroke(
@@ -1425,6 +1406,13 @@ private struct HeaderHorizontalTab: View {
                                 : selected ? chrome.quietBorder : .clear,
                             lineWidth: isDropTargeted ? 1.25 : 1
                         )
+                }
+                .overlay(alignment: .bottom) {
+                    Capsule()
+                        .fill(chrome.accent)
+                        .frame(height: 2)
+                        .padding(.horizontal, 12)
+                        .opacity(selected ? 0.9 : 0)
                 }
         }
         .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))

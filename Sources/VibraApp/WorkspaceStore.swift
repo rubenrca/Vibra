@@ -142,6 +142,7 @@ final class WorkspaceStore: ObservableObject {
     private var agentActivityTimer: Timer?
     private var isRefreshingAgentActivity = false
     private var lastWorkspaceActivities: [UUID: AgentActivity] = [:]
+    private var lastSessionActivities: [UUID: AgentActivity] = [:]
     private let persistsWorkspace: Bool
     /// Stored as nonisolated so `deinit` can remove it without hopping to the main actor.
     nonisolated(unsafe) private var appearanceObserver: NSObjectProtocol?
@@ -169,6 +170,7 @@ final class WorkspaceStore: ObservableObject {
         }
         refreshSessionVisibility()
         lastWorkspaceActivities = workspaceActivitySnapshot()
+        lastSessionActivities = sessionActivitySnapshot()
         startAgentActivityMonitoring()
         observeTerminalAppearanceChanges()
         saveWorkspace()
@@ -1122,6 +1124,12 @@ final class WorkspaceStore: ObservableObject {
         if didUpdateWorkspaceTitles {
             saveWorkspace()
         }
+        let sessionActivities = sessionActivitySnapshot()
+        deliverAgentCompletionNotifications(
+            previousActivities: lastSessionActivities,
+            currentActivities: sessionActivities
+        )
+        lastSessionActivities = sessionActivities
         let activities = workspaceActivitySnapshot()
         if activities != lastWorkspaceActivities || didUpdateWorkspaceTitles {
             lastWorkspaceActivities = activities
@@ -1148,6 +1156,39 @@ final class WorkspaceStore: ObservableObject {
         Dictionary(uniqueKeysWithValues: projects.flatMap { project in
             project.workspaces.map { ($0.id, $0.agentActivity) }
         })
+    }
+
+    private func sessionActivitySnapshot() -> [UUID: AgentActivity] {
+        Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id, $0.agentActivity) })
+    }
+
+    private func deliverAgentCompletionNotifications(
+        previousActivities: [UUID: AgentActivity],
+        currentActivities: [UUID: AgentActivity]
+    ) {
+        for (sessionID, activity) in currentActivities {
+            guard let event = AgentCompletionEvent.transition(
+                from: previousActivities[sessionID],
+                to: activity
+            ),
+                  let located = sidebarWorkspaces.first(where: {
+                      $0.workspace.allSessions.contains(where: { $0.id == sessionID })
+                  })
+            else { continue }
+
+            let rawTitle = located.workspace.name.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let fallbackTitle = located.workspace.selectedSession.map {
+                URL(fileURLWithPath: $0.workingDirectory).lastPathComponent
+            } ?? "Terminal session"
+            AgentCompletionNotifier.shared.notify(
+                event: event,
+                workspaceTitle: rawTitle.isEmpty ? fallbackTitle : rawTitle,
+                workspaceIsVisible: selectedWorkspace?.id == located.id
+                    && selectedSession?.id == sessionID
+            )
+        }
     }
 
     private static func workspaceURL(createDirectory: Bool = true) throws -> URL {
