@@ -2,7 +2,14 @@
 
 ## Unreleased
 
+## 0.2.6 — 2026-08-06
+
 - Fix the header `IDE` button (and ⇧⌘E) so it opens the active console directory instead of the project root (often `$HOME` for ungrouped tabs).
+- Upgrade Git changes with filtering, file-type icons, syntax highlighting, word-level edits, and unified or split diff layouts.
+- Group terminal history into subtle command blocks without interfering with selection, links, or scrolling.
+- Redesign sidebar sessions with clearer hierarchy, metadata, agent marks, and live activity states.
+- Add optional macOS notifications when an agent finishes in a hidden session or while Vibra is in the background.
+- Detect Grok sessions and display the official Grok mark alongside the other supported coding agents.
 
 ## 0.2.5 — 2026-08-03
 
