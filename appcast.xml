@@ -1,0 +1,24 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Vibra</title>
+        <item>
+            <title>0.2.6</title>
+            <pubDate>Thu, 06 Aug 2026 12:02:15 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.2.6</link>
+            <sparkle:version>28</sparkle:version>
+            <sparkle:shortVersionString>0.2.6</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<ul>
+  <li>Fix the header `IDE` button (and ⇧⌘E) so it opens the active console directory instead of the project root (often `$HOME` for ungrouped tabs).</li>
+  <li>Upgrade Git changes with filtering, file-type icons, syntax highlighting, word-level edits, and unified or split diff layouts.</li>
+  <li>Group terminal history into subtle command blocks without interfering with selection, links, or scrolling.</li>
+  <li>Redesign sidebar sessions with clearer hierarchy, metadata, agent marks, and live activity states.</li>
+  <li>Add optional macOS notifications when an agent finishes in a hidden session or while Vibra is in the background.</li>
+  <li>Detect Grok sessions and display the official Grok mark alongside the other supported coding agents.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.2.6/Vibra-0.2.6.dmg" length="13466732" type="application/octet-stream" sparkle:edSignature="QvCNHST8vj8dPnIihM5tEd3q2lFHvqd3XtX8mN4be55kBK+C1LsfyZpzr1KYZVYsWwBE+spYKmhLwtDX1qcGCA=="/>
+        </item>
+    </channel>
+</rss>
