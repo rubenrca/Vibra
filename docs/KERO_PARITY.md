@@ -51,8 +51,9 @@ forzar dependencias contrarias a GPUI.
   memoria y cache invalidation que merece un componente independiente.
 - **Multi-window:** el modelo ya separa proyectos/workspaces, pero el lifecycle
   actual es de una ventana; se priorizó la profundidad del flujo en una ventana.
-- **Actualizador automático:** la firma/notarización está lista, pero no hay feed,
-  servidor de releases ni política de actualización que justifique Sparkle.
+- **Actualizador automático:** la firma/notarización y los prereleases están
+  listos; el feed estable de Sparkle permanece en la última versión Swift hasta
+  que el runtime GPUI incorpore un actualizador compatible.
 - **Localización completa:** la UI está en español y los identificadores internos
   en inglés; se extraerán catálogos cuando exista un segundo idioma objetivo.
 - **Finder extension/servicio:** abrir una ruta explícita y la integración con

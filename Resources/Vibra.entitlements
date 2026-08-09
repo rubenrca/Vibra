@@ -6,14 +6,13 @@
   Everything below exists because macOS attributes a child process' TCC
   prompt to the app that spawned it: a command run inside a Vibra terminal
   asks for the camera, the address book or Apple events as Vibra, and is
-  denied outright unless Vibra declares the capability. This mirrors the
-  entitlements upstream Ghostty ships for the same reason.
+  denied outright unless Vibra declares the capability.
 
   Deliberately absent:
     - com.apple.security.app-sandbox: forking a login shell is not permitted
       inside the sandbox.
-    - com.apple.security.cs.disable-library-validation: libghostty links
-      statically (libghostty.a) and the binary loads no non-system dylib.
+    - com.apple.security.cs.disable-library-validation: the Rust binary loads
+      no non-system dynamic libraries.
     - com.apple.security.cs.allow-jit and allow-unsigned-executable-memory:
       nothing in the app generates executable memory at runtime.
   Add these only alongside a change that actually needs them.

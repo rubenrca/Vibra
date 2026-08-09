@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.3.0-beta.1 — 2026-08-09
+
+- Replace the SwiftUI/AppKit runtime with a Rust application rendered by GPUI and Metal.
+- Replace `libghostty` with `alacritty_terminal`, preserving long-lived PTYs, terminal search, selection, mouse protocols and modern keyboard modes.
+- Add recursive terminal splits, persistent ratios, geometric focus, resizing and pane zoom.
+- Combine Files and read-only Git diffs in one focused right sidebar.
+- Add a built-in file explorer and UTF-8 editor with atomic saves and conflict detection.
+- Preserve the `Vibra.app` identity and import the Swift workspace with a one-time backup before conversion.
+- Import settings and workspaces created by the standalone VibraGPUI preview when no canonical Vibra state exists.
+- Port signing, universal builds, notarization and DMG packaging to Cargo.
+- Publish GPUI builds only as GitHub prereleases while the stable Sparkle feed remains on Vibra 0.2.7.
+
 ## 0.2.7 — 2026-08-06
 
 - Restore the terminal's normal rendering by removing the experimental command-block overlay.

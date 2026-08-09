@@ -56,6 +56,14 @@ if (( stable )); then
   exit 78
 fi
 
+cargo_version=$(
+  sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo_root/Cargo.toml" | head -n 1
+)
+if [[ $cargo_version != $version ]]; then
+  print -u2 -- "Cargo.toml declares $cargo_version, but the requested release is $version."
+  exit 65
+fi
+
 require() {
   whence -p "$1" >/dev/null || {
     print -u2 -- "missing required tool: $1"

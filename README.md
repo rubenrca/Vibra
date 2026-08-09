@@ -1,145 +1,158 @@
 # Vibra
 
-A fast, native macOS workspace for agentic coding.
+Workspace de desarrollo nativo para macOS, escrito en Rust con GPUI. Combina
+terminales persistentes, proyectos, archivos, edición de texto, diff de Git y
+automatización local para agentes en una sola ventana enfocada.
 
-Vibra keeps terminal sessions, projects, and coding agents in one focused
-workspace. It is an independent implementation powered by `libghostty`.
+La rama GPUI reemplaza la implementación SwiftUI/AppKit y `libghostty` que llegó
+hasta Vibra 0.2.7. El historial, identidad de aplicación y canal de distribución
+continúan en este mismo repositorio.
 
-## Status
+## Estado de la migración
 
-Version `0.1.0` established the application and terminal foundation. Version
-`0.2.0` is the first published build. It provides:
+La primera versión GPUI es `0.3.0-beta.1`. Se distribuye únicamente como
+prerelease mientras se valida la migración con usuarios existentes.
 
-- native SwiftUI/AppKit application shell;
-- long-lived terminal tabs with optional folders for organization;
-- `libghostty` terminal rendering;
-- explicit visible/background session lifecycle;
-- workspace restoration;
-- keyboard commands for projects and terminal tabs.
-- an event-driven Git sidebar with a native diff renderer;
-- stage, unstage, stage-all, and unstage-all actions;
-- bounded Git output so unusually large repositories cannot grow memory
-  without limit.
+El feed estable de Sparkle permanece en Vibra 0.2.7. La versión GPUI todavía no
+publica en ese feed porque aún no contiene un actualizador compatible; así se
+evita que una actualización estable deje a los usuarios sin futuras updates.
 
-Split panes and file navigation are next.
+## Funciones principales
 
-## Install
+### Workspaces, tabs y panes
 
-Download the disk image from [the Vibra site](https://rubenrca.github.io/Vibra/)
-or from [Releases](https://github.com/rubenrca/Vibra/releases/latest), then drag
-Vibra to Applications.
+- múltiples proyectos, workspaces y tabs persistentes;
+- terminales divididas recursivamente en cuatro direcciones;
+- foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
+- command palette (`⇧⌘P`) y apertura rápida de archivos (`⌘P`).
 
-Vibra is not notarized by Apple yet, so macOS blocks the first launch. Open it
-once, dismiss the warning, then allow it under **System Settings → Privacy &
-Security → Open Anyway**. This is needed only once; updates Vibra installs by
-itself are not blocked.
+### Terminal
 
-Vibra checks for updates daily through [Sparkle](https://sparkle-project.org)
-and can also check on demand from **Vibra → Check for Updates…**. Automatic
-checks can be turned off in Settings.
+- PTY nativo y emulación ANSI con `alacritty_terminal`;
+- render GPUI/Metal, truecolor, estilos, cursores, scrollback e IME;
+- teclado xterm y Kitty, mouse SGR, bracketed paste y alternate screen;
+- selección, búsqueda, enlaces OSC 8 y clipboard OSC 52 protegido;
+- JetBrains Mono Variable incluida en la aplicación.
 
-## Requirements
+### Files y Diff
 
-- macOS 14 or newer
+- panel derecho unificado con las vistas `Files` y `Diff`;
+- árbol de archivos confinado al proyecto, con operaciones recuperables;
+- editor UTF-8 con búsqueda, undo/redo, guardado atómico y `⌘S`;
+- estado Git y diff virtualizado por archivo en una interfaz de solo lectura;
+- las mutaciones Git se realizan desde la terminal integrada.
 
-Building additionally needs:
+### Agentes y automatización
 
-- Xcode 26 or newer
-- Swift 6.2 or newer
+- detección de Codex, Claude, Gemini, Grok, OpenCode, Cursor, Aider, Amp y Pi;
+- estado idle/working/waiting inferido desde terminal o declarado por hook;
+- socket Unix local protegido por capacidades UUID;
+- comandos `+pane` y `+agent` disponibles mediante `$VIBRA_CLI`.
 
-## Run
+## Requisitos
+
+- macOS 14 o posterior;
+- Xcode;
+- Rust 1.96.
+
+## Ejecutar durante desarrollo
 
 ```bash
-swift run Vibra
+cargo run
+cargo run -- /ruta/al/proyecto
 ```
 
-Open a specific project directly with:
+Cada cambio requiere cerrar la aplicación y ejecutar nuevamente `cargo run`.
+
+Verificar formato, tests, Clippy, plist y scripts:
 
 ```bash
-swift run Vibra -- /path/to/project
+./Scripts/verify.sh
 ```
 
-Create an application bundle with:
+## Crear Vibra.app
+
+Bundle de desarrollo firmado ad-hoc:
 
 ```bash
-./Scripts/package_app.sh debug
+./Scripts/package_app.sh debug --sign -
 open dist/Vibra.app
 ```
 
-The bundle is signed ad-hoc unless a Developer ID Application identity is in the
-keychain, in which case it is signed for real with the hardened runtime and
-`Resources/Vibra.entitlements`. Build a distributable universal disk image with:
+Bundle universal, DMG, firma Developer ID y notarización:
 
 ```bash
 ./Scripts/package_app.sh release --universal --dmg --notarize
 ```
 
-Notarization reads `APPLE_KEYCHAIN_PROFILE`, or `APPLE_ID`, `APPLE_TEAM_ID` and
-`APPLE_APP_SPECIFIC_PASSWORD`, and is skipped when `--notarize` is omitted.
+La notarización usa `APPLE_KEYCHAIN_PROFILE`, o `APPLE_ID`, `APPLE_TEAM_ID` y
+`APPLE_APP_SPECIFIC_PASSWORD`. La identidad puede definirse con
+`VIBRA_SIGNING_IDENTITY` o `--sign`.
 
-Run the model tests with:
+## Releases GPUI
 
-```bash
-swift test
-```
-
-## Releasing
-
-Releases are cut from `main` with a clean working tree. Move the `Unreleased`
-entries in `CHANGELOG.md` under a `## <version>` heading, commit, then run:
+Los releases GPUI son prereleases de GitHub y requieren un árbol limpio. La
+versión debe coincidir con `Cargo.toml` y tener una sección en `CHANGELOG.md`:
 
 ```bash
-./Scripts/release.sh 0.2.0            # add --notarize once a Developer ID exists
-./Scripts/release.sh 0.2.0 --dry-run  # build and sign without publishing
+./Scripts/release.sh 0.3.0-beta.1 --dry-run
+./Scripts/release.sh 0.3.0-beta.1 --notarize
 ```
 
-The script builds the universal disk image, turns that changelog section into
-the release notes Sparkle shows, signs the appcast entry with the EdDSA key,
-uploads the image to GitHub Releases, and only then commits `docs/appcast.xml` —
-so the feed never points at a download that does not exist yet.
+El script crea un DMG universal y publica un GitHub prerelease. No modifica
+`docs/appcast.xml`. Los releases estables están bloqueados hasta integrar un
+actualizador en la aplicación GPUI.
 
-`docs/` is served by GitHub Pages: `docs/index.html` is the download page and
-`docs/appcast.xml` is the update feed baked into every build as `SUFeedURL`.
+## Migración de datos
 
-### Signing keys
+Vibra GPUI conserva la identidad `app.vibra.Vibra` y usa:
 
-Updates are trusted by EdDSA signature, independently of Apple code signing. The
-public key lives in `Scripts/package_app.sh` and is written into each build; the
-private key is in the release machine's keychain, put there by Sparkle's
-`generate_keys`.
-
-Back it up somewhere safe:
-
-```bash
-.build/artifacts/sparkle/Sparkle/bin/generate_keys -x sparkle-private-key.txt
+```text
+~/Library/Application Support/Vibra/workspace.json
 ```
 
-Losing that key means installed copies will reject every future update and each
-user has to download Vibra again by hand, so keep the backup off this machine
-and out of the repository.
+Antes de escribir un workspace creado por Swift, guarda una copia única en:
 
-The first build downloads the prebuilt GhosttyKit binary used by
-`libghostty-spm`.
+```text
+~/Library/Application Support/Vibra/workspace.swift-v0.2.7.backup.json
+```
 
-## Shortcuts
+Si no existe un workspace de Vibra, importa automáticamente el creado durante
+el preview independiente de VibraGPUI. Las preferencias del preview también se
+importan una sola vez.
 
-- `⌘N`: new workspace in the active terminal directory
-- `⌘T`: new terminal tab inside the selected tab
-- `⇧⌘N`: new terminal window
-- `⌘O`: open a directory in a new tab
-- `⌘W`: close the selected terminal
-- `⇧⌘W`: close the selected workspace
-- `⌘1`–`⌘8`: jump to a workspace; `⌘9` jumps to the last one
-- `⌃⌘[` / `⌃⌘]`: previous / next workspace
-- `⌘R`: toggle the Git sidebar
+## Atajos principales
 
-## Principles
+| Atajo | Acción |
+| --- | --- |
+| `⌘N` / `⌘T` / `⌘W` | Nuevo workspace / nuevo tab / cerrar editor o terminal |
+| `⌘D` / `⇧⌘D` | Dividir a la derecha / abajo |
+| `⌃⌥⌘` + flechas | Dividir en cualquier dirección |
+| `⌥⌘` + flechas | Enfocar pane vecino |
+| `⌘[` / `⌘]` | Pane anterior / siguiente |
+| `⌃⌥` + flechas | Cambiar proporción del pane |
+| `⌃⌥E` / `⇧⌘↵` | Igualar panes / alternar zoom |
+| `⇧⌘P` / `⌘P` | Paleta de comandos / quick open |
+| `⌘R` | Mostrar u ocultar Files y Diff |
+| `⌘F`, `⌘G`, `⇧⌘G` | Buscar / siguiente / anterior en terminal |
+| `⌘=`, `⌘-`, `⌘0` | Ajustar o restablecer fuente |
+| `⌘K` | Limpiar pantalla y scrollback |
 
-- Hidden sessions keep their shell alive without rendering frames.
-- Polling is avoided unless an underlying API has no event-driven mechanism.
-- Every long-lived runtime object has an explicit shutdown path.
-- Performance regressions are treated as correctness bugs.
+## Arquitectura
 
-## License and acknowledgements
+```text
+GPUI views
+   │
+WorkspaceSnapshot + acciones de dominio
+   ├── WorkspaceRepository ── JSON versionado y migración Swift
+   ├── SettingsRepository  ── preferencias persistentes
+   ├── TerminalPort        ── AlacrittyTerminal (PTY + parser)
+   ├── FileSystemPort      ── filesystem local confinado
+   ├── GitPort             ── status y diff mediante git CLI
+   └── AutomationServer    ── socket Unix + capacidades por pane
+```
 
-Vibra is MIT licensed. See [NOTICE.md](NOTICE.md) for acknowledgements.
+## Licencia y reconocimientos
+
+Vibra usa licencia MIT. Consulta [NOTICE.md](NOTICE.md) para dependencias y
+reconocimientos.
