@@ -1,0 +1,25 @@
+[package]
+name = "vibra-gpui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+[dependencies]
+alacritty_terminal = "=0.26.0"
+anyhow = "1.0"
+async-channel = "2.5"
+directories = "6.0"
+gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.24", features = ["serde", "v4"] }
+
+[dev-dependencies]
+gpui = { version = "=0.2.2", features = ["test-support"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
