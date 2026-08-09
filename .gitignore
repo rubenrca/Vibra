@@ -1,6 +1,12 @@
 .DS_Store
 /target
+/.build
+/.swiftpm
+/Vibra.app
 /dist
+/graphify-out
+*.xcresult
+xcuserdata/
 *.log
 # An exported backup of the Sparkle EdDSA private key must never be committed.
 sparkle-private-key*.txt
