@@ -337,7 +337,7 @@ impl GitPort for GitCliPort {
         let root = ensure_repository_state(repository, expected_state)?;
         let message = message.trim();
         let message = if message.is_empty() {
-            "VibraGPUI stash"
+            "Vibra stash"
         } else {
             message
         };

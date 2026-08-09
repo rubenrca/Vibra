@@ -94,9 +94,9 @@ fn resolve_launch_directory(
 
 fn run() -> Result<()> {
     let repository = WorkspaceRepository::for_current_user()
-        .context("no se pudo resolver el directorio de datos de VibraGPUI")?;
+        .context("no se pudo resolver el directorio de datos de Vibra")?;
     let settings_repository = SettingsRepository::for_current_user()
-        .context("no se pudo resolver settings.json de VibraGPUI")?;
+        .context("no se pudo resolver settings.json de Vibra")?;
     let launch_directory = launch_directory();
 
     Application::new().run(move |cx: &mut App| {
@@ -155,7 +155,7 @@ fn run() -> Result<()> {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(900.0), px(580.0))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Vibra GPUI".into()),
+                    title: Some("Vibra".into()),
                     appears_transparent: true,
                     traffic_light_position: Some(gpui::point(px(14.0), px(14.0))),
                 }),
@@ -180,7 +180,7 @@ fn run() -> Result<()> {
                 })
             },
         )
-        .expect("no se pudo abrir la ventana principal de VibraGPUI");
+        .expect("no se pudo abrir la ventana principal de Vibra");
 
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -200,12 +200,12 @@ fn main() {
         Ok(true) => return,
         Ok(false) => {}
         Err(error) => {
-            eprintln!("VibraGPUI automation: {error:#}");
+            eprintln!("Vibra automation: {error:#}");
             std::process::exit(2);
         }
     }
     if let Err(error) = run() {
-        eprintln!("VibraGPUI no pudo iniciar: {error:#}");
+        eprintln!("Vibra no pudo iniciar: {error:#}");
         std::process::exit(1);
     }
 }

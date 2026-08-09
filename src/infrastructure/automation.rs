@@ -177,7 +177,7 @@ fn handle_connection(mut stream: UnixStream, sender: &async_channel::Sender<Auto
                 })
                 .is_err()
             {
-                AutomationResponse::failure("VibraGPUI se está cerrando")
+                AutomationResponse::failure("Vibra se está cerrando")
             } else {
                 response_rx
                     .recv_timeout(Duration::from_secs(10))
@@ -193,7 +193,7 @@ fn handle_connection(mut stream: UnixStream, sender: &async_channel::Sender<Auto
 
 fn automation_directory() -> PathBuf {
     let user = unsafe { libc::geteuid() };
-    std::env::temp_dir().join(format!("vibra-gpui-{user}"))
+    std::env::temp_dir().join(format!("vibra-{user}"))
 }
 
 pub fn run_cli(arguments: &[String]) -> Result<bool> {
@@ -205,7 +205,7 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
     }
     let socket = std::env::var_os("VIBRA_AUTOMATION_SOCKET")
         .map(PathBuf::from)
-        .context("VIBRA_AUTOMATION_SOCKET no está disponible; ejecuta esto dentro de VibraGPUI")?;
+        .context("VIBRA_AUTOMATION_SOCKET no está disponible; ejecuta esto dentro de Vibra")?;
     let pane_id = std::env::var("VIBRA_PANE_ID")
         .context("falta VIBRA_PANE_ID")?
         .parse()?;

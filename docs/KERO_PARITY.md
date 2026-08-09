@@ -1,12 +1,12 @@
 # Paridad funcional con Kero
 
 Esta matriz parte de una revisión del código de Kero 0.1.45, no solo de su README.
-Su objetivo es escoger conceptos que mejoran VibraGPUI sin copiar código GPL ni
+Su objetivo es escoger conceptos que mejoran Vibra sin copiar código GPL ni
 forzar dependencias contrarias a GPUI.
 
 ## Implementado
 
-| Área de Kero | Estado en VibraGPUI |
+| Área de Kero | Estado en Vibra |
 | --- | --- |
 | Proyectos, workspaces y tabs | Modelo persistente con selección y migración de snapshots. |
 | Split panes recursivos | Cuatro direcciones, foco geométrico, ciclo, resize, drag, equalize, zoom y collapse al cerrar. |
@@ -22,7 +22,7 @@ forzar dependencias contrarias a GPUI.
 
 ## Implementado con una forma distinta
 
-| Función | Decisión de VibraGPUI |
+| Función | Decisión de Vibra |
 | --- | --- |
 | CWD por OSC 7 | Se consulta el directorio del proceso foreground; funciona también con shells que no emiten OSC 7. |
 | Diff como contenido de pane | Vive junto a Files en el sidebar derecho para mantener el terminal visible sin sumar controles Git secundarios. |
@@ -60,7 +60,7 @@ forzar dependencias contrarias a GPUI.
 
 ## Criterio para futuras incorporaciones
 
-Una función de Kero entra en VibraGPUI cuando mejora el flujo terminal/agente,
+Una función de Kero entra en Vibra cuando mejora el flujo terminal/agente,
 puede aislarse detrás de un puerto o acción de dominio, tiene una frontera de
 seguridad verificable y no exige sostener un fork frágil de GPUI. Esta regla evita
 una copia superficial de features y mantiene la aplicación comprobable.

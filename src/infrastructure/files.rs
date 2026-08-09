@@ -160,7 +160,7 @@ impl FileSystemPort for LocalFileSystemPort {
         let path = canonical_regular_file(&root, path)?;
         let current = fs::read(&path)?;
         if text_fingerprint(&current) != expected_fingerprint {
-            bail!("el archivo cambió fuera de VibraGPUI; recárgalo antes de guardar");
+            bail!("el archivo cambió fuera de Vibra; recárgalo antes de guardar");
         }
         let parent = path
             .parent()

@@ -7,7 +7,7 @@ Aceptado por ahora.
 ## Contexto
 
 Kero incrusta `WKWebView` porque AppKit permite alojar una vista nativa dentro de
-su jerarquía. VibraGPUI usa GPUI 0.2.2, cuya API pública no ofrece un elemento
+su jerarquía. Vibra usa GPUI 0.2.2, cuya API pública no ofrece un elemento
 estable para componer un `NSView` arbitrario dentro del árbol de layout. Introducir
 otra event loop mediante `wry`, o mantener un fork privado de GPUI, elevaría mucho
 el riesgo de foco, IME, accesibilidad y ciclo de vida de ventanas.
