@@ -23,7 +23,6 @@
   <li>Preserve the `Vibra.app` identity and import the Swift workspace with a one-time backup before conversion.</li>
   <li>Import settings and workspaces created by the standalone VibraGPUI preview when no canonical Vibra state exists.</li>
   <li>Port signing, universal builds, notarization and DMG packaging to Cargo.</li>
-  <li>First public GPUI prerelease for migration validation.</li>
 </ul>
 ]]></description>
             <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.0/Vibra-0.3.0.dmg" length="9603570" type="application/octet-stream" sparkle:edSignature="IPX16wyF1RIRo61KBo8m9RdON3DPFMxmhHCz2zdVCDBNxJqDVnmj4wF9dr8DlCN0clkH67EfKPsCBTyMXMWPDw=="/>

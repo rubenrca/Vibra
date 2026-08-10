@@ -123,7 +123,8 @@ fi
 
 notes_markdown=$(
   awk -v version="$version" '
-    $0 ~ "^## " version { capture = 1; next }
+    # Exact section match so "0.3.0" does not also match "0.3.0-beta.1".
+    $0 ~ ("^## " version "( —| |$)") { capture = 1; next }
     capture && /^## / { exit }
     capture { print }
   ' "$repo_root/CHANGELOG.md"
