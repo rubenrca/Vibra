@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-## 0.3.0-beta.1 — 2026-08-09
+## 0.3.0 — 2026-08-09
 
-- Replace the SwiftUI/AppKit runtime with a Rust application rendered by GPUI and Metal.
+- Make the GPUI runtime the official stable Vibra release, replacing SwiftUI/AppKit and `libghostty`.
+- Re-embed Sparkle with the existing EdDSA feed so installed copies can update again from the stable appcast.
 - Replace `libghostty` with `alacritty_terminal`, preserving long-lived PTYs, terminal search, selection, mouse protocols and modern keyboard modes.
 - Add recursive terminal splits, persistent ratios, geometric focus, resizing and pane zoom.
 - Combine Files and read-only Git diffs in one focused right sidebar.
@@ -12,11 +13,14 @@
 - Simplify the chrome toward a Herdr-like layout: no focus ring on panes, sessions-only left sidebar, and a full-height terminal when a single tab is open.
 - Restyle Files/Diff as subtle underline tabs; move file actions into a compact header with double-click to open.
 - Rebuild the Diff panel as a Warp-style master/detail view with a compact change list and full remaining height for the selected file.
-- Toggle sidebars with `⌘B` (sessions) and `⌥⌘B` (Files and Diff); keep `⌘R` free of that role.
+- Toggle sidebars with `⌘B` (sessions) and `⌥⌘B` (Files and Diff); check for updates with `⌘U`.
 - Preserve the `Vibra.app` identity and import the Swift workspace with a one-time backup before conversion.
 - Import settings and workspaces created by the standalone VibraGPUI preview when no canonical Vibra state exists.
 - Port signing, universal builds, notarization and DMG packaging to Cargo.
-- Publish GPUI builds only as GitHub prereleases while the stable Sparkle feed remains on Vibra 0.2.7.
+
+## 0.3.0-beta.1 — 2026-08-09
+
+- First public GPUI prerelease for migration validation.
 
 ## 0.2.7 — 2026-08-06
 

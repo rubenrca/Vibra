@@ -10,12 +10,17 @@ continúan en este mismo repositorio.
 
 ## Estado de la migración
 
-La primera versión GPUI es `0.3.0-beta.1`. Se distribuye únicamente como
-prerelease mientras se valida la migración con usuarios existentes.
+A partir de **Vibra 0.3.0**, el runtime oficial es GPUI (Rust + Metal). La
+última build Swift es 0.2.7.
 
-El feed estable de Sparkle permanece en Vibra 0.2.7. La versión GPUI todavía no
-publica en ese feed porque aún no contiene un actualizador compatible; así se
-evita que una actualización estable deje a los usuarios sin futuras updates.
+La app empaqueta de nuevo **Sparkle** con el mismo feed EdDSA, de modo que
+instalaciones previas en 0.2.7 pueden actualizarse al canal estable:
+
+```text
+https://rubenrca.github.io/Vibra/appcast.xml
+```
+
+La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 ## Funciones principales
 
@@ -89,19 +94,21 @@ La notarización usa `APPLE_KEYCHAIN_PROFILE`, o `APPLE_ID`, `APPLE_TEAM_ID` y
 `APPLE_APP_SPECIFIC_PASSWORD`. La identidad puede definirse con
 `VIBRA_SIGNING_IDENTITY` o `--sign`.
 
-## Releases GPUI
+## Releases
 
-Los releases GPUI son prereleases de GitHub y requieren un árbol limpio. La
-versión debe coincidir con `Cargo.toml` y tener una sección en `CHANGELOG.md`:
+Requiere un árbol limpio, `Cargo.toml` y una sección en `CHANGELOG.md` con la
+misma versión, más las herramientas Sparkle en `.build/artifacts/sparkle`
+(clave EdDSA en el llavero):
 
 ```bash
-./Scripts/release.sh 0.3.0-beta.1 --dry-run
-./Scripts/release.sh 0.3.0-beta.1 --notarize
+./Scripts/release.sh 0.3.0 --dry-run
+./Scripts/release.sh 0.3.0 --notarize
+./Scripts/release.sh 0.3.1-beta.1 --prerelease
 ```
 
-El script crea un DMG universal y publica un GitHub prerelease. No modifica
-`docs/appcast.xml`. Los releases estables están bloqueados hasta integrar un
-actualizador en la aplicación GPUI.
+Un release **estable** crea el DMG universal, firma el appcast, publica en
+GitHub como Latest y actualiza `docs/appcast.xml`. Un **prerelease** no toca el
+feed de Sparkle.
 
 ## Migración de datos
 
@@ -135,6 +142,7 @@ importan una sola vez.
 | `⇧⌘P` / `⌘P` | Paleta de comandos / quick open |
 | `⌘B` | Mostrar u ocultar sidebar de sesiones |
 | `⌥⌘B` | Mostrar u ocultar panel Files y Diff |
+| `⌘U` | Buscar actualizaciones (Sparkle) |
 | `⌘F`, `⌘G`, `⇧⌘G` | Buscar / siguiente / anterior en terminal |
 | `⌘=`, `⌘-`, `⌘0` | Ajustar o restablecer fuente |
 | `⌘K` | Limpiar pantalla y scrollback |

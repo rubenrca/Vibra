@@ -19,7 +19,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.0-beta.1</string>
+	<string>0.3.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSApplicationCategoryType</key>
@@ -34,5 +34,14 @@
 	<string>Vibra is MIT licensed.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- Sparkle: only honored in a packaged .app; the bridge refuses to start without SUFeedURL. -->
+	<key>SUFeedURL</key>
+	<string>https://rubenrca.github.io/Vibra/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>05voyXnLA9QCHMp91KonT03ysgHHfHSAElaMPiUrNOc=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

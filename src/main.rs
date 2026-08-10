@@ -58,6 +58,7 @@ actions!(
         TogglePaneZoom,
         ToggleCommandPalette,
         QuickOpen,
+        CheckForUpdates,
         Quit
     ]
 );
@@ -147,9 +148,16 @@ fn run() -> Result<()> {
             KeyBinding::new("shift-cmd-enter", TogglePaneZoom, None),
             KeyBinding::new("shift-cmd-p", ToggleCommandPalette, None),
             KeyBinding::new("cmd-p", QuickOpen, None),
+            KeyBinding::new("cmd-u", CheckForUpdates, None),
             KeyBinding::new("cmd-q", Quit, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &CheckForUpdates, _cx| {
+            infrastructure::sparkle::check_for_updates();
+        });
+
+        // Packaged builds carry SUFeedURL; development runs are a no-op.
+        infrastructure::sparkle::start();
 
         let bounds = Bounds::centered(None, size(px(1240.0), px(780.0)), cx);
         cx.open_window(

@@ -54,6 +54,7 @@ app_dir="$repo_root/dist/Vibra.app"
 contents_dir="$app_dir/Contents"
 macos_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
+frameworks_dir="$contents_dir/Frameworks"
 plist="$contents_dir/Info.plist"
 plist_template="$repo_root/Resources/Info.plist"
 entitlements="$repo_root/Resources/Vibra.entitlements"
@@ -62,6 +63,12 @@ iconset_dir="$repo_root/target/Vibra.iconset"
 icon_file="$resources_dir/Vibra.icns"
 dmg_path="$repo_root/dist/Vibra.dmg"
 
+# Sparkle checks this feed and refuses any update whose EdDSA signature does not
+# verify against the public key below. The matching private key lives in the
+# keychain of whoever publishes releases; Scripts/release.sh signs with it.
+feed_url=${VIBRA_FEED_URL:-https://rubenrca.github.io/Vibra/appcast.xml}
+public_ed_key=${VIBRA_PUBLIC_ED_KEY:-05voyXnLA9QCHMp91KonT03ysgHHfHSAElaMPiUrNOc=}
+
 for required_path in "$plist_template" "$entitlements" "$icon_source"; do
   if [[ ! -f $required_path ]]; then
     print -u2 -- "missing packaging input: $required_path"
@@ -69,12 +76,35 @@ for required_path in "$plist_template" "$entitlements" "$icon_source"; do
   fi
 done
 
+resolve_sparkle_framework() {
+  local candidate
+  for candidate in \
+    "${VIBRA_SPARKLE_FRAMEWORK:-}" \
+    "$repo_root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" \
+    "$repo_root/.build/checkouts/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" \
+    "$repo_root/third_party/Sparkle.framework" \
+    "$repo_root/dist/Vibra.app/Contents/Frameworks/Sparkle.framework"
+  do
+    [[ -n $candidate && -d $candidate ]] && print -r -- "$candidate" && return 0
+  done
+  return 1
+}
+
+sparkle_source=$(resolve_sparkle_framework || true)
+if [[ -z ${sparkle_source:-} ]]; then
+  print -u2 -- "Sparkle.framework not found."
+  print -u2 -- "Set VIBRA_SPARKLE_FRAMEWORK, or restore .build/artifacts/sparkle from a prior SwiftPM fetch."
+  exit 70
+fi
+export VIBRA_SPARKLE_FRAMEWORK=$sparkle_source
+print "using Sparkle: $sparkle_source"
+
 marketing_version=${VIBRA_MARKETING_VERSION:-}
 if [[ -z $marketing_version ]]; then
   marketing_version=$(
     sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo_root/Cargo.toml" | head -n 1
   )
-  marketing_version=${marketing_version:-0.3.0-beta.1}
+  marketing_version=${marketing_version:-0.3.0}
 fi
 
 build_version=${VIBRA_BUILD_VERSION:-}
@@ -113,7 +143,8 @@ for target in $targets; do
   fi
 
   print "building Vibra ($configuration, $target)"
-  cargo "${cargo_args[@]}" --manifest-path "$repo_root/Cargo.toml"
+  # Ensure the build script can find Sparkle while compiling the ObjC bridge.
+  VIBRA_SPARKLE_FRAMEWORK=$sparkle_source cargo "${cargo_args[@]}" --manifest-path "$repo_root/Cargo.toml"
   binary="$repo_root/target/$target/$profile_dir/vibra"
   if [[ ! -x $binary ]]; then
     print -u2 -- "Cargo did not produce the expected binary: $binary"
@@ -123,7 +154,7 @@ for target in $targets; do
 done
 
 rm -rf "$app_dir"
-mkdir -p "$macos_dir" "$resources_dir"
+mkdir -p "$macos_dir" "$resources_dir" "$frameworks_dir"
 
 if (( ${#binaries} > 1 )); then
   lipo -create "${binaries[@]}" -output "$macos_dir/Vibra"
@@ -132,6 +163,10 @@ else
 fi
 chmod 755 "$macos_dir/Vibra"
 
+# ditto, not cp: the framework is a versioned bundle whose Versions/Current and
+# top-level symlinks have to survive the copy or codesign rejects it.
+ditto "$sparkle_source" "$frameworks_dir/Sparkle.framework"
+
 rm -rf "$iconset_dir"
 swift "$repo_root/Scripts/generate_app_icon.swift" "$icon_source" "$iconset_dir"
 iconutil -c icns "$iconset_dir" -o "$icon_file"
@@ -139,6 +174,10 @@ iconutil -c icns "$iconset_dir" -o "$icon_file"
 cp "$plist_template" "$plist"
 plutil -replace CFBundleShortVersionString -string "$marketing_version" "$plist"
 plutil -replace CFBundleVersion -string "$build_version" "$plist"
+plutil -replace SUFeedURL -string "$feed_url" "$plist"
+plutil -replace SUPublicEDKey -string "$public_ed_key" "$plist"
+plutil -replace SUEnableAutomaticChecks -bool true "$plist"
+plutil -replace SUScheduledCheckInterval -integer 86400 "$plist"
 plutil -lint "$plist" "$entitlements" >/dev/null
 
 if [[ -z $signing_identity ]] && (( ! force_ad_hoc )); then
@@ -160,6 +199,19 @@ else
   sign_flags=(--timestamp=none --sign -)
 fi
 
+# Signing runs inside out: sealing a nested bundle after its container
+# invalidates the container's signature. Sparkle's helpers ship entitlements of
+# their own — the installer and downloader XPC services especially — so theirs
+# are preserved rather than replaced with Vibra's.
+sparkle_versioned_dir="$frameworks_dir/Sparkle.framework/Versions/B"
+for helper in \
+  "$sparkle_versioned_dir/XPCServices/Downloader.xpc" \
+  "$sparkle_versioned_dir/XPCServices/Installer.xpc" \
+  "$sparkle_versioned_dir/Updater.app" \
+  "$sparkle_versioned_dir/Autoupdate"; do
+  codesign --force --preserve-metadata=entitlements "${sign_flags[@]}" "$helper"
+done
+codesign --force "${sign_flags[@]}" "$sparkle_versioned_dir"
 codesign --force --entitlements "$entitlements" "${sign_flags[@]}" "$app_dir"
 codesign --verify --strict --deep --verbose=2 "$app_dir"
 
@@ -204,6 +256,8 @@ if (( make_dmg )); then
 
   if [[ -n $signing_identity ]]; then
     codesign --force --timestamp --sign "$signing_identity" "$dmg_path"
+  else
+    codesign --force --timestamp=none --sign - "$dmg_path"
   fi
 
   if (( notarize )); then
@@ -217,6 +271,7 @@ fi
 print
 print "version:   $marketing_version ($build_version)"
 print "arch:      $(lipo -archs "$macos_dir/Vibra")"
+print "sparkle:   embedded"
 print "signature: $(codesign -dv "$app_dir" 2>&1 | awk -F= '/^Signature=/ { print $2 }')"
 print "$app_dir"
 (( make_dmg )) && print "$dmg_path"

@@ -5,3 +5,4 @@ pub mod git;
 pub mod paths;
 pub mod persistence;
 pub mod settings;
+pub mod sparkle;
