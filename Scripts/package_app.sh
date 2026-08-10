@@ -82,6 +82,7 @@ resolve_sparkle_framework() {
     "${VIBRA_SPARKLE_FRAMEWORK:-}" \
     "$repo_root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" \
     "$repo_root/.build/checkouts/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" \
+    "$repo_root"/third_party/sparkle-*/Sparkle.framework(N) \
     "$repo_root/third_party/Sparkle.framework" \
     "$repo_root/dist/Vibra.app/Contents/Frameworks/Sparkle.framework"
   do
@@ -92,8 +93,10 @@ resolve_sparkle_framework() {
 
 sparkle_source=$(resolve_sparkle_framework || true)
 if [[ -z ${sparkle_source:-} ]]; then
-  print -u2 -- "Sparkle.framework not found."
-  print -u2 -- "Set VIBRA_SPARKLE_FRAMEWORK, or restore .build/artifacts/sparkle from a prior SwiftPM fetch."
+  sparkle_source=$("$repo_root/Scripts/fetch_sparkle.sh")
+fi
+if [[ -z ${sparkle_source:-} || ! -d $sparkle_source ]]; then
+  print -u2 -- "Sparkle.framework not found and could not be fetched."
   exit 70
 fi
 export VIBRA_SPARKLE_FRAMEWORK=$sparkle_source

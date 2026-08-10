@@ -10,3 +10,4 @@ xcuserdata/
 *.log
 # An exported backup of the Sparkle EdDSA private key must never be committed.
 sparkle-private-key*.txt
+third_party/sparkle-*/

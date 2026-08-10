@@ -81,16 +81,19 @@ require cargo
 require hdiutil
 (( dry_run )) || require gh
 
-# Sparkle ships generate_appcast inside the artifact SwiftPM downloads.
+# Sparkle tools: prefer a prior SPM fetch, otherwise download the official tarball.
 appcast_tool=$(
-  print -r -- "$repo_root"/.build/artifacts/sparkle/Sparkle/bin/generate_appcast(N)
+  print -r -- \
+    "$repo_root"/.build/artifacts/sparkle/Sparkle/bin/generate_appcast(N) \
+    "$repo_root"/.build/checkouts/Sparkle/bin/generate_appcast(N) \
+    "$repo_root"/third_party/sparkle-*/bin/generate_appcast(N)
 )
-if [[ -z $appcast_tool ]]; then
-  appcast_tool=$(print -r -- "$repo_root"/.build/checkouts/Sparkle/bin/generate_appcast(N))
+if [[ -z $appcast_tool || ! -x $appcast_tool ]]; then
+  "$repo_root/Scripts/fetch_sparkle.sh" >/dev/null
+  appcast_tool=$(print -r -- "$repo_root"/third_party/sparkle-*/bin/generate_appcast(N))
 fi
 if [[ -z $appcast_tool || ! -x $appcast_tool ]]; then
-  print -u2 -- "generate_appcast not found under .build/artifacts/sparkle."
-  print -u2 -- "Restore the Sparkle tools (prior SPM fetch) before releasing."
+  print -u2 -- "generate_appcast not found after fetching Sparkle."
   exit 69
 fi
 
