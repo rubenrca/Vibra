@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, Context, Div, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, MouseButton, MouseUpEvent, ParentElement, Render, SharedString, Stateful, Styled,
-    Subscription, Window, WindowControlArea, div, prelude::*, px, relative,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render, SharedString,
+    Stateful, Styled, Subscription, Window, WindowControlArea, div, prelude::*, px, relative,
 };
 use uuid::Uuid;
 
@@ -31,8 +31,8 @@ use crate::{
     CloseTerminal, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     NewTerminalTab, NewWorkspace, NextPane, NextWorkspace, PreviousPane, PreviousWorkspace,
     QuickOpen, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, SplitPaneDown,
-    SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette, TogglePaneZoom,
-    ToggleRightSidebar,
+    SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette, ToggleLeftSidebar,
+    TogglePaneZoom, ToggleRightSidebar,
 };
 
 #[derive(Clone)]
@@ -116,13 +116,13 @@ impl Render for PaneDividerDragView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .when(self.axis == WorkspaceSplitAxis::Horizontal, |line| {
-                line.w(px(3.0)).h(px(44.0))
+                line.w(px(2.0)).h(px(40.0))
             })
             .when(self.axis == WorkspaceSplitAxis::Vertical, |line| {
-                line.w(px(44.0)).h(px(3.0))
+                line.w(px(40.0)).h(px(2.0))
             })
             .rounded_full()
-            .bg(DARK.success)
+            .bg(DARK.border_subtle)
     }
 }
 
@@ -370,15 +370,6 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn open_selected_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.selected_file_path.clone() else {
-            self.file_error = Some("Selecciona un archivo".into());
-            cx.notify();
-            return;
-        };
-        self.open_file(path, window, cx);
-    }
-
     fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let root = self.project_root();
         let document = match self.file_port.read_text_file(&root, &path) {
@@ -605,14 +596,14 @@ impl WorkspaceView {
                     action: PaletteAction::TogglePaneZoom,
                 },
                 PaletteItem {
-                    label: "Sidebar: Toggle Files and Diff".into(),
-                    detail: "⌘R".into(),
-                    action: PaletteAction::ToggleGit,
+                    label: "Sidebar: Toggle Sessions".into(),
+                    detail: "⌘B".into(),
+                    action: PaletteAction::ShowSessions,
                 },
                 PaletteItem {
-                    label: "Sidebar: Sessions".into(),
-                    detail: String::new(),
-                    action: PaletteAction::ShowSessions,
+                    label: "Sidebar: Toggle Files and Diff".into(),
+                    detail: "⌥⌘B".into(),
+                    action: PaletteAction::ToggleGit,
                 },
                 PaletteItem {
                     label: "Sidebar: Files".into(),
@@ -712,9 +703,15 @@ impl WorkspaceView {
             }
             PaletteAction::ToggleGit => self.toggle_diff_panel(cx),
             PaletteAction::ShowSessions => {
-                self.left_sidebar_visible = true;
-                self.settings.left_sidebar_visible = true;
-                self.left_sidebar_mode = LeftSidebarMode::Sessions;
+                if self.left_sidebar_visible
+                    && self.left_sidebar_mode == LeftSidebarMode::Sessions
+                {
+                    self.left_sidebar_visible = false;
+                } else {
+                    self.left_sidebar_visible = true;
+                    self.left_sidebar_mode = LeftSidebarMode::Sessions;
+                }
+                self.settings.left_sidebar_visible = self.left_sidebar_visible;
                 self.persist_settings(cx);
             }
             PaletteAction::ShowFiles => {
@@ -1340,6 +1337,21 @@ impl WorkspaceView {
         }
     }
 
+    fn toggle_left_sidebar(
+        &mut self,
+        _: &ToggleLeftSidebar,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.left_sidebar_visible = !self.left_sidebar_visible;
+        self.settings.left_sidebar_visible = self.left_sidebar_visible;
+        if self.left_sidebar_visible {
+            self.left_sidebar_mode = LeftSidebarMode::Sessions;
+        }
+        self.persist_settings(cx);
+        cx.notify();
+    }
+
     fn toggle_right_sidebar(
         &mut self,
         _: &ToggleRightSidebar,
@@ -1405,9 +1417,9 @@ impl WorkspaceView {
 
     fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let left_chrome_width = if self.left_sidebar_visible {
-            260.0
+            240.0
         } else {
-            156.0
+            148.0
         };
         let workspace_name = self
             .snapshot
@@ -1422,7 +1434,7 @@ impl WorkspaceView {
         let show_project_name = project_name != workspace_name;
 
         div()
-            .h(px(42.0))
+            .h(px(38.0))
             .w_full()
             .flex_none()
             .flex()
@@ -1537,13 +1549,13 @@ impl WorkspaceView {
             LeftSidebarMode::Info => self.info_sidebar_content(cx),
             LeftSidebarMode::Settings => self.settings_sidebar_content(cx),
         };
-        let modes = [
-            (LeftSidebarMode::Sessions, "Sesiones"),
-            (LeftSidebarMode::Info, "Info"),
-            (LeftSidebarMode::Settings, "Prefs"),
-        ];
+        let aux_title = match self.left_sidebar_mode {
+            LeftSidebarMode::Sessions => None,
+            LeftSidebarMode::Info => Some("Info"),
+            LeftSidebarMode::Settings => Some("Prefs"),
+        };
         div()
-            .w(px(260.0))
+            .w(px(240.0))
             .h_full()
             .flex_none()
             .flex()
@@ -1552,47 +1564,41 @@ impl WorkspaceView {
             .bg(DARK.sidebar)
             .border_r_1()
             .border_color(DARK.border_subtle)
-            .child(
-                div()
-                    .h(px(34.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .border_b_1()
-                    .border_color(DARK.border_subtle)
-                    .children(modes.into_iter().map(|(mode, label)| {
-                        let selected = mode == self.left_sidebar_mode;
-                        div()
-                            .id(SharedString::from(format!("sidebar-mode-{label}")))
-                            .flex_1()
-                            .h(px(24.0))
-                            .rounded(px(5.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .text_size(px(9.5))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(if selected {
-                                DARK.foreground
-                            } else {
-                                DARK.subtle
-                            })
-                            .bg(if selected {
-                                DARK.selection
-                            } else {
-                                DARK.sidebar
-                            })
-                            .hover(|tab| tab.bg(DARK.hover).text_color(DARK.foreground))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.left_sidebar_mode = mode;
-                                cx.notify();
-                            }))
-                            .child(label)
-                    })),
-            )
+            .when_some(aux_title, |sidebar, title| {
+                sidebar.child(
+                    div()
+                        .h(px(32.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .border_b_1()
+                        .border_color(DARK.border_subtle)
+                        .child(
+                            div()
+                                .id("sidebar-back-sessions")
+                                .px_1()
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .text_size(px(11.0))
+                                .text_color(DARK.subtle)
+                                .hover(|back| back.text_color(DARK.foreground).bg(DARK.hover))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.left_sidebar_mode = LeftSidebarMode::Sessions;
+                                    cx.notify();
+                                }))
+                                .child("←"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(DARK.muted)
+                                .child(title),
+                        ),
+                )
+            })
             .child(content)
     }
 
@@ -1739,9 +1745,9 @@ impl WorkspaceView {
                                                 .absolute()
                                                 .right_0()
                                                 .bottom_0()
-                                                .size(px(6.0))
+                                                .size(px(5.0))
                                                 .rounded_full()
-                                                .bg(DARK.success),
+                                                .bg(DARK.accent),
                                         )
                                     }),
                             )
@@ -1780,12 +1786,12 @@ impl WorkspaceView {
                                                                 DARK.warning
                                                             }
                                                             Some(AgentRuntimeState::Working) => {
-                                                                DARK.success
-                                                            }
-                                                            Some(AgentRuntimeState::Idle) => {
                                                                 DARK.accent
                                                             }
-                                                            None if selected => DARK.success,
+                                                            Some(AgentRuntimeState::Idle) => {
+                                                                DARK.subtle
+                                                            }
+                                                            None if selected => DARK.muted,
                                                             None => DARK.subtle,
                                                         },
                                                     )
@@ -1827,6 +1833,7 @@ impl WorkspaceView {
         let selected_path = self.selected_file_path.clone();
         let file_error = self.file_error.clone();
         let show_hidden = self.show_hidden_files;
+        let has_selection = selected_path.is_some();
         div()
             .id("project-files-content")
             .flex_1()
@@ -1836,18 +1843,20 @@ impl WorkspaceView {
             .overflow_hidden()
             .child(
                 div()
-                    .h(px(34.0))
+                    .h(px(30.0))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px_3()
-                    .gap_2()
+                    .px_2()
+                    .gap_1()
                     .border_b_1()
                     .border_color(DARK.border_subtle)
                     .child(
                         div()
+                            .min_w(px(0.0))
                             .flex_1()
                             .truncate()
+                            .px_1()
                             .text_size(px(10.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(DARK.muted)
@@ -1858,33 +1867,73 @@ impl WorkspaceView {
                                     .unwrap_or_else(|| "Proyecto".into()),
                             ),
                     )
-                    .child(
-                        div()
-                            .id("toggle-hidden-files")
-                            .px_2()
-                            .py_1()
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .text_size(px(9.0))
-                            .text_color(if show_hidden {
-                                DARK.foreground
-                            } else {
-                                DARK.subtle
-                            })
-                            .bg(if show_hidden {
-                                DARK.selection
-                            } else {
-                                DARK.sidebar
-                            })
-                            .hover(|button| button.bg(DARK.hover))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_hidden_files = !this.show_hidden_files;
-                                this.settings.show_hidden_files = this.show_hidden_files;
-                                this.refresh_project_files();
-                                this.persist_settings(cx);
-                            }))
-                            .child(".files"),
-                    ),
+                    .child(self.file_icon_button(
+                        "+",
+                        "new-file",
+                        "Nuevo archivo",
+                        false,
+                        cx,
+                        |this, _, cx| {
+                            this.begin_file_prompt(FilePromptKind::NewFile, cx);
+                        },
+                    ))
+                    .child(self.file_icon_button(
+                        "□",
+                        "new-directory",
+                        "Nueva carpeta",
+                        false,
+                        cx,
+                        |this, _, cx| {
+                            this.begin_file_prompt(FilePromptKind::NewDirectory, cx);
+                        },
+                    ))
+                    .when(has_selection, |header| {
+                        header
+                            .child(self.file_icon_button(
+                                "✎",
+                                "rename-file",
+                                "Renombrar",
+                                false,
+                                cx,
+                                |this, _, cx| {
+                                    this.begin_file_prompt(FilePromptKind::Rename, cx);
+                                },
+                            ))
+                            .child(self.file_icon_button(
+                                "⌫",
+                                "trash-file",
+                                "Mover a la papelera",
+                                false,
+                                cx,
+                                |this, _, cx| {
+                                    this.request_file_trash(cx);
+                                },
+                            ))
+                    })
+                    .child(self.file_icon_button(
+                        if show_hidden { "·" } else { "…" },
+                        "toggle-hidden-files",
+                        "Archivos ocultos",
+                        show_hidden,
+                        cx,
+                        |this, _, cx| {
+                            this.show_hidden_files = !this.show_hidden_files;
+                            this.settings.show_hidden_files = this.show_hidden_files;
+                            this.refresh_project_files();
+                            this.persist_settings(cx);
+                        },
+                    ))
+                    .child(self.file_icon_button(
+                        "↻",
+                        "refresh-files",
+                        "Actualizar",
+                        false,
+                        cx,
+                        |this, _, cx| {
+                            this.refresh_project_files();
+                            cx.notify();
+                        },
+                    )),
             )
             .child(
                 div()
@@ -1927,13 +1976,22 @@ impl WorkspaceView {
                                 DARK.muted
                             })
                             .hover(|item| item.bg(DARK.hover).text_color(DARK.foreground))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if is_directory {
-                                    this.toggle_directory(&path, cx);
-                                } else {
-                                    this.select_file_path(path.clone(), cx);
-                                }
-                            }))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                    if is_directory {
+                                        if event.click_count == 1 {
+                                            this.toggle_directory(&path, cx);
+                                        }
+                                        return;
+                                    }
+                                    if event.click_count >= 2 {
+                                        this.open_file(path.clone(), window, cx);
+                                    } else {
+                                        this.select_file_path(path.clone(), cx);
+                                    }
+                                }),
+                            )
                             .child(
                                 div()
                                     .w(px(12.0))
@@ -1970,49 +2028,37 @@ impl WorkspaceView {
                         .child(error),
                 )
             })
-            .child(
-                div()
-                    .h(px(36.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .border_t_1()
-                    .border_color(DARK.border_subtle)
-                    .child(
-                        self.file_action_button("Open", "open-file", cx, |this, window, cx| {
-                            this.open_selected_file(window, cx);
-                        }),
-                    )
-                    .child(
-                        self.file_action_button("+ File", "new-file", cx, |this, _, cx| {
-                            this.begin_file_prompt(FilePromptKind::NewFile, cx);
-                        }),
-                    )
-                    .child(
-                        self.file_action_button("+ Dir", "new-directory", cx, |this, _, cx| {
-                            this.begin_file_prompt(FilePromptKind::NewDirectory, cx);
-                        }),
-                    )
-                    .child(
-                        self.file_action_button("Rename", "rename-file", cx, |this, _, cx| {
-                            this.begin_file_prompt(FilePromptKind::Rename, cx);
-                        }),
-                    )
-                    .child(
-                        self.file_action_button("Trash", "trash-file", cx, |this, _, cx| {
-                            this.request_file_trash(cx);
-                        }),
-                    )
-                    .child(
-                        self.file_action_button("↻", "refresh-files", cx, |this, _, cx| {
-                            this.refresh_project_files();
-                            cx.notify();
-                        }),
-                    ),
-            )
             .into_any_element()
+    }
+
+    fn file_icon_button(
+        &self,
+        label: &'static str,
+        id: &'static str,
+        _tooltip: &'static str,
+        active: bool,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .size(px(22.0))
+            .flex_none()
+            .rounded(px(4.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_size(px(11.0))
+            .text_color(if active {
+                DARK.foreground
+            } else {
+                DARK.subtle
+            })
+            .bg(if active { DARK.selection } else { DARK.panel })
+            .hover(|button| button.bg(DARK.hover).text_color(DARK.foreground))
+            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
+            .child(label)
     }
 
     fn info_sidebar_content(&self, _: &mut Context<Self>) -> AnyElement {
@@ -2363,30 +2409,6 @@ impl WorkspaceView {
             )
     }
 
-    fn file_action_button(
-        &self,
-        label: &'static str,
-        id: &'static str,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .h(px(22.0))
-            .px_2()
-            .rounded(px(4.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .bg(DARK.elevated)
-            .text_size(px(8.5))
-            .text_color(DARK.muted)
-            .hover(|button| button.bg(DARK.hover).text_color(DARK.foreground))
-            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-            .child(label)
-    }
-
     fn center_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = self.editor.clone();
         let tabs = self
@@ -2410,10 +2432,13 @@ impl WorkspaceView {
             .bg(DARK.terminal);
         if let Some(editor) = editor {
             panel.child(editor)
-        } else {
+        } else if tabs.len() > 1 {
             panel
                 .child(self.tab_bar(tabs, selected_tab_id, cx))
                 .child(self.terminal_canvas(cx))
+        } else {
+            // Single tab: full terminal, no chrome strip (⌘T for new tab).
+            panel.child(self.terminal_canvas(cx))
         }
     }
 
@@ -2429,7 +2454,7 @@ impl WorkspaceView {
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .gap(px(2.0))
+            .gap(px(1.0))
             .px_2()
             .overflow_x_hidden()
             .children(tabs.into_iter().enumerate().map(|(index, tab)| {
@@ -2443,26 +2468,26 @@ impl WorkspaceView {
                     .unwrap_or_else(|| format!("Terminal {}", index + 1));
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
-                    .h(px(28.0))
-                    .min_w(px(112.0))
-                    .max_w(px(192.0))
+                    .h_full()
+                    .min_w(px(96.0))
+                    .max_w(px(168.0))
                     .flex()
                     .items_center()
                     .gap_1()
                     .px_2()
-                    .rounded(px(5.0))
                     .cursor_pointer()
-                    .bg(if selected {
-                        DARK.elevated
+                    .border_b_1()
+                    .border_color(if selected {
+                        DARK.muted
                     } else {
-                        DARK.terminal
+                        gpui::rgba(0x00000000)
                     })
                     .text_color(if selected {
                         DARK.foreground
                     } else {
-                        DARK.muted
+                        DARK.subtle
                     })
-                    .hover(|tab| tab.bg(DARK.hover))
+                    .hover(|tab| tab.text_color(DARK.foreground).bg(DARK.hover))
                     .active(|tab| tab.opacity(0.84))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_tab(tab_id, window, cx);
@@ -2472,7 +2497,7 @@ impl WorkspaceView {
                             .min_w(px(0.0))
                             .flex_1()
                             .truncate()
-                            .text_size(px(10.5))
+                            .text_size(px(10.0))
                             .font_weight(if selected {
                                 gpui::FontWeight::MEDIUM
                             } else {
@@ -2484,13 +2509,13 @@ impl WorkspaceView {
                         tab.child(
                             div()
                                 .id(SharedString::from(format!("close-tab-{tab_id}")))
-                                .size(px(16.0))
+                                .size(px(14.0))
                                 .flex_none()
-                                .rounded(px(4.0))
+                                .rounded(px(3.0))
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .text_size(px(13.0))
+                                .text_size(px(12.0))
                                 .text_color(DARK.subtle)
                                 .hover(|close| close.bg(DARK.elevated).text_color(DARK.foreground))
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -2503,7 +2528,7 @@ impl WorkspaceView {
             }));
 
         div()
-            .h(px(36.0))
+            .h(px(30.0))
             .w_full()
             .flex_none()
             .flex()
@@ -2520,19 +2545,6 @@ impl WorkspaceView {
                     .items_center()
                     .gap_1()
                     .px_1()
-                    .child(self.chrome_button(
-                        "□",
-                        "toggle-pane-zoom",
-                        false,
-                        cx,
-                        |this, window, cx| {
-                            if this.snapshot.toggle_selected_pane_zoom() {
-                                this.persist(cx);
-                                this.focus_selected_terminal(window, cx);
-                            }
-                        },
-                    ))
-                    .child(div().w(px(1.0)).h(px(18.0)).mx_1().bg(DARK.border_subtle))
                     .child(self.chrome_button(
                         "+",
                         "new-terminal-tab",
@@ -2560,7 +2572,6 @@ impl WorkspaceView {
         match layout {
             PaneLayoutSnapshot::Terminal { id } => {
                 let session_id = *id;
-                let selected = selected_session_id == Some(session_id);
                 let terminal = self.terminals.get(&session_id).cloned();
                 div()
                     .id(SharedString::from(format!("pane-{session_id}")))
@@ -2569,12 +2580,6 @@ impl WorkspaceView {
                     .min_h(px(48.0))
                     .relative()
                     .overflow_hidden()
-                    .border_1()
-                    .border_color(if selected {
-                        DARK.success
-                    } else {
-                        DARK.border_subtle
-                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
@@ -2582,17 +2587,6 @@ impl WorkspaceView {
                         }),
                     )
                     .when_some(terminal, |pane, terminal| pane.child(terminal))
-                    .when(selected, |pane| {
-                        pane.child(
-                            div()
-                                .absolute()
-                                .top_1()
-                                .right_1()
-                                .size(px(5.0))
-                                .rounded_full()
-                                .bg(DARK.success),
-                        )
-                    })
                     .into_any_element()
             }
             PaneLayoutSnapshot::Split {
@@ -2626,12 +2620,12 @@ impl WorkspaceView {
                     .id(SharedString::from(divider_id))
                     .flex_none()
                     .bg(DARK.border_subtle)
-                    .hover(|divider| divider.bg(DARK.success))
+                    .hover(|divider| divider.bg(DARK.muted))
                     .when(axis == WorkspaceSplitAxis::Horizontal, |divider| {
-                        divider.w(px(5.0)).h_full().cursor_ew_resize()
+                        divider.w(px(1.0)).h_full().cursor_ew_resize()
                     })
                     .when(axis == WorkspaceSplitAxis::Vertical, |divider| {
-                        divider.h(px(5.0)).w_full().cursor_ns_resize()
+                        divider.h(px(1.0)).w_full().cursor_ns_resize()
                     })
                     .on_drag(drag, move |drag, _, _, cx| {
                         cx.new(|_| PaneDividerDragView { axis: drag.axis })
@@ -2790,34 +2784,43 @@ impl WorkspaceView {
             .border_color(DARK.border_subtle)
             .child(
                 div()
-                    .h(px(34.0))
+                    .h(px(30.0))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .px_2()
+                    .gap_0()
+                    .px_3()
                     .border_b_1()
                     .border_color(DARK.border_subtle)
                     .children(modes.into_iter().map(|(item_mode, label)| {
                         let selected = item_mode == mode;
                         div()
                             .id(SharedString::from(format!("utility-mode-{label}")))
-                            .flex_1()
-                            .h(px(24.0))
-                            .rounded(px(5.0))
+                            .h_full()
+                            .px_2()
+                            .mr_2()
                             .flex()
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .text_size(px(9.5))
-                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_size(px(10.0))
+                            .font_weight(if selected {
+                                gpui::FontWeight::MEDIUM
+                            } else {
+                                gpui::FontWeight::NORMAL
+                            })
                             .text_color(if selected {
                                 DARK.foreground
                             } else {
                                 DARK.subtle
                             })
-                            .bg(if selected { DARK.selection } else { DARK.panel })
-                            .hover(|tab| tab.bg(DARK.hover).text_color(DARK.foreground))
+                            .border_b_1()
+                            .border_color(if selected {
+                                DARK.muted
+                            } else {
+                                gpui::rgba(0x00000000)
+                            })
+                            .hover(|tab| tab.text_color(DARK.foreground))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.right_sidebar_mode = item_mode;
                                 match item_mode {
@@ -2882,7 +2885,7 @@ impl WorkspaceView {
                                 .child(
                                     div()
                                         .font_family("JetBrains Mono")
-                                        .text_color(DARK.success)
+                                        .text_color(DARK.subtle)
                                         .child(">"),
                                 )
                                 .child(
@@ -2938,7 +2941,7 @@ impl WorkspaceView {
                                                 .text_center()
                                                 .font_family("JetBrains Mono")
                                                 .text_color(if active {
-                                                    DARK.success
+                                                    DARK.muted
                                                 } else {
                                                     DARK.subtle
                                                 })
@@ -3270,6 +3273,7 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::new_workspace))
             .on_action(cx.listener(Self::new_terminal_tab))
             .on_action(cx.listener(Self::close_terminal))
+            .on_action(cx.listener(Self::toggle_left_sidebar))
             .on_action(cx.listener(Self::toggle_right_sidebar))
             .on_action(cx.listener(Self::previous_workspace))
             .on_action(cx.listener(Self::next_workspace))

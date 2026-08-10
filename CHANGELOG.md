@@ -9,6 +9,10 @@
 - Add recursive terminal splits, persistent ratios, geometric focus, resizing and pane zoom.
 - Combine Files and read-only Git diffs in one focused right sidebar.
 - Add a built-in file explorer and UTF-8 editor with atomic saves and conflict detection.
+- Simplify the chrome toward a Herdr-like layout: no focus ring on panes, sessions-only left sidebar, and a full-height terminal when a single tab is open.
+- Restyle Files/Diff as subtle underline tabs; move file actions into a compact header with double-click to open.
+- Rebuild the Diff panel as a Warp-style master/detail view with a compact change list and full remaining height for the selected file.
+- Toggle sidebars with `⌘B` (sessions) and `⌥⌘B` (Files and Diff); keep `⌘R` free of that role.
 - Preserve the `Vibra.app` identity and import the Swift workspace with a one-time backup before conversion.
 - Import settings and workspaces created by the standalone VibraGPUI preview when no canonical Vibra state exists.
 - Port signing, universal builds, notarization and DMG packaging to Cargo.

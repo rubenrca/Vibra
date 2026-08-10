@@ -133,7 +133,8 @@ importan una sola vez.
 | `⌃⌥` + flechas | Cambiar proporción del pane |
 | `⌃⌥E` / `⇧⌘↵` | Igualar panes / alternar zoom |
 | `⇧⌘P` / `⌘P` | Paleta de comandos / quick open |
-| `⌘R` | Mostrar u ocultar Files y Diff |
+| `⌘B` | Mostrar u ocultar sidebar de sesiones |
+| `⌥⌘B` | Mostrar u ocultar panel Files y Diff |
 | `⌘F`, `⌘G`, `⇧⌘G` | Buscar / siguiente / anterior en terminal |
 | `⌘=`, `⌘-`, `⌘0` | Ajustar o restablecer fuente |
 | `⌘K` | Limpiar pantalla y scrollback |
