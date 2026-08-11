@@ -10,8 +10,8 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use directories::BaseDirs;
 use gpui::{
-    App, AppContext, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions,
-    actions, px, size,
+    App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, SystemMenuType,
+    TitlebarOptions, WindowBounds, WindowOptions, actions, px, size,
 };
 
 use crate::infrastructure::alacritty::AlacrittyTerminalPort;
@@ -59,6 +59,7 @@ actions!(
         TogglePaneZoom,
         ToggleCommandPalette,
         QuickOpen,
+        ShowSettings,
         CheckForUpdates,
         Quit
     ]
@@ -151,6 +152,7 @@ fn run() -> Result<()> {
             KeyBinding::new("shift-cmd-enter", TogglePaneZoom, None),
             KeyBinding::new("shift-cmd-p", ToggleCommandPalette, None),
             KeyBinding::new("cmd-p", QuickOpen, None),
+            KeyBinding::new("cmd-,", ShowSettings, None),
             KeyBinding::new("cmd-u", CheckForUpdates, None),
             KeyBinding::new("cmd-q", Quit, None),
         ]);
@@ -158,6 +160,54 @@ fn run() -> Result<()> {
         cx.on_action(|_: &CheckForUpdates, _cx| {
             infrastructure::sparkle::check_for_updates();
         });
+
+        // Application menu becomes "Vibra" in the macOS menu bar (click the name).
+        cx.set_menus(vec![
+            Menu {
+                name: "Vibra".into(),
+                items: vec![
+                    MenuItem::action("Settings…", ShowSettings),
+                    MenuItem::action("Check for Updates…", CheckForUpdates),
+                    MenuItem::separator(),
+                    MenuItem::os_submenu("Services", SystemMenuType::Services),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit Vibra", Quit),
+                ],
+            },
+            Menu {
+                name: "File".into(),
+                items: vec![
+                    MenuItem::action("New Workspace", NewWorkspace),
+                    MenuItem::action("New Terminal Tab", NewTerminalTab),
+                    MenuItem::separator(),
+                    MenuItem::action("Close Terminal", CloseTerminal),
+                ],
+            },
+            Menu {
+                name: "Edit".into(),
+                items: vec![
+                    MenuItem::action("Copy", CopyTerminal),
+                    MenuItem::action("Paste", PasteTerminal),
+                ],
+            },
+            Menu {
+                name: "View".into(),
+                items: vec![
+                    MenuItem::action("Toggle Sessions Sidebar", ToggleLeftSidebar),
+                    MenuItem::action("Toggle Files / Diff", ToggleRightSidebar),
+                    MenuItem::separator(),
+                    MenuItem::action("Command Palette", ToggleCommandPalette),
+                    MenuItem::action("Quick Open", QuickOpen),
+                ],
+            },
+            Menu {
+                name: "Window".into(),
+                items: vec![
+                    MenuItem::action("Previous Workspace", PreviousWorkspace),
+                    MenuItem::action("Next Workspace", NextWorkspace),
+                ],
+            },
+        ]);
 
         // Packaged builds carry SUFeedURL; development runs are a no-op.
         infrastructure::sparkle::start();

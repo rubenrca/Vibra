@@ -33,9 +33,9 @@ use crate::ui::theme::DARK;
 use crate::{
     CloseTerminal, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     NewTerminalTab, NewWorkspace, NextPane, NextWorkspace, PreviousPane, PreviousWorkspace,
-    QuickOpen, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, SplitPaneDown,
-    SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette, ToggleLeftSidebar,
-    TogglePaneZoom, ToggleRightSidebar,
+    QuickOpen, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, ShowSettings,
+    SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette,
+    ToggleLeftSidebar, TogglePaneZoom, ToggleRightSidebar,
 };
 
 /// Full width of the left sessions/info/settings sidebar.
@@ -644,7 +644,7 @@ impl WorkspaceView {
                 },
                 PaletteItem {
                     label: "Settings: Open".into(),
-                    detail: String::new(),
+                    detail: "⌘,".into(),
                     action: PaletteAction::ShowSettings,
                 },
             ],
@@ -1456,6 +1456,11 @@ impl WorkspaceView {
             self.left_sidebar_mode = LeftSidebarMode::Sessions;
         }
         self.set_left_sidebar_visible(!self.left_sidebar_visible, true, cx);
+    }
+
+    fn show_settings(&mut self, _: &ShowSettings, _: &mut Window, cx: &mut Context<Self>) {
+        self.left_sidebar_mode = LeftSidebarMode::Settings;
+        self.set_left_sidebar_visible(true, true, cx);
     }
 
     fn toggle_right_sidebar(
@@ -3445,6 +3450,7 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::toggle_pane_zoom))
             .on_action(cx.listener(Self::toggle_command_palette))
             .on_action(cx.listener(Self::quick_open))
+            .on_action(cx.listener(Self::show_settings))
             .capture_key_down(cx.listener(Self::on_workspace_key_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_pane_resize))
             .size_full()

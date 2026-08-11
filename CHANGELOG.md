@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Restore the macOS application menu (Vibra → Settings…, Check for Updates…, Quit) and basic File / Edit / View / Window menus.
+- Open preferences from the menu or with `⌘,` (same settings panel as the command palette).
+- Rebuild the Diff panel as Warp-style expandable file cards: accordion multi-expand, inline diffs, single line-number gutter, and an “Uncommitted changes” header.
+- Add IDE-style syntax highlighting in the Diff panel (keywords, strings, comments, types, numbers) for Rust, JS/TS, Python, Swift, Go, shell, and common config formats.
+
 ## 0.3.1 — 2026-08-11
 
 - Restore coding-agent brand marks in the sessions sidebar with live idle/working/waiting status.

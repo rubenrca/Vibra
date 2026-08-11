@@ -57,9 +57,10 @@ pub static DARK: LazyLock<Theme> = LazyLock::new(|| Theme {
     warning: rgb(0xd7ad61),
     accent: rgb(0x82aaff),
     diff_added: rgb(0x6bcf8e),
-    diff_added_bg: rgba(0x14261aff),
+    // Slightly stronger full-row tints so inline diffs read like Warp.
+    diff_added_bg: rgba(0x1a3322ff),
     diff_deleted: rgb(0xe06c75),
-    diff_deleted_bg: rgba(0x2a1618ff),
+    diff_deleted_bg: rgba(0x3a1c20ff),
     diff_hunk_bg: rgba(0x161b26ff),
     gutter: rgb(0x121213),
     indent_guide: rgba(0x3a3a3e55),
