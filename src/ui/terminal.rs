@@ -1172,6 +1172,12 @@ impl EntityInputHandler for TerminalView {
 
 struct TerminalPaintState {
     lines: Vec<ShapedLine>,
+    /// Per-cell backgrounds in row-major order (`rows * columns`).
+    /// Painted as quads so the grid always fills the pane (ShapedLine
+    /// backgrounds can leave a gap; Warp-style emulators paint cells directly).
+    cell_backgrounds: Vec<Hsla>,
+    /// Full-pane underlay from the live surface color (not a forced theme black).
+    surface: Hsla,
     cursor: Option<PaintQuad>,
     cursor_bounds: Option<Bounds<Pixels>>,
     composition: Option<ShapedLine>,
@@ -1284,27 +1290,37 @@ impl Render for TerminalView {
                                 }],
                                 None,
                             );
-                            let cell_width = measure.width.ceil();
+                            // Target grid from natural glyph metrics (what the PTY should be).
+                            let natural_cell_width: f32 = measure.width.ceil().into();
+                            let natural_line_height: f32 = line_height.into();
+                            let width: f32 = bounds.size.width.into();
+                            let height: f32 = bounds.size.height.into();
+                            let target_columns = (width / natural_cell_width)
+                                .floor()
+                                .clamp(2.0, u16::MAX as f32) as u16;
+                            let target_rows = (height / natural_line_height)
+                                .floor()
+                                .clamp(1.0, u16::MAX as f32) as u16;
                             if let Some(handle) = &handle {
-                                let width: f32 = bounds.size.width.into();
-                                let height: f32 = bounds.size.height.into();
-                                let cell_width_f32: f32 = cell_width.into();
-                                let line_height_f32: f32 = line_height.into();
                                 let size = TerminalSize {
-                                    columns: (width / cell_width_f32)
-                                        .floor()
-                                        .clamp(2.0, u16::MAX as f32)
-                                        as u16,
-                                    rows: (height / line_height_f32)
-                                        .floor()
-                                        .clamp(1.0, u16::MAX as f32)
-                                        as u16,
-                                    cell_width: cell_width_f32,
-                                    cell_height: line_height_f32,
+                                    columns: target_columns,
+                                    rows: target_rows,
+                                    cell_width: natural_cell_width,
+                                    cell_height: natural_line_height,
                                 };
                                 let _ = handle.resize(size);
                             }
                             let snapshot = entity.read(cx).snapshot();
+                            // Stretch paint metrics to the *live* snapshot grid so every
+                            // cell covers the pane. Using target_* while the PTY still has
+                            // fewer columns/rows left a gray strip where full-screen TUIs
+                            // looked cut off (cols_snap * width/cols_target < width).
+                            let paint_columns = snapshot.columns.max(1) as f32;
+                            let paint_rows = snapshot.rows.max(1) as f32;
+                            let cell_width_f32 = width / paint_columns;
+                            let line_height_f32 = height / paint_rows;
+                            let cell_width = px(cell_width_f32);
+                            let line_height = px(line_height_f32);
                             let focused = entity.read(cx).focus_handle.is_focused(window);
                             let shape_context = TerminalShapeContext {
                                 base_font: &base_font,
@@ -1319,6 +1335,8 @@ impl Render for TerminalView {
                                 snapshot.clone(),
                                 &shape_context,
                             );
+                            let cell_backgrounds = collect_cell_backgrounds(&snapshot);
+                            let surface = snapshot_surface_color(&snapshot);
                             let cursor_bounds = snapshot.cursor.map(|cursor| {
                                 cursor_bounds(bounds, cursor, cell_width, line_height)
                             });
@@ -1352,6 +1370,8 @@ impl Render for TerminalView {
                             let scrollbar = scrollbar_quad(bounds, &snapshot);
                             TerminalPaintState {
                                 lines,
+                                cell_backgrounds,
+                                surface,
                                 cursor,
                                 cursor_bounds,
                                 composition,
@@ -1371,10 +1391,24 @@ impl Render for TerminalView {
                             ElementInputHandler::new(bounds, entity.clone()),
                             cx,
                         );
-                        for (row, line) in state.lines.iter().enumerate() {
-                            let origin =
-                                point(bounds.left(), bounds.top() + state.line_height * row);
-                            let _ = line.paint_background(origin, state.line_height, window, cx);
+                        // 1) Full-pane underlay from live surface color (matches TUI canvas,
+                        //    not a forced theme black — normal shells keep their bg).
+                        window.paint_quad(fill(bounds, state.surface));
+                        // 2) Exact per-cell backgrounds so the grid covers every pixel.
+                        let columns = state.grid_size.0.max(1);
+                        for (index, background) in state.cell_backgrounds.iter().enumerate() {
+                            let row = index / columns;
+                            let column = index % columns;
+                            let cell_bounds = Bounds::new(
+                                point(
+                                    bounds.left() + state.cell_width * column,
+                                    bounds.top() + state.line_height * row,
+                                ),
+                                size(state.cell_width, state.line_height),
+                            );
+                            if *background != state.surface {
+                                window.paint_quad(fill(cell_bounds, *background));
+                            }
                         }
                         if let Some(cursor) = state.cursor {
                             window.paint_quad(cursor);
@@ -1622,11 +1656,6 @@ fn shape_snapshot_line(
         } else {
             cell.foreground
         };
-        let background = if cell.selected {
-            SELECTION_BACKGROUND
-        } else {
-            cell.background
-        };
         let underline = match cell.underline {
             TerminalUnderline::None => None,
             TerminalUnderline::Single | TerminalUnderline::Dotted | TerminalUnderline::Dashed => {
@@ -1647,11 +1676,13 @@ fn shape_snapshot_line(
                 wavy: true,
             }),
         };
+        // Backgrounds are painted as per-cell quads; keep runs transparent so
+        // glyph advances never leave a background gap at the pane edge.
         runs.push(TextRun {
             len: piece.len(),
             font,
             color: to_hsla(foreground),
-            background_color: Some(to_hsla(background)),
+            background_color: None,
             underline,
             strikethrough: cell.strikeout.then_some(StrikethroughStyle {
                 thickness: px(1.0),
@@ -1666,6 +1697,35 @@ fn shape_snapshot_line(
         &runs,
         Some(context.cell_width),
     )
+}
+
+fn collect_cell_backgrounds(snapshot: &TerminalSnapshot) -> Vec<Hsla> {
+    let mut backgrounds = Vec::with_capacity(snapshot.rows.saturating_mul(snapshot.columns));
+    for line in &snapshot.lines {
+        for cell in line.iter() {
+            let background = if cell.selected {
+                SELECTION_BACKGROUND
+            } else {
+                cell.background
+            };
+            backgrounds.push(to_hsla(background));
+        }
+    }
+    backgrounds
+}
+
+/// Live canvas color for full-pane underlay. Taken from the TUI itself so Grok’s
+/// black fills the pane without forcing the shell theme to pure black.
+fn snapshot_surface_color(snapshot: &TerminalSnapshot) -> Hsla {
+    let sample = snapshot
+        .lines
+        .last()
+        .and_then(|line| line.first())
+        .or_else(|| snapshot.lines.first().and_then(|line| line.first()))
+        .map(|cell| cell.background);
+    sample
+        .map(to_hsla)
+        .unwrap_or_else(|| DARK.terminal.into())
 }
 
 fn scrollbar_quad(bounds: Bounds<Pixels>, snapshot: &TerminalSnapshot) -> Option<PaintQuad> {

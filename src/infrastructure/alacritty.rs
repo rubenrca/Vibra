@@ -36,6 +36,21 @@ const FOREGROUND: TerminalRgb = TerminalRgb::new(0xe5, 0xe5, 0xe6);
 const BACKGROUND: TerminalRgb = TerminalRgb::new(0x10, 0x10, 0x11);
 const CURSOR: TerminalRgb = TerminalRgb::new(0xe8, 0xe8, 0xe8);
 
+/// Host tools (CI, agent shells, cargo wrappers) often export these to force
+/// monochrome output. Interactive agent CLIs inside Vibra panes should not
+/// inherit that — dock-launched and agent-launched builds must look the same.
+const COLOR_SUPPRESSING_ENV: &[&str] = &[
+    "NO_COLOR",
+    "CLICOLOR",
+    "CLICOLOR_FORCE",
+    "FORCE_COLOR",
+    "CARGO_TERM_COLOR",
+    "NPM_CONFIG_COLOR",
+    "PIP_NO_COLOR",
+    "PY_COLORS",
+    "NOCOLOR",
+];
+
 const ANSI: [TerminalRgb; 16] = [
     TerminalRgb::new(0x23, 0x23, 0x26),
     TerminalRgb::new(0xd9, 0x6c, 0x75),
@@ -213,16 +228,7 @@ impl AlacrittyTerminal {
             listener.clone(),
         )));
 
-        let mut env = HashMap::new();
-        env.insert("TERM".into(), "xterm-256color".into());
-        env.insert("COLORTERM".into(), "truecolor".into());
-        env.insert("TERM_PROGRAM".into(), "Vibra".into());
-        env.insert(
-            "TERM_PROGRAM_VERSION".into(),
-            env!("CARGO_PKG_VERSION").into(),
-        );
-        env.insert("VIBRA_SESSION_ID".into(), session_id.to_string());
-        env.extend(extra_environment.clone());
+        let env = terminal_child_environment(session_id, extra_environment);
         let options = Options {
             shell,
             working_directory: Some(working_directory.to_path_buf()),
@@ -230,11 +236,17 @@ impl AlacrittyTerminal {
             env,
         };
         let window_id = u64::from_le_bytes(session_id.as_bytes()[..8].try_into().unwrap());
-        let pty = tty::new(&options, window_size(size), window_id).with_context(|| {
-            format!(
-                "no se pudo iniciar el PTY en {}",
-                working_directory.display()
-            )
+        // Alacritty merges Options.env into the inherited process environment and
+        // cannot remove keys. Strip color-suppression vars around spawn so panes
+        // match a dock-launched release even when Vibra itself was started from a
+        // monochrome host (agent shells, CI wrappers, etc.).
+        let pty = with_cleared_color_suppression(|| {
+            tty::new(&options, window_size(size), window_id).with_context(|| {
+                format!(
+                    "no se pudo iniciar el PTY en {}",
+                    working_directory.display()
+                )
+            })
         })?;
         #[cfg(unix)]
         let pty_probe_fd = {
@@ -964,6 +976,65 @@ fn to_alacritty_rgb(color: TerminalRgb) -> Rgb {
     }
 }
 
+fn is_color_suppressing_env(key: &str) -> bool {
+    COLOR_SUPPRESSING_ENV
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(key))
+}
+
+fn terminal_child_environment(
+    session_id: Uuid,
+    extra_environment: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert("TERM".into(), "xterm-256color".into());
+    env.insert("COLORTERM".into(), "truecolor".into());
+    env.insert("TERM_PROGRAM".into(), "Vibra".into());
+    env.insert(
+        "TERM_PROGRAM_VERSION".into(),
+        env!("CARGO_PKG_VERSION").into(),
+    );
+    env.insert("VIBRA_SESSION_ID".into(), session_id.to_string());
+    for (key, value) in extra_environment {
+        if is_color_suppressing_env(key) {
+            continue;
+        }
+        env.insert(key.clone(), value.clone());
+    }
+    env
+}
+
+/// Remove monochrome-forcing variables for the duration of `f`, then restore them.
+///
+/// `std::process::Command` (used by alacritty's PTY spawn) inherits the current
+/// process environment; Options.env can only set keys, not unset them.
+fn with_cleared_color_suppression<T>(f: impl FnOnce() -> T) -> T {
+    // Serialize so concurrent pane spawns don't restore vars mid-flight.
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().expect("color-suppression lock poisoned");
+
+    let mut saved = Vec::new();
+    for key in COLOR_SUPPRESSING_ENV {
+        if let Ok(value) = std::env::var(key) {
+            saved.push((*key, value));
+            // SAFETY: guarded by LOCK; only used around PTY spawn.
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+    }
+
+    let result = f();
+
+    for (key, value) in saved {
+        // SAFETY: same lock as removal; restore host environment as found.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -976,6 +1047,41 @@ mod tests {
         assert_eq!(indexed_color(21), TerminalRgb::new(0, 0, 255));
         assert_eq!(indexed_color(231), TerminalRgb::new(255, 255, 255));
         assert_eq!(indexed_color(255), TerminalRgb::new(238, 238, 238));
+    }
+
+    #[test]
+    fn child_environment_drops_color_suppression_keys() {
+        let mut extra = HashMap::new();
+        extra.insert("NO_COLOR".into(), "1".into());
+        extra.insert("FORCE_COLOR".into(), "0".into());
+        extra.insert("VIBRA_PANE_ID".into(), "pane".into());
+        let env = terminal_child_environment(Uuid::nil(), &extra);
+        assert!(!env.contains_key("NO_COLOR"));
+        assert!(!env.contains_key("FORCE_COLOR"));
+        assert_eq!(env.get("COLORTERM").map(String::as_str), Some("truecolor"));
+        assert_eq!(env.get("VIBRA_PANE_ID").map(String::as_str), Some("pane"));
+    }
+
+    #[test]
+    fn clearing_color_suppression_is_restored() {
+        // SAFETY: test-only mutation of process env under the same helper lock path.
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+            std::env::set_var("FORCE_COLOR", "0");
+        }
+        let inside = with_cleared_color_suppression(|| {
+            (
+                std::env::var_os("NO_COLOR").is_none(),
+                std::env::var_os("FORCE_COLOR").is_none(),
+            )
+        });
+        assert_eq!(inside, (true, true));
+        assert_eq!(std::env::var("NO_COLOR").ok().as_deref(), Some("1"));
+        assert_eq!(std::env::var("FORCE_COLOR").ok().as_deref(), Some("0"));
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::remove_var("FORCE_COLOR");
+        }
     }
 
     #[test]

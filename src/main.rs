@@ -19,6 +19,7 @@ use crate::infrastructure::files::LocalFileSystemPort;
 use crate::infrastructure::git::GitCliPort;
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::SettingsRepository;
+use crate::ui::agent_marks::VibraAssets;
 use crate::ui::workspace_view::{WorkspaceDependencies, WorkspaceView};
 
 actions!(
@@ -101,7 +102,9 @@ fn run() -> Result<()> {
         .context("no se pudo resolver settings.json de Vibra")?;
     let launch_directory = launch_directory();
 
-    Application::new().run(move |cx: &mut App| {
+    Application::new()
+        .with_assets(VibraAssets)
+        .run(move |cx: &mut App| {
         cx.text_system()
             .add_fonts(vec![
                 Cow::Borrowed(include_bytes!("../Resources/Fonts/JetBrainsMono[wght].ttf")),

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    Context, Div, EventEmitter, IntoElement, Render, Rgba, SharedString, Task, Timer, Window, div,
-    prelude::*, px, uniform_list,
+    Context, Div, EventEmitter, IntoElement, ListHorizontalSizingBehavior, Render, Rgba,
+    SharedString, Task, Timer, Window, div, prelude::*, px, uniform_list,
 };
 
 use crate::ports::git::{
@@ -81,6 +81,35 @@ impl DiffView {
         }
     }
 
+    /// Repo root + relative path → status, for coloring the Files tree (Zed-style).
+    pub fn status_index(&self) -> (Option<PathBuf>, std::collections::HashMap<String, GitFileStatus>) {
+        match &self.snapshot {
+            Some(snapshot) => {
+                let map = snapshot
+                    .changes
+                    .iter()
+                    .map(|change| (change.path.replace('\\', "/"), change.status))
+                    .collect();
+                (Some(snapshot.root.clone()), map)
+            }
+            None => (None, std::collections::HashMap::new()),
+        }
+    }
+
+    /// Open a changed file in the Diff panel (if it has git status).
+    pub fn select_path_if_changed(&mut self, relative_path: &str, cx: &mut Context<Self>) -> bool {
+        let relative_path = relative_path.replace('\\', "/");
+        let exists = self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.changes.iter().any(|c| c.path == relative_path));
+        if !exists {
+            return false;
+        }
+        self.select_change(relative_path, cx);
+        true
+    }
+
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         if self.context_root == root {
             return;
@@ -155,6 +184,8 @@ impl DiffView {
         } else {
             self.diff_loading = false;
         }
+        // Let the Files tree repaint git status colors.
+        cx.emit(DiffViewEvent);
     }
 
     fn select_change(&mut self, path: String, cx: &mut Context<Self>) {
@@ -264,90 +295,97 @@ impl DiffView {
         let loading = self.refreshing;
 
         div()
-            .h(px(36.0))
             .w_full()
             .flex_none()
             .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
+            .flex_col()
             .bg(DARK.panel)
             .border_b_1()
             .border_color(DARK.border_subtle)
+            // Branch + stats — quiet, not SCM-app chrome
             .child(
                 div()
-                    .min_w(px(0.0))
-                    .flex_1()
+                    .h(px(32.0))
                     .flex()
                     .items_center()
                     .gap_2()
+                    .px_3()
                     .child(
                         div()
-                            .truncate()
-                            .font_family("JetBrains Mono")
-                            .text_size(px(10.5))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(DARK.foreground)
-                            .child(branch.unwrap_or_else(|| {
-                                if loading {
-                                    "…".to_owned()
-                                } else {
-                                    "no git".to_owned()
-                                }
-                            })),
+                            .flex_none()
+                            .text_size(px(11.0))
+                            .text_color(DARK.accent)
+                            .child("⎇"),
                     )
-                    .when(files > 0, |row| {
-                        row.child(
-                            div()
-                                .text_size(px(9.5))
-                                .text_color(DARK.subtle)
-                                .child(format!("{files}")),
-                        )
-                        .when(additions > 0, |row| {
-                            row.child(
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
                                 div()
+                                    .truncate()
                                     .font_family("JetBrains Mono")
-                                    .text_size(px(9.5))
-                                    .text_color(DARK.diff_added)
-                                    .child(format!("+{additions}")),
+                                    .text_size(px(11.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(DARK.foreground)
+                                    .child(branch.unwrap_or_else(|| {
+                                        if loading {
+                                            "…".to_owned()
+                                        } else {
+                                            "no git".to_owned()
+                                        }
+                                    })),
                             )
-                        })
-                        .when(deletions > 0, |row| {
-                            row.child(
-                                div()
-                                    .font_family("JetBrains Mono")
-                                    .text_size(px(9.5))
-                                    .text_color(DARK.diff_deleted)
-                                    .child(format!("−{deletions}")),
-                            )
-                        })
-                    })
-                    .when(ahead > 0 || behind > 0, |row| {
-                        row.child(
-                            div()
-                                .font_family("JetBrains Mono")
-                                .text_size(px(9.0))
-                                .text_color(DARK.subtle)
-                                .child(format!("↑{ahead} ↓{behind}")),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .id("git-refresh")
-                    .size(px(22.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .text_size(px(12.0))
-                    .text_color(if loading { DARK.subtle } else { DARK.muted })
-                    .hover(|button| button.bg(DARK.hover).text_color(DARK.foreground))
-                    .active(|button| button.opacity(0.72))
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh_now(cx)))
-                    .child(if loading { "·" } else { "↻" }),
+                            .when(files > 0, |row| {
+                                row.when(additions > 0, |row| {
+                                    row.child(
+                                        div()
+                                            .font_family("JetBrains Mono")
+                                            .text_size(px(9.5))
+                                            .text_color(DARK.diff_added)
+                                            .child(format!("+{additions}")),
+                                    )
+                                })
+                                .when(deletions > 0, |row| {
+                                    row.child(
+                                        div()
+                                            .font_family("JetBrains Mono")
+                                            .text_size(px(9.5))
+                                            .text_color(DARK.diff_deleted)
+                                            .child(format!("−{deletions}")),
+                                    )
+                                })
+                            })
+                            .when(ahead > 0 || behind > 0, |row| {
+                                row.child(
+                                    div()
+                                        .font_family("JetBrains Mono")
+                                        .text_size(px(9.0))
+                                        .text_color(DARK.subtle)
+                                        .child(format!("↑{ahead} ↓{behind}")),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("git-refresh")
+                            .size(px(22.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .text_size(px(12.0))
+                            .text_color(if loading { DARK.subtle } else { DARK.muted })
+                            .hover(|button| button.bg(DARK.hover).text_color(DARK.foreground))
+                            .active(|button| button.opacity(0.72))
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh_now(cx)))
+                            .child(if loading { "·" } else { "↻" }),
+                    ),
             )
     }
 
@@ -361,7 +399,7 @@ impl DiffView {
             .p_6()
             .child(
                 div()
-                    .max_w(px(220.0))
+                    .max_w(px(240.0))
                     .text_center()
                     .text_size(px(11.0))
                     .line_height(px(16.0))
@@ -370,130 +408,187 @@ impl DiffView {
             )
     }
 
-    fn change_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn change_list(&mut self, cx: &mut Context<Self>, fill: bool) -> impl IntoElement {
         let changes = self
             .snapshot
             .as_ref()
             .map(|snapshot| snapshot.changes.clone())
             .unwrap_or_default();
         let expanded_path = self.expanded_path.clone();
-        let list_height = ((changes.len() as f32 * 28.0) + 4.0).clamp(28.0, 168.0);
+        let count = changes.len();
+        // When a file is open, keep the list compact; otherwise fill the panel.
+        let list_height = if fill {
+            None
+        } else {
+            Some(((count as f32 * 24.0) + 4.0).clamp(48.0, 160.0))
+        };
 
         div()
             .id("git-change-list")
-            .h(px(list_height))
             .w_full()
-            .flex_none()
-            .overflow_y_scroll()
-            .border_b_1()
-            .border_color(DARK.border_subtle)
-            .children(changes.into_iter().map(|change| {
-                let selected = expanded_path.as_ref() == Some(&change.path);
-                let path = change.path.clone();
-                let color = Self::status_color(change.status);
-                let (name, parent) = Self::path_parts(&change.path);
-                let additions = change.additions.unwrap_or_default();
-                let deletions = change.deletions.unwrap_or_default();
+            .when(fill, |list| list.flex_1().min_h(px(0.0)))
+            .when_some(list_height, |list, height| list.h(px(height)).flex_none())
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .when(!fill, |list| {
+                list.border_b_1().border_color(DARK.border_subtle)
+            })
+            .child(
                 div()
-                    .id(SharedString::from(format!("git-change-{}", change.path)))
-                    .h(px(28.0))
-                    .w_full()
+                    .h(px(22.0))
                     .flex_none()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .px_2()
-                    .cursor_pointer()
-                    .bg(if selected {
-                        DARK.selection
-                    } else {
-                        DARK.panel
-                    })
-                    .hover(|row| row.bg(DARK.hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select_change(path.clone(), cx);
-                    }))
+                    .px_3()
                     .child(
                         div()
-                            .w(px(2.0))
-                            .h(px(16.0))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(if selected { color } else { gpui::rgba(0x00000000) }),
+                            .text_size(px(9.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(DARK.subtle)
+                            .child("CHANGES"),
                     )
                     .child(
                         div()
-                            .w(px(14.0))
-                            .flex_none()
+                            .px_1()
+                            .rounded(px(3.0))
+                            .bg(DARK.elevated)
                             .font_family("JetBrains Mono")
-                            .text_size(px(10.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(color)
-                            .child(change.status.badge()),
-                    )
-                    .child(
+                            .text_size(px(9.0))
+                            .text_color(DARK.muted)
+                            .child(format!("{count}")),
+                    ),
+            )
+            .child(
+                div()
+                    .id("git-change-rows")
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .children(changes.into_iter().map(|change| {
+                        let selected = expanded_path.as_ref() == Some(&change.path);
+                        let path = change.path.clone();
+                        let color = Self::status_color(change.status);
+                        let (name, parent) = Self::path_parts(&change.path);
+                        let additions = change.additions.unwrap_or_default();
+                        let deletions = change.deletions.unwrap_or_default();
                         div()
-                            .min_w(px(0.0))
-                            .flex_1()
+                            .id(SharedString::from(format!("git-change-{}", change.path)))
+                            .h(px(24.0))
+                            .w_full()
+                            .flex_none()
                             .flex()
-                            .items_baseline()
+                            .items_center()
                             .gap_1()
-                            .overflow_hidden()
+                            .pr_2()
+                            .cursor_pointer()
+                            .bg(if selected {
+                                DARK.selection
+                            } else {
+                                gpui::rgba(0x00000000)
+                            })
+                            .hover(|row| row.bg(DARK.hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_change(path.clone(), cx);
+                            }))
                             .child(
                                 div()
-                                    .truncate()
-                                    .text_size(px(11.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(DARK.foreground)
-                                    .child(name),
+                                    .w(px(2.0))
+                                    .h_full()
+                                    .flex_none()
+                                    .bg(if selected {
+                                        color
+                                    } else {
+                                        gpui::rgba(0x00000000)
+                                    }),
                             )
-                            .when(!parent.is_empty(), |row| {
+                            .child(
+                                div()
+                                    .w(px(16.0))
+                                    .h(px(16.0))
+                                    .ml_1()
+                                    .flex_none()
+                                    .rounded(px(3.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(DARK.elevated)
+                                    .font_family("JetBrains Mono")
+                                    .text_size(px(9.0))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(color)
+                                    .child(change.status.badge()),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .flex()
+                                    .items_baseline()
+                                    .gap_1()
+                                    .overflow_hidden()
+                                    .pl_1()
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(11.0))
+                                            .font_weight(if selected {
+                                                gpui::FontWeight::MEDIUM
+                                            } else {
+                                                gpui::FontWeight::NORMAL
+                                            })
+                                            .text_color(DARK.foreground)
+                                            .child(name),
+                                    )
+                                    .when(!parent.is_empty(), |row| {
+                                        row.child(
+                                            div()
+                                                .min_w(px(0.0))
+                                                .flex_1()
+                                                .truncate()
+                                                .text_size(px(9.5))
+                                                .text_color(DARK.subtle)
+                                                .child(parent),
+                                        )
+                                    }),
+                            )
+                            .when(additions > 0 || deletions > 0, |row| {
                                 row.child(
                                     div()
-                                        .min_w(px(0.0))
-                                        .flex_1()
-                                        .truncate()
-                                        .text_size(px(9.5))
-                                        .text_color(DARK.subtle)
-                                        .child(parent),
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .font_family("JetBrains Mono")
+                                        .text_size(px(9.0))
+                                        .when(additions > 0, |stats| {
+                                            stats.child(
+                                                div()
+                                                    .text_color(DARK.diff_added)
+                                                    .child(format!("+{additions}")),
+                                            )
+                                        })
+                                        .when(deletions > 0, |stats| {
+                                            stats.child(
+                                                div()
+                                                    .text_color(DARK.diff_deleted)
+                                                    .child(format!("−{deletions}")),
+                                            )
+                                        }),
                                 )
-                            }),
-                    )
-                    .when(additions > 0 || deletions > 0, |row| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .font_family("JetBrains Mono")
-                                .text_size(px(9.0))
-                                .when(additions > 0, |stats| {
-                                    stats.child(
-                                        div()
-                                            .text_color(DARK.diff_added)
-                                            .child(format!("+{additions}")),
-                                    )
-                                })
-                                .when(deletions > 0, |stats| {
-                                    stats.child(
-                                        div()
-                                            .text_color(DARK.diff_deleted)
-                                            .child(format!("−{deletions}")),
-                                    )
-                                }),
-                        )
-                    })
-                    .when(change.staged, |row| {
-                        row.child(
-                            div()
-                                .size(px(5.0))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(DARK.diff_added),
-                        )
-                    })
-            }))
+                            })
+                            .when(change.staged, |row| {
+                                row.child(
+                                    div()
+                                        .size(px(5.0))
+                                        .flex_none()
+                                        .rounded_full()
+                                        .bg(DARK.diff_added),
+                                )
+                            })
+                    })),
+            )
     }
 
     fn diff_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -526,8 +621,9 @@ impl DiffView {
                         .gap_2()
                         .px_2()
                         .border_b_1()
+                        .border_t_1()
                         .border_color(DARK.border_subtle)
-                        .bg(DARK.panel)
+                        .bg(DARK.elevated)
                         .child(
                             div()
                                 .id("git-clear-selection")
@@ -552,6 +648,15 @@ impl DiffView {
                                 .items_baseline()
                                 .gap_1()
                                 .overflow_hidden()
+                                .when(!parent.is_empty(), |row| {
+                                    row.child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(9.5))
+                                            .text_color(DARK.subtle)
+                                            .child(format!("{parent}/")),
+                                    )
+                                })
                                 .child(
                                     div()
                                         .truncate()
@@ -559,18 +664,7 @@ impl DiffView {
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(DARK.foreground)
                                         .child(name),
-                                )
-                                .when(!parent.is_empty(), |row| {
-                                    row.child(
-                                        div()
-                                            .min_w(px(0.0))
-                                            .flex_1()
-                                            .truncate()
-                                            .text_size(px(9.5))
-                                            .text_color(DARK.subtle)
-                                            .child(parent),
-                                    )
-                                }),
+                                ),
                         )
                         .when(additions > 0, |row| {
                             row.child(
@@ -621,6 +715,19 @@ impl DiffView {
             return self.message(message).into();
         }
 
+        // Measure the longest line so horizontal scroll can reach the end.
+        let widest_row_index = diff
+            .as_ref()
+            .map(|diff| {
+                diff.rows
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, row)| row.text.chars().count())
+                    .map(|(index, _)| index)
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+
         let list_id: SharedString = format!("inline-diff-{}", path.unwrap_or("file")).into();
         div()
             .flex_1()
@@ -657,6 +764,10 @@ impl DiffView {
                             .collect()
                     }),
                 )
+                // Allow long lines to extend past the panel; scroll sideways (trackpad /
+                // shift+wheel) instead of clipping the text.
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+                .with_width_from_item(Some(widest_row_index))
                 .flex_1()
                 .size_full(),
             )
@@ -690,6 +801,7 @@ impl DiffView {
             .map(|line| line.to_string())
             .unwrap_or_default();
         let is_hunk = matches!(row.kind, GitDiffRowKind::Hunk | GitDiffRowKind::Section);
+        let is_hunk_header = matches!(row.kind, GitDiffRowKind::Hunk);
 
         div()
             .h(px(DIFF_ROW_HEIGHT))
@@ -697,10 +809,10 @@ impl DiffView {
             .flex_none()
             .flex()
             .items_center()
-            .overflow_hidden()
             .bg(background)
             .font_family("JetBrains Mono")
-            .text_size(px(10.0))
+            .text_size(px(10.5))
+            // Color rail
             .child(
                 div()
                     .w(px(3.0))
@@ -708,45 +820,58 @@ impl DiffView {
                     .flex_none()
                     .bg(bar),
             )
-            .when(!is_hunk, |row_el| {
-                row_el
-                    .child(Self::line_number(old_line))
-                    .child(Self::line_number(new_line))
-            })
-            .when(is_hunk, |row_el| {
-                row_el.child(
-                    div()
-                        .w(px(68.0))
-                        .flex_none(),
-                )
-            })
+            // Line-number gutter with IDE-style background
             .child(
                 div()
-                    .w(px(16.0))
+                    .h_full()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .bg(DARK.gutter)
+                    .border_r_1()
+                    .border_color(DARK.border_subtle)
+                    .when(!is_hunk, |gutter| {
+                        gutter
+                            .child(Self::line_number(old_line))
+                            .child(Self::line_number(new_line))
+                    })
+                    .when(is_hunk, |gutter| {
+                        gutter.child(div().w(px(72.0)).h_full().flex_none())
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(14.0))
                     .flex_none()
                     .text_center()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(match row.kind {
                         GitDiffRowKind::Addition => DARK.diff_added,
                         GitDiffRowKind::Deletion => DARK.diff_deleted,
+                        GitDiffRowKind::Hunk => DARK.accent,
                         _ => foreground,
                     })
                     .child(marker),
             )
             .child(
+                // Intrinsic width — no truncate — so horizontal scroll can reveal the rest.
                 div()
-                    .min_w(px(0.0))
-                    .flex_1()
-                    .overflow_hidden()
+                    .flex_none()
                     .whitespace_nowrap()
-                    .text_color(foreground)
+                    .pr_3()
+                    .text_color(if is_hunk_header {
+                        DARK.accent
+                    } else {
+                        foreground
+                    })
+                    .opacity(if is_hunk_header { 0.9 } else { 1.0 })
                     .child(row.text.clone()),
             )
     }
 
     fn line_number(number: String) -> Div {
         div()
-            .w(px(34.0))
+            .w(px(36.0))
             .h_full()
             .flex_none()
             .flex()
@@ -755,7 +880,7 @@ impl DiffView {
             .pr_1()
             .text_size(px(9.0))
             .text_color(DARK.subtle)
-            .opacity(0.7)
+            .opacity(0.75)
             .child(number)
     }
 }
@@ -768,6 +893,7 @@ impl Render for DiffView {
             .snapshot
             .as_ref()
             .is_some_and(|snapshot| snapshot.changes.is_empty());
+        let has_selection = self.expanded_path.is_some();
 
         div()
             .size_full()
@@ -798,10 +924,15 @@ impl Render for DiffView {
                 view.child(self.message("No hay repositorio Git en este proyecto."))
             })
             .when(is_clean, |view| {
-                view.child(self.message("Working tree limpio."))
+                view.child(self.message("Working tree limpio — sin cambios."))
             })
-            .when(has_repository && !is_clean, |view| {
-                view.child(self.change_list(cx)).child(self.diff_panel(cx))
+            .when(has_repository && !is_clean && !has_selection, |view| {
+                // Full-height change list when no file is open (SCM panel style).
+                view.child(self.change_list(cx, true))
+            })
+            .when(has_repository && !is_clean && has_selection, |view| {
+                view.child(self.change_list(cx, false))
+                    .child(self.diff_panel(cx))
             })
     }
 }

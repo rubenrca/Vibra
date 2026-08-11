@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, Context, Div, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render, SharedString,
-    Stateful, Styled, Subscription, Window, WindowControlArea, div, prelude::*, px, relative,
+    Stateful, Styled, Subscription, Task, Timer, Window, WindowControlArea, div, prelude::*, px,
+    relative,
 };
 use uuid::Uuid;
 
@@ -20,9 +22,10 @@ use crate::infrastructure::automation::{
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{AppSettings, SettingsRepository};
 use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
-use crate::ports::git::GitPort;
+use crate::ports::git::{GitFileStatus, GitPort};
 use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentPresence, TerminalAgentState};
+use crate::ui::agent_marks::agent_sidebar_badge;
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
 use crate::ui::terminal::{TerminalView, TerminalViewEvent};
@@ -34,6 +37,17 @@ use crate::{
     SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette, ToggleLeftSidebar,
     TogglePaneZoom, ToggleRightSidebar,
 };
+
+/// Full width of the left sessions/info/settings sidebar.
+const LEFT_SIDEBAR_WIDTH: f32 = 240.0;
+/// Titlebar chrome width when the left sidebar is fully collapsed.
+const TITLEBAR_CHROME_COLLAPSED: f32 = 148.0;
+/// Full width of the Files panel on the right.
+const RIGHT_SIDEBAR_FILES_WIDTH: f32 = 300.0;
+/// Open/close duration — short enough to feel snappy, long enough to read as motion.
+const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(160);
+/// ~60 fps ticks; only runs while a sidebar is mid-animation.
+const SIDEBAR_ANIM_FRAME: Duration = Duration::from_millis(16);
 
 #[derive(Clone)]
 struct PaneDividerDrag {
@@ -148,6 +162,8 @@ pub struct WorkspaceView {
     explicit_agent_states: HashMap<Uuid, AgentRuntimeState>,
     focus_handle: FocusHandle,
     left_sidebar_visible: bool,
+    /// Visual open amount for the left sidebar (`0.0` closed … `1.0` open).
+    left_sidebar_progress: f32,
     left_sidebar_mode: LeftSidebarMode,
     expanded_directories: HashSet<PathBuf>,
     project_files: Vec<ProjectFileRow>,
@@ -161,7 +177,11 @@ pub struct WorkspaceView {
     palette_selected: usize,
     palette_files: Vec<PathBuf>,
     right_sidebar_visible: bool,
+    /// Visual open amount for the right sidebar (`0.0` closed … `1.0` open).
+    right_sidebar_progress: f32,
     right_sidebar_mode: RightSidebarMode,
+    sidebar_anim_token: u64,
+    _sidebar_anim_task: Option<Task<()>>,
     initial_terminal_focus_pending: bool,
     pane_resize_dirty: bool,
     persistence_error: Option<SharedString>,
@@ -277,6 +297,11 @@ impl WorkspaceView {
             explicit_agent_states: HashMap::new(),
             focus_handle,
             left_sidebar_visible: settings.left_sidebar_visible,
+            left_sidebar_progress: if settings.left_sidebar_visible {
+                1.0
+            } else {
+                0.0
+            },
             left_sidebar_mode: LeftSidebarMode::Sessions,
             expanded_directories: HashSet::new(),
             project_files: Vec::new(),
@@ -290,7 +315,10 @@ impl WorkspaceView {
             palette_selected: 0,
             palette_files: Vec::new(),
             right_sidebar_visible: settings.git_panel_visible,
+            right_sidebar_progress: if settings.git_panel_visible { 1.0 } else { 0.0 },
             right_sidebar_mode: RightSidebarMode::Diff,
+            sidebar_anim_token: 0,
+            _sidebar_anim_task: None,
             initial_terminal_focus_pending: true,
             pane_resize_dirty: false,
             persistence_error,
@@ -376,9 +404,8 @@ impl WorkspaceView {
             Ok(document) => document,
             Err(error) => {
                 self.file_error = Some(error.to_string().into());
-                self.right_sidebar_visible = true;
                 self.right_sidebar_mode = RightSidebarMode::Files;
-                cx.notify();
+                self.set_right_sidebar_visible(true, false, cx);
                 return;
             }
         };
@@ -601,7 +628,7 @@ impl WorkspaceView {
                     action: PaletteAction::ShowSessions,
                 },
                 PaletteItem {
-                    label: "Sidebar: Toggle Files and Diff".into(),
+                    label: "Sidebar: Toggle Files / Diff".into(),
                     detail: "⌥⌘B".into(),
                     action: PaletteAction::ToggleGit,
                 },
@@ -706,32 +733,24 @@ impl WorkspaceView {
                 if self.left_sidebar_visible
                     && self.left_sidebar_mode == LeftSidebarMode::Sessions
                 {
-                    self.left_sidebar_visible = false;
+                    self.set_left_sidebar_visible(false, true, cx);
                 } else {
-                    self.left_sidebar_visible = true;
                     self.left_sidebar_mode = LeftSidebarMode::Sessions;
+                    self.set_left_sidebar_visible(true, true, cx);
                 }
-                self.settings.left_sidebar_visible = self.left_sidebar_visible;
-                self.persist_settings(cx);
             }
             PaletteAction::ShowFiles => {
-                self.right_sidebar_visible = true;
-                self.settings.git_panel_visible = true;
                 self.right_sidebar_mode = RightSidebarMode::Files;
                 self.refresh_project_files();
-                self.persist_settings(cx);
+                self.set_right_sidebar_visible(true, true, cx);
             }
             PaletteAction::ShowInfo => {
-                self.left_sidebar_visible = true;
-                self.settings.left_sidebar_visible = true;
                 self.left_sidebar_mode = LeftSidebarMode::Info;
-                self.persist_settings(cx);
+                self.set_left_sidebar_visible(true, true, cx);
             }
             PaletteAction::ShowSettings => {
-                self.left_sidebar_visible = true;
-                self.settings.left_sidebar_visible = true;
                 self.left_sidebar_mode = LeftSidebarMode::Settings;
-                self.persist_settings(cx);
+                self.set_left_sidebar_visible(true, true, cx);
             }
             PaletteAction::SelectWorkspace {
                 project_id,
@@ -832,14 +851,104 @@ impl WorkspaceView {
     }
 
     fn toggle_diff_panel(&mut self, cx: &mut Context<Self>) {
-        self.right_sidebar_visible = !self.right_sidebar_visible;
-        self.settings.git_panel_visible = self.right_sidebar_visible;
-        self.persist_settings(cx);
+        self.set_right_sidebar_visible(!self.right_sidebar_visible, true, cx);
         if self.right_sidebar_visible {
             self.sync_diff_root(cx);
             self.diff_view
                 .update(cx, |diff_view, cx| diff_view.refresh_now(cx));
         }
+    }
+
+    /// Desired open/closed state for the left sidebar, with a light width animation.
+    fn set_left_sidebar_visible(
+        &mut self,
+        visible: bool,
+        persist: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.left_sidebar_visible == visible {
+            // Caller may have changed mode/content; repaint without restarting motion.
+            cx.notify();
+            return;
+        }
+        self.left_sidebar_visible = visible;
+        self.settings.left_sidebar_visible = visible;
+        if persist {
+            self.persist_settings(cx);
+        }
+        self.start_sidebar_animation(cx);
+    }
+
+    /// Desired open/closed state for the right sidebar, with a light width animation.
+    fn set_right_sidebar_visible(
+        &mut self,
+        visible: bool,
+        persist: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.right_sidebar_visible == visible {
+            cx.notify();
+            return;
+        }
+        self.right_sidebar_visible = visible;
+        self.settings.git_panel_visible = visible;
+        if persist {
+            self.persist_settings(cx);
+        }
+        self.start_sidebar_animation(cx);
+    }
+
+    /// Interpolates left/right sidebar progress toward their targets (~160ms ease-out).
+    /// Cheap: only schedules frames while mid-animation; drops previous task on restart.
+    fn start_sidebar_animation(&mut self, cx: &mut Context<Self>) {
+        let left_to = if self.left_sidebar_visible { 1.0 } else { 0.0 };
+        let right_to = if self.right_sidebar_visible { 1.0 } else { 0.0 };
+        let left_from = self.left_sidebar_progress;
+        let right_from = self.right_sidebar_progress;
+
+        if (left_from - left_to).abs() < 0.001 && (right_from - right_to).abs() < 0.001 {
+            self.left_sidebar_progress = left_to;
+            self.right_sidebar_progress = right_to;
+            self._sidebar_anim_task = None;
+            cx.notify();
+            return;
+        }
+
+        let token = self.sidebar_anim_token.wrapping_add(1);
+        self.sidebar_anim_token = token;
+        let started = Instant::now();
+
+        self._sidebar_anim_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                Timer::after(SIDEBAR_ANIM_FRAME).await;
+                let cont = this
+                    .update(cx, |this, cx| {
+                        if this.sidebar_anim_token != token {
+                            return false;
+                        }
+                        let t = (started.elapsed().as_secs_f32()
+                            / SIDEBAR_ANIM_DURATION.as_secs_f32())
+                        .min(1.0);
+                        let eased = ease_out_cubic(t);
+                        this.left_sidebar_progress = left_from + (left_to - left_from) * eased;
+                        this.right_sidebar_progress =
+                            right_from + (right_to - right_from) * eased;
+                        if t >= 1.0 {
+                            this.left_sidebar_progress = left_to;
+                            this.right_sidebar_progress = right_to;
+                            this._sidebar_anim_task = None;
+                            cx.notify();
+                            return false;
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !cont {
+                    break;
+                }
+            }
+        }));
         cx.notify();
     }
 
@@ -1343,13 +1452,10 @@ impl WorkspaceView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.left_sidebar_visible = !self.left_sidebar_visible;
-        self.settings.left_sidebar_visible = self.left_sidebar_visible;
-        if self.left_sidebar_visible {
+        if !self.left_sidebar_visible {
             self.left_sidebar_mode = LeftSidebarMode::Sessions;
         }
-        self.persist_settings(cx);
-        cx.notify();
+        self.set_left_sidebar_visible(!self.left_sidebar_visible, true, cx);
     }
 
     fn toggle_right_sidebar(
@@ -1416,11 +1522,10 @@ impl WorkspaceView {
     }
 
     fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let left_chrome_width = if self.left_sidebar_visible {
-            240.0
-        } else {
-            148.0
-        };
+        let left_progress = self.left_sidebar_progress;
+        let left_chrome_width = TITLEBAR_CHROME_COLLAPSED
+            + (LEFT_SIDEBAR_WIDTH - TITLEBAR_CHROME_COLLAPSED) * left_progress;
+        let left_open = left_progress > 0.5;
         let workspace_name = self
             .snapshot
             .selected_workspace()
@@ -1451,19 +1556,20 @@ impl WorkspaceView {
                     .items_center()
                     .pl(px(86.0))
                     .gap_1()
-                    .bg(if self.left_sidebar_visible {
+                    .bg(if left_open {
                         DARK.sidebar
                     } else {
                         DARK.titlebar
                     })
-                    .when(self.left_sidebar_visible, |chrome| {
+                    .when(left_progress > 0.001, |chrome| {
                         chrome.border_r_1().border_color(DARK.border_subtle)
                     })
                     .child(
                         self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
-                            this.left_sidebar_visible = !this.left_sidebar_visible;
-                            this.settings.left_sidebar_visible = this.left_sidebar_visible;
-                            this.persist_settings(cx);
+                            if !this.left_sidebar_visible {
+                                this.left_sidebar_mode = LeftSidebarMode::Sessions;
+                            }
+                            this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
                         }),
                     )
                     .child(self.chrome_button(
@@ -1549,57 +1655,75 @@ impl WorkspaceView {
             LeftSidebarMode::Info => self.info_sidebar_content(cx),
             LeftSidebarMode::Settings => self.settings_sidebar_content(cx),
         };
-        let aux_title = match self.left_sidebar_mode {
-            LeftSidebarMode::Sessions => None,
-            LeftSidebarMode::Info => Some("Info"),
-            LeftSidebarMode::Settings => Some("Prefs"),
+        let (show_back, title) = match self.left_sidebar_mode {
+            LeftSidebarMode::Sessions => (false, "Sessions"),
+            LeftSidebarMode::Info => (true, "Info"),
+            LeftSidebarMode::Settings => (true, "Prefs"),
         };
+        let width = LEFT_SIDEBAR_WIDTH * self.left_sidebar_progress;
+        // Outer clips to animated width; inner keeps full layout so content doesn't reflow.
         div()
-            .w(px(240.0))
+            .w(px(width))
             .h_full()
             .flex_none()
-            .flex()
-            .flex_col()
             .overflow_hidden()
             .bg(DARK.sidebar)
             .border_r_1()
             .border_color(DARK.border_subtle)
-            .when_some(aux_title, |sidebar, title| {
-                sidebar.child(
-                    div()
-                        .h(px(32.0))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .border_b_1()
-                        .border_color(DARK.border_subtle)
-                        .child(
-                            div()
-                                .id("sidebar-back-sessions")
-                                .px_1()
-                                .rounded(px(4.0))
-                                .cursor_pointer()
-                                .text_size(px(11.0))
-                                .text_color(DARK.subtle)
-                                .hover(|back| back.text_color(DARK.foreground).bg(DARK.hover))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.left_sidebar_mode = LeftSidebarMode::Sessions;
-                                    cx.notify();
-                                }))
-                                .child("←"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(DARK.muted)
-                                .child(title),
-                        ),
-                )
-            })
-            .child(content)
+            .child(
+                div()
+                    .w(px(LEFT_SIDEBAR_WIDTH))
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(32.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_3()
+                            .border_b_1()
+                            .border_color(DARK.border_subtle)
+                            .when(show_back, |header| {
+                                header.child(
+                                    div()
+                                        .id("sidebar-back-sessions")
+                                        .px_1()
+                                        .rounded(px(4.0))
+                                        .cursor_pointer()
+                                        .text_size(px(11.0))
+                                        .text_color(DARK.subtle)
+                                        .hover(|back| {
+                                            back.text_color(DARK.foreground).bg(DARK.hover)
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.left_sidebar_mode = LeftSidebarMode::Sessions;
+                                            cx.notify();
+                                        }))
+                                        .child("←"),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .text_size(px(10.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(DARK.muted)
+                                    .child(title),
+                            )
+                            .child(self.sidebar_close_button(
+                                "close-left-sidebar",
+                                cx,
+                                |this, cx| {
+                                    this.set_left_sidebar_visible(false, true, cx);
+                                },
+                            )),
+                    )
+                    .child(content),
+            )
     }
 
     fn workspace_agent_summary(&self, workspace_id: Uuid) -> Option<(String, AgentRuntimeState)> {
@@ -1724,33 +1848,11 @@ impl WorkspaceView {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.select_workspace(project_id, workspace_id, window, cx);
                             }))
-                            .child(
-                                div()
-                                    .size(px(32.0))
-                                    .flex_none()
-                                    .relative()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(8.0))
-                                    .bg(DARK.elevated)
-                                    .font_family("JetBrains Mono")
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_size(px(9.5))
-                                    .text_color(DARK.foreground)
-                                    .child(">_")
-                                    .when(selected, |icon| {
-                                        icon.child(
-                                            div()
-                                                .absolute()
-                                                .right_0()
-                                                .bottom_0()
-                                                .size(px(5.0))
-                                                .rounded_full()
-                                                .bg(DARK.accent),
-                                        )
-                                    }),
-                            )
+                            .child(agent_sidebar_badge(
+                                agent.as_ref().map(|(kind, _)| kind.as_str()),
+                                agent.as_ref().map(|(_, state)| *state),
+                                selected,
+                            ))
                             .child(
                                 div()
                                     .min_w(px(0.0))
@@ -1832,8 +1934,19 @@ impl WorkspaceView {
         let rows = self.project_files.clone();
         let selected_path = self.selected_file_path.clone();
         let file_error = self.file_error.clone();
-        let show_hidden = self.show_hidden_files;
-        let has_selection = selected_path.is_some();
+        let project_name = self
+            .snapshot
+            .selected_project()
+            .map(|project| project.name.clone())
+            .unwrap_or_else(|| "Proyecto".into());
+        let project_root = self.project_root();
+        let (git_root, git_statuses) = self.diff_view.read(cx).status_index();
+        let status_root = git_root.unwrap_or_else(|| project_root.clone());
+        let root_status = aggregate_dir_status("", &git_statuses);
+        let root_name_color = root_status
+            .map(git_status_color)
+            .unwrap_or(DARK.foreground);
+
         div()
             .id("project-files-content")
             .flex_1()
@@ -1841,141 +1954,100 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .bg(DARK.panel)
+            // Project root row — Zed-style
             .child(
                 div()
-                    .h(px(30.0))
+                    .h(px(28.0))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px_2()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(DARK.border_subtle)
+                    .gap_2()
+                    .px_3()
+                    .child(
+                        div()
+                            .size(px(14.0))
+                            .flex_none()
+                            .rounded(px(3.0))
+                            .bg(DARK.elevated)
+                            .border_1()
+                            .border_color(DARK.border_subtle)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(8.0))
+                            .text_color(DARK.folder)
+                            .child("◆"),
+                    )
                     .child(
                         div()
                             .min_w(px(0.0))
                             .flex_1()
                             .truncate()
-                            .px_1()
-                            .text_size(px(10.0))
+                            .text_size(px(12.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(DARK.muted)
-                            .child(
-                                self.snapshot
-                                    .selected_project()
-                                    .map(|project| project.name.clone())
-                                    .unwrap_or_else(|| "Proyecto".into()),
-                            ),
+                            .text_color(root_name_color)
+                            .child(project_name),
                     )
-                    .child(self.file_icon_button(
-                        "+",
-                        "new-file",
-                        "Nuevo archivo",
-                        false,
-                        cx,
-                        |this, _, cx| {
-                            this.begin_file_prompt(FilePromptKind::NewFile, cx);
-                        },
-                    ))
-                    .child(self.file_icon_button(
-                        "□",
-                        "new-directory",
-                        "Nueva carpeta",
-                        false,
-                        cx,
-                        |this, _, cx| {
-                            this.begin_file_prompt(FilePromptKind::NewDirectory, cx);
-                        },
-                    ))
-                    .when(has_selection, |header| {
-                        header
-                            .child(self.file_icon_button(
-                                "✎",
-                                "rename-file",
-                                "Renombrar",
-                                false,
-                                cx,
-                                |this, _, cx| {
-                                    this.begin_file_prompt(FilePromptKind::Rename, cx);
-                                },
-                            ))
-                            .child(self.file_icon_button(
-                                "⌫",
-                                "trash-file",
-                                "Mover a la papelera",
-                                false,
-                                cx,
-                                |this, _, cx| {
-                                    this.request_file_trash(cx);
-                                },
-                            ))
-                    })
-                    .child(self.file_icon_button(
-                        if show_hidden { "·" } else { "…" },
-                        "toggle-hidden-files",
-                        "Archivos ocultos",
-                        show_hidden,
-                        cx,
-                        |this, _, cx| {
-                            this.show_hidden_files = !this.show_hidden_files;
-                            this.settings.show_hidden_files = this.show_hidden_files;
-                            this.refresh_project_files();
-                            this.persist_settings(cx);
-                        },
-                    ))
-                    .child(self.file_icon_button(
-                        "↻",
-                        "refresh-files",
-                        "Actualizar",
-                        false,
-                        cx,
-                        |this, _, cx| {
-                            this.refresh_project_files();
-                            cx.notify();
-                        },
-                    )),
+                    .when_some(root_status.map(git_status_trailing), |row, trailing| {
+                        row.child(trailing)
+                    }),
             )
+            // File tree
             .child(
                 div()
                     .id("project-file-tree")
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
-                    .py_1()
+                    .pb_2()
                     .children(rows.into_iter().map(|row| {
                         let path = row.entry.path.clone();
                         let selected = selected_path.as_ref() == Some(&path);
                         let is_directory = row.entry.kind == FileEntryKind::Directory;
-                        let icon = match row.entry.kind {
-                            FileEntryKind::Directory if row.expanded => "▾",
-                            FileEntryKind::Directory => "▸",
-                            FileEntryKind::File => "·",
-                            FileEntryKind::Symlink => "↗",
+                        let rel = relative_repo_path(&path, &status_root);
+                        let status = if is_directory {
+                            rel.as_deref()
+                                .and_then(|rel| aggregate_dir_status(rel, &git_statuses))
+                        } else {
+                            rel.as_ref()
+                                .and_then(|rel| git_statuses.get(rel).copied())
                         };
+                        let (glyph, default_glyph_color) =
+                            file_tree_glyph(row.entry.kind, row.expanded, &row.entry.name);
+                        let glyph_color = if is_directory {
+                            status
+                                .map(git_status_color)
+                                .unwrap_or(DARK.folder)
+                        } else {
+                            default_glyph_color
+                        };
+                        let name_color = status
+                            .map(git_status_color)
+                            .unwrap_or(if is_directory {
+                                DARK.foreground
+                            } else {
+                                DARK.muted
+                            });
+                        let depth = row.depth;
+                        let rel_for_click = rel.clone();
                         div()
                             .id(SharedString::from(format!(
                                 "file-row-{}",
                                 path.to_string_lossy()
                             )))
-                            .h(px(24.0))
+                            .h(px(22.0))
                             .w_full()
                             .flex()
                             .items_center()
-                            .gap_1()
                             .pr_2()
-                            .pl(px(8.0 + row.depth as f32 * 13.0))
                             .cursor_pointer()
                             .bg(if selected {
                                 DARK.selection
                             } else {
-                                DARK.sidebar
+                                gpui::rgba(0x00000000)
                             })
-                            .text_color(if selected {
-                                DARK.foreground
-                            } else {
-                                DARK.muted
-                            })
-                            .hover(|item| item.bg(DARK.hover).text_color(DARK.foreground))
+                            .hover(|item| item.bg(DARK.hover))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -1985,34 +2057,61 @@ impl WorkspaceView {
                                         }
                                         return;
                                     }
+                                    this.select_file_path(path.clone(), cx);
+                                    // Double-click opens for reading; no edit chrome in the tree.
                                     if event.click_count >= 2 {
                                         this.open_file(path.clone(), window, cx);
-                                    } else {
-                                        this.select_file_path(path.clone(), cx);
+                                    } else if let Some(rel) = rel_for_click.as_ref() {
+                                        // Single click on a dirty file peeks it in Diff.
+                                        let selected = this.diff_view.update(cx, |diff, cx| {
+                                            diff.select_path_if_changed(rel, cx)
+                                        });
+                                        if selected {
+                                            this.right_sidebar_mode = RightSidebarMode::Diff;
+                                            this.set_right_sidebar_visible(true, true, cx);
+                                        }
                                     }
                                 }),
                             )
                             .child(
                                 div()
-                                    .w(px(12.0))
+                                    .w(px(8.0 + depth as f32 * 12.0))
+                                    .h_full()
+                                    .flex_none(),
+                            )
+                            .child(
+                                div()
+                                    .w(px(16.0))
                                     .flex_none()
-                                    .text_center()
-                                    .text_size(px(10.0))
-                                    .text_color(if is_directory {
-                                        DARK.warning
-                                    } else {
-                                        DARK.subtle
-                                    })
-                                    .child(icon),
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(11.0))
+                                    .text_color(glyph_color)
+                                    .child(glyph),
                             )
                             .child(
                                 div()
                                     .min_w(px(0.0))
                                     .flex_1()
                                     .truncate()
-                                    .text_size(px(10.5))
+                                    .pl_1()
+                                    .text_size(px(12.0))
+                                    .font_weight(if selected {
+                                        gpui::FontWeight::MEDIUM
+                                    } else {
+                                        gpui::FontWeight::NORMAL
+                                    })
+                                    .text_color(if selected && status.is_none() {
+                                        DARK.foreground
+                                    } else {
+                                        name_color
+                                    })
                                     .child(row.entry.name),
                             )
+                            .when_some(status.map(git_status_trailing), |row, trailing| {
+                                row.child(trailing)
+                            })
                     })),
             )
             .when_some(file_error, |panel, error| {
@@ -2022,7 +2121,7 @@ impl WorkspaceView {
                         .mb_1()
                         .p_2()
                         .rounded(px(5.0))
-                        .bg(DARK.elevated)
+                        .bg(DARK.diff_deleted_bg)
                         .text_size(px(9.0))
                         .text_color(DARK.danger)
                         .child(error),
@@ -2273,23 +2372,20 @@ impl WorkspaceView {
                         "settings-sidebar-visible",
                         cx,
                         |this, cx| {
-                            this.left_sidebar_visible = !this.left_sidebar_visible;
-                            this.settings.left_sidebar_visible = this.left_sidebar_visible;
-                            this.persist_settings(cx);
+                            this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
                         },
                     ))
                     .child(self.settings_toggle_row(
-                        "Panel Files y Diff al iniciar",
+                        "Files / Diff al iniciar",
                         git_panel,
                         "settings-git-visible",
                         cx,
                         |this, cx| {
-                            this.right_sidebar_visible = !this.right_sidebar_visible;
-                            this.settings.git_panel_visible = this.right_sidebar_visible;
-                            if this.right_sidebar_visible {
+                            let open = !this.right_sidebar_visible;
+                            this.set_right_sidebar_visible(open, true, cx);
+                            if open {
                                 this.sync_diff_root(cx);
                             }
-                            this.persist_settings(cx);
                         },
                     )),
             )
@@ -2705,12 +2801,13 @@ impl WorkspaceView {
         let is_empty = panes.is_none();
         let zoomed = tab.as_ref().and_then(|tab| tab.zoomed_session_id).is_some();
 
+        // Full-bleed: no padding. Agent TUIs paint pure black; any inset against
+        // chrome makes the background look “cut off”.
         div()
             .flex_1()
             .min_h(px(0.0))
             .relative()
             .overflow_hidden()
-            .p_2()
             .bg(DARK.terminal)
             .when_some(panes, |canvas, panes| canvas.child(panes))
             .when(zoomed, |canvas| {
@@ -2759,10 +2856,11 @@ impl WorkspaceView {
 
     fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.right_sidebar_mode;
-        let width = match mode {
-            RightSidebarMode::Files => 300.0,
+        let full_width = match mode {
+            RightSidebarMode::Files => RIGHT_SIDEBAR_FILES_WIDTH,
             RightSidebarMode::Diff => self.diff_view.read(cx).preferred_width(),
         };
+        let width = full_width * self.right_sidebar_progress;
         let content = match mode {
             RightSidebarMode::Files => self.files_sidebar_content(cx),
             RightSidebarMode::Diff => self.diff_view.clone().into_any_element(),
@@ -2772,72 +2870,101 @@ impl WorkspaceView {
             (RightSidebarMode::Diff, "Diff"),
         ];
 
+        // Outer clips to animated width; inner keeps full panel layout.
         div()
             .w(px(width))
             .h_full()
             .flex_none()
-            .flex()
-            .flex_col()
             .overflow_hidden()
             .bg(DARK.panel)
             .border_l_1()
             .border_color(DARK.border_subtle)
             .child(
                 div()
-                    .h(px(30.0))
-                    .flex_none()
+                    .w(px(full_width))
+                    .h_full()
                     .flex()
-                    .items_center()
-                    .gap_0()
-                    .px_3()
-                    .border_b_1()
-                    .border_color(DARK.border_subtle)
-                    .children(modes.into_iter().map(|(item_mode, label)| {
-                        let selected = item_mode == mode;
+                    .flex_col()
+                    .child(
                         div()
-                            .id(SharedString::from(format!("utility-mode-{label}")))
-                            .h_full()
-                            .px_2()
-                            .mr_2()
+                            .h(px(30.0))
+                            .flex_none()
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .text_size(px(10.0))
-                            .font_weight(if selected {
-                                gpui::FontWeight::MEDIUM
-                            } else {
-                                gpui::FontWeight::NORMAL
-                            })
-                            .text_color(if selected {
-                                DARK.foreground
-                            } else {
-                                DARK.subtle
-                            })
+                            .gap_0()
+                            .pl_3()
+                            .pr_2()
                             .border_b_1()
-                            .border_color(if selected {
-                                DARK.muted
-                            } else {
-                                gpui::rgba(0x00000000)
-                            })
-                            .hover(|tab| tab.text_color(DARK.foreground))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.right_sidebar_mode = item_mode;
-                                match item_mode {
-                                    RightSidebarMode::Files => this.refresh_project_files(),
-                                    RightSidebarMode::Diff => {
-                                        this.sync_diff_root(cx);
-                                        this.diff_view.update(cx, |diff_view, cx| {
-                                            diff_view.refresh_now(cx);
-                                        });
-                                    }
-                                }
-                                cx.notify();
-                            }))
-                            .child(label)
-                    })),
+                            .border_color(DARK.border_subtle)
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .children(modes.into_iter().map(|(item_mode, label)| {
+                                        let selected = item_mode == mode;
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "utility-mode-{label}"
+                                            )))
+                                            .h_full()
+                                            .px_2()
+                                            .mr_2()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .cursor_pointer()
+                                            .text_size(px(10.0))
+                                            .font_weight(if selected {
+                                                gpui::FontWeight::MEDIUM
+                                            } else {
+                                                gpui::FontWeight::NORMAL
+                                            })
+                                            .text_color(if selected {
+                                                DARK.foreground
+                                            } else {
+                                                DARK.subtle
+                                            })
+                                            .border_b_1()
+                                            .border_color(if selected {
+                                                DARK.muted
+                                            } else {
+                                                gpui::rgba(0x00000000)
+                                            })
+                                            .hover(|tab| tab.text_color(DARK.foreground))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.right_sidebar_mode = item_mode;
+                                                match item_mode {
+                                                    RightSidebarMode::Files => {
+                                                        this.refresh_project_files()
+                                                    }
+                                                    RightSidebarMode::Diff => {
+                                                        this.sync_diff_root(cx);
+                                                        this.diff_view.update(
+                                                            cx,
+                                                            |diff_view, cx| {
+                                                                diff_view.refresh_now(cx);
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                                cx.notify();
+                                            }))
+                                            .child(label)
+                                    })),
+                            )
+                            .child(self.sidebar_close_button(
+                                "close-right-sidebar",
+                                cx,
+                                |this, cx| {
+                                    this.set_right_sidebar_visible(false, true, cx);
+                                },
+                            )),
+                    )
+                    .child(content),
             )
-            .child(content)
     }
 
     fn palette_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -3182,6 +3309,29 @@ impl WorkspaceView {
         })
     }
 
+    fn sidebar_close_button(
+        &self,
+        id: &'static str,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .size(px(18.0))
+            .flex_none()
+            .rounded(px(4.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_size(px(13.0))
+            .text_color(DARK.subtle)
+            .hover(|close| close.bg(DARK.hover).text_color(DARK.foreground))
+            .active(|close| close.opacity(0.72))
+            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+            .child("×")
+    }
+
     fn chrome_button(
         &self,
         label: &'static str,
@@ -3311,11 +3461,12 @@ impl Render for WorkspaceView {
         }
 
         let mut layout = div().flex_1().min_h(px(0.0)).flex();
-        if self.left_sidebar_visible {
+        // Keep sidebars mounted while progress > 0 so close animations can finish.
+        if self.left_sidebar_progress > 0.001 {
             layout = layout.child(self.sidebar(cx));
         }
         layout = layout.child(self.center_panel(cx));
-        if self.right_sidebar_visible {
+        if self.right_sidebar_progress > 0.001 {
             layout = layout.child(self.right_sidebar(cx));
         }
 
@@ -3422,6 +3573,150 @@ fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
         AgentRuntimeState::Idle => "idle",
         AgentRuntimeState::Working => "working",
         AgentRuntimeState::Waiting => "waiting",
+    }
+}
+
+/// Smooth ease-out for sidebar width (`t` in `0.0..=1.0`).
+fn ease_out_cubic(t: f32) -> f32 {
+    let inv = 1.0 - t;
+    1.0 - inv * inv * inv
+}
+
+/// Compact glyph + color for the Files tree (Zed-ish, extension-aware).
+fn file_tree_glyph(
+    kind: FileEntryKind,
+    expanded: bool,
+    name: &str,
+) -> (&'static str, gpui::Rgba) {
+    match kind {
+        // Folder glyph — open vs closed.
+        FileEntryKind::Directory if expanded => ("▾", DARK.folder),
+        FileEntryKind::Directory => ("▸", DARK.folder),
+        FileEntryKind::Symlink => ("↗", DARK.accent),
+        FileEntryKind::File => {
+            let lower = name.to_ascii_lowercase();
+            let ext = std::path::Path::new(name)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            match (lower.as_str(), ext.as_str()) {
+                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => ("⚙", DARK.muted),
+                (_, "rs") => ("●", gpui::rgb(0xdea584)),
+                (_, "md" | "mdx") => ("M", DARK.accent),
+                (_, "json" | "jsonc") => ("{}", gpui::rgb(0xcbcb41)),
+                (_, "lock") => ("⊟", DARK.subtle),
+                (_, "yml" | "yaml") => ("⚙", DARK.muted),
+                (_, "gitignore" | "gitattributes") | (".gitignore", _) => ("⊘", gpui::rgb(0xf05033)),
+                ("license" | "licence" | "notice" | "copying", _) => ("©", DARK.subtle),
+                (_, "ts" | "tsx") => ("●", gpui::rgb(0x519aba)),
+                (_, "js" | "jsx" | "mjs" | "cjs") => ("●", gpui::rgb(0xcbcb41)),
+                (_, "css" | "scss") => ("#", gpui::rgb(0x563d7c)),
+                (_, "html" | "htm" | "svg") => ("<>", gpui::rgb(0xe34c26)),
+                (_, "py") => ("●", gpui::rgb(0x3572a5)),
+                (_, "go") => ("●", gpui::rgb(0x00add8)),
+                (_, "sh" | "bash" | "zsh") => ("$", DARK.success),
+                (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => ("▣", gpui::rgb(0xa074c4)),
+                _ if name.starts_with('.') => ("·", DARK.subtle),
+                _ => ("·", DARK.subtle),
+            }
+        }
+    }
+}
+
+fn relative_repo_path(path: &Path, root: &Path) -> Option<String> {
+    path.strip_prefix(root)
+        .ok()
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn git_status_color(status: GitFileStatus) -> gpui::Rgba {
+    match status {
+        GitFileStatus::Modified | GitFileStatus::TypeChanged => DARK.git_modified,
+        GitFileStatus::Added
+        | GitFileStatus::Untracked
+        | GitFileStatus::Renamed
+        | GitFileStatus::Copied => DARK.git_added,
+        GitFileStatus::Deleted | GitFileStatus::Conflicted => DARK.git_deleted,
+    }
+}
+
+fn git_status_rank(status: GitFileStatus) -> u8 {
+    match status {
+        GitFileStatus::Conflicted => 0,
+        GitFileStatus::Deleted => 1,
+        GitFileStatus::Modified | GitFileStatus::TypeChanged => 2,
+        GitFileStatus::Renamed | GitFileStatus::Copied => 3,
+        GitFileStatus::Added => 4,
+        GitFileStatus::Untracked => 5,
+    }
+}
+
+/// Roll up git status of files under a directory (empty `rel` = repo root).
+fn aggregate_dir_status(
+    rel: &str,
+    statuses: &HashMap<String, GitFileStatus>,
+) -> Option<GitFileStatus> {
+    let mut best: Option<GitFileStatus> = None;
+    for (path, status) in statuses {
+        let under = if rel.is_empty() {
+            true
+        } else {
+            path == rel || path.starts_with(&format!("{rel}/"))
+        };
+        if !under {
+            continue;
+        }
+        best = Some(match best {
+            None => *status,
+            Some(current) if git_status_rank(*status) < git_status_rank(current) => *status,
+            Some(current) => current,
+        });
+    }
+    best
+}
+
+/// Right-side indicator: letter for modified/renamed, colored dots for add/delete.
+fn git_status_trailing(status: GitFileStatus) -> Div {
+    match status {
+        GitFileStatus::Modified | GitFileStatus::TypeChanged => div()
+            .flex_none()
+            .font_family("JetBrains Mono")
+            .text_size(px(10.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(DARK.git_modified)
+            .child("M"),
+        GitFileStatus::Renamed => div()
+            .flex_none()
+            .font_family("JetBrains Mono")
+            .text_size(px(10.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(DARK.git_added)
+            .child("R"),
+        GitFileStatus::Copied => div()
+            .flex_none()
+            .font_family("JetBrains Mono")
+            .text_size(px(10.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(DARK.git_added)
+            .child("C"),
+        GitFileStatus::Conflicted => div()
+            .flex_none()
+            .font_family("JetBrains Mono")
+            .text_size(px(10.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(DARK.git_deleted)
+            .child("U"),
+        GitFileStatus::Added | GitFileStatus::Untracked => div()
+            .size(px(6.0))
+            .flex_none()
+            .rounded_full()
+            .bg(DARK.git_added),
+        GitFileStatus::Deleted => div()
+            .size(px(6.0))
+            .flex_none()
+            .rounded_full()
+            .bg(DARK.git_deleted),
     }
 }
 

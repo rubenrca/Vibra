@@ -25,6 +25,18 @@ pub struct Theme {
     pub diff_deleted: Rgba,
     pub diff_deleted_bg: Rgba,
     pub diff_hunk_bg: Rgba,
+    /// Gutter behind line numbers in the diff viewer.
+    pub gutter: Rgba,
+    /// Soft vertical indent guides in the file tree.
+    pub indent_guide: Rgba,
+    /// Default folder icon tint (Zed-like cool gray-violet).
+    pub folder: Rgba,
+    /// Git-modified name tint (Zed gold).
+    pub git_modified: Rgba,
+    /// Git-added / untracked name tint.
+    pub git_added: Rgba,
+    /// Git-deleted / conflict name tint.
+    pub git_deleted: Rgba,
 }
 
 pub static DARK: LazyLock<Theme> = LazyLock::new(|| Theme {
@@ -32,14 +44,14 @@ pub static DARK: LazyLock<Theme> = LazyLock::new(|| Theme {
     terminal: rgb(0x101011),
     titlebar: rgb(0x101011),
     sidebar: rgb(0x141415),
-    panel: rgb(0x141415),
-    elevated: rgb(0x1a1a1b),
-    hover: rgb(0x1e1e20),
-    selection: rgb(0x202022),
+    panel: rgb(0x18181a),
+    elevated: rgb(0x1c1c1f),
+    hover: rgb(0x222226),
+    selection: rgb(0x2a2a2e),
     border_subtle: rgb(0x29292b),
-    foreground: rgb(0xe8e8e8),
-    muted: rgb(0xa0a0a4),
-    subtle: rgb(0x6c6c71),
+    foreground: rgb(0xd4d4d8),
+    muted: rgb(0x9898a0),
+    subtle: rgb(0x6c6c74),
     success: rgb(0x58b87a),
     danger: rgb(0xdd6b6b),
     warning: rgb(0xd7ad61),
@@ -49,4 +61,10 @@ pub static DARK: LazyLock<Theme> = LazyLock::new(|| Theme {
     diff_deleted: rgb(0xe06c75),
     diff_deleted_bg: rgba(0x2a1618ff),
     diff_hunk_bg: rgba(0x161b26ff),
+    gutter: rgb(0x121213),
+    indent_guide: rgba(0x3a3a3e55),
+    folder: rgb(0x8b8ba3),
+    git_modified: rgb(0xdcb67a),
+    git_added: rgb(0x6bcf8e),
+    git_deleted: rgb(0xe06c75),
 });
