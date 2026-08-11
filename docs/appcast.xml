@@ -3,29 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.0</title>
-            <pubDate>Sun, 09 Aug 2026 23:07:14 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.0</link>
-            <sparkle:version>38</sparkle:version>
-            <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+            <title>0.3.1</title>
+            <pubDate>Tue, 11 Aug 2026 18:28:15 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.1</link>
+            <sparkle:version>43</sparkle:version>
+            <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Make the GPUI runtime the official stable Vibra release, replacing SwiftUI/AppKit and `libghostty`.</li>
-  <li>Re-embed Sparkle with the existing EdDSA feed so installed copies can update again from the stable appcast.</li>
-  <li>Replace `libghostty` with `alacritty_terminal`, preserving long-lived PTYs, terminal search, selection, mouse protocols and modern keyboard modes.</li>
-  <li>Add recursive terminal splits, persistent ratios, geometric focus, resizing and pane zoom.</li>
-  <li>Combine Files and read-only Git diffs in one focused right sidebar.</li>
-  <li>Add a built-in file explorer and UTF-8 editor with atomic saves and conflict detection.</li>
-  <li>Simplify the chrome toward a Herdr-like layout: no focus ring on panes, sessions-only left sidebar, and a full-height terminal when a single tab is open.</li>
-  <li>Restyle Files/Diff as subtle underline tabs; move file actions into a compact header with double-click to open.</li>
-  <li>Rebuild the Diff panel as a Warp-style master/detail view with a compact change list and full remaining height for the selected file.</li>
-  <li>Toggle sidebars with `⌘B` (sessions) and `⌥⌘B` (Files and Diff); check for updates with `⌘U`.</li>
-  <li>Preserve the `Vibra.app` identity and import the Swift workspace with a one-time backup before conversion.</li>
-  <li>Import settings and workspaces created by the standalone VibraGPUI preview when no canonical Vibra state exists.</li>
-  <li>Port signing, universal builds, notarization and DMG packaging to Cargo.</li>
+  <li>Restore coding-agent brand marks in the sessions sidebar with live idle/working/waiting status.</li>
+  <li>Sanitize monochrome host environment variables (`NO_COLOR`, `FORCE_COLOR`, etc.) when spawning PTYs so agent colors match a dock-launched app.</li>
+  <li>Paint terminal cell backgrounds as a full-bleed grid so full-screen agent TUIs no longer leave a cut-off strip at the pane edge.</li>
+  <li>Keep the shell theme intact: surface fill follows the live TUI color instead of forcing pure black.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.0/Vibra-0.3.0.dmg" length="9603570" type="application/octet-stream" sparkle:edSignature="IPX16wyF1RIRo61KBo8m9RdON3DPFMxmhHCz2zdVCDBNxJqDVnmj4wF9dr8DlCN0clkH67EfKPsCBTyMXMWPDw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.1/Vibra-0.3.1.dmg" length="11543072" type="application/octet-stream" sparkle:edSignature="ChjtLvmQsJF5y0vL/Vxdc6ADPUvxoFiW316RF7G9CdsfKigWWTW2IQSsDvfNFnsSecD+a16aYioRFd3HdFRAAw=="/>
         </item>
     </channel>
 </rss>
