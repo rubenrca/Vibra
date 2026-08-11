@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.3.1 — 2026-08-11
+
+- Restore coding-agent brand marks in the sessions sidebar with live idle/working/waiting status.
+- Sanitize monochrome host environment variables (`NO_COLOR`, `FORCE_COLOR`, etc.) when spawning PTYs so agent colors match a dock-launched app.
+- Paint terminal cell backgrounds as a full-bleed grid so full-screen agent TUIs no longer leave a cut-off strip at the pane edge.
+- Keep the shell theme intact: surface fill follows the live TUI color instead of forcing pure black.
+
 ## 0.3.0 — 2026-08-09
 
 - Make the GPUI runtime the official stable Vibra release, replacing SwiftUI/AppKit and `libghostty`.
