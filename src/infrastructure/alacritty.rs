@@ -10,7 +10,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Boundary, Column, Direction, Point, Side};
+use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
@@ -286,14 +286,14 @@ impl AlacrittyTerminal {
     }
 
     #[cfg(unix)]
-    fn foreground_process_id(&self) -> Option<u32> {
+    fn foreground_process_group_id(&self) -> Option<u32> {
         let file_descriptor = self.pty_probe_fd.as_ref()?.as_raw_fd();
         let process_group = unsafe { libc::tcgetpgrp(file_descriptor) };
         (process_group > 0).then_some(process_group as u32)
     }
 
     #[cfg(not(unix))]
-    fn foreground_process_id(&self) -> Option<u32> {
+    fn foreground_process_group_id(&self) -> Option<u32> {
         None
     }
 }
@@ -431,16 +431,49 @@ impl TerminalHandle for AlacrittyTerminal {
         // short-lived foreground tool. Fall back to the foreground process when
         // the shell path is unavailable (e.g. mid-reap).
         process_working_directory(self.process_id).or_else(|| {
-            self.foreground_process_id()
+            self.foreground_process_group_id()
                 .filter(|pid| *pid != self.process_id)
                 .and_then(process_working_directory)
         })
     }
 
     fn foreground_process_name(&self) -> Option<String> {
-        self.foreground_process_id()
+        self.foreground_process_group_id()
             .and_then(process_executable_name)
             .or_else(|| process_executable_name(self.process_id))
+    }
+
+    fn foreground_process_id(&self) -> Option<u32> {
+        self.foreground_process_group_id()
+    }
+
+    fn recent_text(&self, lines: usize) -> Option<String> {
+        let terminal = self.terminal.lock();
+        let grid = terminal.grid();
+        let take = lines.max(1).min(grid.total_lines().max(1));
+        let bottom = grid.bottommost_line().0;
+        let top = grid.topmost_line().0;
+        let start = (bottom - take as i32 + 1).max(top);
+        let mut text = String::new();
+        for line_index in start..=bottom {
+            let row = &grid[Line(line_index)];
+            let mut line = String::new();
+            for cell in row {
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                line.push(cell.c);
+                if let Some(zerowidth) = cell.zerowidth() {
+                    line.extend(zerowidth);
+                }
+            }
+            while line.ends_with(' ') {
+                line.pop();
+            }
+            text.push_str(&line);
+            text.push('\n');
+        }
+        Some(text)
     }
 
     fn clear_selection(&self) {
@@ -1416,9 +1449,15 @@ mod tests {
                 .any(|line| line.contains("STRESS_DONE"));
             std::thread::sleep(Duration::from_millis(10));
         }
+        terminal.scroll(i32::MAX);
+        let recent = terminal.recent_text(20).unwrap();
         terminal.shutdown();
 
         assert!(found_tail, "the final PTY output was not rendered");
         assert!(history_size >= 3_000, "scrollback dropped too much output");
+        assert!(
+            recent.contains("STRESS_DONE"),
+            "recent text followed the scrolled viewport instead of the live tail"
+        );
     }
 }

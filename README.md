@@ -53,7 +53,8 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 ### Agentes y automatización
 
 - detección de Codex, Claude, Gemini, Grok, OpenCode, Cursor, Aider, Amp y Pi;
-- identidad resuelta por proceso foreground, título y texto visible; estado por hooks o heurística de terminal;
+- identidad resuelta por proceso foreground, sesión, título y texto reciente; los aliases siguen al proceso vivo, no al pane;
+- esperas ligadas a la identidad del agente: un reemplazo o timeout falla explícitamente y los launches nuevos hacen rollback;
 - socket Unix local protegido por capacidades UUID;
 - comandos `+pane` y `+agent` disponibles mediante `$VIBRA_CLI`;
 - un agente (o script) dentro de un pane puede abrir otro agente en split o tab:
@@ -80,8 +81,8 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 "$VIBRA_CLI" +skill
 ```
 
-Para instalar los adaptadores de estado de Claude y Codex, usa **Settings →
-Integraciones de agentes** o la CLI:
+Para activar el seguimiento preciso de actividad, usa **Settings → Coordinación
+de agentes → Activar seguimiento** o la CLI:
 
 ```bash
 "$VIBRA_CLI" agent setup
@@ -91,8 +92,9 @@ Integraciones de agentes** o la CLI:
 
 El instalador añade únicamente los handlers de Vibra a `~/.claude/settings.json`
 y `~/.codex/hooks.json`, guarda scripts en `~/.vibra/agent-hooks/` y conserva los
-hooks existentes. Los scripts no hacen nada fuera de un pane de Vibra. Después de
-instalar el hook de Codex, ábrelo una vez y apruébalo en `/hooks`.
+hooks existentes. Los scripts no hacen nada fuera de un pane de Vibra y los eventos
+se procesan en orden para evitar estados atrasados. Después de instalar el hook de
+Codex, ábrelo una vez y apruébalo en `/hooks`.
 
 ## Requisitos
 
@@ -144,11 +146,11 @@ misma versión, más las herramientas Sparkle en `.build/artifacts/sparkle`
 (clave EdDSA en el llavero):
 
 ```bash
-./Scripts/release.sh 0.3.4 --dry-run
-./Scripts/release.sh 0.3.4
+./Scripts/release.sh 0.3.5 --dry-run
+./Scripts/release.sh 0.3.5
 ./Scripts/release.sh 0.3.5-beta.1 --prerelease
-./Scripts/release.sh 0.3.4 --no-notarize   # solo si hace falta omitir notarización
-./Scripts/release.sh 0.3.4 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
+./Scripts/release.sh 0.3.5 --no-notarize   # solo si hace falta omitir notarización
+./Scripts/release.sh 0.3.5 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
 ```
 
 Un release **estable** crea el DMG universal, firma con Developer ID, notariza

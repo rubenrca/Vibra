@@ -176,6 +176,9 @@ pub struct TerminalAgentPresence {
     pub kind: String,
     pub kind_source: TerminalAgentKindSource,
     pub state: TerminalAgentState,
+    /// Foreground process group owning the TTY. This pins aliases and waits to
+    /// the live agent process instead of to the pane that happens to contain it.
+    pub process_id: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -214,6 +217,15 @@ pub trait TerminalHandle: Send + Sync {
     /// Basename (or full path) of the process currently owning the TTY, when known.
     /// Used to detect coding agents even before their UI prints a brand string.
     fn foreground_process_name(&self) -> Option<String> {
+        None
+    }
+    /// Process group currently owning the TTY, when the platform exposes it.
+    fn foreground_process_id(&self) -> Option<u32> {
+        None
+    }
+    /// Text from the bottom of the terminal buffer, independent of the user's
+    /// current scroll position. Implementations may fall back to `None`.
+    fn recent_text(&self, _lines: usize) -> Option<String> {
         None
     }
     fn clear_selection(&self);

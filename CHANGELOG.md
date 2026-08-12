@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+## 0.3.5 — 2026-08-12
+
 - Track terminal `cd` end-to-end: automatic session titles, titlebar, Files tree, and Diff root follow the live working directory.
 - Keep cmux-style sidebar tabs in sync (directory name, branch with ahead/behind/dirty, and path).
 - Add dual light/dark app themes (Midnight, Moss, Harbor, Cinder, Violet, Bloom) with Sistema/Claro/Oscuro mode in Settings.
 - Persist theme preference and follow the system appearance when mode is Sistema.
+- Bind agent aliases and waits to the live process/session so stale panes cannot receive prompts intended for a previous agent.
+- Make launches transactional, preserve the user's selection with `--no-focus`, and report launch/wait timeouts as real errors.
+- Read the live terminal tail independently of scroll position and sanitize automated prompt input.
+- Process Claude and Codex lifecycle hooks in order, repair incomplete installations, and expose one intuitive activity-tracking control in Settings.
 
 ## 0.3.4 — 2026-08-11
 

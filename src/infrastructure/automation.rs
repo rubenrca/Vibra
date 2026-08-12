@@ -789,29 +789,65 @@ fn parse_agent_read(arguments: &[String]) -> Result<AutomationCommand> {
 }
 
 fn parse_agent_rename(arguments: &[String]) -> Result<AutomationCommand> {
-    let clear = arguments.iter().any(|argument| argument == "--clear");
-    let target = parse_agent_target(arguments)?;
-    let name = if clear {
-        None
-    } else {
-        parse_agent_flag(arguments, "--to")?
-            .or_else(|| {
-                // `+agent rename <target> <name>` or `+agent rename <name>` for current
-                let positional: Vec<_> = arguments
-                    .iter()
-                    .filter(|argument| !argument.starts_with('-'))
-                    .cloned()
-                    .collect();
-                match positional.as_slice() {
-                    [only] if target.as_ref() == Some(only) => None,
-                    [only] => Some(only.clone()),
-                    [first, second] if target.as_ref() == Some(first) => Some(second.clone()),
-                    [_, second] => Some(second.clone()),
-                    _ => None,
+    let mut clear = false;
+    let mut target = None;
+    let mut name = None;
+    let mut positional = Vec::new();
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--pane" | "--target" => {
+                if target.is_some() {
+                    bail!("el destino se indicó más de una vez");
                 }
-            })
-            .or_else(|| parse_agent_flag(arguments, "--name").ok().flatten())
-    };
+                target = Some(
+                    arguments
+                        .get(index + 1)
+                        .cloned()
+                        .context("falta valor para el destino")?,
+                );
+                index += 2;
+            }
+            // In `rename`, --name always means the new alias. This avoids the
+            // ambiguity with the generic target parser used by read/wait/status.
+            "--name" | "--to" => {
+                if name.is_some() {
+                    bail!("el nombre nuevo se indicó más de una vez");
+                }
+                name = Some(
+                    arguments
+                        .get(index + 1)
+                        .cloned()
+                        .context("falta valor para el nombre nuevo")?,
+                );
+                index += 2;
+            }
+            "--clear" => {
+                clear = true;
+                index += 1;
+            }
+            other if other.starts_with('-') => bail!("flag desconocida en +agent rename: {other}"),
+            other => {
+                positional.push(other.to_owned());
+                index += 1;
+            }
+        }
+    }
+    match (target.is_some(), positional.as_slice()) {
+        (false, [target_name, new_name]) if !clear && name.is_none() => {
+            target = Some(target_name.clone());
+            name = Some(new_name.clone());
+        }
+        (false, [target_name]) if clear => target = Some(target_name.clone()),
+        (true, [new_name]) if !clear && name.is_none() => name = Some(new_name.clone()),
+        (_, []) => {}
+        _ => bail!(
+            "uso: +agent rename <target> <name> | +agent rename --name <alias> | +agent rename <target> --clear"
+        ),
+    }
+    if clear && name.is_some() {
+        bail!("--clear no se puede combinar con un nombre nuevo");
+    }
     if !clear && name.is_none() {
         bail!(
             "uso: +agent rename <target> <name> | +agent rename --name <alias> | +agent rename <target> --clear"
@@ -1395,7 +1431,7 @@ fn manage_agent_hooks(
             .iter()
             .map(|(_, _, event)| format!("{script_command} {event}"))
             .collect();
-        let installed = hooks_installed(&config_path, &commands)?;
+        let installed = hooks_installed(&config_path, &entries, &commands, &script_path, script)?;
         if operation == AgentHookOperation::Status {
             reports.push(serde_json::json!({
                 "agent": kind.display_name(),
@@ -1490,24 +1526,47 @@ fn ensure_hook_entry(
         .or_insert_with(|| serde_json::json!([]))
         .as_array_mut()
         .with_context(|| format!("hooks.{slot} debe contener una lista"))?;
-    if groups.iter().any(|group| {
-        group
-            .get("hooks")
-            .and_then(Value::as_array)
-            .is_some_and(|handlers| {
-                handlers
-                    .iter()
-                    .any(|handler| handler.get("command").and_then(Value::as_str) == Some(command))
-            })
-    }) {
-        return Ok(false);
-    }
     let handler = serde_json::json!({
         "type": "command",
         "command": command,
-        "timeout": 1,
-        "async": true,
+        "timeout": 3,
     });
+    let mut found_correct_group = false;
+    let mut changed = false;
+    for group in groups.iter_mut() {
+        let matcher_matches = match matcher {
+            Some(matcher) => group.get("matcher").and_then(Value::as_str) == Some(matcher),
+            None => group.get("matcher").is_none(),
+        };
+        let Some(handlers) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        handlers.retain_mut(|existing| {
+            if existing.get("command").and_then(Value::as_str) != Some(command) {
+                return true;
+            }
+            if matcher_matches && !found_correct_group {
+                changed |= *existing != handler;
+                *existing = handler.clone();
+                found_correct_group = true;
+                true
+            } else {
+                // Move managed handlers out of groups with a different matcher
+                // without changing the behavior of neighboring user hooks.
+                changed = true;
+                false
+            }
+        });
+    }
+    groups.retain(|group| {
+        group
+            .get("hooks")
+            .and_then(Value::as_array)
+            .is_none_or(|handlers| !handlers.is_empty())
+    });
+    if found_correct_group {
+        return Ok(changed);
+    }
     let mut group = serde_json::json!({ "hooks": [handler] });
     if let Some(matcher) = matcher {
         group["matcher"] = Value::String(matcher.to_owned());
@@ -1560,20 +1619,55 @@ fn managed_hook_command_matches(command: &str, raw_path: &str, quoted_path: &str
     })
 }
 
-fn hooks_installed(path: &Path, commands: &[String]) -> Result<bool> {
+fn hooks_installed(
+    path: &Path,
+    entries: &[(&str, Option<&str>, &str)],
+    commands: &[String],
+    script_path: &Path,
+    script: &str,
+) -> Result<bool> {
+    let script_ready = fs::read_to_string(script_path).ok().as_deref() == Some(script)
+        && fs::metadata(script_path)
+            .ok()
+            .is_some_and(|metadata| metadata.permissions().mode() & 0o111 != 0);
+    if !script_ready {
+        return Ok(false);
+    }
     let config = read_hook_config(path)?;
-    Ok(commands.iter().all(|command| {
-        config
-            .get("hooks")
-            .and_then(Value::as_object)
-            .into_iter()
-            .flat_map(|hooks| hooks.values())
-            .filter_map(Value::as_array)
-            .flatten()
-            .filter_map(|group| group.get("hooks").and_then(Value::as_array))
-            .flatten()
-            .any(|handler| handler.get("command").and_then(Value::as_str) == Some(command))
-    }))
+    Ok(entries
+        .iter()
+        .zip(commands)
+        .all(|((slot, matcher, _), command)| {
+            config["hooks"]
+                .get(*slot)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|group| {
+                    let matcher_matches = match matcher {
+                        Some(matcher) => {
+                            group.get("matcher").and_then(Value::as_str) == Some(*matcher)
+                        }
+                        None => group.get("matcher").is_none(),
+                    };
+                    matcher_matches
+                        && group
+                            .get("hooks")
+                            .and_then(Value::as_array)
+                            .is_some_and(|handlers| {
+                                handlers.iter().any(|handler| {
+                                    handler.get("type").and_then(Value::as_str) == Some("command")
+                                        && handler.get("command").and_then(Value::as_str)
+                                            == Some(command)
+                                        && handler.get("timeout").and_then(Value::as_u64) == Some(3)
+                                        && !handler
+                                            .get("async")
+                                            .and_then(Value::as_bool)
+                                            .unwrap_or(false)
+                                })
+                            })
+                })
+        }))
 }
 
 fn script_changed(path: &Path, script: &str) -> Result<bool> {
@@ -1828,6 +1922,30 @@ mod tests {
             parse_cli_command("+agent", &["list".into()]).unwrap(),
             AutomationCommand::AgentList
         ));
+        assert!(matches!(
+            parse_cli_command(
+                "+agent",
+                &["rename".into(), "--name".into(), "reviewer".into()]
+            )
+            .unwrap(),
+            AutomationCommand::AgentRename {
+                target: None,
+                name: Some(ref name),
+                clear: false,
+            } if name == "reviewer"
+        ));
+        assert!(matches!(
+            parse_cli_command(
+                "+agent",
+                &["rename".into(), "reviewer".into(), "critic".into()]
+            )
+            .unwrap(),
+            AutomationCommand::AgentRename {
+                target: Some(ref target),
+                name: Some(ref name),
+                clear: false,
+            } if target == "reviewer" && name == "critic"
+        ));
         assert!(parse_cli_command("+pane", &["split".into(), "diagonal".into()]).is_err());
         assert!(parse_cli_command("+agent", &["open".into(), "nope".into()]).is_err());
         assert!(
@@ -1886,8 +2004,8 @@ mod tests {
                 handler["command"]
                     .as_str()
                     .is_some_and(|command| command.contains(".vibra/agent-hooks"))
-                    && handler["timeout"] == 1
-                    && handler["async"] == true
+                    && handler["timeout"] == 3
+                    && handler.get("async").is_none()
             }));
         }
 
@@ -1900,6 +2018,19 @@ mod tests {
                 .iter()
                 .all(|agent| agent["changed"] == false)
         );
+
+        fs::write(
+            home.0.join(".vibra/agent-hooks/vibra-codex.sh"),
+            "#!/bin/sh\nexit 0\n",
+        )
+        .unwrap();
+        let status =
+            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Status, false).unwrap();
+        assert_eq!(status["agents"][0]["installed"], true);
+        assert_eq!(status["agents"][1]["installed"], false);
+        let repaired =
+            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false).unwrap();
+        assert_eq!(repaired["agents"][1]["changed"], true);
 
         manage_agent_hooks(&home.0, &agents, AgentHookOperation::Uninstall, false).unwrap();
         assert!(!home.0.join(".vibra/agent-hooks/vibra-claude.sh").exists());
@@ -1926,6 +2057,49 @@ mod tests {
         assert!(!status.codex_installed);
         assert!(status.any_installed());
         assert!(!status.all_installed());
+    }
+
+    #[test]
+    fn repairing_a_managed_hook_does_not_rewrite_neighboring_user_hooks() {
+        let command = "'/tmp/vibra hook.sh' prompt";
+        let mut config = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "matcher": "old-matcher",
+                    "hooks": [
+                        { "type": "command", "command": command, "timeout": 1, "async": true },
+                        { "type": "command", "command": "echo user-hook" }
+                    ]
+                }]
+            }
+        });
+
+        assert!(
+            ensure_hook_entry(
+                &mut config,
+                "UserPromptSubmit",
+                Some("new-matcher"),
+                command
+            )
+            .unwrap()
+        );
+        let groups = config["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert!(groups.iter().any(|group| {
+            group["matcher"] == "old-matcher"
+                && group["hooks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|handler| handler["command"] == "echo user-hook")
+        }));
+        assert!(groups.iter().any(|group| {
+            group["matcher"] == "new-matcher"
+                && group["hooks"].as_array().unwrap().iter().any(|handler| {
+                    handler["command"] == command
+                        && handler["timeout"] == 3
+                        && handler.get("async").is_none()
+                })
+        }));
     }
 
     #[test]
