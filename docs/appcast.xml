@@ -3,18 +3,24 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.4</title>
-            <pubDate>Wed, 12 Aug 2026 09:55:52 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.4</link>
-            <sparkle:version>51</sparkle:version>
-            <sparkle:shortVersionString>0.3.4</sparkle:shortVersionString>
+            <title>0.3.5</title>
+            <pubDate>Wed, 12 Aug 2026 12:06:36 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.5</link>
+            <sparkle:version>56</sparkle:version>
+            <sparkle:shortVersionString>0.3.5</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Sign release builds with Developer ID Application and notarize with Apple so Gatekeeper no longer blocks install.</li>
-  <li>Make notarization the default path in `Scripts/release.sh` (opt out with `--no-notarize`).</li>
+  <li>Track terminal `cd` end-to-end: automatic session titles, titlebar, Files tree, and Diff root follow the live working directory.</li>
+  <li>Keep cmux-style sidebar tabs in sync (directory name, branch with ahead/behind/dirty, and path).</li>
+  <li>Add dual light/dark app themes (Midnight, Moss, Harbor, Cinder, Violet, Bloom) with Sistema/Claro/Oscuro mode in Settings.</li>
+  <li>Persist theme preference and follow the system appearance when mode is Sistema.</li>
+  <li>Bind agent aliases and waits to the live process/session so stale panes cannot receive prompts intended for a previous agent.</li>
+  <li>Make launches transactional, preserve the user's selection with `--no-focus`, and report launch/wait timeouts as real errors.</li>
+  <li>Read the live terminal tail independently of scroll position and sanitize automated prompt input.</li>
+  <li>Process Claude and Codex lifecycle hooks in order, repair incomplete installations, and expose one intuitive activity-tracking control in Settings.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.4/Vibra-0.3.4.dmg" length="11992302" type="application/octet-stream" sparkle:edSignature="YEaD5TX91Q63XHBkfBqdsuKohJUkZF4LezX6f+wPH8UyYJc0fpbcETJvIJc1apPi6tJr9CfhZzqGI0i78IXECg=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.5/Vibra-0.3.5.dmg" length="12064366" type="application/octet-stream" sparkle:edSignature="SzpAVW1a25wmVbxsrnfLl/h0Dvk/FrRsGudoxyliJv0o3r3l12lUdCN00qxBajxcG1GZp1k8TTFqyAy05tsfBQ=="/>
         </item>
     </channel>
 </rss>
