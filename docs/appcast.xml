@@ -3,24 +3,22 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.2</title>
-            <pubDate>Tue, 11 Aug 2026 20:32:20 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.2</link>
-            <sparkle:version>46</sparkle:version>
-            <sparkle:shortVersionString>0.3.2</sparkle:shortVersionString>
+            <title>0.3.3</title>
+            <pubDate>Tue, 11 Aug 2026 21:17:00 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.3</link>
+            <sparkle:version>49</sparkle:version>
+            <sparkle:shortVersionString>0.3.3</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Restore the macOS application menu (Vibra → Settings…, Check for Updates…, Quit) and basic File / Edit / View / Window menus.</li>
-  <li>Open preferences from the menu or with `⌘,` (same settings panel as the command palette).</li>
-  <li>Rebuild the Diff panel as Warp-style expandable file cards: accordion multi-expand, inline diffs, single line-number gutter, and an “Uncommitted changes” header.</li>
-  <li>Add IDE-style syntax highlighting in the Diff panel (keywords, strings, comments, types, numbers) for Rust, JS/TS, Python, Swift, Go, shell, and common config formats.</li>
-  <li>Resolve coding-agent identity from foreground TTY process, terminal title, then screen text so the Codex mark appears as soon as `codex` starts (not only after a screen banner).</li>
-  <li>Add structured `SetAgentPresence` automation and idempotent Claude/Codex hook setup, so hooks report working, waiting-for-permission, idle, and session end states.</li>
-  <li>Manage Claude/Codex hook integrations from Settings, with installed-state feedback and explicit install/update or uninstall actions.</li>
-  <li>Let agents open and coordinate other agents via `$VIBRA_CLI`: `+agent open/start` (split/tab, `--cwd`, shell-ready wait), named targets, `+agent prompt/wait/read/list/rename/status`, `+pane split/tab --no-focus`, cross-pane `+pane run --pane`, `+agent kinds`, and `+skill`.</li>
+  <li>Open Settings as a centered modal (⌘,) instead of embedding preferences in the sessions sidebar.</li>
+  <li>Add right-click context menus on sessions and panes: rename, delete/close, split, and zoom.</li>
+  <li>Route system paste (⌘V) like Warp: inject text with bracketed paste, and for CLI agents with an image on the clipboard send Ctrl+V so tools like Claude Code can attach screenshots.</li>
+  <li>Show live working directory and git branch metadata (ahead/behind/dirty) on each sessions sidebar tab.</li>
+  <li>Remove the left sidebar title bar; collapse sessions with the titlebar control or ⌘B.</li>
+  <li>Restyle the Files tree with open/closed folder SVG icons, expand chevrons, indent guides, and clearer file-type glyphs.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.2/Vibra-0.3.2.dmg" length="11863073" type="application/octet-stream" sparkle:edSignature="oNg7+L+XxpWJ8s/wphb3CbKzbxLwxiSNwlU8ETB/B18zHNdBVLxrEqOMmT3lHEgtdCJG5EkE721yo9ostgf/Ag=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.3/Vibra-0.3.3.dmg" length="11926881" type="application/octet-stream" sparkle:edSignature="H65AvEgOheAmLRd8AtaUpSghm0INbv77sB4U57+e9rPPi0xajXlEH3aQ6xx1EPsJCRtKZm7KgVicuwzlhAVEBw=="/>
         </item>
     </channel>
 </rss>
