@@ -7,8 +7,8 @@ use std::process::{Command, Output, Stdio};
 use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
-    GitCommit, GitDiff, GitDiffHunk, GitDiffHunkSource, GitDiffRow, GitDiffRowKind, GitFileChange,
-    GitFileStatus, GitHunkAction, GitPort, GitRepositorySnapshot,
+    GitBranchSummary, GitCommit, GitDiff, GitDiffHunk, GitDiffHunkSource, GitDiffRow,
+    GitDiffRowKind, GitFileChange, GitFileStatus, GitHunkAction, GitPort, GitRepositorySnapshot,
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
@@ -115,6 +115,63 @@ impl GitPort for GitCliPort {
             additions,
             deletions,
             state_token,
+        }))
+    }
+
+    fn branch_summary(&self, root: &Path) -> Result<Option<GitBranchSummary>> {
+        let Some(root) = repository_root(root)? else {
+            return Ok(None);
+        };
+        // Porcelain without numstat/diff: enough for branch, upstream, and dirty.
+        let output = run_git(
+            &root,
+            [
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--branch",
+                "--untracked-files=normal",
+            ],
+        )?;
+        ensure_success(&output, "git status")?;
+        let mut records = output.stdout.split(|byte| *byte == 0).peekable();
+        let mut branch = "HEAD".to_owned();
+        let mut upstream = None;
+        let mut ahead = 0;
+        let mut behind = 0;
+        let mut dirty = false;
+
+        while let Some(record) = records.next() {
+            if record.is_empty() {
+                continue;
+            }
+            let record = String::from_utf8_lossy(record);
+            if let Some(header) = record.strip_prefix("## ") {
+                (branch, upstream, ahead, behind) = parse_branch_header(header);
+                continue;
+            }
+            if record.len() < 3 {
+                continue;
+            }
+            let bytes = record.as_bytes();
+            let index = bytes[0] as char;
+            let worktree = bytes[1] as char;
+            if index == '!' && worktree == '!' {
+                continue;
+            }
+            dirty = true;
+            // Renamed/copied records consume the next path entry.
+            if matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C') {
+                let _ = records.next();
+            }
+        }
+
+        Ok(Some(GitBranchSummary {
+            branch,
+            upstream,
+            ahead,
+            behind,
+            dirty,
         }))
     }
 
@@ -942,6 +999,21 @@ mod tests {
         let snapshot = GitCliPort.snapshot(&nested).unwrap().unwrap();
 
         assert_eq!(snapshot.root, root.canonicalize().unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_summary_reports_dirty_and_tracking_without_full_snapshot() {
+        let root = repository();
+        let port = GitCliPort;
+        let clean = port.branch_summary(&root).unwrap().unwrap();
+        assert!(!clean.dirty);
+        assert!(clean.branch == "main" || clean.branch == "master");
+
+        fs::write(root.join("tracked.txt"), "one\nchanged\n").unwrap();
+        let dirty = port.branch_summary(&root).unwrap().unwrap();
+        assert!(dirty.dirty);
+
         fs::remove_dir_all(root).unwrap();
     }
 

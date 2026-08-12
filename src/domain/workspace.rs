@@ -160,6 +160,8 @@ pub struct WorkspaceEntry {
     pub workspace_id: Uuid,
     pub project_name: String,
     pub workspace_name: String,
+    /// Working directory of the selected (or first) session in this workspace.
+    pub working_directory: String,
     pub session_count: usize,
     pub is_selected: bool,
 }
@@ -575,6 +577,22 @@ impl WorkspaceSnapshot {
     }
 
     pub fn close_selected_terminal(&mut self) -> bool {
+        let Some((_, _, _, session_index)) = self.selected_session_indices() else {
+            return false;
+        };
+        let Some(session_id) = self
+            .selected_tab()
+            .and_then(|tab| tab.sessions.get(session_index).map(|session| session.id))
+        else {
+            return false;
+        };
+        self.close_terminal(session_id)
+    }
+
+    pub fn close_terminal(&mut self, session_id: Uuid) -> bool {
+        if !self.select_terminal_global(session_id) {
+            return false;
+        }
         let Some((project_index, workspace_index, tab_index, session_index)) =
             self.selected_session_indices()
         else {
@@ -585,6 +603,9 @@ impl WorkspaceSnapshot {
         let workspaces = project.workspaces.as_mut().expect("normalized");
         let workspace = &mut workspaces[workspace_index];
         let tab = &mut workspace.tabs[tab_index];
+        if tab.sessions.get(session_index).map(|s| s.id) != Some(session_id) {
+            return false;
+        }
         let old_order = tab.layout.terminal_ids();
         let removed_id = tab.sessions.remove(session_index).id;
 
@@ -611,6 +632,69 @@ impl WorkspaceSnapshot {
         if workspace.tabs.is_empty() {
             workspaces.remove(workspace_index);
         }
+        if workspaces.is_empty() {
+            self.projects.remove(project_index);
+        }
+        self.normalize();
+        true
+    }
+
+    pub fn rename_workspace(
+        &mut self,
+        project_id: Uuid,
+        workspace_id: Uuid,
+        name: &str,
+    ) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        else {
+            return false;
+        };
+        let Some(workspace) = project
+            .workspaces
+            .as_mut()
+            .and_then(|workspaces| workspaces.iter_mut().find(|item| item.id == workspace_id))
+        else {
+            return false;
+        };
+        if workspace.name == name && workspace.title_source == Some(WorkspaceTitleSource::Manual) {
+            return false;
+        }
+        workspace.name = name.to_owned();
+        workspace.title_source = Some(WorkspaceTitleSource::Manual);
+        true
+    }
+
+    pub fn close_workspace(&mut self, project_id: Uuid, workspace_id: Uuid) -> bool {
+        let Some(project_index) = self
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+        else {
+            return false;
+        };
+        let Some(workspace_index) = self.projects[project_index]
+            .workspaces
+            .as_ref()
+            .and_then(|workspaces| {
+                workspaces
+                    .iter()
+                    .position(|workspace| workspace.id == workspace_id)
+            })
+        else {
+            return false;
+        };
+        let workspaces = self.projects[project_index]
+            .workspaces
+            .as_mut()
+            .expect("checked above");
+        workspaces.remove(workspace_index);
         if workspaces.is_empty() {
             self.projects.remove(project_index);
         }
@@ -681,6 +765,9 @@ impl WorkspaceSnapshot {
                         workspace_id: workspace.id,
                         project_name: project.name.clone(),
                         workspace_name: workspace.name.clone(),
+                        working_directory: workspace
+                            .primary_working_directory()
+                            .unwrap_or_else(|| project.root_path.clone()),
                         session_count: workspace.tabs.iter().map(|tab| tab.sessions.len()).sum(),
                         is_selected: self.selected_project_id == Some(project.id)
                             && project.selected_workspace_id == Some(workspace.id),
@@ -960,6 +1047,35 @@ impl TerminalWorkspaceSnapshot {
         {
             self.selected_tab_id = self.tabs.first().map(|tab| tab.id);
         }
+    }
+}
+
+impl TerminalWorkspaceSnapshot {
+    /// Working directory of the selected tab's selected session (or first available).
+    pub fn primary_working_directory(&self) -> Option<String> {
+        let tab = self
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.id) == self.selected_tab_id)
+            .or_else(|| self.tabs.first())?;
+        tab.sessions
+            .iter()
+            .find(|session| Some(session.id) == tab.selected_session_id)
+            .or_else(|| tab.sessions.first())
+            .map(|session| session.working_directory.clone())
+    }
+
+    /// Session that drives sidebar path/branch metadata for this workspace.
+    pub fn primary_session(&self) -> Option<&SessionSnapshot> {
+        let tab = self
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.id) == self.selected_tab_id)
+            .or_else(|| self.tabs.first())?;
+        tab.sessions
+            .iter()
+            .find(|session| Some(session.id) == tab.selected_session_id)
+            .or_else(|| tab.sessions.first())
     }
 }
 
@@ -1559,6 +1675,21 @@ mod tests {
 
         assert_eq!(snapshot.projects[0].sessions.len(), 1);
         assert_eq!(snapshot.selected_session().unwrap().id, session_id);
+    }
+
+    #[test]
+    fn workspace_entries_surface_the_selected_session_working_directory() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-sidebar"));
+        let session_id = snapshot.selected_session().unwrap().id;
+        assert!(snapshot.update_session_working_directory(
+            session_id,
+            Path::new("/tmp/vibra-sidebar/nested")
+        ));
+
+        let entries = snapshot.workspace_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].working_directory, "/tmp/vibra-sidebar/nested");
     }
 
     #[test]

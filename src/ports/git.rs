@@ -16,6 +16,17 @@ pub struct GitRepositorySnapshot {
     pub state_token: String,
 }
 
+/// Lightweight branch/tracking summary for sidebar chrome (no file list or diffs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitBranchSummary {
+    pub branch: String,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+    /// True when the worktree has staged, unstaged, or untracked changes.
+    pub dirty: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct GitCommit {
@@ -124,6 +135,8 @@ pub enum GitDiffRowKind {
 #[allow(dead_code)]
 pub trait GitPort: Send + Sync {
     fn snapshot(&self, root: &Path) -> Result<Option<GitRepositorySnapshot>>;
+    /// Fast branch + upstream + dirty flag for sidebar tabs (no numstat/diff work).
+    fn branch_summary(&self, root: &Path) -> Result<Option<GitBranchSummary>>;
     fn diff(&self, repository: &Path, change: &GitFileChange) -> Result<GitDiff>;
     fn stage(&self, repository: &Path, path: &str, expected_state: &str) -> Result<()>;
     fn unstage(&self, repository: &Path, path: &str, expected_state: &str) -> Result<()>;

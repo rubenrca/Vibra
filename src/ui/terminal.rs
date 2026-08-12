@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
-    FocusHandle, Focusable, Hsla, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Render,
-    ShapedLine, SharedString, StrikethroughStyle, Subscription, Task, TextRun, Timer,
+    App, Bounds, ClipboardEntry, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
+    EventEmitter, FocusHandle, Focusable, Hsla, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke,
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels,
+    Render, ShapedLine, SharedString, StrikethroughStyle, Subscription, Task, TextRun, Timer,
     UTF16Selection, UnderlineStyle, Window, canvas, div, fill, outline, point, prelude::*, px,
     rgba, size,
 };
@@ -59,6 +59,11 @@ pub enum TerminalViewEvent {
     },
     FontSizeChanged {
         size: f32,
+    },
+    ContextMenuRequested {
+        session_id: Uuid,
+        x: f32,
+        y: f32,
     },
 }
 
@@ -479,7 +484,14 @@ impl TerminalView {
     }
 
     fn request_paste(&mut self, text: String, cx: &mut Context<Self>) {
-        if paste_requires_confirmation(&text) {
+        // When the app enabled bracketed paste, inject immediately (Warp/iTerm).
+        // Confirm only for raw pastes that could execute as typed input.
+        let bracketed = self
+            .handle
+            .as_ref()
+            .map(|handle| handle.input_mode().bracketed_paste)
+            .unwrap_or(false);
+        if !bracketed && paste_requires_confirmation(&text) {
             self.pending_confirmations
                 .push_back(TerminalConfirmation::Paste(text));
             cx.notify();
@@ -488,6 +500,44 @@ impl TerminalView {
             self.reset_cursor_blink();
             cx.notify();
         }
+    }
+
+    /// System paste (⌘V / Edit → Paste), following Warp's terminal paste path:
+    /// `warpdotdev/warp` → `app/src/terminal/view.rs` → `TerminalView::paste`.
+    ///
+    /// 1. CLI agent + clipboard image (macOS): write Ctrl+V (`C0::SYN` / `0x16`)
+    ///    to the PTY so the agent reads the image from the system clipboard.
+    /// 2. Otherwise: inject clipboard text, with bracketed paste when enabled.
+    fn paste_from_system_clipboard(&mut self, cx: &mut Context<Self>) {
+        let item = cx.read_from_clipboard();
+        let has_image = item.as_ref().is_some_and(clipboard_has_image);
+
+        // Warp: `is_cli_agent_paste && clipboard_content.has_image_data()` then
+        // `write_user_bytes_to_pty(vec![escape_sequences::C0::SYN], …)` on !windows.
+        if has_image && self.has_active_cli_agent() {
+            self.send_protocol(vec![0x16]);
+            self.reset_cursor_blink();
+            cx.notify();
+            return;
+        }
+
+        if let Some(text) = item
+            .and_then(|item| item.text())
+            .filter(|text| !text.is_empty())
+        {
+            self.request_paste(text, cx);
+        }
+    }
+
+    /// Whether a CLI coding agent is the foreground context for paste routing.
+    fn has_active_cli_agent(&self) -> bool {
+        if self.agent_presence.is_some() {
+            return true;
+        }
+        self.foreground_process_name()
+            .as_deref()
+            .and_then(agent_kind_from_process_name)
+            .is_some()
     }
 
     fn confirm_pending_action(&mut self, cx: &mut Context<Self>) {
@@ -565,9 +615,7 @@ impl TerminalView {
     }
 
     fn paste_action(&mut self, _: &PasteTerminal, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.request_paste(text, cx);
-        }
+        self.paste_from_system_clipboard(cx);
     }
 
     fn search_action(&mut self, _: &SearchTerminal, _: &mut Window, cx: &mut Context<Self>) {
@@ -711,9 +759,7 @@ impl TerminalView {
                     cx.stop_propagation();
                 }
                 "v" => {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        self.request_paste(text, cx);
-                    }
+                    self.paste_from_system_clipboard(cx);
                     cx.stop_propagation();
                 }
                 "f" => {
@@ -901,6 +947,18 @@ impl TerminalView {
             };
             handle.start_selection(selection_type, point, side);
             cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+
+        if event.button == MouseButton::Right {
+            let x: f32 = event.position.x.into();
+            let y: f32 = event.position.y.into();
+            cx.emit(TerminalViewEvent::ContextMenuRequested {
+                session_id: self.session_id,
+                x,
+                y,
+            });
             cx.stop_propagation();
         }
     }
@@ -1926,6 +1984,12 @@ fn paste_requires_confirmation(text: &str) -> bool {
             .any(|character| character.is_control() && character != '\t')
 }
 
+fn clipboard_has_image(item: &ClipboardItem) -> bool {
+    item.entries()
+        .iter()
+        .any(|entry| matches!(entry, ClipboardEntry::Image(_)))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminalKeyEventType {
     Press,
@@ -2799,6 +2863,12 @@ mod tests {
         assert!(!paste_requires_confirmation("uno\tdos"));
         assert!(paste_requires_confirmation("cargo test\nrm -rf build"));
         assert!(paste_requires_confirmation("echo\x1b[31m"));
+    }
+
+    #[test]
+    fn clipboard_image_detection_ignores_text_only_items() {
+        let text = ClipboardItem::new_string("hola".into());
+        assert!(!clipboard_has_image(&text));
     }
 
     #[test]
