@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.3.4 — 2026-08-11
+
+- Sign release builds with Developer ID Application and notarize with Apple so Gatekeeper no longer blocks install.
+- Make notarization the default path in `Scripts/release.sh` (opt out with `--no-notarize`).
+
 ## 0.3.3 — 2026-08-11
 
 - Open Settings as a centered modal (⌘,) instead of embedding preferences in the sessions sidebar.

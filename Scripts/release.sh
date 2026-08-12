@@ -11,23 +11,29 @@ set -euo pipefail
 script_name=${0:A}
 repo_root=${script_name:h:h}
 dry_run=0
-notarize=0
+# Default on: Developer ID + Apple notarization so Gatekeeper accepts downloads.
+# Opt out with --no-notarize (e.g. local dry packaging without credentials).
+notarize=1
 prerelease=0
 version=
 repo_slug=${VIBRA_REPO_SLUG:-rubenrca/Vibra}
 download_prefix="https://github.com/$repo_slug/releases/download"
 feed_dir="$repo_root/docs"
 staging_dir="$repo_root/dist/appcast"
+# Used by package_app.sh when --notarize is set.
+export APPLE_KEYCHAIN_PROFILE="${APPLE_KEYCHAIN_PROFILE:-Vibra-Notary}"
 
 usage() {
-  print -u2 -- "usage: $script_name <version> [--prerelease] [--notarize] [--dry-run]"
+  print -u2 -- "usage: $script_name <version> [--prerelease] [--notarize|--no-notarize] [--dry-run]"
   print -u2 --
-  print -u2 -- "  <version>      marketing version, e.g. 0.3.0 or 0.3.1-beta.1"
-  print -u2 -- "  --prerelease   GitHub prerelease only; does not update docs/appcast.xml"
-  print -u2 -- "  --notarize     submit the app and disk image to Apple"
-  print -u2 -- "  --dry-run      build and sign everything, publish nothing"
+  print -u2 -- "  <version>       marketing version, e.g. 0.3.0 or 0.3.1-beta.1"
+  print -u2 -- "  --prerelease    GitHub prerelease only; does not update docs/appcast.xml"
+  print -u2 -- "  --notarize      Developer ID sign + Apple notarization (default)"
+  print -u2 -- "  --no-notarize   skip notarization (ad-hoc or signed only)"
+  print -u2 -- "  --dry-run       build and sign everything, publish nothing"
   print -u2 --
   print -u2 -- "Stable releases update the Sparkle feed after the DMG is live on GitHub."
+  print -u2 -- "Notarization uses \$APPLE_KEYCHAIN_PROFILE (default: Vibra-Notary)."
   print -u2 -- "Requires the GitHub CLI and the Sparkle EdDSA private key in the keychain."
   exit 64
 }
@@ -35,6 +41,7 @@ usage() {
 while (( $# )); do
   case "$1" in
     --notarize) notarize=1 ;;
+    --no-notarize) notarize=0 ;;
     --dry-run) dry_run=1 ;;
     --prerelease) prerelease=1 ;;
     --stable)
@@ -119,6 +126,20 @@ fi
 if git -C "$repo_root" rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
   print -u2 -- "tag $tag already exists."
   exit 65
+fi
+
+if (( notarize )); then
+  if ! security find-identity -v -p codesigning 2>/dev/null | grep -q 'Developer ID Application'; then
+    print -u2 -- "notarization requires a Developer ID Application identity in the keychain."
+    print -u2 -- "Install one, or pass --no-notarize for an unsigned/ad-hoc package."
+    exit 78
+  fi
+  if ! xcrun notarytool history --keychain-profile "$APPLE_KEYCHAIN_PROFILE" >/dev/null 2>&1; then
+    print -u2 -- "notarization profile '$APPLE_KEYCHAIN_PROFILE' is missing or invalid."
+    print -u2 -- "Create it with: xcrun notarytool store-credentials \"$APPLE_KEYCHAIN_PROFILE\""
+    print -u2 -- "Or pass --no-notarize to skip Apple notarization."
+    exit 78
+  fi
 fi
 
 notes_markdown=$(
