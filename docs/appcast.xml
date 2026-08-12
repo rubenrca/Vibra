@@ -3,22 +3,18 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.3</title>
-            <pubDate>Tue, 11 Aug 2026 21:17:00 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.3</link>
-            <sparkle:version>49</sparkle:version>
-            <sparkle:shortVersionString>0.3.3</sparkle:shortVersionString>
+            <title>0.3.4</title>
+            <pubDate>Wed, 12 Aug 2026 09:55:52 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.4</link>
+            <sparkle:version>51</sparkle:version>
+            <sparkle:shortVersionString>0.3.4</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Open Settings as a centered modal (⌘,) instead of embedding preferences in the sessions sidebar.</li>
-  <li>Add right-click context menus on sessions and panes: rename, delete/close, split, and zoom.</li>
-  <li>Route system paste (⌘V) like Warp: inject text with bracketed paste, and for CLI agents with an image on the clipboard send Ctrl+V so tools like Claude Code can attach screenshots.</li>
-  <li>Show live working directory and git branch metadata (ahead/behind/dirty) on each sessions sidebar tab.</li>
-  <li>Remove the left sidebar title bar; collapse sessions with the titlebar control or ⌘B.</li>
-  <li>Restyle the Files tree with open/closed folder SVG icons, expand chevrons, indent guides, and clearer file-type glyphs.</li>
+  <li>Sign release builds with Developer ID Application and notarize with Apple so Gatekeeper no longer blocks install.</li>
+  <li>Make notarization the default path in `Scripts/release.sh` (opt out with `--no-notarize`).</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.3/Vibra-0.3.3.dmg" length="11926881" type="application/octet-stream" sparkle:edSignature="H65AvEgOheAmLRd8AtaUpSghm0INbv77sB4U57+e9rPPi0xajXlEH3aQ6xx1EPsJCRtKZm7KgVicuwzlhAVEBw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.4/Vibra-0.3.4.dmg" length="11992302" type="application/octet-stream" sparkle:edSignature="YEaD5TX91Q63XHBkfBqdsuKohJUkZF4LezX6f+wPH8UyYJc0fpbcETJvIJc1apPi6tJr9CfhZzqGI0i78IXECg=="/>
         </item>
     </channel>
 </rss>
