@@ -45,7 +45,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 ### Files y Diff
 
 - panel derecho unificado con las vistas `Files` y `Diff`;
-- árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos, guías de indentación y operaciones recuperables;
+- árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos y guías de indentación;
 - editor UTF-8 con búsqueda, undo/redo, guardado atómico y `⌘S`;
 - Diff de solo lectura estilo Warp: tarjetas expandibles, gutter de línea y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - las mutaciones Git se realizan desde la terminal integrada.

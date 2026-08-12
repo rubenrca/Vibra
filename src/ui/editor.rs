@@ -358,7 +358,11 @@ impl Render for EditorView {
                             .rounded(px(4.0))
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(if dirty { colors().success } else { colors().subtle })
+                            .text_color(if dirty {
+                                colors().success
+                            } else {
+                                colors().subtle
+                            })
                             .hover(|button| button.bg(colors().hover))
                             .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
                             .child("Save"),
@@ -374,7 +378,9 @@ impl Render for EditorView {
                             .justify_center()
                             .text_sm()
                             .text_color(colors().muted)
-                            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+                            .hover(|button| {
+                                button.bg(colors().hover).text_color(colors().foreground)
+                            })
                             .on_click(cx.listener(|this, _, _, cx| this.request_close(cx)))
                             .child("×"),
                     ),
@@ -478,7 +484,13 @@ impl Render for EditorView {
                                     .text_color(colors().subtle)
                                     .child((index + 1).to_string()),
                             )
-                            .child(div().pl_3().pr_6().text_color(colors().muted).child(display))
+                            .child(
+                                div()
+                                    .pl_3()
+                                    .pr_6()
+                                    .text_color(colors().muted)
+                                    .child(display),
+                            )
                     })),
             )
             .child(

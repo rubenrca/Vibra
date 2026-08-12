@@ -56,9 +56,13 @@ pub struct SyntaxSpan {
 enum Mode {
     Code,
     BlockComment,
-    String { quote: u8 },
+    String {
+        quote: u8,
+    },
     /// Rust raw string `r##"..."##` — number of `#` delimiters.
-    RawString { hashes: u8 },
+    RawString {
+        hashes: u8,
+    },
 }
 
 /// Multi-line state so block comments / strings survive across hunk lines.
@@ -173,24 +177,25 @@ impl Highlighter {
                         continue;
                     }
                     // Rust raw string r" / r#"
-                    if self.language == Language::Rust && bytes[i] == b'r' {
-                        if let Some((hashes, open_end)) = rust_raw_opener(bytes, i) {
-                            flush_code(line, code_start, i, self.language, &mut spans);
-                            let start = i;
-                            let (end, closed) = scan_raw_string_end(bytes, open_end, hashes);
-                            spans.push(SyntaxSpan {
-                                range: start..end,
-                                kind: SyntaxKind::String,
-                            });
-                            i = end;
-                            if closed {
-                                self.mode = Mode::Code;
-                                code_start = i;
-                            } else {
-                                self.mode = Mode::RawString { hashes };
-                            }
-                            continue;
+                    if self.language == Language::Rust
+                        && bytes[i] == b'r'
+                        && let Some((hashes, open_end)) = rust_raw_opener(bytes, i)
+                    {
+                        flush_code(line, code_start, i, self.language, &mut spans);
+                        let start = i;
+                        let (end, closed) = scan_raw_string_end(bytes, open_end, hashes);
+                        spans.push(SyntaxSpan {
+                            range: start..end,
+                            kind: SyntaxKind::String,
+                        });
+                        i = end;
+                        if closed {
+                            self.mode = Mode::Code;
+                            code_start = i;
+                        } else {
+                            self.mode = Mode::RawString { hashes };
                         }
+                        continue;
                     }
                     // Normal string
                     if is_string_quote(bytes[i], self.language, bytes, i) {
@@ -348,9 +353,7 @@ fn flush_code(
             continue;
         }
         // Number
-        if b.is_ascii_digit()
-            || (b == b'.' && i + 1 < end && bytes[i + 1].is_ascii_digit())
-        {
+        if b.is_ascii_digit() || (b == b'.' && i + 1 < end && bytes[i + 1].is_ascii_digit()) {
             let s = i;
             i += 1;
             while i < end
@@ -380,10 +383,7 @@ fn flush_code(
             if is_macro {
                 i += 1;
             }
-            spans.push(SyntaxSpan {
-                range: s..i,
-                kind,
-            });
+            spans.push(SyntaxSpan { range: s..i, kind });
             continue;
         }
         // Two-char operators
@@ -477,12 +477,7 @@ fn peek_after_ident(bytes: &[u8], mut i: usize, end: usize) -> AfterIdent {
     }
 }
 
-fn classify_ident(
-    word: &str,
-    language: Language,
-    is_macro: bool,
-    after: AfterIdent,
-) -> SyntaxKind {
+fn classify_ident(word: &str, language: Language, is_macro: bool, after: AfterIdent) -> SyntaxKind {
     if is_macro {
         return SyntaxKind::Macro;
     }
@@ -492,11 +487,7 @@ fn classify_ident(
     if is_literal_constant(word, language) {
         return SyntaxKind::Constant;
     }
-    if word
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_uppercase())
-    {
+    if word.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
         return SyntaxKind::Type;
     }
     if matches!(after, AfterIdent::Call) {
@@ -514,8 +505,10 @@ fn classify_ident(
 }
 
 fn is_literal_constant(word: &str, language: Language) -> bool {
-    matches!(word, "true" | "false" | "null" | "undefined" | "None" | "nil")
-        || (language == Language::Python && matches!(word, "True" | "False"))
+    matches!(
+        word,
+        "true" | "false" | "null" | "undefined" | "None" | "nil"
+    ) || (language == Language::Python && matches!(word, "True" | "False"))
         || (language == Language::Rust && matches!(word, "Some" | "Ok" | "Err"))
 }
 
@@ -578,8 +571,10 @@ impl SyntaxKind {
     }
 
     pub fn highlight_style(self) -> HighlightStyle {
-        let mut style = HighlightStyle::default();
-        style.color = Some(self.color().into());
+        let mut style = HighlightStyle {
+            color: Some(self.color().into()),
+            ..Default::default()
+        };
         match self {
             Self::Comment => style.font_style = Some(FontStyle::Italic),
             Self::Keyword | Self::Macro => style.font_weight = Some(FontWeight::MEDIUM),
@@ -633,12 +628,64 @@ static RUST_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 static JS_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     set(&[
-        "as", "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger",
-        "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for",
-        "from", "function", "get", "if", "implements", "import", "in", "instanceof", "interface",
-        "let", "new", "null", "of", "private", "protected", "public", "return", "set", "static",
-        "super", "switch", "this", "throw", "true", "try", "typeof", "undefined", "var", "void",
-        "while", "with", "yield", "type", "namespace", "declare", "readonly", "keyof", "infer",
+        "as",
+        "async",
+        "await",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "debugger",
+        "default",
+        "delete",
+        "do",
+        "else",
+        "enum",
+        "export",
+        "extends",
+        "false",
+        "finally",
+        "for",
+        "from",
+        "function",
+        "get",
+        "if",
+        "implements",
+        "import",
+        "in",
+        "instanceof",
+        "interface",
+        "let",
+        "new",
+        "null",
+        "of",
+        "private",
+        "protected",
+        "public",
+        "return",
+        "set",
+        "static",
+        "super",
+        "switch",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "typeof",
+        "undefined",
+        "var",
+        "void",
+        "while",
+        "with",
+        "yield",
+        "type",
+        "namespace",
+        "declare",
+        "readonly",
+        "keyof",
+        "infer",
     ])
 });
 
@@ -653,19 +700,81 @@ static PYTHON_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 static SWIFT_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     set(&[
-        "class", "deinit", "enum", "extension", "func", "import", "init", "let", "protocol",
-        "static", "struct", "subscript", "typealias", "var", "break", "case", "continue",
-        "default", "defer", "do", "else", "for", "guard", "if", "in", "return", "switch", "where",
-        "while", "as", "catch", "false", "is", "nil", "super", "self", "Self", "throw", "throws",
-        "true", "try", "async", "await", "actor", "some",
+        "class",
+        "deinit",
+        "enum",
+        "extension",
+        "func",
+        "import",
+        "init",
+        "let",
+        "protocol",
+        "static",
+        "struct",
+        "subscript",
+        "typealias",
+        "var",
+        "break",
+        "case",
+        "continue",
+        "default",
+        "defer",
+        "do",
+        "else",
+        "for",
+        "guard",
+        "if",
+        "in",
+        "return",
+        "switch",
+        "where",
+        "while",
+        "as",
+        "catch",
+        "false",
+        "is",
+        "nil",
+        "super",
+        "self",
+        "Self",
+        "throw",
+        "throws",
+        "true",
+        "try",
+        "async",
+        "await",
+        "actor",
+        "some",
     ])
 });
 
 static GO_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     set(&[
-        "break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough",
-        "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range",
-        "return", "select", "struct", "switch", "type", "var",
+        "break",
+        "case",
+        "chan",
+        "const",
+        "continue",
+        "default",
+        "defer",
+        "else",
+        "fallthrough",
+        "for",
+        "func",
+        "go",
+        "goto",
+        "if",
+        "import",
+        "interface",
+        "map",
+        "package",
+        "range",
+        "return",
+        "select",
+        "struct",
+        "switch",
+        "type",
+        "var",
     ])
 });
 
@@ -679,8 +788,22 @@ static SHELL_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 static CSS_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     set(&[
-        "important", "from", "to", "and", "or", "not", "only", "var", "rgb", "rgba", "hsl", "url",
-        "calc", "min", "max", "clamp",
+        "important",
+        "from",
+        "to",
+        "and",
+        "or",
+        "not",
+        "only",
+        "var",
+        "rgb",
+        "rgba",
+        "hsl",
+        "url",
+        "calc",
+        "min",
+        "max",
+        "clamp",
     ])
 });
 

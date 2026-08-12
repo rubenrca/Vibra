@@ -16,10 +16,9 @@ use uuid::Uuid;
 
 use crate::ports::terminal::{
     TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentState, TerminalCell,
-    TerminalCellSide, TerminalCursor,
-    TerminalCursorShape, TerminalEvent, TerminalHandle, TerminalInputMode, TerminalPoint,
-    TerminalPort, TerminalRgb, TerminalSearchDirection, TerminalSelectionType, TerminalSize,
-    TerminalSnapshot, TerminalUnderline,
+    TerminalCellSide, TerminalCursor, TerminalCursorShape, TerminalEvent, TerminalHandle,
+    TerminalInputMode, TerminalPoint, TerminalPort, TerminalRgb, TerminalSearchDirection,
+    TerminalSelectionType, TerminalSize, TerminalSnapshot, TerminalUnderline,
 };
 use crate::ui::theme::colors;
 use crate::{
@@ -1426,10 +1425,12 @@ impl Render for TerminalView {
                             let height: f32 = bounds.size.height.into();
                             let target_columns = (width / natural_cell_width)
                                 .floor()
-                                .clamp(2.0, u16::MAX as f32) as u16;
+                                .clamp(2.0, u16::MAX as f32)
+                                as u16;
                             let target_rows = (height / natural_line_height)
                                 .floor()
-                                .clamp(1.0, u16::MAX as f32) as u16;
+                                .clamp(1.0, u16::MAX as f32)
+                                as u16;
                             if let Some(handle) = &handle {
                                 let size = TerminalSize {
                                     columns: target_columns,
@@ -2352,9 +2353,7 @@ fn detect_agent_presence(
     let (kind, kind_source) = process_name
         .and_then(agent_kind_from_process_name)
         .map(|kind| (kind, TerminalAgentKindSource::Process))
-        .or_else(|| {
-            agent_kind_from_text(title).map(|kind| (kind, TerminalAgentKindSource::Title))
-        })
+        .or_else(|| agent_kind_from_text(title).map(|kind| (kind, TerminalAgentKindSource::Title)))
         .or_else(|| {
             agent_kind_from_text(&screen).map(|kind| (kind, TerminalAgentKindSource::Screen))
         })?;

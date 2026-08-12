@@ -199,7 +199,8 @@ impl DiffView {
         self.diffs.retain(|path, _| live_paths.contains(path));
         self.highlights.retain(|path, _| live_paths.contains(path));
         self.loading.retain(|path| live_paths.contains(path));
-        self.pending_loads.retain(|path, _| live_paths.contains(path));
+        self.pending_loads
+            .retain(|path, _| live_paths.contains(path));
         // Snapshot content changed — drop cached diffs so expanded cards reload.
         self.diffs.clear();
         self.highlights.clear();
@@ -398,15 +399,18 @@ impl DiffView {
                                                     .child(format!("+{additions}")),
                                             )
                                         })
-                                        .when(deletions > 0, |row| {
-                                            row.child(
-                                                div()
-                                                    .font_family("JetBrains Mono")
-                                                    .text_size(px(10.0))
-                                                    .text_color(colors().diff_deleted)
-                                                    .child(format!("−{deletions}")),
-                                            )
-                                        })
+                                        .when(
+                                            deletions > 0,
+                                            |row| {
+                                                row.child(
+                                                    div()
+                                                        .font_family("JetBrains Mono")
+                                                        .text_size(px(10.0))
+                                                        .text_color(colors().diff_deleted)
+                                                        .child(format!("−{deletions}")),
+                                                )
+                                            },
+                                        )
                                     }),
                             ),
                     )
@@ -421,8 +425,14 @@ impl DiffView {
                             .rounded(px(6.0))
                             .cursor_pointer()
                             .text_size(px(13.0))
-                            .text_color(if loading { colors().subtle } else { colors().muted })
-                            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+                            .text_color(if loading {
+                                colors().subtle
+                            } else {
+                                colors().muted
+                            })
+                            .hover(|button| {
+                                button.bg(colors().hover).text_color(colors().foreground)
+                            })
                             .active(|button| button.opacity(0.72))
                             .on_click(cx.listener(|this, _, _, cx| this.refresh_now(cx)))
                             .child(if loading { "·" } else { "↻" }),
@@ -506,7 +516,10 @@ impl DiffView {
             // File header — click toggles accordion
             .child(
                 div()
-                    .id(SharedString::from(format!("git-card-header-{}", change.path)))
+                    .id(SharedString::from(format!(
+                        "git-card-header-{}",
+                        change.path
+                    )))
                     .h(px(34.0))
                     .w_full()
                     .flex_none()
@@ -701,7 +714,8 @@ impl DiffView {
                         range
                             .filter_map(|index| {
                                 let row = diff.rows.get(index)?;
-                                let spans = highlights_for_list.get(index).cloned().unwrap_or_default();
+                                let spans =
+                                    highlights_for_list.get(index).cloned().unwrap_or_default();
                                 Some(Self::diff_row(row, &spans))
                             })
                             .collect()
@@ -758,11 +772,7 @@ impl DiffView {
                     .text_size(px(10.0))
                     .text_color(colors().subtle)
                     .opacity(0.7)
-                    .child(if is_hunk {
-                        String::new()
-                    } else {
-                        line_number
-                    }),
+                    .child(if is_hunk { String::new() } else { line_number }),
             )
             .child(
                 div()
@@ -793,11 +803,7 @@ impl DiffView {
             )
     }
 
-    fn styled_code_line(
-        text: &str,
-        spans: &[SyntaxSpan],
-        kind: GitDiffRowKind,
-    ) -> StyledText {
+    fn styled_code_line(text: &str, spans: &[SyntaxSpan], kind: GitDiffRowKind) -> StyledText {
         let default_color = match kind {
             GitDiffRowKind::Hunk | GitDiffRowKind::Section => colors().accent,
             GitDiffRowKind::Notice => colors().warning,

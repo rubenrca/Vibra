@@ -26,9 +26,7 @@ use crate::infrastructure::settings::{AppSettings, SettingsRepository};
 use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 use crate::ports::git::{GitBranchSummary, GitFileStatus, GitPort};
 use crate::ports::terminal::TerminalPort;
-use crate::ports::terminal::{
-    TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentState,
-};
+use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentState};
 use crate::ui::agent_marks::agent_sidebar_badge;
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
@@ -139,13 +137,6 @@ struct ProjectFileRow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FilePromptKind {
-    NewFile,
-    NewDirectory,
-    Rename,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaletteMode {
     Commands,
     Files,
@@ -175,14 +166,6 @@ struct PaletteItem {
     label: String,
     detail: String,
     action: PaletteAction,
-}
-
-#[derive(Debug, Clone)]
-struct FilePrompt {
-    kind: FilePromptKind,
-    directory: PathBuf,
-    target: Option<PathBuf>,
-    value: String,
 }
 
 #[derive(Debug, Clone)]
@@ -284,8 +267,6 @@ pub struct WorkspaceView {
     selected_file_path: Option<PathBuf>,
     show_hidden_files: bool,
     file_error: Option<SharedString>,
-    file_prompt: Option<FilePrompt>,
-    pending_file_trash: Option<PathBuf>,
     palette_mode: Option<PaletteMode>,
     palette_query: String,
     palette_selected: usize,
@@ -459,8 +440,6 @@ impl WorkspaceView {
             selected_file_path: None,
             show_hidden_files: settings.show_hidden_files,
             file_error: None,
-            file_prompt: None,
-            pending_file_trash: None,
             palette_mode: None,
             palette_query: String::new(),
             palette_selected: 0,
@@ -544,12 +523,12 @@ impl WorkspaceView {
                     .as_deref()
                     .unwrap_or_default()
                     .iter()
-                    .filter_map(|workspace| {
+                    .map(|workspace| {
                         let cwd = self
                             .workspace_live_cwd(workspace.id, cx)
                             .or_else(|| workspace.primary_working_directory().map(PathBuf::from))
                             .unwrap_or_else(|| PathBuf::from(&project.root_path));
-                        Some((workspace.id, cwd))
+                        (workspace.id, cwd)
                     })
             })
             .collect()
@@ -742,115 +721,10 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn begin_file_prompt(&mut self, kind: FilePromptKind, cx: &mut Context<Self>) {
-        let root = self.project_root();
-        let selected = self.selected_file_path.clone();
-        let (directory, target, value) = match kind {
-            FilePromptKind::NewFile | FilePromptKind::NewDirectory => {
-                let directory = selected
-                    .as_ref()
-                    .filter(|path| path.is_dir())
-                    .cloned()
-                    .or_else(|| selected.as_ref()?.parent().map(Path::to_path_buf))
-                    .unwrap_or(root);
-                (directory, None, String::new())
-            }
-            FilePromptKind::Rename => {
-                let Some(target) = selected else {
-                    self.file_error = Some("Selecciona un archivo o carpeta para renombrar".into());
-                    cx.notify();
-                    return;
-                };
-                let Some(directory) = target.parent().map(Path::to_path_buf) else {
-                    return;
-                };
-                let value = target
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                (directory, Some(target), value)
-            }
-        };
-        self.file_prompt = Some(FilePrompt {
-            kind,
-            directory,
-            target,
-            value,
-        });
-        self.file_error = None;
-        cx.notify();
-    }
-
-    fn confirm_file_prompt(&mut self, cx: &mut Context<Self>) {
-        let Some(prompt) = self.file_prompt.clone() else {
-            return;
-        };
-        let root = self.project_root();
-        let result = match prompt.kind {
-            FilePromptKind::NewFile => {
-                self.file_port
-                    .create_file(&root, &prompt.directory, &prompt.value)
-            }
-            FilePromptKind::NewDirectory => {
-                self.file_port
-                    .create_directory(&root, &prompt.directory, &prompt.value)
-            }
-            FilePromptKind::Rename => self.file_port.rename(
-                &root,
-                prompt.target.as_deref().expect("rename has a target"),
-                &prompt.value,
-            ),
-        };
-        match result {
-            Ok(path) => {
-                self.file_prompt = None;
-                self.file_error = None;
-                self.selected_file_path = Some(path.clone());
-                if path.is_dir() {
-                    self.expanded_directories.insert(path);
-                }
-                self.expanded_directories.insert(prompt.directory);
-                self.refresh_project_files();
-            }
-            Err(error) => self.file_error = Some(error.to_string().into()),
-        }
-        cx.notify();
-    }
-
-    fn request_file_trash(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.selected_file_path.clone() else {
-            self.file_error = Some("Selecciona un archivo o carpeta".into());
-            cx.notify();
-            return;
-        };
-        self.pending_file_trash = Some(path);
-        self.file_error = None;
-        cx.notify();
-    }
-
-    fn confirm_file_trash(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.pending_file_trash.take() else {
-            return;
-        };
-        let root = self.project_root();
-        match self.file_port.move_to_trash(&root, &path) {
-            Ok(()) => {
-                self.selected_file_path = None;
-                self.expanded_directories.remove(&path);
-                self.file_error = None;
-                self.refresh_project_files();
-            }
-            Err(error) => self.file_error = Some(error.to_string().into()),
-        }
-        cx.notify();
-    }
-
     fn open_palette(&mut self, mode: PaletteMode, cx: &mut Context<Self>) {
         self.palette_mode = Some(mode);
         self.palette_query.clear();
         self.palette_selected = 0;
-        self.file_prompt = None;
-        self.pending_file_trash = None;
         self.settings_open = false;
         self.context_menu = None;
         self.rename_prompt = None;
@@ -870,8 +744,6 @@ impl WorkspaceView {
     fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_open = true;
         self.palette_mode = None;
-        self.file_prompt = None;
-        self.pending_file_trash = None;
         self.context_menu = None;
         self.rename_prompt = None;
         cx.notify();
@@ -884,13 +756,7 @@ impl WorkspaceView {
         }
     }
 
-    fn open_context_menu(
-        &mut self,
-        kind: ContextMenuKind,
-        x: f32,
-        y: f32,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_context_menu(&mut self, kind: ContextMenuKind, x: f32, y: f32, cx: &mut Context<Self>) {
         self.context_menu = Some(ContextMenuState { kind, x, y });
         self.rename_prompt = None;
         cx.notify();
@@ -937,8 +803,6 @@ impl WorkspaceView {
         };
         self.context_menu = None;
         self.rename_prompt = Some(RenamePrompt { kind, value });
-        self.file_prompt = None;
-        self.pending_file_trash = None;
         self.palette_mode = None;
         self.settings_open = false;
         cx.notify();
@@ -979,8 +843,8 @@ impl WorkspaceView {
                     cx.notify();
                     return;
                 }
-                if let Some(project_id) = project_id {
-                    if let Some((existing, _)) =
+                if let Some(project_id) = project_id
+                    && let Some((existing, _)) =
                         self.agent_names.iter().find(|(other_id, other_name)| {
                             *other_name == &name
                                 && **other_id != session_id
@@ -988,14 +852,12 @@ impl WorkspaceView {
                                     .project_id_for_session(**other_id)
                                     .is_some_and(|id| id == project_id)
                         })
-                    {
-                        self.persistence_error = Some(
-                            format!("El nombre '{name}' ya está en uso por el pane {existing}")
-                                .into(),
-                        );
-                        cx.notify();
-                        return;
-                    }
+                {
+                    self.persistence_error = Some(
+                        format!("El nombre '{name}' ya está en uso por el pane {existing}").into(),
+                    );
+                    cx.notify();
+                    return;
                 }
                 self.agent_names.insert(session_id, name);
                 self.rename_prompt = None;
@@ -1255,8 +1117,7 @@ impl WorkspaceView {
             }
             PaletteAction::ToggleGit => self.toggle_diff_panel(cx),
             PaletteAction::ShowSessions => {
-                if self.left_sidebar_visible
-                    && self.left_sidebar_mode == LeftSidebarMode::Sessions
+                if self.left_sidebar_visible && self.left_sidebar_mode == LeftSidebarMode::Sessions
                 {
                     self.set_left_sidebar_visible(false, true, cx);
                 } else {
@@ -1322,11 +1183,11 @@ impl WorkspaceView {
                     && !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.alt =>
                 {
-                    if let Some(text) = event.keystroke.key_char.as_ref() {
-                        if let Some(prompt) = self.rename_prompt.as_mut() {
-                            prompt.value.push_str(text);
-                            cx.notify();
-                        }
+                    if let Some(text) = event.keystroke.key_char.as_ref()
+                        && let Some(prompt) = self.rename_prompt.as_mut()
+                    {
+                        prompt.value.push_str(text);
+                        cx.notify();
                     }
                 }
                 _ => {}
@@ -1374,47 +1235,7 @@ impl WorkspaceView {
                 _ => {}
             }
             cx.stop_propagation();
-            return;
         }
-        if self.pending_file_trash.is_some() {
-            match key.as_str() {
-                "enter" | "return" => self.confirm_file_trash(cx),
-                "escape" | "esc" => {
-                    self.pending_file_trash = None;
-                    cx.notify();
-                }
-                _ => {}
-            }
-            cx.stop_propagation();
-            return;
-        }
-
-        let Some(prompt) = self.file_prompt.as_mut() else {
-            return;
-        };
-        match key.as_str() {
-            "enter" | "return" => self.confirm_file_prompt(cx),
-            "escape" | "esc" => {
-                self.file_prompt = None;
-                self.file_error = None;
-                cx.notify();
-            }
-            "backspace" => {
-                prompt.value.pop();
-                cx.notify();
-            }
-            _ if !event.keystroke.modifiers.platform
-                && !event.keystroke.modifiers.control
-                && !event.keystroke.modifiers.alt =>
-            {
-                if let Some(text) = event.keystroke.key_char.as_ref() {
-                    prompt.value.push_str(text);
-                    cx.notify();
-                }
-            }
-            _ => {}
-        }
-        cx.stop_propagation();
     }
 
     fn toggle_diff_panel(&mut self, cx: &mut Context<Self>) {
@@ -1427,12 +1248,7 @@ impl WorkspaceView {
     }
 
     /// Desired open/closed state for the left sidebar, with a light width animation.
-    fn set_left_sidebar_visible(
-        &mut self,
-        visible: bool,
-        persist: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn set_left_sidebar_visible(&mut self, visible: bool, persist: bool, cx: &mut Context<Self>) {
         if self.left_sidebar_visible == visible {
             // Caller may have changed mode/content; repaint without restarting motion.
             cx.notify();
@@ -1447,12 +1263,7 @@ impl WorkspaceView {
     }
 
     /// Desired open/closed state for the right sidebar, with a light width animation.
-    fn set_right_sidebar_visible(
-        &mut self,
-        visible: bool,
-        persist: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn set_right_sidebar_visible(&mut self, visible: bool, persist: bool, cx: &mut Context<Self>) {
         if self.right_sidebar_visible == visible {
             cx.notify();
             return;
@@ -1498,8 +1309,7 @@ impl WorkspaceView {
                         .min(1.0);
                         let eased = ease_out_cubic(t);
                         this.left_sidebar_progress = left_from + (left_to - left_from) * eased;
-                        this.right_sidebar_progress =
-                            right_from + (right_to - right_from) * eased;
+                        this.right_sidebar_progress = right_from + (right_to - right_from) * eased;
                         if t >= 1.0 {
                             this.left_sidebar_progress = left_to;
                             this.right_sidebar_progress = right_to;
@@ -1614,8 +1424,9 @@ impl WorkspaceView {
                     // Keep Files/editor rooted on the live console directory.
                     let new_root = self.project_root();
                     if previous_files_root.as_ref() != Some(&new_root) {
-                        self.expanded_directories
-                            .retain(|entry| entry.starts_with(&new_root) || new_root.starts_with(entry));
+                        self.expanded_directories.retain(|entry| {
+                            entry.starts_with(&new_root) || new_root.starts_with(entry)
+                        });
                         self.expanded_directories.insert(new_root);
                         self.refresh_project_files();
                     }
@@ -1632,19 +1443,10 @@ impl WorkspaceView {
                 let _exited_session = (*session_id, *code);
                 cx.notify();
             }
-            TerminalViewEvent::ContextMenuRequested {
-                session_id,
-                x,
-                y,
-            } => {
+            TerminalViewEvent::ContextMenuRequested { session_id, x, y } => {
                 let session_id = *session_id;
                 let _ = self.snapshot.select_terminal_global(session_id);
-                self.open_context_menu(
-                    ContextMenuKind::Pane { session_id },
-                    *x,
-                    *y,
-                    cx,
-                );
+                self.open_context_menu(ContextMenuKind::Pane { session_id }, *x, *y, cx);
             }
             TerminalViewEvent::AgentPresenceChanged {
                 session_id,
@@ -1798,8 +1600,7 @@ impl WorkspaceView {
                     .hook_agent_presence
                     .get(&pane_id)
                     .is_none_or(|presence| {
-                        session_id.is_none()
-                            || presence.session_id.as_ref() == session_id.as_ref()
+                        session_id.is_none() || presence.session_id.as_ref() == session_id.as_ref()
                     });
                 if clear {
                     self.hook_agent_presence.remove(&pane_id);
@@ -1918,9 +1719,7 @@ impl WorkspaceView {
             if !self.automation_same_project(caller, uuid) {
                 return Err("el pane destino no está en el mismo proyecto".to_owned());
             }
-            if !self.terminals.contains_key(&uuid)
-                && self.project_id_for_session(uuid).is_none()
-            {
+            if !self.terminals.contains_key(&uuid) && self.project_id_for_session(uuid).is_none() {
                 return Err("el pane destino no existe".to_owned());
             }
             return Ok(uuid);
@@ -1941,7 +1740,9 @@ impl WorkspaceView {
             .collect();
         match matches.as_slice() {
             [only] => Ok(*only),
-            [] => Err(format!("no hay un agente llamado '{target}' en este proyecto")),
+            [] => Err(format!(
+                "no hay un agente llamado '{target}' en este proyecto"
+            )),
             _ => Err(format!("el nombre '{target}' es ambiguo en este proyecto")),
         }
     }
@@ -2063,16 +1864,7 @@ impl WorkspaceView {
                 wait,
                 args,
             } => (
-                kind,
-                placement,
-                direction,
-                no_focus,
-                name,
-                cwd,
-                timeout_ms,
-                wait,
-                args,
-                None,
+                kind, placement, direction, no_focus, name, cwd, timeout_ms, wait, args, None,
             ),
             AutomationCommand::AgentStart {
                 kind,
@@ -2272,9 +2064,7 @@ impl WorkspaceView {
                     let sent = this
                         .update(cx, |this, cx| {
                             if let Some(terminal) = this.terminals.get(&pane_id) {
-                                terminal
-                                    .read(cx)
-                                    .send_automation_input(&command_text, true);
+                                terminal.read(cx).send_automation_input(&command_text, true);
                                 true
                             } else {
                                 false
@@ -2536,9 +2326,11 @@ impl WorkspaceView {
         });
         let hook_state = hook.map(|presence| (presence.state, presence.observed_at));
         let (state, state_source, attention) = match (hook_state, terminal_state) {
-            (Some((state, _)), _) => {
-                (Some(state), Some("hook"), hook.and_then(|presence| presence.attention))
-            }
+            (Some((state, _)), _) => (
+                Some(state),
+                Some("hook"),
+                hook.and_then(|presence| presence.attention),
+            ),
             (None, Some((state, _))) => (Some(state), Some("heuristic"), None),
             (None, None) => (None, None, None),
         };
@@ -2721,8 +2513,7 @@ impl WorkspaceView {
         if self._appearance_subscription.is_some() {
             return;
         }
-        let system_dark =
-            ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
+        let system_dark = ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
         self.apply_theme_preference(system_dark, cx);
         self._appearance_subscription =
             Some(cx.observe_window_appearance(window, |this, window, cx| {
@@ -2738,8 +2529,7 @@ impl WorkspaceView {
             return;
         }
         self.settings.theme_id = theme_id.to_string();
-        let system_dark =
-            ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
+        let system_dark = ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
         self.apply_theme_preference(system_dark, cx);
         self.persist_settings(cx);
     }
@@ -2754,8 +2544,7 @@ impl WorkspaceView {
             return;
         }
         self.settings.appearance_mode = mode.as_str().to_string();
-        let system_dark =
-            ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
+        let system_dark = ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
         self.apply_theme_preference(system_dark, cx);
         self.persist_settings(cx);
     }
@@ -2981,8 +2770,9 @@ impl WorkspaceView {
         let left_open = left_progress > 0.5;
         let selected_workspace = self.snapshot.selected_workspace();
         let selected_workspace_id = selected_workspace.map(|w| w.id);
-        let title_is_manual = selected_workspace
-            .is_some_and(|w| w.title_source == Some(crate::domain::workspace::WorkspaceTitleSource::Manual));
+        let title_is_manual = selected_workspace.is_some_and(|w| {
+            w.title_source == Some(crate::domain::workspace::WorkspaceTitleSource::Manual)
+        });
         let workspace_name = selected_workspace
             .map(|workspace| workspace.name.clone())
             .unwrap_or_else(|| "Sin espacio".to_owned());
@@ -3434,8 +3224,7 @@ impl WorkspaceView {
                             rel.as_deref()
                                 .and_then(|rel| aggregate_dir_status(rel, &git_statuses))
                         } else {
-                            rel.as_ref()
-                                .and_then(|rel| git_statuses.get(rel).copied())
+                            rel.as_ref().and_then(|rel| git_statuses.get(rel).copied())
                         };
                         let icon_color = if is_directory {
                             status.map(git_status_color).unwrap_or(colors().folder)
@@ -3522,11 +3311,7 @@ impl WorkspaceView {
                                     .text_size(px(9.0))
                                     .text_color(colors().subtle)
                                     .child(if is_directory {
-                                        if expanded {
-                                            "▾"
-                                        } else {
-                                            "▸"
-                                        }
+                                        if expanded { "▾" } else { "▸" }
                                     } else {
                                         ""
                                     }),
@@ -3586,36 +3371,6 @@ impl WorkspaceView {
                 )
             })
             .into_any_element()
-    }
-
-    fn file_icon_button(
-        &self,
-        label: &'static str,
-        id: &'static str,
-        _tooltip: &'static str,
-        active: bool,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .size(px(22.0))
-            .flex_none()
-            .rounded(px(4.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .text_size(px(11.0))
-            .text_color(if active {
-                colors().foreground
-            } else {
-                colors().subtle
-            })
-            .bg(if active { colors().selection } else { colors().panel })
-            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
-            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-            .child(label)
     }
 
     fn info_sidebar_content(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3746,7 +3501,11 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    fn settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn settings_modal(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.settings_open {
             return None;
         }
@@ -3800,15 +3559,14 @@ impl WorkspaceView {
                                         .text_color(colors().foreground)
                                         .child("Ajustes"),
                                 )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(colors().subtle)
-                                        .child("esc"),
-                                )
-                                .child(self.sidebar_close_button("close-settings-modal", cx, |this, cx| {
-                                    this.close_settings(cx);
-                                })),
+                                .child(div().text_xs().text_color(colors().subtle).child("esc"))
+                                .child(self.sidebar_close_button(
+                                    "close-settings-modal",
+                                    cx,
+                                    |this, cx| {
+                                        this.close_settings(cx);
+                                    },
+                                )),
                         )
                         .child(self.settings_modal_content(window, cx)),
                 )
@@ -3827,8 +3585,7 @@ impl WorkspaceView {
         let git_panel = self.settings.git_panel_visible;
         let appearance = self.appearance_mode();
         let theme_id = self.settings.theme_id.clone();
-        let system_dark =
-            ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
+        let system_dark = ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
         let preview_tone = theme::resolve_tone(appearance, system_dark);
         let agent_hooks = self.agent_hook_status.unwrap_or_default();
         let agent_hook_error = self.agent_hook_error.clone();
@@ -4471,7 +4228,9 @@ impl WorkspaceView {
                                 .justify_center()
                                 .text_size(px(12.0))
                                 .text_color(colors().subtle)
-                                .hover(|close| close.bg(colors().elevated).text_color(colors().foreground))
+                                .hover(|close| {
+                                    close.bg(colors().elevated).text_color(colors().foreground)
+                                })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.close_tab(tab_id, window, cx);
@@ -4519,7 +4278,6 @@ impl WorkspaceView {
     fn render_pane_layout(
         &mut self,
         layout: &PaneLayoutSnapshot,
-        selected_session_id: Option<Uuid>,
         path: Vec<PaneBranch>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -4547,12 +4305,7 @@ impl WorkspaceView {
                             this.select_terminal(session_id, window, cx);
                             let x: f32 = event.position.x.into();
                             let y: f32 = event.position.y.into();
-                            this.open_context_menu(
-                                ContextMenuKind::Pane { session_id },
-                                x,
-                                y,
-                                cx,
-                            );
+                            this.open_context_menu(ContextMenuKind::Pane { session_id }, x, y, cx);
                             cx.stop_propagation();
                         }),
                     )
@@ -4571,8 +4324,8 @@ impl WorkspaceView {
                 first_path.push(PaneBranch::First);
                 let mut second_path = path.clone();
                 second_path.push(PaneBranch::Second);
-                let first = self.render_pane_layout(first, selected_session_id, first_path, cx);
-                let second = self.render_pane_layout(second, selected_session_id, second_path, cx);
+                let first = self.render_pane_layout(first, first_path, cx);
+                let second = self.render_pane_layout(second, second_path, cx);
                 let divider_id = format!(
                     "pane-divider-{}",
                     path.iter()
@@ -4662,14 +4415,9 @@ impl WorkspaceView {
         let tab = self.snapshot.selected_tab().cloned();
         let panes = tab.as_ref().map(|tab| {
             if let Some(zoomed_id) = tab.zoomed_session_id {
-                self.render_pane_layout(
-                    &PaneLayoutSnapshot::terminal(zoomed_id),
-                    tab.selected_session_id,
-                    Vec::new(),
-                    cx,
-                )
+                self.render_pane_layout(&PaneLayoutSnapshot::terminal(zoomed_id), Vec::new(), cx)
             } else {
-                self.render_pane_layout(&tab.layout, tab.selected_session_id, Vec::new(), cx)
+                self.render_pane_layout(&tab.layout, Vec::new(), cx)
             }
         });
         let is_empty = panes.is_none();
@@ -4780,9 +4528,7 @@ impl WorkspaceView {
                                     .children(modes.into_iter().map(|(item_mode, label)| {
                                         let selected = item_mode == mode;
                                         div()
-                                            .id(SharedString::from(format!(
-                                                "utility-mode-{label}"
-                                            )))
+                                            .id(SharedString::from(format!("utility-mode-{label}")))
                                             .h_full()
                                             .px_2()
                                             .mr_2()
@@ -5051,28 +4797,30 @@ impl WorkspaceView {
                         .on_mouse_down(MouseButton::Right, |_, _, cx| {
                             cx.stop_propagation();
                         })
-                        .children(items.into_iter().enumerate().map(|(index, (label, action, danger))| {
-                            div()
-                                .id(SharedString::from(format!("context-menu-item-{index}")))
-                                .h(px(30.0))
-                                .mx_1()
-                                .px_3()
-                                .rounded(px(5.0))
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .text_size(px(11.0))
-                                .text_color(if danger {
-                                    colors().danger
-                                } else {
-                                    colors().foreground
-                                })
-                                .hover(|item| item.bg(colors().hover))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.run_context_menu_action(action, window, cx);
-                                }))
-                                .child(label)
-                        })),
+                        .children(items.into_iter().enumerate().map(
+                            |(index, (label, action, danger))| {
+                                div()
+                                    .id(SharedString::from(format!("context-menu-item-{index}")))
+                                    .h(px(30.0))
+                                    .mx_1()
+                                    .px_3()
+                                    .rounded(px(5.0))
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .text_size(px(11.0))
+                                    .text_color(if danger {
+                                        colors().danger
+                                    } else {
+                                        colors().foreground
+                                    })
+                                    .hover(|item| item.bg(colors().hover))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.run_context_menu_action(action, window, cx);
+                                    }))
+                                    .child(label)
+                            },
+                        )),
                 )
                 .into_any_element(),
         )
@@ -5179,169 +4927,6 @@ impl WorkspaceView {
         )
     }
 
-    fn file_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if let Some(prompt) = self.file_prompt.clone() {
-            let title = match prompt.kind {
-                FilePromptKind::NewFile => "Crear archivo",
-                FilePromptKind::NewDirectory => "Crear carpeta",
-                FilePromptKind::Rename => "Renombrar",
-            };
-            let value = if prompt.value.is_empty() {
-                "Escribe un nombre…".to_owned()
-            } else {
-                prompt.value
-            };
-            return Some(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::rgba(0x08080acc))
-                    .child(
-                        div()
-                            .w(px(420.0))
-                            .max_w_full()
-                            .mx_4()
-                            .p_4()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(colors().border_subtle)
-                            .bg(colors().elevated)
-                            .shadow_lg()
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(colors().foreground)
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .h(px(34.0))
-                                    .px_3()
-                                    .rounded(px(5.0))
-                                    .border_1()
-                                    .border_color(colors().success)
-                                    .bg(colors().terminal)
-                                    .flex()
-                                    .items_center()
-                                    .font_family("JetBrains Mono")
-                                    .text_size(px(11.0))
-                                    .text_color(if value == "Escribe un nombre…" {
-                                        colors().subtle
-                                    } else {
-                                        colors().foreground
-                                    })
-                                    .child(value),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(colors().subtle)
-                                            .child("↵ confirmar · esc cancelar"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("confirm-file-prompt")
-                                            .px_3()
-                                            .py_1()
-                                            .rounded(px(5.0))
-                                            .cursor_pointer()
-                                            .bg(colors().success)
-                                            .text_xs()
-                                            .text_color(colors().terminal)
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.confirm_file_prompt(cx);
-                                            }))
-                                            .child("Confirmar"),
-                                    ),
-                            ),
-                    )
-                    .into_any_element(),
-            );
-        }
-
-        self.pending_file_trash.clone().map(|path| {
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(gpui::rgba(0x08080acc))
-                .child(
-                    div()
-                        .w(px(420.0))
-                        .max_w_full()
-                        .mx_4()
-                        .p_4()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(colors().elevated)
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(colors().foreground)
-                                .child(format!("¿Mover “{name}” a la Papelera?")),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(colors().muted)
-                                .child("La operación es recuperable desde la Papelera de macOS."),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(colors().subtle)
-                                        .child("↵ mover · esc cancelar"),
-                                )
-                                .child(
-                                    div()
-                                        .id("confirm-file-trash")
-                                        .px_3()
-                                        .py_1()
-                                        .rounded(px(5.0))
-                                        .cursor_pointer()
-                                        .bg(colors().danger)
-                                        .text_xs()
-                                        .text_color(colors().foreground)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.confirm_file_trash(cx);
-                                        }))
-                                        .child("Mover"),
-                                ),
-                        ),
-                )
-                .into_any_element()
-        })
-    }
-
     fn error_banner(&self) -> Option<impl IntoElement> {
         self.persistence_error.as_ref().map(|error| {
             div()
@@ -5420,7 +5005,11 @@ impl WorkspaceView {
     }
 
     fn sidebar_icon(left: bool) -> Div {
-        let panel = div().w(px(4.0)).h_full().flex_none().bg(colors().foreground);
+        let panel = div()
+            .w(px(4.0))
+            .h_full()
+            .flex_none()
+            .bg(colors().foreground);
         let content = div().h_full().flex_1();
         let icon = div()
             .w(px(14.0))
@@ -5526,8 +5115,6 @@ impl Render for WorkspaceView {
 
         body = body.child(layout);
         if let Some(modal) = self.palette_modal(cx) {
-            body = body.child(modal);
-        } else if let Some(modal) = self.file_modal(cx) {
             body = body.child(modal);
         } else if let Some(modal) = self.rename_modal(cx) {
             body = body.child(modal);
@@ -5638,13 +5225,7 @@ fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
 }
 
 /// One label row inside a sessions sidebar tab (fixed width, ellipsis).
-fn sidebar_tab_line(
-    text: &str,
-    color: gpui::Rgba,
-    size: f32,
-    medium: bool,
-    mono: bool,
-) -> Div {
+fn sidebar_tab_line(text: &str, color: gpui::Rgba, size: f32, medium: bool, mono: bool) -> Div {
     let mut row = div()
         .w(px(LEFT_SIDEBAR_TAB_TEXT_WIDTH))
         .overflow_hidden()
@@ -5682,7 +5263,8 @@ fn format_sidebar_path(path: &str) -> String {
     if path.is_empty() {
         return "—".to_owned();
     }
-    let display = if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+    let display = if let Some(home) =
+        directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
     {
         let home_str = home.to_string_lossy();
         if path == home_str.as_ref() {

@@ -53,7 +53,3 @@ void vibra_sparkle_check_for_updates(void) {
         [g_controller checkForUpdates:nil];
     }
 }
-
-bool vibra_sparkle_is_configured(void) {
-    return g_controller != nil;
-}

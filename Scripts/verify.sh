@@ -10,4 +10,4 @@ cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets --all-features -- -D warnings
 plutil -lint Resources/Info.plist Resources/Vibra.entitlements
-zsh -n Scripts/package_app.sh Scripts/release.sh Scripts/finish_notarized_release.sh
+zsh -n Scripts/*.sh

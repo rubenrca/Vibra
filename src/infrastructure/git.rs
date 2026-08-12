@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
 
 use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
-    GitBranchSummary, GitCommit, GitDiff, GitDiffHunk, GitDiffHunkSource, GitDiffRow,
-    GitDiffRowKind, GitFileChange, GitFileStatus, GitHunkAction, GitPort, GitRepositorySnapshot,
+    GitBranchSummary, GitDiff, GitDiffRow, GitDiffRowKind, GitFileChange, GitFileStatus, GitPort,
+    GitRepositorySnapshot,
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
@@ -103,8 +104,6 @@ impl GitPort for GitCliPort {
         });
         let additions = changes.iter().filter_map(|change| change.additions).sum();
         let deletions = changes.iter().filter_map(|change| change.deletions).sum();
-        let state_token = repository_state_token(&root, &output.stdout)?;
-
         Ok(Some(GitRepositorySnapshot {
             root,
             branch,
@@ -114,7 +113,6 @@ impl GitPort for GitCliPort {
             changes,
             additions,
             deletions,
-            state_token,
         }))
     }
 
@@ -185,10 +183,9 @@ impl GitPort for GitCliPort {
         let mut deletions = 0;
         let mut binary = false;
         let mut truncated = false;
-        let mut hunks = Vec::new();
 
         if change.staged {
-            let output = run_git(
+            let patch = run_git_diff(
                 &root,
                 [
                     "diff",
@@ -199,23 +196,22 @@ impl GitPort for GitCliPort {
                     "--",
                     &change.path,
                 ],
+                "git diff --cached",
+                false,
             )?;
-            ensure_success(&output, "git diff --cached")?;
             append_patch(
-                &output.stdout,
+                &patch,
                 multiple_sections.then_some("CAMBIOS PREPARADOS"),
                 &mut rows,
                 &mut additions,
                 &mut deletions,
                 &mut binary,
                 &mut truncated,
-                &mut hunks,
-                GitDiffHunkSource::Index,
             );
         }
 
         if change.unstaged {
-            let output = run_git(
+            let patch = run_git_diff(
                 &root,
                 [
                     "diff",
@@ -225,23 +221,22 @@ impl GitPort for GitCliPort {
                     "--",
                     &change.path,
                 ],
+                "git diff",
+                false,
             )?;
-            ensure_success(&output, "git diff")?;
             append_patch(
-                &output.stdout,
+                &patch,
                 multiple_sections.then_some("DIRECTORIO DE TRABAJO"),
                 &mut rows,
                 &mut additions,
                 &mut deletions,
                 &mut binary,
                 &mut truncated,
-                &mut hunks,
-                GitDiffHunkSource::Worktree,
             );
         }
 
         if change.untracked {
-            let output = run_git_allow_difference(
+            let patch = run_git_diff(
                 &root,
                 [
                     "diff",
@@ -253,17 +248,17 @@ impl GitPort for GitCliPort {
                     "/dev/null",
                     &change.path,
                 ],
+                "git diff --no-index",
+                true,
             )?;
             append_patch(
-                &output.stdout,
+                &patch,
                 multiple_sections.then_some("ARCHIVO SIN SEGUIMIENTO"),
                 &mut rows,
                 &mut additions,
                 &mut deletions,
                 &mut binary,
                 &mut truncated,
-                &mut hunks,
-                GitDiffHunkSource::Untracked,
             );
         }
 
@@ -288,216 +283,7 @@ impl GitPort for GitCliPort {
             deletions,
             binary,
             truncated,
-            hunks,
         })
-    }
-
-    fn stage(&self, repository: &Path, path: &str, expected_state: &str) -> Result<()> {
-        validate_relative_path(path)?;
-        let root = ensure_repository_state(repository, expected_state)?;
-        let output = run_git_mutating(&root, ["add", "--", path])?;
-        ensure_success(&output, "git add")
-    }
-
-    fn unstage(&self, repository: &Path, path: &str, expected_state: &str) -> Result<()> {
-        validate_relative_path(path)?;
-        let root = ensure_repository_state(repository, expected_state)?;
-        let has_head = run_git(&root, ["rev-parse", "--verify", "HEAD"])?
-            .status
-            .success();
-        let output = if has_head {
-            run_git_mutating(&root, ["restore", "--staged", "--", path])?
-        } else {
-            run_git_mutating(&root, ["rm", "--cached", "-r", "--", path])?
-        };
-        ensure_success(&output, "git unstage")
-    }
-
-    fn discard_worktree_change(
-        &self,
-        repository: &Path,
-        path: &str,
-        expected_state: &str,
-    ) -> Result<()> {
-        validate_relative_path(path)?;
-        let root = ensure_repository_state(repository, expected_state)?;
-        if !root.join(path).exists() {
-            // Restoring a tracked deletion is safe; untracked paths are deliberately
-            // excluded because deletion belongs in the recoverable Files workflow.
-            let tracked = run_git(&root, ["ls-files", "--error-unmatch", "--", path])?;
-            ensure_success(&tracked, "git ls-files")?;
-        }
-        let output = run_git_mutating(&root, ["restore", "--worktree", "--", path])?;
-        ensure_success(&output, "git restore")
-    }
-
-    fn commit(
-        &self,
-        repository: &Path,
-        message: &str,
-        amend: bool,
-        expected_state: &str,
-    ) -> Result<()> {
-        let message = validate_commit_message(message)?;
-        let root = ensure_repository_state(repository, expected_state)?;
-        let mut arguments = vec!["commit"];
-        if amend {
-            arguments.push("--amend");
-        }
-        arguments.extend(["-m", message]);
-        let output = run_git_mutating(&root, arguments)?;
-        ensure_success(
-            &output,
-            if amend {
-                "git commit --amend"
-            } else {
-                "git commit"
-            },
-        )
-    }
-
-    fn fetch(&self, repository: &Path) -> Result<()> {
-        let root = repository_root(repository)?.context("no hay repositorio Git")?;
-        let output = run_git_mutating(&root, ["fetch", "--prune"])?;
-        ensure_success(&output, "git fetch")
-    }
-
-    fn pull_ff_only(&self, repository: &Path, expected_state: &str) -> Result<()> {
-        let root = ensure_repository_state(repository, expected_state)?;
-        let output = run_git_mutating(&root, ["pull", "--ff-only"])?;
-        ensure_success(&output, "git pull --ff-only")
-    }
-
-    fn push(&self, repository: &Path) -> Result<()> {
-        let root = repository_root(repository)?.context("no hay repositorio Git")?;
-        let output = run_git_mutating(&root, ["push"])?;
-        ensure_success(&output, "git push")
-    }
-
-    fn publish_branch(&self, repository: &Path, branch: &str) -> Result<()> {
-        validate_branch_name(branch)?;
-        let root = repository_root(repository)?.context("no hay repositorio Git")?;
-        let output = run_git_mutating(&root, ["push", "--set-upstream", "origin", branch])?;
-        ensure_success(&output, "git push --set-upstream")
-    }
-
-    fn create_branch(&self, repository: &Path, branch: &str, expected_state: &str) -> Result<()> {
-        validate_branch_name(branch)?;
-        let root = ensure_repository_state(repository, expected_state)?;
-        let check = run_git(&root, ["check-ref-format", "--branch", branch])?;
-        ensure_success(&check, "nombre de branch")?;
-        let output = run_git_mutating(&root, ["switch", "-c", branch])?;
-        ensure_success(&output, "git switch -c")
-    }
-
-    fn stash(&self, repository: &Path, message: &str, expected_state: &str) -> Result<()> {
-        let root = ensure_repository_state(repository, expected_state)?;
-        let message = message.trim();
-        let message = if message.is_empty() {
-            "Vibra stash"
-        } else {
-            message
-        };
-        let output = run_git_mutating(&root, ["stash", "push", "-u", "-m", message])?;
-        ensure_success(&output, "git stash push")
-    }
-
-    fn stash_pop(&self, repository: &Path, expected_state: &str) -> Result<()> {
-        let root = ensure_repository_state(repository, expected_state)?;
-        let output = run_git_mutating(&root, ["stash", "pop"])?;
-        ensure_success(&output, "git stash pop")
-    }
-
-    fn initialize(&self, root: &Path) -> Result<()> {
-        if !root.is_dir() {
-            bail!("{} no es un directorio", root.display());
-        }
-        let output = run_git_mutating(root, ["init"])?;
-        ensure_success(&output, "git init")
-    }
-
-    fn recent_commits(&self, repository: &Path, limit: usize) -> Result<Vec<GitCommit>> {
-        let root = repository_root(repository)?.context("no hay repositorio Git")?;
-        let limit = limit.clamp(1, 200).to_string();
-        let output = run_git(
-            &root,
-            [
-                "log",
-                "-z",
-                "--format=%H%x00%h%x00%an%x00%ct%x00%s",
-                "-n",
-                &limit,
-            ],
-        )?;
-        ensure_success(&output, "git log")?;
-        let fields: Vec<_> = output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|field| !field.is_empty())
-            .collect();
-        Ok(fields
-            .chunks_exact(5)
-            .map(|fields| GitCommit {
-                oid: String::from_utf8_lossy(fields[0]).into_owned(),
-                short_oid: String::from_utf8_lossy(fields[1]).into_owned(),
-                author: String::from_utf8_lossy(fields[2]).into_owned(),
-                timestamp: String::from_utf8_lossy(fields[3])
-                    .parse()
-                    .unwrap_or_default(),
-                summary: String::from_utf8_lossy(fields[4]).into_owned(),
-            })
-            .collect())
-    }
-
-    fn apply_hunk(
-        &self,
-        repository: &Path,
-        hunk: &GitDiffHunk,
-        action: GitHunkAction,
-        expected_state: &str,
-    ) -> Result<()> {
-        let root = ensure_repository_state(repository, expected_state)?;
-        match (hunk.source, action) {
-            (GitDiffHunkSource::Index, GitHunkAction::Unstage)
-            | (GitDiffHunkSource::Worktree | GitDiffHunkSource::Untracked, GitHunkAction::Stage)
-            | (GitDiffHunkSource::Worktree, GitHunkAction::Discard) => {}
-            _ => bail!("esa acción no corresponde al origen del hunk"),
-        }
-        let mut command = Command::new("git");
-        command
-            .arg("-c")
-            .arg("core.quotepath=false")
-            .arg("-C")
-            .arg(&root)
-            .arg("apply")
-            .arg("--unidiff-zero")
-            .arg("--whitespace=nowarn");
-        match action {
-            GitHunkAction::Stage => {
-                command.arg("--cached");
-            }
-            GitHunkAction::Unstage => {
-                command.args(["--cached", "--reverse"]);
-            }
-            GitHunkAction::Discard => {
-                command.arg("--reverse");
-            }
-        }
-        let mut child = command
-            .arg("-")
-            .env("LC_ALL", "C")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("no se pudo ejecutar git apply en {}", root.display()))?;
-        child
-            .stdin
-            .take()
-            .context("git apply no abrió stdin")?
-            .write_all(hunk.patch.as_bytes())?;
-        let output = child.wait_with_output()?;
-        ensure_success(&output, "git apply hunk")
     }
 }
 
@@ -530,142 +316,61 @@ where
         .with_context(|| format!("no se pudo ejecutar Git en {}", root.display()))
 }
 
-#[allow(dead_code)]
-fn run_git_mutating<I, S>(root: &Path, arguments: I) -> Result<Output>
+fn run_git_diff<I, S>(
+    root: &Path,
+    arguments: I,
+    operation: &str,
+    allow_difference: bool,
+) -> Result<Vec<u8>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Command::new("git")
+    let mut child = Command::new("git")
         .arg("-c")
         .arg("core.quotepath=false")
         .arg("-C")
         .arg(root)
         .args(arguments)
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .env("LC_ALL", "C")
-        .output()
-        .with_context(|| format!("no se pudo ejecutar Git en {}", root.display()))
-}
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("no se pudo ejecutar Git en {}", root.display()))?;
+    let stdout = child.stdout.take().context("Git no abrió stdout")?;
+    let mut stderr = child.stderr.take().context("Git no abrió stderr")?;
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes)?;
+        Ok::<_, std::io::Error>(bytes)
+    });
 
-#[allow(dead_code)]
-fn ensure_repository_state(repository: &Path, expected_state: &str) -> Result<PathBuf> {
-    let root = repository_root(repository)?.context("el repositorio dejó de estar disponible")?;
-    let status = run_git(
-        &root,
-        [
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--branch",
-            "--untracked-files=all",
-        ],
-    )?;
-    ensure_success(&status, "git status")?;
-    let actual_state = repository_state_token(&root, &status.stdout)?;
-    if actual_state != expected_state {
-        bail!(
-            "el repositorio cambió desde la última lectura; actualiza el panel antes de continuar"
-        );
+    let mut patch = Vec::with_capacity(MAX_DIFF_BYTES.min(64 * 1024));
+    let read_result = stdout
+        .take((MAX_DIFF_BYTES + 1) as u64)
+        .read_to_end(&mut patch);
+    let reached_limit = patch.len() > MAX_DIFF_BYTES;
+    if reached_limit || read_result.is_err() {
+        let _ = child.kill();
     }
-    Ok(root)
-}
+    let status = child.wait()?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("falló el lector de stderr de Git"))??;
+    read_result?;
 
-fn repository_state_token(root: &Path, status: &[u8]) -> Result<String> {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    let mut byte_count = 0_u64;
-    hash_bytes(&mut hash, &mut byte_count, status);
-    for (index, arguments) in [
-        vec!["rev-parse", "--verify", "HEAD"],
-        vec!["diff", "--no-ext-diff", "--binary"],
-        vec!["diff", "--cached", "--no-ext-diff", "--binary"],
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let output = run_git(root, arguments)?;
-        // An unborn HEAD is expected; the other commands must succeed.
-        if !output.status.success() && index != 0 {
-            ensure_success(&output, "Git state fingerprint")?;
-        }
-        hash_bytes(&mut hash, &mut byte_count, &output.stdout);
-        hash_bytes(&mut hash, &mut byte_count, &output.stderr);
+    if !(reached_limit || status.success() || allow_difference && status.code() == Some(1)) {
+        ensure_success(
+            &Output {
+                status,
+                stdout: Vec::new(),
+                stderr,
+            },
+            operation,
+        )?;
     }
-
-    let untracked = run_git(root, ["ls-files", "--others", "--exclude-standard", "-z"])?;
-    ensure_success(&untracked, "git ls-files --others")?;
-    hash_bytes(&mut hash, &mut byte_count, &untracked.stdout);
-    for path in untracked
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-    {
-        let path = String::from_utf8_lossy(path);
-        validate_relative_path(&path)?;
-        let candidate = root.join(path.as_ref());
-        if candidate.is_file() {
-            let mut file = fs::File::open(&candidate)?;
-            let mut buffer = [0_u8; 64 * 1024];
-            loop {
-                let read = file.read(&mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                hash_bytes(&mut hash, &mut byte_count, &buffer[..read]);
-            }
-        }
-    }
-    Ok(format!("{hash:016x}-{byte_count:x}"))
-}
-
-fn hash_bytes(hash: &mut u64, byte_count: &mut u64, bytes: &[u8]) {
-    for byte in bytes {
-        *hash ^= u64::from(*byte);
-        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    *byte_count = byte_count.wrapping_add(bytes.len() as u64);
-    *hash ^= 0xff;
-    *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-}
-
-#[allow(dead_code)]
-fn validate_commit_message(message: &str) -> Result<&str> {
-    let message = message.trim();
-    if message.is_empty() {
-        bail!("escribe un mensaje de commit");
-    }
-    if message
-        .chars()
-        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
-    {
-        bail!("el mensaje de commit contiene caracteres de control");
-    }
-    Ok(message)
-}
-
-#[allow(dead_code)]
-fn validate_branch_name(branch: &str) -> Result<()> {
-    if branch.is_empty()
-        || branch.trim() != branch
-        || branch.starts_with('-')
-        || branch.chars().any(char::is_control)
-    {
-        bail!("nombre de branch inválido");
-    }
-    Ok(())
-}
-
-fn run_git_allow_difference<I, S>(root: &Path, arguments: I) -> Result<Output>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<std::ffi::OsStr>,
-{
-    let output = run_git(root, arguments)?;
-    if output.status.success() || output.status.code() == Some(1) {
-        Ok(output)
-    } else {
-        ensure_success(&output, "git diff --no-index")?;
-        unreachable!()
-    }
+    Ok(patch)
 }
 
 fn ensure_success(output: &Output, operation: &str) -> Result<()> {
@@ -792,7 +497,6 @@ fn validate_relative_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_patch(
     bytes: &[u8],
     section: Option<&str>,
@@ -801,8 +505,6 @@ fn append_patch(
     deletions: &mut usize,
     binary: &mut bool,
     truncated: &mut bool,
-    hunks: &mut Vec<GitDiffHunk>,
-    hunk_source: GitDiffHunkSource,
 ) {
     if bytes.is_empty() {
         return;
@@ -816,7 +518,6 @@ fn append_patch(
         });
     }
     let visible = &bytes[..bytes.len().min(MAX_DIFF_BYTES)];
-    hunks.extend(extract_hunks(visible, hunk_source));
     *truncated |= bytes.len() > MAX_DIFF_BYTES;
     let patch = String::from_utf8_lossy(visible);
     let mut old_line = 0;
@@ -880,42 +581,6 @@ fn append_patch(
             text: "Diff truncado a 4 MiB para mantener la interfaz fluida.".into(),
         });
     }
-}
-
-fn extract_hunks(bytes: &[u8], source: GitDiffHunkSource) -> Vec<GitDiffHunk> {
-    let patch = String::from_utf8_lossy(bytes);
-    let lines: Vec<_> = patch.lines().collect();
-    let Some(first_hunk) = lines.iter().position(|line| line.starts_with("@@ ")) else {
-        return Vec::new();
-    };
-    let preamble = &lines[..first_hunk];
-    let mut hunks = Vec::new();
-    let mut index = first_hunk;
-    while index < lines.len() {
-        if !lines[index].starts_with("@@ ") {
-            index += 1;
-            continue;
-        }
-        let start = index;
-        index += 1;
-        while index < lines.len()
-            && !lines[index].starts_with("@@ ")
-            && !lines[index].starts_with("diff --git ")
-        {
-            index += 1;
-        }
-        let mut hunk_patch = String::new();
-        for line in preamble.iter().chain(lines[start..index].iter()) {
-            hunk_patch.push_str(line);
-            hunk_patch.push('\n');
-        }
-        hunks.push(GitDiffHunk {
-            header: lines[start].to_owned(),
-            patch: hunk_patch,
-            source,
-        });
-    }
-    hunks
 }
 
 fn parse_hunk_lines(header: &str) -> Option<(usize, usize)> {
@@ -1024,7 +689,6 @@ mod tests {
         let mut deletions = 0;
         let mut binary = false;
         let mut truncated = false;
-        let mut hunks = Vec::new();
         append_patch(
             b"@@ -4,2 +4,2 @@\n-old\n+new\n context\n",
             None,
@@ -1033,8 +697,6 @@ mod tests {
             &mut deletions,
             &mut binary,
             &mut truncated,
-            &mut hunks,
-            GitDiffHunkSource::Worktree,
         );
 
         assert_eq!(rows[1].old_line, Some(4));
@@ -1043,156 +705,24 @@ mod tests {
     }
 
     #[test]
-    fn guarded_stage_unstage_discard_and_commit_workflows() {
+    fn oversized_diffs_are_truncated_while_reading_git_output() {
         let root = repository();
+        let path = root.join("large.txt");
+        fs::write(&path, vec![b'x'; MAX_DIFF_BYTES + 1024]).unwrap();
         let port = GitCliPort;
-        fs::write(root.join("tracked.txt"), "one\nchanged\n").unwrap();
-        let before_stage = port.snapshot(&root).unwrap().unwrap();
-
-        port.stage(&root, "tracked.txt", &before_stage.state_token)
-            .unwrap();
-        let staged = port.snapshot(&root).unwrap().unwrap();
-        assert!(staged.changes[0].staged);
-
-        port.unstage(&root, "tracked.txt", &staged.state_token)
-            .unwrap();
-        let unstaged = port.snapshot(&root).unwrap().unwrap();
-        assert!(unstaged.changes[0].unstaged);
-
-        port.discard_worktree_change(&root, "tracked.txt", &unstaged.state_token)
-            .unwrap();
-        assert_eq!(
-            fs::read_to_string(root.join("tracked.txt")).unwrap(),
-            "one\ntwo\n"
-        );
-
-        fs::write(root.join("committed.txt"), "ready\n").unwrap();
-        let untracked = port.snapshot(&root).unwrap().unwrap();
-        port.stage(&root, "committed.txt", &untracked.state_token)
-            .unwrap();
-        let staged = port.snapshot(&root).unwrap().unwrap();
-        port.commit(&root, "add committed file", false, &staged.state_token)
-            .unwrap();
-
-        let commits = port.recent_commits(&root, 2).unwrap();
-        assert_eq!(commits[0].summary, "add committed file");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn stale_mutations_are_rejected_before_git_changes_state() {
-        let root = repository();
-        let port = GitCliPort;
-        fs::write(root.join("tracked.txt"), "first edit\n").unwrap();
-        let stale = port.snapshot(&root).unwrap().unwrap();
-        fs::write(root.join("tracked.txt"), "second edit\n").unwrap();
-
-        let error = port
-            .stage(&root, "tracked.txt", &stale.state_token)
-            .unwrap_err();
-
-        assert!(error.to_string().contains("cambió"));
-        assert!(!port.snapshot(&root).unwrap().unwrap().changes[0].staged);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn branch_stash_and_init_operations_are_guarded() {
-        let root = repository();
-        let port = GitCliPort;
-        let clean = port.snapshot(&root).unwrap().unwrap();
-        port.create_branch(&root, "feature/test", &clean.state_token)
-            .unwrap();
-        assert_eq!(
-            port.snapshot(&root).unwrap().unwrap().branch,
-            "feature/test"
-        );
-
-        fs::write(root.join("tracked.txt"), "stash me\n").unwrap();
-        let dirty = port.snapshot(&root).unwrap().unwrap();
-        port.stash(&root, "test stash", &dirty.state_token).unwrap();
-        let clean = port.snapshot(&root).unwrap().unwrap();
-        assert!(clean.changes.is_empty());
-        port.stash_pop(&root, &clean.state_token).unwrap();
-        assert!(!port.snapshot(&root).unwrap().unwrap().changes.is_empty());
-
-        let initialized = std::env::temp_dir().join(format!("vibra-init-{}", Uuid::new_v4()));
-        fs::create_dir_all(&initialized).unwrap();
-        port.initialize(&initialized).unwrap();
-        assert!(initialized.join(".git").is_dir());
-        fs::remove_dir_all(initialized).unwrap();
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn individual_hunks_can_be_staged_unstaged_and_discarded() {
-        let root = repository();
-        let port = GitCliPort;
-        let original = (1..=16)
-            .map(|line| format!("line {line}\n"))
-            .collect::<String>();
-        fs::write(root.join("hunks.txt"), &original).unwrap();
-        git(&root, &["add", "hunks.txt"]);
-        git(&root, &["commit", "-qm", "add hunk fixture"]);
-        let changed = original
-            .replace("line 2\n", "line two changed\n")
-            .replace("line 14\n", "line fourteen changed\n");
-        fs::write(root.join("hunks.txt"), changed).unwrap();
-
         let snapshot = port.snapshot(&root).unwrap().unwrap();
         let change = snapshot
             .changes
             .iter()
-            .find(|change| change.path == "hunks.txt")
+            .find(|change| change.path == "large.txt")
             .unwrap();
+
         let diff = port.diff(&root, change).unwrap();
-        assert_eq!(diff.hunks.len(), 2);
-        port.apply_hunk(
-            &root,
-            &diff.hunks[0],
-            GitHunkAction::Stage,
-            &snapshot.state_token,
-        )
-        .unwrap();
 
-        let mixed = port.snapshot(&root).unwrap().unwrap();
-        let change = mixed
-            .changes
-            .iter()
-            .find(|change| change.path == "hunks.txt")
-            .unwrap();
-        assert!(change.staged && change.unstaged);
-        let mixed_diff = port.diff(&root, change).unwrap();
-        let staged_hunk = mixed_diff
-            .hunks
-            .iter()
-            .find(|hunk| hunk.source == GitDiffHunkSource::Index)
-            .unwrap();
-        port.apply_hunk(
-            &root,
-            staged_hunk,
-            GitHunkAction::Unstage,
-            &mixed.state_token,
-        )
-        .unwrap();
-
-        let unstaged = port.snapshot(&root).unwrap().unwrap();
-        let change = unstaged
-            .changes
-            .iter()
-            .find(|change| change.path == "hunks.txt")
-            .unwrap();
-        let diff = port.diff(&root, change).unwrap();
-        port.apply_hunk(
-            &root,
-            &diff.hunks[0],
-            GitHunkAction::Discard,
-            &unstaged.state_token,
-        )
-        .unwrap();
-
-        let contents = fs::read_to_string(root.join("hunks.txt")).unwrap();
-        assert_eq!(contents.matches("changed").count(), 1);
+        assert!(diff.truncated);
+        assert!(diff.rows.iter().any(|row| {
+            row.kind == GitDiffRowKind::Notice && row.text.contains("truncado a 4 MiB")
+        }));
         fs::remove_dir_all(root).unwrap();
     }
 }

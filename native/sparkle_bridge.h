@@ -1,7 +1,5 @@
 #pragma once
 
-#include <stdbool.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -12,9 +10,6 @@ void vibra_sparkle_start(void);
 
 /// Show Sparkle's check-for-updates UI. No-op when the updater is not configured.
 void vibra_sparkle_check_for_updates(void);
-
-/// True when a packaged feed is present and the controller started.
-bool vibra_sparkle_is_configured(void);
 
 #ifdef __cplusplus
 }

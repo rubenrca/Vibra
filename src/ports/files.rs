@@ -24,7 +24,7 @@ pub struct TextFileSnapshot {
     pub fingerprint: String,
 }
 
-/// Boundary for project-scoped filesystem operations.
+/// Boundary for project-scoped file inspection and editing.
 pub trait FileSystemPort: Send + Sync {
     fn list_directory(
         &self,
@@ -32,20 +32,6 @@ pub trait FileSystemPort: Send + Sync {
         directory: &Path,
         show_hidden: bool,
     ) -> Result<Vec<FileEntry>>;
-
-    fn create_file(&self, project_root: &Path, directory: &Path, name: &str) -> Result<PathBuf>;
-
-    fn create_directory(
-        &self,
-        project_root: &Path,
-        directory: &Path,
-        name: &str,
-    ) -> Result<PathBuf>;
-
-    fn rename(&self, project_root: &Path, path: &Path, new_name: &str) -> Result<PathBuf>;
-
-    /// Moves an entry to the operating system's recoverable trash.
-    fn move_to_trash(&self, project_root: &Path, path: &Path) -> Result<()>;
 
     fn read_text_file(&self, project_root: &Path, path: &Path) -> Result<TextFileSnapshot>;
 

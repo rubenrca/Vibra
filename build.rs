@@ -19,7 +19,10 @@ fn main() {
             .expect("Sparkle.framework must live inside a Frameworks directory")
             .to_path_buf();
         println!("cargo:rustc-cfg=vibra_has_sparkle");
-        println!("cargo:warning=linking Sparkle from {}", framework_dir.display());
+        println!(
+            "cargo:warning=linking Sparkle from {}",
+            framework_dir.display()
+        );
 
         cc::Build::new()
             .file(manifest_dir.join("native/sparkle_bridge.m"))

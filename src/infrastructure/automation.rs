@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -16,6 +16,10 @@ use serde_json::Value;
 use uuid::Uuid;
 
 const MAX_AUTOMATION_REQUEST_BYTES: u64 = 1024 * 1024;
+const MAX_AUTOMATION_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_AGENT_HOOK_BYTES: u64 = 1024 * 1024;
+const AUTOMATION_IO_TIMEOUT: Duration = Duration::from_secs(5);
+static NEXT_AUTOMATION_SERVER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,18 +123,13 @@ impl AgentKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentPlacement {
     Current,
+    #[default]
     Split,
     Tab,
-}
-
-impl Default for AgentPlacement {
-    fn default() -> Self {
-        Self::Split
-    }
 }
 
 const DEFAULT_AGENT_START_TIMEOUT_MS: u64 = 30_000;
@@ -363,10 +362,8 @@ impl AutomationServer {
         fs::create_dir_all(&directory)
             .with_context(|| format!("no se pudo crear {}", directory.display()))?;
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-        let path = directory.join(format!("{}.sock", std::process::id()));
-        if path.exists() {
-            fs::remove_file(&path)?;
-        }
+        let server_id = NEXT_AUTOMATION_SERVER_ID.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!("{}-{server_id}.sock", std::process::id()));
         let listener = UnixListener::bind(&path)
             .with_context(|| format!("no se pudo abrir {}", path.display()))?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
@@ -383,7 +380,10 @@ impl AutomationServer {
                     let Ok(stream) = connection else {
                         continue;
                     };
-                    handle_connection(stream, &sender);
+                    let sender = sender.clone();
+                    let _ = thread::Builder::new()
+                        .name("vibra-automation-client".into())
+                        .spawn(move || handle_connection(stream, &sender));
                 }
             })?;
         Ok(Self {
@@ -416,11 +416,19 @@ impl Drop for AutomationServer {
 
 fn handle_connection(mut stream: UnixStream, sender: &async_channel::Sender<AutomationIncoming>) {
     let mut request = String::new();
-    let parsed = Read::by_ref(&mut stream)
-        .take(MAX_AUTOMATION_REQUEST_BYTES)
-        .read_to_string(&mut request)
+    let parsed = stream
+        .set_read_timeout(Some(AUTOMATION_IO_TIMEOUT))
+        .and_then(|_| stream.set_write_timeout(Some(AUTOMATION_IO_TIMEOUT)))
         .map_err(anyhow::Error::from)
-        .and_then(|_| serde_json::from_str::<AutomationEnvelope>(&request).map_err(Into::into));
+        .and_then(|_| {
+            Read::by_ref(&mut stream)
+                .take(MAX_AUTOMATION_REQUEST_BYTES + 1)
+                .read_to_string(&mut request)?;
+            if request.len() as u64 > MAX_AUTOMATION_REQUEST_BYTES {
+                bail!("la solicitud supera 1 MiB");
+            }
+            serde_json::from_str::<AutomationEnvelope>(&request).map_err(Into::into)
+        });
     let response = match parsed {
         Ok(envelope) => {
             let (response_tx, response_rx) = mpsc::channel();
@@ -467,10 +475,7 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
     }
     let command = parse_cli_command(mode, &arguments[1..])?;
     if matches!(command, AutomationCommand::AgentKinds) {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&agent_kinds_payload())?
-        );
+        println!("{}", serde_json::to_string_pretty(&agent_kinds_payload())?);
         return Ok(true);
     }
     let socket = std::env::var_os("VIBRA_AUTOMATION_SOCKET")
@@ -492,7 +497,12 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
     stream.write_all(&serde_json::to_vec(&envelope)?)?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
+    stream
+        .take(MAX_AUTOMATION_RESPONSE_BYTES + 1)
+        .read_to_end(&mut response)?;
+    if response.len() as u64 > MAX_AUTOMATION_RESPONSE_BYTES {
+        bail!("la respuesta de automatización supera 4 MiB");
+    }
     let response: AutomationResponse = serde_json::from_slice(&response)?;
     if !response.ok {
         bail!(
@@ -538,10 +548,10 @@ fn shell_quote(value: &str) -> String {
     if value.is_empty() {
         return "''".into();
     }
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | '=' | ':' | '@' | '+' | ','))
-    {
+    if value.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || matches!(ch, '-' | '_' | '.' | '/' | '=' | ':' | '@' | '+' | ',')
+    }) {
         return value.to_owned();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -803,7 +813,9 @@ fn parse_agent_rename(arguments: &[String]) -> Result<AutomationCommand> {
             .or_else(|| parse_agent_flag(arguments, "--name").ok().flatten())
     };
     if !clear && name.is_none() {
-        bail!("uso: +agent rename <target> <name> | +agent rename --name <alias> | +agent rename <target> --clear");
+        bail!(
+            "uso: +agent rename <target> <name> | +agent rename --name <alias> | +agent rename <target> --clear"
+        );
     }
     if let Some(name) = name.as_ref() {
         validate_agent_name(name)?;
@@ -950,18 +962,14 @@ fn parse_agent_start(arguments: &[String]) -> Result<AutomationCommand> {
     while index < flags.len() {
         match flags[index].as_str() {
             "--kind" => {
-                let value = flags
-                    .get(index + 1)
-                    .context("falta valor para --kind")?;
+                let value = flags.get(index + 1).context("falta valor para --kind")?;
                 kind = Some(
                     AgentKind::parse(value).with_context(|| format!("kind inválido: {value}"))?,
                 );
                 index += 2;
             }
             "--pane" => {
-                let value = flags
-                    .get(index + 1)
-                    .context("falta valor para --pane")?;
+                let value = flags.get(index + 1).context("falta valor para --pane")?;
                 pane = Some(
                     value
                         .parse()
@@ -1028,16 +1036,6 @@ fn parse_timeout_ms(value: Option<&str>) -> Result<u64> {
         bail!("--timeout debe estar entre 3000 y 300000 ms");
     }
     Ok(timeout)
-}
-
-fn parse_uuid_flag(arguments: &[String], flag: &str) -> Result<Option<Uuid>> {
-    let Some(value) = parse_agent_flag(arguments, flag)? else {
-        return Ok(None);
-    };
-    value
-        .parse()
-        .map(Some)
-        .with_context(|| format!("uuid inválido para {flag}: {value}"))
 }
 
 const AUTOMATION_SKILL: &str = r#"# Vibra automation skill
@@ -1110,7 +1108,9 @@ fn parse_agent_presence(arguments: &[String]) -> Result<AutomationCommand> {
     let kind = arguments
         .first()
         .and_then(|kind| AgentKind::parse(kind))
-        .context("agent esperado: aider, amp, claude, codex, cursor, gemini, grok, opencode o pi")?;
+        .context(
+            "agent esperado: aider, amp, claude, codex, cursor, gemini, grok, opencode o pi",
+        )?;
     let state = parse_agent_runtime_state(arguments.get(1).map(String::as_str))?;
     let attention = arguments
         .get(2)
@@ -1159,8 +1159,12 @@ fn parse_agent_hook(arguments: &[String]) -> Result<AutomationCommand> {
         .context("falta evento de hook")?;
     let mut input = String::new();
     std::io::stdin()
+        .take(MAX_AGENT_HOOK_BYTES + 1)
         .read_to_string(&mut input)
         .context("no se pudo leer el JSON del hook")?;
+    if input.len() as u64 > MAX_AGENT_HOOK_BYTES {
+        bail!("el payload del hook supera 1 MiB");
+    }
     let payload = if input.trim().is_empty() {
         Value::Null
     } else {
@@ -1194,17 +1198,16 @@ fn agent_hook_command(kind: AgentKind, event: &str, payload: &Value) -> Result<A
             AgentRuntimeState::Waiting,
             Some(AgentAttention::Permission),
         )),
-        (AgentKind::Claude, "notification") => match payload
-            .get("notification_type")
-            .and_then(Value::as_str)
-        {
-            Some("permission_prompt") => Ok(presence(
-                AgentRuntimeState::Waiting,
-                Some(AgentAttention::Permission),
-            )),
-            Some("idle_prompt") => Ok(presence(AgentRuntimeState::Idle, None)),
-            _ => bail!("notificación de Claude no soportada"),
-        },
+        (AgentKind::Claude, "notification") => {
+            match payload.get("notification_type").and_then(Value::as_str) {
+                Some("permission_prompt") => Ok(presence(
+                    AgentRuntimeState::Waiting,
+                    Some(AgentAttention::Permission),
+                )),
+                Some("idle_prompt") => Ok(presence(AgentRuntimeState::Idle, None)),
+                _ => bail!("notificación de Claude no soportada"),
+            }
+        }
         (AgentKind::Claude | AgentKind::Codex, _) => bail!("evento de hook no soportado: {event}"),
         _ => bail!("Vibra todavía no incluye hooks para {}", kind.cli_name()),
     }
@@ -1458,8 +1461,8 @@ fn read_hook_config(path: &Path) -> Result<Value> {
     if !path.exists() {
         return Ok(serde_json::json!({}));
     }
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("no se pudo leer {}", path.display()))?;
+    let content =
+        fs::read_to_string(path).with_context(|| format!("no se pudo leer {}", path.display()))?;
     let value: Value = serde_json::from_str(&content)
         .with_context(|| format!("{} no contiene JSON válido", path.display()))?;
     value
@@ -1474,7 +1477,9 @@ fn ensure_hook_entry(
     matcher: Option<&str>,
     command: &str,
 ) -> Result<bool> {
-    let root = config.as_object_mut().context("configuración JSON inválida")?;
+    let root = config
+        .as_object_mut()
+        .context("configuración JSON inválida")?;
     let hooks = root
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}))
@@ -1528,13 +1533,16 @@ fn remove_hook_entries(config: &mut Value, script_path: &Path) -> Result<bool> {
             };
             let before = handlers.len();
             handlers.retain(|handler| {
-                !handler.get("command").and_then(Value::as_str).is_some_and(|command| {
-                    managed_hook_command_matches(
-                        command,
-                        raw_script_path.as_ref(),
-                        &quoted_script_path,
-                    )
-                })
+                !handler
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|command| {
+                        managed_hook_command_matches(
+                            command,
+                            raw_script_path.as_ref(),
+                            &quoted_script_path,
+                        )
+                    })
             });
             changed |= handlers.len() != before;
             !handlers.is_empty()
@@ -1574,13 +1582,20 @@ fn script_changed(path: &Path, script: &str) -> Result<bool> {
 
 fn backup_if_exists(path: &Path) -> Result<()> {
     if path.exists() {
-        fs::copy(path, PathBuf::from(format!("{}.vibra-backup", path.display())))?;
+        fs::copy(
+            path,
+            PathBuf::from(format!("{}.vibra-backup", path.display())),
+        )?;
     }
     Ok(())
 }
 
 fn write_json_atomically(path: &Path, value: &Value) -> Result<()> {
-    write_text_atomically(path, &format!("{}\n", serde_json::to_string_pretty(value)?), 0o600)
+    write_text_atomically(
+        path,
+        &format!("{}\n", serde_json::to_string_pretty(value)?),
+        0o600,
+    )
 }
 
 fn write_script_atomically(path: &Path, script: &str) -> Result<()> {
@@ -1588,7 +1603,9 @@ fn write_script_atomically(path: &Path, script: &str) -> Result<()> {
 }
 
 fn write_text_atomically(path: &Path, text: &str, mode: u32) -> Result<()> {
-    let parent = path.parent().context("ruta de configuración sin directorio padre")?;
+    let parent = path
+        .parent()
+        .context("ruta de configuración sin directorio padre")?;
     let parent_exists = parent.exists();
     fs::create_dir_all(parent)?;
     if !parent_exists {
@@ -1623,8 +1640,8 @@ mod tests {
 
     impl TestHome {
         fn new() -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("vibra automation test-{}", Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("vibra automation test-{}", Uuid::new_v4()));
             fs::create_dir_all(&path).unwrap();
             Self(path)
         }
@@ -1647,8 +1664,11 @@ mod tests {
             }
         ));
         assert!(matches!(
-            parse_cli_command("+pane", &["split".into(), "right".into(), "--no-focus".into()])
-                .unwrap(),
+            parse_cli_command(
+                "+pane",
+                &["split".into(), "right".into(), "--no-focus".into()]
+            )
+            .unwrap(),
             AutomationCommand::Split {
                 direction: AutomationDirection::Right,
                 no_focus: true,
@@ -1665,7 +1685,12 @@ mod tests {
         assert!(matches!(
             parse_cli_command(
                 "+pane",
-                &["run".into(), "--pane".into(), Uuid::nil().to_string(), "codex".into()]
+                &[
+                    "run".into(),
+                    "--pane".into(),
+                    Uuid::nil().to_string(),
+                    "codex".into()
+                ]
             )
             .unwrap(),
             AutomationCommand::Send {
@@ -1736,7 +1761,12 @@ mod tests {
         assert!(matches!(
             parse_cli_command(
                 "+agent",
-                &["start".into(), "--kind".into(), "codex".into(), "--no-wait".into()]
+                &[
+                    "start".into(),
+                    "--kind".into(),
+                    "codex".into(),
+                    "--no-wait".into()
+                ]
             )
             .unwrap(),
             AutomationCommand::AgentStart {
@@ -1800,11 +1830,18 @@ mod tests {
         ));
         assert!(parse_cli_command("+pane", &["split".into(), "diagonal".into()]).is_err());
         assert!(parse_cli_command("+agent", &["open".into(), "nope".into()]).is_err());
-        assert!(parse_cli_command(
-            "+agent",
-            &["open".into(), "codex".into(), "--name".into(), "BadName".into()]
-        )
-        .is_err());
+        assert!(
+            parse_cli_command(
+                "+agent",
+                &[
+                    "open".into(),
+                    "codex".into(),
+                    "--name".into(),
+                    "BadName".into()
+                ]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1812,18 +1849,21 @@ mod tests {
         let home = TestHome::new();
         let claude_settings = home.0.join(".claude/settings.json");
         let codex_hooks = home.0.join(".codex/hooks.json");
-        let existing = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo keep"}]}]}}"#;
+        let existing =
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo keep"}]}]}}"#;
         write_text_atomically(&claude_settings, existing, 0o600).unwrap();
         write_text_atomically(&codex_hooks, existing, 0o600).unwrap();
         let agents = [AgentKind::Claude, AgentKind::Codex].into_iter().collect();
 
-        let report = manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false)
-            .unwrap();
-        assert!(report["agents"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|agent| agent["changed"] == true));
+        let report =
+            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false).unwrap();
+        assert!(
+            report["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|agent| agent["changed"] == true)
+        );
         assert!(home.0.join(".vibra/agent-hooks/vibra-claude.sh").exists());
         assert!(home.0.join(".vibra/agent-hooks/vibra-codex.sh").exists());
         assert!(!home.0.join(".codex/config.toml").exists());
@@ -1837,7 +1877,11 @@ mod tests {
                 .flat_map(|groups| groups.as_array().unwrap())
                 .flat_map(|group| group["hooks"].as_array().unwrap())
                 .collect();
-            assert!(handlers.iter().any(|handler| handler["command"] == "echo keep"));
+            assert!(
+                handlers
+                    .iter()
+                    .any(|handler| handler["command"] == "echo keep")
+            );
             assert!(handlers.iter().any(|handler| {
                 handler["command"]
                     .as_str()
@@ -1847,20 +1891,25 @@ mod tests {
             }));
         }
 
-        let repeat = manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false)
-            .unwrap();
-        assert!(repeat["agents"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|agent| agent["changed"] == false));
+        let repeat =
+            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false).unwrap();
+        assert!(
+            repeat["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|agent| agent["changed"] == false)
+        );
 
         manage_agent_hooks(&home.0, &agents, AgentHookOperation::Uninstall, false).unwrap();
         assert!(!home.0.join(".vibra/agent-hooks/vibra-claude.sh").exists());
         assert!(!home.0.join(".vibra/agent-hooks/vibra-codex.sh").exists());
         for path in [&claude_settings, &codex_hooks] {
             let config: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-            assert_eq!(config["hooks"]["Stop"][0]["hooks"][0]["command"], "echo keep");
+            assert_eq!(
+                config["hooks"]["Stop"][0]["hooks"][0]["command"],
+                "echo keep"
+            );
         }
     }
 
@@ -1960,5 +2009,66 @@ mod tests {
         let response = client.join().unwrap();
         assert!(response.ok);
         assert_eq!(response.data.unwrap()["count"], 1);
+    }
+
+    #[test]
+    fn automation_server_accepts_a_second_request_while_the_first_is_pending() {
+        let server = AutomationServer::start().unwrap();
+        let path = server.path().to_path_buf();
+        let start_client = |path: PathBuf| {
+            thread::spawn(move || {
+                let mut stream = UnixStream::connect(path).unwrap();
+                serde_json::to_writer(
+                    &mut stream,
+                    &AutomationEnvelope {
+                        pane_id: Uuid::new_v4(),
+                        token: Uuid::new_v4(),
+                        command: AutomationCommand::List,
+                    },
+                )
+                .unwrap();
+                stream.shutdown(std::net::Shutdown::Write).unwrap();
+                serde_json::from_reader::<_, AutomationResponse>(stream).unwrap()
+            })
+        };
+
+        let first_client = start_client(path.clone());
+        let first = server.receiver().recv_blocking().unwrap();
+        let second_client = start_client(path);
+        let receiver = server.receiver();
+        let (incoming_tx, incoming_rx) = mpsc::channel();
+        let relay = thread::spawn(move || incoming_tx.send(receiver.recv_blocking()).unwrap());
+
+        let (second, concurrent) = match incoming_rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(second) => (second.unwrap(), true),
+            Err(_) => {
+                first
+                    .response
+                    .send(AutomationResponse::success(Value::Null))
+                    .unwrap();
+                (
+                    incoming_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap()
+                        .unwrap(),
+                    false,
+                )
+            }
+        };
+        second
+            .response
+            .send(AutomationResponse::success(Value::Null))
+            .unwrap();
+        if concurrent {
+            first
+                .response
+                .send(AutomationResponse::success(Value::Null))
+                .unwrap();
+        }
+
+        relay.join().unwrap();
+        assert!(first_client.join().unwrap().ok);
+        assert!(second_client.join().unwrap().ok);
+        assert!(concurrent, "the first response blocked the second request");
     }
 }

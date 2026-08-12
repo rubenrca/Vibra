@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::infrastructure::paths::{application_support_directory, gpui_preview_support_directory};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 const KNOWN_THEME_IDS: &[&str] = &["midnight", "moss", "harbor", "cinder", "violet", "bloom"];
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
@@ -116,6 +117,10 @@ impl SettingsRepository {
         self.import_preview_settings()?;
         if !self.path.exists() {
             return Ok(AppSettings::default());
+        }
+        let metadata = fs::metadata(&self.path)?;
+        if metadata.len() > MAX_SETTINGS_BYTES {
+            bail!("{} supera el límite de 1 MiB", self.path.display());
         }
         let bytes = fs::read(&self.path)?;
         let mut settings: AppSettings = serde_json::from_slice(&bytes)

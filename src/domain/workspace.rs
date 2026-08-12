@@ -313,10 +313,7 @@ impl WorkspaceSnapshot {
 
     /// Creates a terminal tab in the selected workspace.
     /// When `focus_new` is false the previous selected tab stays selected.
-    pub fn create_terminal_tab_with_focus(
-        &mut self,
-        focus_new: bool,
-    ) -> Option<(Uuid, Uuid)> {
+    pub fn create_terminal_tab_with_focus(&mut self, focus_new: bool) -> Option<(Uuid, Uuid)> {
         self.create_terminal_tab_with_options(focus_new, None)
     }
 
@@ -327,8 +324,7 @@ impl WorkspaceSnapshot {
     ) -> Option<(Uuid, Uuid)> {
         let (project_index, workspace_index) = self.selected_workspace_indices()?;
         let project = &mut self.projects[project_index];
-        let working_directory =
-            working_directory.unwrap_or_else(|| project.root_path.clone());
+        let working_directory = working_directory.unwrap_or_else(|| project.root_path.clone());
         let tab = TabSnapshot::with_session(SessionSnapshot::new(working_directory));
         let tab_id = tab.id;
         let session_id = tab.selected_session_id?;
@@ -367,9 +363,8 @@ impl WorkspaceSnapshot {
         let tab =
             &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
         let selected_id = tab.sessions[session_index].id;
-        let working_directory = working_directory.unwrap_or_else(|| {
-            tab.sessions[session_index].working_directory.clone()
-        });
+        let working_directory = working_directory
+            .unwrap_or_else(|| tab.sessions[session_index].working_directory.clone());
         let session = SessionSnapshot::new(working_directory);
         let session_id = session.id;
         let (axis, insert_first) = match direction {
@@ -641,12 +636,7 @@ impl WorkspaceSnapshot {
         true
     }
 
-    pub fn rename_workspace(
-        &mut self,
-        project_id: Uuid,
-        workspace_id: Uuid,
-        name: &str,
-    ) -> bool {
+    pub fn rename_workspace(&mut self, project_id: Uuid, workspace_id: Uuid, name: &str) -> bool {
         let name = name.trim();
         if name.is_empty() {
             return false;
@@ -681,14 +671,15 @@ impl WorkspaceSnapshot {
         else {
             return false;
         };
-        let Some(workspace_index) = self.projects[project_index]
-            .workspaces
-            .as_ref()
-            .and_then(|workspaces| {
-                workspaces
-                    .iter()
-                    .position(|workspace| workspace.id == workspace_id)
-            })
+        let Some(workspace_index) =
+            self.projects[project_index]
+                .workspaces
+                .as_ref()
+                .and_then(|workspaces| {
+                    workspaces
+                        .iter()
+                        .position(|workspace| workspace.id == workspace_id)
+                })
         else {
             return false;
         };
@@ -1716,10 +1707,12 @@ mod tests {
         let mut snapshot = WorkspaceSnapshot::default();
         snapshot.create_workspace(Path::new("/tmp/vibra-sidebar"));
         let session_id = snapshot.selected_session().unwrap().id;
-        assert!(snapshot.update_session_working_directory(
-            session_id,
-            Path::new("/tmp/vibra-sidebar/nested")
-        ));
+        assert!(
+            snapshot.update_session_working_directory(
+                session_id,
+                Path::new("/tmp/vibra-sidebar/nested")
+            )
+        );
 
         let entries = snapshot.workspace_entries();
         assert_eq!(entries.len(), 1);

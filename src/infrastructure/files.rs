@@ -1,8 +1,6 @@
-use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
@@ -54,79 +52,6 @@ impl FileSystemPort for LocalFileSystemPort {
                 .then_with(|| left.name.cmp(&right.name))
         });
         Ok(entries)
-    }
-
-    fn create_file(&self, project_root: &Path, directory: &Path, name: &str) -> Result<PathBuf> {
-        let root = canonical_root(project_root)?;
-        let directory = canonical_directory(&root, directory)?;
-        let target = unused_child(&directory, name)?;
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&target)
-            .with_context(|| format!("no se pudo crear {}", target.display()))?;
-        Ok(target)
-    }
-
-    fn create_directory(
-        &self,
-        project_root: &Path,
-        directory: &Path,
-        name: &str,
-    ) -> Result<PathBuf> {
-        let root = canonical_root(project_root)?;
-        let directory = canonical_directory(&root, directory)?;
-        let target = unused_child(&directory, name)?;
-        fs::create_dir(&target)
-            .with_context(|| format!("no se pudo crear {}", target.display()))?;
-        Ok(target)
-    }
-
-    fn rename(&self, project_root: &Path, path: &Path, new_name: &str) -> Result<PathBuf> {
-        let root = canonical_root(project_root)?;
-        let path = existing_entry(&root, path)?;
-        let parent = path
-            .parent()
-            .context("la entrada no tiene directorio padre")?;
-        let target = unused_child(parent, new_name)?;
-        fs::rename(&path, &target).with_context(|| {
-            format!(
-                "no se pudo renombrar {} a {}",
-                path.display(),
-                target.display()
-            )
-        })?;
-        Ok(target)
-    }
-
-    fn move_to_trash(&self, project_root: &Path, path: &Path) -> Result<()> {
-        let root = canonical_root(project_root)?;
-        let path = existing_entry(&root, path)?;
-        #[cfg(target_os = "macos")]
-        {
-            const SCRIPT: &str = r#"
-                on run argv
-                    tell application "Finder"
-                        delete POSIX file (item 1 of argv)
-                    end tell
-                end run
-            "#;
-            let status = Command::new("/usr/bin/osascript")
-                .arg("-e")
-                .arg(SCRIPT)
-                .arg(path.as_os_str())
-                .status()
-                .with_context(|| format!("no se pudo abrir la Papelera para {}", path.display()))?;
-            if !status.success() {
-                bail!("Finder no pudo mover {} a la Papelera", path.display());
-            }
-            Ok(())
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = path;
-            bail!("mover a la Papelera aún no está soportado en esta plataforma")
-        }
     }
 
     fn read_text_file(&self, project_root: &Path, path: &Path) -> Result<TextFileSnapshot> {
@@ -237,42 +162,6 @@ fn text_fingerprint(bytes: &[u8]) -> String {
     format!("{hash:016x}-{:x}", bytes.len())
 }
 
-fn existing_entry(root: &Path, path: &Path) -> Result<PathBuf> {
-    let parent = path
-        .parent()
-        .context("la entrada no tiene directorio padre")?;
-    let parent = canonical_directory(root, parent)?;
-    let name = path.file_name().context("la entrada no tiene nombre")?;
-    let path = parent.join(name);
-    if path == root {
-        bail!("no se puede modificar la raíz del proyecto");
-    }
-    fs::symlink_metadata(&path).with_context(|| format!("{} ya no existe", path.display()))?;
-    Ok(path)
-}
-
-fn unused_child(directory: &Path, name: &str) -> Result<PathBuf> {
-    validate_file_name(name)?;
-    let target = directory.join(name);
-    if fs::symlink_metadata(&target).is_ok() {
-        bail!("{} ya existe", target.display());
-    }
-    Ok(target)
-}
-
-fn validate_file_name(name: &str) -> Result<()> {
-    if name.trim() != name || name.is_empty() || name.as_bytes().contains(&0) {
-        bail!("el nombre no puede estar vacío ni tener espacios externos");
-    }
-    let mut components = Path::new(name).components();
-    let valid = matches!(components.next(), Some(Component::Normal(value)) if value != OsStr::new("."))
-        && components.next().is_none();
-    if !valid {
-        bail!("usa un nombre simple, sin /, . ni ..");
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,30 +173,12 @@ mod tests {
     }
 
     #[test]
-    fn file_operations_stay_inside_the_project_and_never_overwrite() {
-        let root = temporary_root();
-        let port = LocalFileSystemPort;
-        let directory = port.create_directory(&root, &root, "src").unwrap();
-        let file = port.create_file(&root, &directory, "main.rs").unwrap();
-
-        assert!(port.create_file(&root, &directory, "main.rs").is_err());
-        assert!(port.create_file(&root, &directory, "../escape").is_err());
-        assert!(port.rename(&root, &file, "../escape").is_err());
-        assert!(port.list_directory(&root, Path::new("/"), false).is_err());
-
-        let renamed = port.rename(&root, &file, "lib.rs").unwrap();
-        assert!(renamed.exists());
-        assert!(!file.exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn listing_sorts_directories_first_and_hides_dotfiles() {
         let root = temporary_root();
         let port = LocalFileSystemPort;
-        port.create_file(&root, &root, "z.txt").unwrap();
-        port.create_file(&root, &root, ".secret").unwrap();
-        port.create_directory(&root, &root, "alpha").unwrap();
+        fs::write(root.join("z.txt"), "").unwrap();
+        fs::write(root.join(".secret"), "").unwrap();
+        fs::create_dir(root.join("alpha")).unwrap();
 
         let visible = port.list_directory(&root, &root, false).unwrap();
         assert_eq!(

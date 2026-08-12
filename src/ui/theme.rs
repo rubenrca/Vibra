@@ -80,11 +80,7 @@ pub enum ThemeTone {
 
 impl ThemeTone {
     pub fn from_system_dark(system_dark: bool) -> Self {
-        if system_dark {
-            Self::Dark
-        } else {
-            Self::Light
-        }
+        if system_dark { Self::Dark } else { Self::Light }
     }
 
     pub fn from_window_appearance(appearance: WindowAppearance) -> Self {
@@ -119,7 +115,7 @@ impl ThemeFamily {
     }
 }
 
-pub const DEFAULT_THEME_ID: &str = "midnight";
+const DEFAULT_THEME_ID: &str = "midnight";
 
 // ---------------------------------------------------------------------------
 // Built-in palettes
@@ -512,7 +508,7 @@ fn bloom_light() -> Theme {
 fn build_catalog() -> [ThemeFamily; 6] {
     [
         ThemeFamily {
-            id: "midnight",
+            id: DEFAULT_THEME_ID,
             label: "Midnight",
             light: midnight_light(),
             dark: midnight_dark(),

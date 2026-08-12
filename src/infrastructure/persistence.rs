@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 
 const WORKSPACE_FILE_NAME: &str = "workspace.json";
 const SWIFT_BACKUP_FILE_NAME: &str = "workspace.swift-v0.2.7.backup.json";
+const MAX_WORKSPACE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct WorkspaceRepository {
@@ -53,8 +54,7 @@ impl WorkspaceRepository {
         if !self.path.exists() {
             return Ok(None);
         }
-        let data = fs::read(&self.path)
-            .with_context(|| format!("no se pudo leer {}", self.path.display()))?;
+        let data = read_workspace_file(&self.path)?;
         let mut snapshot: WorkspaceSnapshot = serde_json::from_slice(&data)
             .with_context(|| format!("JSON inválido en {}", self.path.display()))?;
         if snapshot.schema_version > CURRENT_WORKSPACE_SCHEMA_VERSION {
@@ -115,8 +115,7 @@ impl WorkspaceRepository {
         }
 
         if self.path.exists() && !self.swift_backup_path.exists() {
-            let data = fs::read(&self.path)
-                .with_context(|| format!("no se pudo leer {}", self.path.display()))?;
+            let data = read_workspace_file(&self.path)?;
             let is_swift_snapshot = serde_json::from_slice::<serde_json::Value>(&data)
                 .ok()
                 .and_then(|value| value.as_object().cloned())
@@ -134,6 +133,15 @@ impl WorkspaceRepository {
 
         Ok(())
     }
+}
+
+fn read_workspace_file(path: &std::path::Path) -> Result<Vec<u8>> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("no se pudo inspeccionar {}", path.display()))?;
+    if metadata.len() > MAX_WORKSPACE_BYTES {
+        bail!("{} supera el límite de 16 MiB", path.display());
+    }
+    fs::read(path).with_context(|| format!("no se pudo leer {}", path.display()))
 }
 
 #[cfg(test)]
