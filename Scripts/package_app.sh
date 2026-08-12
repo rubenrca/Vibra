@@ -16,12 +16,13 @@ usage() {
   print -u2 --
   print -u2 -- "  --universal  build aarch64 and x86_64 slices and merge them"
   print -u2 -- "  --dmg        also produce dist/Vibra.dmg"
-  print -u2 -- "  --notarize   submit the app (and DMG) to Apple and staple the ticket"
+  print -u2 -- "  --notarize   notarize the distributable artifact with Apple and staple its ticket"
   print -u2 -- "  --sign <id>  signing identity. Defaults to \$VIBRA_SIGNING_IDENTITY, then the"
   print -u2 -- "               first Developer ID Application identity, then ad-hoc signing."
   print -u2 --
   print -u2 -- "Notarization reads APPLE_KEYCHAIN_PROFILE, or APPLE_ID + APPLE_TEAM_ID +"
-  print -u2 -- "APPLE_APP_SPECIFIC_PASSWORD."
+  print -u2 -- "APPLE_APP_SPECIFIC_PASSWORD. Set VIBRA_NOTARY_WAIT_TIMEOUT (default: 2h)"
+  print -u2 -- "to bound how long the command waits; the submission continues at Apple after a timeout."
   exit 64
 }
 
@@ -62,6 +63,8 @@ icon_source="$repo_root/Resources/AppIcon.png"
 iconset_dir="$repo_root/target/Vibra.iconset"
 icon_file="$resources_dir/Vibra.icns"
 dmg_path="$repo_root/dist/Vibra.dmg"
+notarization_dir="$repo_root/dist/notarization"
+notary_wait_timeout=${VIBRA_NOTARY_WAIT_TIMEOUT:-2h}
 
 # Sparkle checks this feed and refuses any update whose EdDSA signature does not
 # verify against the public key below. The matching private key lives in the
@@ -233,20 +236,12 @@ if (( notarize )); then
     print -u2 -- "APPLE_APP_SPECIFIC_PASSWORD."
     exit 78
   fi
-
-  zip_path="$repo_root/dist/Vibra-notarize.zip"
-  rm -f "$zip_path"
-  ditto -c -k --keepParent "$app_dir" "$zip_path"
-  print "notarizing Vibra.app"
-  xcrun notarytool submit "$zip_path" "${notary_auth[@]}" --wait
-  xcrun stapler staple "$app_dir"
-  xcrun stapler validate "$app_dir"
-  rm -f "$zip_path"
 fi
 
 if (( make_dmg )); then
   staging_dir=$(mktemp -d)
-  cp -R "$app_dir" "$staging_dir/Vibra.app"
+  # Preserve the bundle's signature, symlinks and extended attributes.
+  ditto "$app_dir" "$staging_dir/Vibra.app"
   ln -s /Applications "$staging_dir/Applications"
   rm -f "$dmg_path"
   hdiutil create \
@@ -262,12 +257,56 @@ if (( make_dmg )); then
   else
     codesign --force --timestamp=none --sign - "$dmg_path"
   fi
+fi
 
-  if (( notarize )); then
-    print "notarizing Vibra.dmg"
-    xcrun notarytool submit "$dmg_path" "${notary_auth[@]}" --wait
-    xcrun stapler staple "$dmg_path"
-    xcrun stapler validate "$dmg_path"
+if (( notarize )); then
+  # Apple recommends notarizing only the outermost file users download. For a
+  # normal release that is the DMG; sending both the app ZIP and its DMG adds a
+  # second queue wait without improving the distributed artifact.
+  if (( make_dmg )); then
+    notarize_path=$dmg_path
+    notarize_label=Vibra.dmg
+  else
+    notarize_path="$repo_root/dist/Vibra-notarize.zip"
+    notarize_label=Vibra.app
+    rm -f "$notarize_path"
+    ditto -c -k --keepParent "$app_dir" "$notarize_path"
+  fi
+
+  mkdir -p "$notarization_dir"
+  print "submitting $notarize_label to Apple for notarization"
+  submission=$(
+    xcrun notarytool submit "$notarize_path" "${notary_auth[@]}" \
+      --output-format json --no-progress
+  )
+  submission_id=$(print -r -- "$submission" | plutil -extract id raw -o - -)
+  if [[ ! $submission_id =~ '^[0-9A-Fa-f-]{36}$' ]]; then
+    print -u2 -- "Apple did not return a valid notarization submission ID."
+    print -u2 -- "$submission"
+    exit 70
+  fi
+  submission_record="$notarization_dir/${notarize_label}.submission-id"
+  print -r -- "$submission_id" > "$submission_record"
+  print "submitted: $submission_id"
+  print "waiting for Apple (timeout: $notary_wait_timeout)"
+  xcrun notarytool wait "$submission_id" "${notary_auth[@]}" \
+    --timeout "$notary_wait_timeout" || {
+      wait_status=$?
+      print -u2 -- "Notarization did not complete successfully. Apple keeps processing after a timeout."
+      print -u2 -- "Submission ID: $submission_id"
+      print -u2 -- "Check:  xcrun notarytool info $submission_id --keychain-profile \"${APPLE_KEYCHAIN_PROFILE:-Vibra-Notary}\""
+      print -u2 -- "Record: $submission_record"
+      exit "$wait_status"
+    }
+
+  print "stapling Apple's ticket to $notarize_label"
+  xcrun stapler staple "$notarize_path"
+  xcrun stapler validate "$notarize_path"
+  if (( make_dmg )); then
+    spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg_path"
+  else
+    spctl --assess --type execute --verbose=2 "$app_dir"
+    rm -f "$notarize_path"
   fi
 fi
 

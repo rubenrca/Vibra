@@ -427,9 +427,14 @@ impl TerminalHandle for AlacrittyTerminal {
     }
 
     fn current_working_directory(&self) -> Option<PathBuf> {
-        self.foreground_process_id()
-            .and_then(process_working_directory)
-            .or_else(|| process_working_directory(self.process_id))
+        // Prefer the session shell: interactive `cd` updates the shell, not a
+        // short-lived foreground tool. Fall back to the foreground process when
+        // the shell path is unavailable (e.g. mid-reap).
+        process_working_directory(self.process_id).or_else(|| {
+            self.foreground_process_id()
+                .filter(|pid| *pid != self.process_id)
+                .and_then(process_working_directory)
+        })
     }
 
     fn foreground_process_name(&self) -> Option<String> {

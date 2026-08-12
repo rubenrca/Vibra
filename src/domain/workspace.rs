@@ -160,6 +160,8 @@ pub struct WorkspaceEntry {
     pub workspace_id: Uuid,
     pub project_name: String,
     pub workspace_name: String,
+    /// `true` when the user renamed the tab; automatic titles follow the live cwd.
+    pub title_is_manual: bool,
     /// Working directory of the selected (or first) session in this workspace.
     pub working_directory: String,
     pub session_count: usize,
@@ -765,6 +767,8 @@ impl WorkspaceSnapshot {
                         workspace_id: workspace.id,
                         project_name: project.name.clone(),
                         workspace_name: workspace.name.clone(),
+                        title_is_manual: workspace.title_source
+                            == Some(WorkspaceTitleSource::Manual),
                         working_directory: workspace
                             .primary_working_directory()
                             .unwrap_or_else(|| project.root_path.clone()),
@@ -849,26 +853,56 @@ impl WorkspaceSnapshot {
     }
 
     pub fn update_session_working_directory(&mut self, session_id: Uuid, path: &Path) -> bool {
-        let path = path.to_string_lossy();
+        let directory_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Terminal")
+            .to_owned();
+        let path = path.to_string_lossy().into_owned();
+
         for project in &mut self.projects {
             let Some(workspaces) = project.workspaces.as_mut() else {
                 continue;
             };
             for workspace in workspaces {
+                let mut found = false;
+                let mut path_changed = false;
                 for tab in &mut workspace.tabs {
                     if let Some(session) = tab
                         .sessions
                         .iter_mut()
                         .find(|session| session.id == session_id)
                     {
-                        if session.working_directory == path {
-                            return false;
+                        found = true;
+                        if session.working_directory != path {
+                            session.working_directory = path.clone();
+                            path_changed = true;
                         }
-                        session.working_directory = path.into_owned();
-                        project.normalize();
-                        return true;
+                        break;
                     }
                 }
+                if !found {
+                    continue;
+                }
+
+                // cmux-style: automatic workspace titles track the primary session cwd.
+                let is_primary = workspace
+                    .primary_session()
+                    .is_some_and(|session| session.id == session_id);
+                let auto_title = workspace.title_source != Some(WorkspaceTitleSource::Manual);
+                let mut name_changed = false;
+                if is_primary && auto_title && workspace.name != directory_name {
+                    workspace.name = directory_name;
+                    workspace.title_source = Some(WorkspaceTitleSource::Automatic);
+                    name_changed = true;
+                }
+
+                if path_changed || name_changed {
+                    project.normalize();
+                    return true;
+                }
+                return false;
             }
         }
         false
@@ -1690,6 +1724,32 @@ mod tests {
         let entries = snapshot.workspace_entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].working_directory, "/tmp/vibra-sidebar/nested");
+        // Automatic titles follow the primary session basename after `cd`.
+        assert_eq!(entries[0].workspace_name, "nested");
+        assert_eq!(
+            snapshot.selected_workspace().unwrap().title_source,
+            Some(WorkspaceTitleSource::Automatic)
+        );
+    }
+
+    #[test]
+    fn manual_workspace_title_survives_working_directory_changes() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-manual-title"));
+        let project_id = snapshot.selected_project_id.unwrap();
+        let workspace_id = snapshot.selected_workspace().unwrap().id;
+        assert!(snapshot.rename_workspace(project_id, workspace_id, "Mi sesión"));
+        let session_id = snapshot.selected_session().unwrap().id;
+
+        assert!(snapshot.update_session_working_directory(
+            session_id,
+            Path::new("/tmp/vibra-manual-title/deep")
+        ));
+        assert_eq!(snapshot.selected_workspace().unwrap().name, "Mi sesión");
+        assert_eq!(
+            snapshot.selected_workspace().unwrap().title_source,
+            Some(WorkspaceTitleSource::Manual)
+        );
     }
 
     #[test]

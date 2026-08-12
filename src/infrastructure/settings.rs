@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::infrastructure::paths::{application_support_directory, gpui_preview_support_directory};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const KNOWN_THEME_IDS: &[&str] = &["midnight", "moss", "harbor", "cinder", "violet", "bloom"];
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
 
@@ -23,6 +24,12 @@ pub struct AppSettings {
     pub left_sidebar_visible: bool,
     #[serde(default)]
     pub git_panel_visible: bool,
+    /// Built-in palette id (e.g. `midnight`, `moss`).
+    #[serde(default = "default_theme_id")]
+    pub theme_id: String,
+    /// `light`, `dark`, or `system`.
+    #[serde(default = "default_appearance_mode")]
+    pub appearance_mode: String,
 }
 
 const fn default_terminal_font_size() -> f32 {
@@ -33,6 +40,14 @@ const fn default_true() -> bool {
     true
 }
 
+fn default_theme_id() -> String {
+    "midnight".to_string()
+}
+
+fn default_appearance_mode() -> String {
+    "system".to_string()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -41,6 +56,8 @@ impl Default for AppSettings {
             show_hidden_files: false,
             left_sidebar_visible: true,
             git_panel_visible: false,
+            theme_id: default_theme_id(),
+            appearance_mode: default_appearance_mode(),
         }
     }
 }
@@ -51,6 +68,14 @@ impl AppSettings {
             self.terminal_font_size = default_terminal_font_size();
         }
         self.terminal_font_size = self.terminal_font_size.clamp(8.0, 32.0);
+        if !KNOWN_THEME_IDS.contains(&self.theme_id.as_str()) {
+            self.theme_id = default_theme_id();
+        }
+        self.appearance_mode = match self.appearance_mode.as_str() {
+            "light" => "light".to_string(),
+            "dark" => "dark".to_string(),
+            _ => "system".to_string(),
+        };
         self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
     }
 }

@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use crate::infrastructure::automation::AgentRuntimeState;
-use crate::ui::theme::DARK;
+use crate::ui::theme::colors;
 
 /// Bundled agent brand marks served through GPUI's asset source.
 pub struct VibraAssets;
@@ -105,9 +105,9 @@ fn agent_mark(kind: &str) -> Option<(&'static str, AgentMarkStyle)> {
 
 pub fn agent_status_color(state: Option<AgentRuntimeState>) -> Option<Rgba> {
     match state {
-        Some(AgentRuntimeState::Waiting) => Some(DARK.warning),
-        Some(AgentRuntimeState::Working) => Some(DARK.accent),
-        Some(AgentRuntimeState::Idle) => Some(DARK.subtle),
+        Some(AgentRuntimeState::Waiting) => Some(colors().warning),
+        Some(AgentRuntimeState::Working) => Some(colors().accent),
+        Some(AgentRuntimeState::Idle) => Some(colors().subtle),
         None => None,
     }
 }
@@ -137,11 +137,11 @@ pub fn agent_sidebar_badge(
     selected: bool,
 ) -> AnyElement {
     let mark_color = if selected {
-        DARK.foreground
+        colors().foreground
     } else {
-        DARK.muted
+        colors().muted
     };
-    let status = agent_status_color(state).or_else(|| selected.then_some(DARK.accent));
+    let status = agent_status_color(state).or_else(|| selected.then_some(colors().accent));
 
     div()
         .size(px(32.0))
@@ -151,7 +151,7 @@ pub fn agent_sidebar_badge(
         .items_center()
         .justify_center()
         .rounded(px(8.0))
-        .bg(DARK.elevated)
+        .bg(colors().elevated)
         .child(
             div()
                 .size(px(18.0))
@@ -169,7 +169,7 @@ pub fn agent_sidebar_badge(
                     .size(px(6.0))
                     .rounded_full()
                     .border_1()
-                    .border_color(DARK.elevated)
+                    .border_color(colors().elevated)
                     .bg(color),
             )
         })

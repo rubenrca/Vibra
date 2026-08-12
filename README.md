@@ -132,7 +132,10 @@ Bundle universal, DMG, firma Developer ID y notarización:
 
 La notarización usa `APPLE_KEYCHAIN_PROFILE`, o `APPLE_ID`, `APPLE_TEAM_ID` y
 `APPLE_APP_SPECIFIC_PASSWORD`. La identidad puede definirse con
-`VIBRA_SIGNING_IDENTITY` o `--sign`.
+`VIBRA_SIGNING_IDENTITY` o `--sign`. El release normal notariza solo el DMG,
+que es el archivo distribuido. La espera está limitada a dos horas por defecto;
+si Apple demora más, conserva la solicitud y el ID queda en
+`dist/notarization/Vibra.dmg.submission-id` para consultarlo después.
 
 ## Releases
 
@@ -145,6 +148,7 @@ misma versión, más las herramientas Sparkle en `.build/artifacts/sparkle`
 ./Scripts/release.sh 0.3.4
 ./Scripts/release.sh 0.3.5-beta.1 --prerelease
 ./Scripts/release.sh 0.3.4 --no-notarize   # solo si hace falta omitir notarización
+./Scripts/release.sh 0.3.4 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
 ```
 
 Un release **estable** crea el DMG universal, firma con Developer ID, notariza

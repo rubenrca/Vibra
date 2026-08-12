@@ -14,7 +14,7 @@ use crate::ports::git::{
     GitRepositorySnapshot,
 };
 use crate::ui::syntax::{SyntaxSpan, highlight_diff_rows};
-use crate::ui::theme::DARK;
+use crate::ui::theme::colors;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
 /// Comfortable panel width for Warp-style expandable file cards + inline diffs.
@@ -288,11 +288,11 @@ impl DiffView {
 
     fn status_color(status: GitFileStatus) -> Rgba {
         match status {
-            GitFileStatus::Added | GitFileStatus::Untracked => DARK.diff_added,
-            GitFileStatus::Conflicted => DARK.warning,
-            GitFileStatus::Deleted => DARK.diff_deleted,
-            GitFileStatus::Renamed | GitFileStatus::Copied => DARK.accent,
-            GitFileStatus::Modified | GitFileStatus::TypeChanged => DARK.warning,
+            GitFileStatus::Added | GitFileStatus::Untracked => colors().diff_added,
+            GitFileStatus::Conflicted => colors().warning,
+            GitFileStatus::Deleted => colors().diff_deleted,
+            GitFileStatus::Renamed | GitFileStatus::Copied => colors().accent,
+            GitFileStatus::Modified | GitFileStatus::TypeChanged => colors().warning,
         }
     }
 
@@ -334,9 +334,9 @@ impl DiffView {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(DARK.panel)
+            .bg(colors().panel)
             .border_b_1()
-            .border_color(DARK.border_subtle)
+            .border_color(colors().border_subtle)
             .child(
                 div()
                     .h(px(40.0))
@@ -356,7 +356,7 @@ impl DiffView {
                                     .truncate()
                                     .text_size(px(12.5))
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(DARK.foreground)
+                                    .text_color(colors().foreground)
                                     .child(title),
                             )
                             .child(
@@ -369,7 +369,7 @@ impl DiffView {
                                             .truncate()
                                             .font_family("JetBrains Mono")
                                             .text_size(px(10.0))
-                                            .text_color(DARK.subtle)
+                                            .text_color(colors().subtle)
                                             .child(branch.unwrap_or_else(|| {
                                                 if loading {
                                                     "…".to_owned()
@@ -383,7 +383,7 @@ impl DiffView {
                                             div()
                                                 .font_family("JetBrains Mono")
                                                 .text_size(px(10.0))
-                                                .text_color(DARK.subtle)
+                                                .text_color(colors().subtle)
                                                 .child(format!(
                                                     "{files} file{}",
                                                     if files == 1 { "" } else { "s" }
@@ -394,7 +394,7 @@ impl DiffView {
                                                 div()
                                                     .font_family("JetBrains Mono")
                                                     .text_size(px(10.0))
-                                                    .text_color(DARK.diff_added)
+                                                    .text_color(colors().diff_added)
                                                     .child(format!("+{additions}")),
                                             )
                                         })
@@ -403,7 +403,7 @@ impl DiffView {
                                                 div()
                                                     .font_family("JetBrains Mono")
                                                     .text_size(px(10.0))
-                                                    .text_color(DARK.diff_deleted)
+                                                    .text_color(colors().diff_deleted)
                                                     .child(format!("−{deletions}")),
                                             )
                                         })
@@ -421,8 +421,8 @@ impl DiffView {
                             .rounded(px(6.0))
                             .cursor_pointer()
                             .text_size(px(13.0))
-                            .text_color(if loading { DARK.subtle } else { DARK.muted })
-                            .hover(|button| button.bg(DARK.hover).text_color(DARK.foreground))
+                            .text_color(if loading { colors().subtle } else { colors().muted })
+                            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
                             .active(|button| button.opacity(0.72))
                             .on_click(cx.listener(|this, _, _, cx| this.refresh_now(cx)))
                             .child(if loading { "·" } else { "↻" }),
@@ -444,7 +444,7 @@ impl DiffView {
                     .text_center()
                     .text_size(px(11.0))
                     .line_height(px(16.0))
-                    .text_color(DARK.subtle)
+                    .text_color(colors().subtle)
                     .child(text),
             )
     }
@@ -500,8 +500,8 @@ impl DiffView {
             .flex_col()
             .rounded(px(8.0))
             .border_1()
-            .border_color(DARK.border_subtle)
-            .bg(DARK.elevated)
+            .border_color(colors().border_subtle)
+            .bg(colors().elevated)
             .overflow_hidden()
             // File header — click toggles accordion
             .child(
@@ -515,7 +515,7 @@ impl DiffView {
                     .gap_1()
                     .px_2()
                     .cursor_pointer()
-                    .hover(|row| row.bg(DARK.hover))
+                    .hover(|row| row.bg(colors().hover))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_path(path_for_click.clone(), cx);
                     }))
@@ -525,7 +525,7 @@ impl DiffView {
                             .flex_none()
                             .text_center()
                             .text_size(px(10.0))
-                            .text_color(DARK.subtle)
+                            .text_color(colors().subtle)
                             .child(if expanded { "▾" } else { "▸" }),
                     )
                     .child(
@@ -537,7 +537,7 @@ impl DiffView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(DARK.selection)
+                            .bg(colors().selection)
                             .font_family("JetBrains Mono")
                             .text_size(px(9.0))
                             .font_weight(gpui::FontWeight::BOLD)
@@ -558,7 +558,7 @@ impl DiffView {
                                     .truncate()
                                     .text_size(px(12.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(DARK.foreground)
+                                    .text_color(colors().foreground)
                                     .child(name),
                             )
                             .when(!parent.is_empty(), |row| {
@@ -568,7 +568,7 @@ impl DiffView {
                                         .flex_1()
                                         .truncate()
                                         .text_size(px(10.0))
-                                        .text_color(DARK.subtle)
+                                        .text_color(colors().subtle)
                                         .child(parent),
                                 )
                             }),
@@ -579,7 +579,7 @@ impl DiffView {
                                 .size(px(6.0))
                                 .flex_none()
                                 .rounded_full()
-                                .bg(DARK.diff_added),
+                                .bg(colors().diff_added),
                         )
                     })
                     .when(additions > 0 || deletions > 0, |row| {
@@ -592,20 +592,20 @@ impl DiffView {
                                 .px_1()
                                 .py_0()
                                 .rounded(px(4.0))
-                                .bg(DARK.selection)
+                                .bg(colors().selection)
                                 .font_family("JetBrains Mono")
                                 .text_size(px(10.0))
                                 .when(additions > 0, |stats| {
                                     stats.child(
                                         div()
-                                            .text_color(DARK.diff_added)
+                                            .text_color(colors().diff_added)
                                             .child(format!("+{additions}")),
                                     )
                                 })
                                 .when(deletions > 0, |stats| {
                                     stats.child(
                                         div()
-                                            .text_color(DARK.diff_deleted)
+                                            .text_color(colors().diff_deleted)
                                             .child(format!("−{deletions}")),
                                     )
                                 }),
@@ -642,12 +642,12 @@ impl DiffView {
                 .w_full()
                 .flex_none()
                 .border_t_1()
-                .border_color(DARK.border_subtle)
+                .border_color(colors().border_subtle)
                 .px_3()
                 .py_3()
-                .bg(DARK.background)
+                .bg(colors().background)
                 .text_size(px(11.0))
-                .text_color(DARK.subtle)
+                .text_color(colors().subtle)
                 .child(message);
         }
 
@@ -674,8 +674,8 @@ impl DiffView {
             .flex()
             .flex_col()
             .border_t_1()
-            .border_color(DARK.border_subtle)
-            .bg(DARK.background)
+            .border_color(colors().border_subtle)
+            .bg(colors().background)
             .when(truncated, |panel| {
                 panel.child(
                     div()
@@ -684,9 +684,9 @@ impl DiffView {
                         .flex()
                         .items_center()
                         .px_3()
-                        .bg(DARK.elevated)
+                        .bg(colors().elevated)
                         .text_size(px(9.0))
-                        .text_color(DARK.warning)
+                        .text_color(colors().warning)
                         .child("Diff truncado"),
                 )
             })
@@ -716,12 +716,12 @@ impl DiffView {
 
     fn diff_row(row: &GitDiffRow, spans: &[SyntaxSpan]) -> Div {
         let (background, marker) = match row.kind {
-            GitDiffRowKind::Addition => (DARK.diff_added_bg, "+"),
-            GitDiffRowKind::Deletion => (DARK.diff_deleted_bg, "−"),
-            GitDiffRowKind::Hunk => (DARK.diff_hunk_bg, " "),
-            GitDiffRowKind::Section => (DARK.elevated, " "),
-            GitDiffRowKind::Notice => (DARK.background, "!"),
-            GitDiffRowKind::Context => (DARK.background, " "),
+            GitDiffRowKind::Addition => (colors().diff_added_bg, "+"),
+            GitDiffRowKind::Deletion => (colors().diff_deleted_bg, "−"),
+            GitDiffRowKind::Hunk => (colors().diff_hunk_bg, " "),
+            GitDiffRowKind::Section => (colors().elevated, " "),
+            GitDiffRowKind::Notice => (colors().background, "!"),
+            GitDiffRowKind::Context => (colors().background, " "),
         };
         // Warp shows a single line-number gutter (prefer new, fall back to old).
         let line_number = row
@@ -756,7 +756,7 @@ impl DiffView {
                     .justify_end()
                     .pr_2()
                     .text_size(px(10.0))
-                    .text_color(DARK.subtle)
+                    .text_color(colors().subtle)
                     .opacity(0.7)
                     .child(if is_hunk {
                         String::new()
@@ -771,15 +771,15 @@ impl DiffView {
                     .text_center()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(if is_addition {
-                        DARK.diff_added
+                        colors().diff_added
                     } else if is_deletion {
-                        DARK.diff_deleted
+                        colors().diff_deleted
                     } else if is_hunk_header {
-                        DARK.accent
+                        colors().accent
                     } else if is_notice {
-                        DARK.warning
+                        colors().warning
                     } else {
-                        DARK.subtle
+                        colors().subtle
                     })
                     .child(marker),
             )
@@ -799,10 +799,10 @@ impl DiffView {
         kind: GitDiffRowKind,
     ) -> StyledText {
         let default_color = match kind {
-            GitDiffRowKind::Hunk | GitDiffRowKind::Section => DARK.accent,
-            GitDiffRowKind::Notice => DARK.warning,
-            GitDiffRowKind::Context => DARK.muted,
-            GitDiffRowKind::Addition | GitDiffRowKind::Deletion => DARK.foreground,
+            GitDiffRowKind::Hunk | GitDiffRowKind::Section => colors().accent,
+            GitDiffRowKind::Notice => colors().warning,
+            GitDiffRowKind::Context => colors().muted,
+            GitDiffRowKind::Addition | GitDiffRowKind::Deletion => colors().foreground,
         };
         let default_style = TextStyle {
             color: default_color.into(),
@@ -852,7 +852,7 @@ impl Render for DiffView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(DARK.panel)
+            .bg(colors().panel)
             .child(self.header(cx))
             .when_some(error, |view, error| {
                 view.child(
@@ -860,12 +860,12 @@ impl Render for DiffView {
                         .flex_none()
                         .px_3()
                         .py_2()
-                        .bg(DARK.diff_deleted_bg)
+                        .bg(colors().diff_deleted_bg)
                         .border_b_1()
-                        .border_color(DARK.danger)
+                        .border_color(colors().danger)
                         .text_size(px(9.0))
                         .line_height(px(14.0))
-                        .text_color(DARK.danger)
+                        .text_color(colors().danger)
                         .child(error),
                 )
             })

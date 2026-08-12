@@ -21,7 +21,7 @@ use crate::ports::terminal::{
     TerminalPort, TerminalRgb, TerminalSearchDirection, TerminalSelectionType, TerminalSize,
     TerminalSnapshot, TerminalUnderline,
 };
-use crate::ui::theme::DARK;
+use crate::ui::theme::colors;
 use crate::{
     ClearTerminalScrollback, CopyTerminal, DecreaseTerminalFontSize, IncreaseTerminalFontSize,
     PasteTerminal, ResetTerminalFontSize, SearchTerminal, SearchTerminalNext,
@@ -36,7 +36,8 @@ const CURSOR_COLOR: TerminalRgb = TerminalRgb::new(0xe8, 0xe8, 0xe8);
 const SELECTION_FOREGROUND: TerminalRgb = TerminalRgb::new(0xf4, 0xf4, 0xf5);
 const SELECTION_BACKGROUND: TerminalRgb = TerminalRgb::new(0x3b, 0x3b, 0x43);
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
-const WORKING_DIRECTORY_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Poll shell/foreground cwd often enough that `cd` feels live in the chrome.
+const WORKING_DIRECTORY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const BELL_FLASH_DURATION: Duration = Duration::from_millis(140);
 
 #[derive(Clone, Debug)]
@@ -1386,12 +1387,12 @@ impl Render for TerminalView {
             .font_weight(gpui::FontWeight::LIGHT)
             .text_size(px(font_size))
             .line_height(px(line_height))
-            .bg(DARK.terminal)
+            .bg(colors().terminal)
             .border_1()
             .border_color(if bell_active {
-                DARK.danger
+                colors().danger
             } else {
-                DARK.terminal
+                colors().terminal
             })
             .cursor(gpui::CursorStyle::IBeam)
             .when(hyperlink_hovered, |terminal| terminal.cursor_pointer())
@@ -1601,8 +1602,8 @@ impl Render for TerminalView {
                         .py_2()
                         .rounded_md()
                         .border_1()
-                        .border_color(DARK.border_subtle)
-                        .bg(DARK.elevated)
+                        .border_color(colors().border_subtle)
+                        .bg(colors().elevated)
                         .shadow_sm()
                         .flex()
                         .flex_col()
@@ -1610,16 +1611,16 @@ impl Render for TerminalView {
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(DARK.foreground)
+                                .text_color(colors().foreground)
                                 .child(format!("Buscar  {search_query}{composition}")),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(if search_match_found {
-                                    DARK.muted
+                                    colors().muted
                                 } else {
-                                    DARK.danger
+                                    colors().danger
                                 })
                                 .child(status),
                         ),
@@ -1646,16 +1647,16 @@ impl Render for TerminalView {
                                 .p_4()
                                 .rounded_lg()
                                 .border_1()
-                                .border_color(DARK.border_subtle)
-                                .bg(DARK.elevated)
+                                .border_color(colors().border_subtle)
+                                .bg(colors().elevated)
                                 .shadow_lg()
                                 .flex()
                                 .flex_col()
                                 .gap_2()
-                                .child(div().text_sm().text_color(DARK.foreground).child(title))
+                                .child(div().text_sm().text_color(colors().foreground).child(title))
                                 .when_some(warning, |dialog, warning| {
                                     dialog.child(
-                                        div().text_xs().text_color(DARK.danger).child(warning),
+                                        div().text_xs().text_color(colors().danger).child(warning),
                                     )
                                 })
                                 .child(
@@ -1663,13 +1664,13 @@ impl Render for TerminalView {
                                         .px_2()
                                         .py_2()
                                         .rounded_sm()
-                                        .bg(DARK.terminal)
+                                        .bg(colors().terminal)
                                         .text_xs()
-                                        .text_color(DARK.muted)
+                                        .text_color(colors().muted)
                                         .overflow_hidden()
                                         .child(preview),
                                 )
-                                .child(div().text_xs().text_color(DARK.muted).child(hint)),
+                                .child(div().text_xs().text_color(colors().muted).child(hint)),
                         ),
                 )
             })
@@ -1681,7 +1682,7 @@ impl Render for TerminalView {
                         .p_5()
                         .font_family("JetBrains Mono")
                         .text_sm()
-                        .text_color(DARK.danger)
+                        .text_color(colors().danger)
                         .child(error),
                 )
             })
@@ -1694,9 +1695,9 @@ impl Render for TerminalView {
                         .px_2()
                         .py_1()
                         .rounded_sm()
-                        .bg(DARK.elevated)
+                        .bg(colors().elevated)
                         .text_xs()
-                        .text_color(DARK.muted)
+                        .text_color(colors().muted)
                         .child("proceso finalizado"),
                 )
             })
@@ -1853,7 +1854,7 @@ fn snapshot_surface_color(snapshot: &TerminalSnapshot) -> Hsla {
         .map(|cell| cell.background);
     sample
         .map(to_hsla)
-        .unwrap_or_else(|| DARK.terminal.into())
+        .unwrap_or_else(|| colors().terminal.into())
 }
 
 fn scrollbar_quad(bounds: Bounds<Pixels>, snapshot: &TerminalSnapshot) -> Option<PaintQuad> {

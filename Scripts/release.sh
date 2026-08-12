@@ -14,6 +14,7 @@ dry_run=0
 # Default on: Developer ID + Apple notarization so Gatekeeper accepts downloads.
 # Opt out with --no-notarize (e.g. local dry packaging without credentials).
 notarize=1
+resume_dmg=0
 prerelease=0
 version=
 repo_slug=${VIBRA_REPO_SLUG:-rubenrca/Vibra}
@@ -24,12 +25,13 @@ staging_dir="$repo_root/dist/appcast"
 export APPLE_KEYCHAIN_PROFILE="${APPLE_KEYCHAIN_PROFILE:-Vibra-Notary}"
 
 usage() {
-  print -u2 -- "usage: $script_name <version> [--prerelease] [--notarize|--no-notarize] [--dry-run]"
+  print -u2 -- "usage: $script_name <version> [--prerelease] [--notarize|--no-notarize] [--resume-dmg] [--dry-run]"
   print -u2 --
   print -u2 -- "  <version>       marketing version, e.g. 0.3.0 or 0.3.1-beta.1"
   print -u2 -- "  --prerelease    GitHub prerelease only; does not update docs/appcast.xml"
   print -u2 -- "  --notarize      Developer ID sign + Apple notarization (default)"
   print -u2 -- "  --no-notarize   skip notarization (ad-hoc or signed only)"
+  print -u2 -- "  --resume-dmg    publish an existing, notarized dist/Vibra.dmg; do not rebuild"
   print -u2 -- "  --dry-run       build and sign everything, publish nothing"
   print -u2 --
   print -u2 -- "Stable releases update the Sparkle feed after the DMG is live on GitHub."
@@ -42,6 +44,7 @@ while (( $# )); do
   case "$1" in
     --notarize) notarize=1 ;;
     --no-notarize) notarize=0 ;;
+    --resume-dmg) resume_dmg=1 ;;
     --dry-run) dry_run=1 ;;
     --prerelease) prerelease=1 ;;
     --stable)
@@ -142,6 +145,19 @@ if (( notarize )); then
   fi
 fi
 
+if (( resume_dmg )); then
+  if (( ! notarize )); then
+    print -u2 -- "--resume-dmg requires a notarized DMG; do not combine it with --no-notarize."
+    exit 64
+  fi
+  if [[ ! -f $repo_root/dist/Vibra.dmg ]]; then
+    print -u2 -- "--resume-dmg needs dist/Vibra.dmg. Finish notarizing or build the DMG first."
+    exit 66
+  fi
+  xcrun stapler validate "$repo_root/dist/Vibra.dmg"
+  spctl --assess --type open --context context:primary-signature --verbose=2 "$repo_root/dist/Vibra.dmg"
+fi
+
 notes_markdown=$(
   awk -v version="$version" '
     # Exact section match so "0.3.0" does not also match "0.3.0-beta.1".
@@ -159,9 +175,13 @@ channel=stable
 (( prerelease )) && channel=prerelease
 print "building Vibra $version ($channel) from $(git -C "$repo_root" rev-parse --short HEAD)"
 
-package_args=(release --universal --dmg)
-(( notarize )) && package_args+=(--notarize)
-VIBRA_MARKETING_VERSION=$version "$repo_root/Scripts/package_app.sh" "${package_args[@]}"
+if (( resume_dmg )); then
+  print "reusing notarized DMG at dist/Vibra.dmg"
+else
+  package_args=(release --universal --dmg)
+  (( notarize )) && package_args+=(--notarize)
+  VIBRA_MARKETING_VERSION=$version "$repo_root/Scripts/package_app.sh" "${package_args[@]}"
+fi
 
 rm -rf "$staging_dir"
 mkdir -p "$staging_dir"

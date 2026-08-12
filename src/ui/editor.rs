@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use crate::ports::files::{FileSystemPort, TextFileSnapshot};
-use crate::ui::theme::DARK;
+use crate::ui::theme::colors;
 
 pub enum EditorViewEvent {
     Close,
@@ -297,7 +297,7 @@ impl Render for EditorView {
             .track_focus(&self.focus_handle)
             .key_context("Editor")
             .on_key_down(cx.listener(Self::on_key_down))
-            .bg(DARK.background)
+            .bg(colors().background)
             .child(
                 div()
                     .h(px(38.0))
@@ -307,8 +307,8 @@ impl Render for EditorView {
                     .gap_2()
                     .px_3()
                     .border_b_1()
-                    .border_color(DARK.border_subtle)
-                    .bg(DARK.titlebar)
+                    .border_color(colors().border_subtle)
+                    .bg(colors().titlebar)
                     .child(
                         div()
                             .min_w(px(0.0))
@@ -321,7 +321,7 @@ impl Render for EditorView {
                                     .truncate()
                                     .text_size(px(11.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(DARK.foreground)
+                                    .text_color(colors().foreground)
                                     .child(format!("{}{}", if dirty { "● " } else { "" }, title)),
                             )
                             .child(
@@ -329,7 +329,7 @@ impl Render for EditorView {
                                     .truncate()
                                     .font_family("JetBrains Mono")
                                     .text_size(px(8.0))
-                                    .text_color(DARK.subtle)
+                                    .text_color(colors().subtle)
                                     .child(path),
                             ),
                     )
@@ -341,8 +341,8 @@ impl Render for EditorView {
                             .rounded(px(4.0))
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(DARK.muted)
-                            .hover(|button| button.bg(DARK.hover))
+                            .text_color(colors().muted)
+                            .hover(|button| button.bg(colors().hover))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.search_active = true;
                                 this.focus_handle.focus(window);
@@ -358,8 +358,8 @@ impl Render for EditorView {
                             .rounded(px(4.0))
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(if dirty { DARK.success } else { DARK.subtle })
-                            .hover(|button| button.bg(DARK.hover))
+                            .text_color(if dirty { colors().success } else { colors().subtle })
+                            .hover(|button| button.bg(colors().hover))
                             .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
                             .child("Save"),
                     )
@@ -373,8 +373,8 @@ impl Render for EditorView {
                             .items_center()
                             .justify_center()
                             .text_sm()
-                            .text_color(DARK.muted)
-                            .hover(|button| button.bg(DARK.hover).text_color(DARK.foreground))
+                            .text_color(colors().muted)
+                            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
                             .on_click(cx.listener(|this, _, _, cx| this.request_close(cx)))
                             .child("×"),
                     ),
@@ -389,20 +389,20 @@ impl Render for EditorView {
                         .gap_2()
                         .px_3()
                         .border_b_1()
-                        .border_color(DARK.border_subtle)
-                        .bg(DARK.elevated)
+                        .border_color(colors().border_subtle)
+                        .bg(colors().elevated)
                         .child(
                             div()
                                 .flex_1()
                                 .font_family("JetBrains Mono")
                                 .text_size(px(9.5))
-                                .text_color(DARK.foreground)
+                                .text_color(colors().foreground)
                                 .child(format!("Buscar: {search_query}")),
                         )
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(DARK.subtle)
+                                .text_color(colors().subtle)
                                 .child(format!("{match_count} matches · ↵ next · esc close")),
                         ),
                 )
@@ -413,9 +413,9 @@ impl Render for EditorView {
                         .flex_none()
                         .px_3()
                         .py_2()
-                        .bg(DARK.diff_deleted_bg)
+                        .bg(colors().diff_deleted_bg)
                         .text_xs()
-                        .text_color(DARK.danger)
+                        .text_color(colors().danger)
                         .child(error),
                 )
             })
@@ -450,11 +450,11 @@ impl Render for EditorView {
                             .items_center()
                             .whitespace_nowrap()
                             .bg(if active {
-                                DARK.selection
+                                colors().selection
                             } else if matches {
-                                DARK.diff_hunk_bg
+                                colors().diff_hunk_bg
                             } else {
-                                DARK.background
+                                colors().background
                             })
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -474,11 +474,11 @@ impl Render for EditorView {
                                     .justify_end()
                                     .pr_3()
                                     .border_r_1()
-                                    .border_color(DARK.border_subtle)
-                                    .text_color(DARK.subtle)
+                                    .border_color(colors().border_subtle)
+                                    .text_color(colors().subtle)
                                     .child((index + 1).to_string()),
                             )
-                            .child(div().pl_3().pr_6().text_color(DARK.muted).child(display))
+                            .child(div().pl_3().pr_6().text_color(colors().muted).child(display))
                     })),
             )
             .child(
@@ -490,11 +490,11 @@ impl Render for EditorView {
                     .justify_end()
                     .px_3()
                     .border_t_1()
-                    .border_color(DARK.border_subtle)
-                    .bg(DARK.titlebar)
+                    .border_color(colors().border_subtle)
+                    .bg(colors().titlebar)
                     .font_family("JetBrains Mono")
                     .text_size(px(8.5))
-                    .text_color(DARK.subtle)
+                    .text_color(colors().subtle)
                     .child(format!("Ln {cursor_line}, Col {cursor_column} · UTF-8")),
             )
             .when(close_confirmation, |editor| {
@@ -512,8 +512,8 @@ impl Render for EditorView {
                                 .p_4()
                                 .rounded_lg()
                                 .border_1()
-                                .border_color(DARK.border_subtle)
-                                .bg(DARK.elevated)
+                                .border_color(colors().border_subtle)
+                                .bg(colors().elevated)
                                 .shadow_lg()
                                 .flex()
                                 .flex_col()
@@ -522,13 +522,13 @@ impl Render for EditorView {
                                     div()
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(DARK.foreground)
+                                        .text_color(colors().foreground)
                                         .child("¿Cerrar con cambios sin guardar?"),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(DARK.muted)
+                                        .text_color(colors().muted)
                                         .child("Puedes guardar, seguir editando o descartar."),
                                 )
                                 .child(
@@ -545,8 +545,8 @@ impl Render for EditorView {
                                                 .rounded(px(5.0))
                                                 .cursor_pointer()
                                                 .text_xs()
-                                                .text_color(DARK.muted)
-                                                .hover(|button| button.bg(DARK.hover))
+                                                .text_color(colors().muted)
+                                                .hover(|button| button.bg(colors().hover))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.close_confirmation = false;
                                                     cx.notify();
@@ -560,9 +560,9 @@ impl Render for EditorView {
                                                 .py_1()
                                                 .rounded(px(5.0))
                                                 .cursor_pointer()
-                                                .bg(DARK.diff_deleted_bg)
+                                                .bg(colors().diff_deleted_bg)
                                                 .text_xs()
-                                                .text_color(DARK.diff_deleted)
+                                                .text_color(colors().diff_deleted)
                                                 .on_click(cx.listener(|_, _, _, cx| {
                                                     cx.emit(EditorViewEvent::Close);
                                                 }))
@@ -575,9 +575,9 @@ impl Render for EditorView {
                                                 .py_1()
                                                 .rounded(px(5.0))
                                                 .cursor_pointer()
-                                                .bg(DARK.success)
+                                                .bg(colors().success)
                                                 .text_xs()
-                                                .text_color(DARK.terminal)
+                                                .text_color(colors().terminal)
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.save_and_close(cx);
                                                 }))

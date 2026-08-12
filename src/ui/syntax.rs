@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use gpui::{FontStyle, FontWeight, HighlightStyle, Rgba, rgb};
 
 use crate::ports::git::{GitDiffRow, GitDiffRowKind};
-use crate::ui::theme::DARK;
+use crate::ui::theme::colors;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -573,7 +573,7 @@ impl SyntaxKind {
             Self::Constant => SYNTAX.constant,
             Self::Punctuation => SYNTAX.punctuation,
             Self::Macro => SYNTAX.macro_name,
-            Self::Default => DARK.foreground,
+            Self::Default => colors().foreground,
         }
     }
 

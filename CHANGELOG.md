@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Track terminal `cd` end-to-end: automatic session titles, titlebar, Files tree, and Diff root follow the live working directory.
+- Keep cmux-style sidebar tabs in sync (directory name, branch with ahead/behind/dirty, and path).
+- Add dual light/dark app themes (Midnight, Moss, Harbor, Cinder, Violet, Bloom) with Sistema/Claro/Oscuro mode in Settings.
+- Persist theme preference and follow the system appearance when mode is Sistema.
+
 ## 0.3.4 — 2026-08-11
 
 - Sign release builds with Developer ID Application and notarize with Apple so Gatekeeper no longer blocks install.

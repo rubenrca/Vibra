@@ -33,7 +33,7 @@ use crate::ui::agent_marks::agent_sidebar_badge;
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
 use crate::ui::terminal::{TerminalView, TerminalViewEvent};
-use crate::ui::theme::DARK;
+use crate::ui::theme::{self, AppearanceMode, ThemeTone, colors};
 use crate::{
     CloseTerminal, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
     NewTerminalTab, NewWorkspace, NextPane, NextWorkspace, PreviousPane, PreviousWorkspace,
@@ -44,6 +44,8 @@ use crate::{
 
 /// Full width of the left sessions/info sidebar.
 const LEFT_SIDEBAR_WIDTH: f32 = 240.0;
+/// Text column inside a sessions tab: sidebar − list pad − item pad − badge − gap.
+const LEFT_SIDEBAR_TAB_TEXT_WIDTH: f32 = LEFT_SIDEBAR_WIDTH - 16.0 - 24.0 - 32.0 - 8.0;
 /// Titlebar chrome width when the left sidebar is fully collapsed.
 const TITLEBAR_CHROME_COLLAPSED: f32 = 148.0;
 /// Full width of the Files panel on the right.
@@ -238,7 +240,7 @@ impl Render for PaneDividerDragView {
                 line.w(px(40.0)).h(px(2.0))
             })
             .rounded_full()
-            .bg(DARK.border_subtle)
+            .bg(colors().border_subtle)
     }
 }
 
@@ -300,6 +302,8 @@ pub struct WorkspaceView {
     initial_terminal_focus_pending: bool,
     pane_resize_dirty: bool,
     persistence_error: Option<SharedString>,
+    /// Subscribed once so system light/dark flips re-resolve the palette.
+    _appearance_subscription: Option<Subscription>,
 }
 
 pub struct WorkspaceDependencies {
@@ -472,7 +476,10 @@ impl WorkspaceView {
             initial_terminal_focus_pending: true,
             pane_resize_dirty: false,
             persistence_error,
+            _appearance_subscription: None,
         };
+        // System appearance is refined on first paint via observe_window_appearance.
+        view.apply_theme_preference(true, cx);
         view.reconcile_terminal_views(cx);
         view.sync_diff_root(cx);
         view.refresh_project_files();
@@ -481,22 +488,30 @@ impl WorkspaceView {
     }
 
     fn sync_diff_root(&self, cx: &mut Context<Self>) {
-        let root = self
-            .snapshot
-            .selected_session()
-            .and_then(|session| self.terminals.get(&session.id))
-            .map(|terminal| terminal.read(cx).current_working_directory())
-            .or_else(|| {
-                self.snapshot
-                    .selected_project()
-                    .map(|project| PathBuf::from(&project.root_path))
-            })
-            .unwrap_or_else(|| self.launch_directory.clone());
+        let root = self.selected_live_cwd(cx);
         self.diff_view
             .update(cx, |diff_view, cx| diff_view.set_root(root, cx));
     }
 
+    /// Active console directory: live PTY cwd when available, else snapshot / launch dir.
+    fn selected_live_cwd(&self, cx: &Context<Self>) -> PathBuf {
+        if let Some(session) = self.snapshot.selected_session() {
+            if let Some(terminal) = self.terminals.get(&session.id) {
+                return terminal.read(cx).current_working_directory();
+            }
+            return PathBuf::from(&session.working_directory);
+        }
+        self.snapshot
+            .selected_project()
+            .map(|project| PathBuf::from(&project.root_path))
+            .unwrap_or_else(|| self.launch_directory.clone())
+    }
+
+    /// Files / editor root follows the selected terminal cwd (not the frozen project root).
     fn project_root(&self) -> PathBuf {
+        if let Some(session) = self.snapshot.selected_session() {
+            return PathBuf::from(&session.working_directory);
+        }
         self.snapshot
             .selected_project()
             .map(|project| PathBuf::from(&project.root_path))
@@ -643,6 +658,7 @@ impl WorkspaceView {
     }
 
     fn refresh_project_files(&mut self) {
+        // Snapshot cwd is updated on WorkingDirectoryChanged; enough for tree rebuilds.
         let root = self.project_root();
         self.expanded_directories.insert(root.clone());
         let mut rows = Vec::new();
@@ -1583,20 +1599,28 @@ impl WorkspaceView {
                 }
             }
             TerminalViewEvent::WorkingDirectoryChanged { session_id, path } => {
+                let is_selected = self
+                    .snapshot
+                    .selected_session()
+                    .is_some_and(|session| session.id == *session_id);
+                let previous_files_root = is_selected.then(|| self.project_root());
                 let changed = self
                     .snapshot
                     .update_session_working_directory(*session_id, path);
-                if self
-                    .snapshot
-                    .selected_session()
-                    .is_some_and(|session| session.id == *session_id)
-                {
+                if is_selected {
                     self.diff_view.update(cx, |diff_view, cx| {
                         diff_view.set_root(path.clone(), cx);
                     });
+                    // Keep Files/editor rooted on the live console directory.
+                    let new_root = self.project_root();
+                    if previous_files_root.as_ref() != Some(&new_root) {
+                        self.expanded_directories
+                            .retain(|entry| entry.starts_with(&new_root) || new_root.starts_with(entry));
+                        self.expanded_directories.insert(new_root);
+                        self.refresh_project_files();
+                    }
                 }
-                // Path/branch in the sessions sidebar follow the live cwd; refresh even
-                // when only a background workspace moved.
+                // Path/branch/title in the sessions sidebar follow the live cwd.
                 self.refresh_sidebar_workspace_meta(cx);
                 if changed {
                     self.persist(cx);
@@ -2558,6 +2582,7 @@ impl WorkspaceView {
     fn select_terminal(&mut self, session_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.select_terminal(session_id) {
             self.sync_diff_root(cx);
+            self.refresh_project_files();
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
         }
@@ -2599,6 +2624,7 @@ impl WorkspaceView {
     ) {
         if self.snapshot.focus_terminal(direction) {
             self.sync_diff_root(cx);
+            self.refresh_project_files();
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
         }
@@ -2607,6 +2633,7 @@ impl WorkspaceView {
     fn cycle_pane(&mut self, offset: isize, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.cycle_terminal(offset) {
             self.sync_diff_root(cx);
+            self.refresh_project_files();
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
         }
@@ -2678,6 +2705,58 @@ impl WorkspaceView {
         for terminal in self.terminals.values() {
             terminal.update(cx, |terminal, cx| terminal.apply_font_size(size, cx));
         }
+        self.persist_settings(cx);
+    }
+
+    fn appearance_mode(&self) -> AppearanceMode {
+        AppearanceMode::parse(&self.settings.appearance_mode)
+    }
+
+    fn apply_theme_preference(&mut self, system_dark: bool, cx: &mut Context<Self>) {
+        theme::apply_preference(&self.settings.theme_id, self.appearance_mode(), system_dark);
+        cx.notify();
+    }
+
+    fn ensure_appearance_subscription(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self._appearance_subscription.is_some() {
+            return;
+        }
+        let system_dark =
+            ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
+        self.apply_theme_preference(system_dark, cx);
+        self._appearance_subscription =
+            Some(cx.observe_window_appearance(window, |this, window, cx| {
+                let system_dark =
+                    ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
+                this.apply_theme_preference(system_dark, cx);
+            }));
+    }
+
+    fn set_theme_id(&mut self, theme_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let theme_id = theme::canonicalize_theme_id(theme_id);
+        if self.settings.theme_id == theme_id {
+            return;
+        }
+        self.settings.theme_id = theme_id.to_string();
+        let system_dark =
+            ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
+        self.apply_theme_preference(system_dark, cx);
+        self.persist_settings(cx);
+    }
+
+    fn set_appearance_mode(
+        &mut self,
+        mode: AppearanceMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.appearance_mode() == mode {
+            return;
+        }
+        self.settings.appearance_mode = mode.as_str().to_string();
+        let system_dark =
+            ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
+        self.apply_theme_preference(system_dark, cx);
         self.persist_settings(cx);
     }
 
@@ -2867,6 +2946,7 @@ impl WorkspaceView {
     ) {
         if self.snapshot.select_workspace(project_id, workspace_id) {
             self.sync_diff_root(cx);
+            self.refresh_project_files();
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
@@ -2876,6 +2956,7 @@ impl WorkspaceView {
     fn select_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.select_tab(tab_id) {
             self.sync_diff_root(cx);
+            self.refresh_project_files();
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
@@ -2886,6 +2967,7 @@ impl WorkspaceView {
         if self.snapshot.close_tab(tab_id) {
             self.reconcile_terminal_views(cx);
             self.sync_diff_root(cx);
+            self.refresh_project_files();
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
@@ -2897,17 +2979,36 @@ impl WorkspaceView {
         let left_chrome_width = TITLEBAR_CHROME_COLLAPSED
             + (LEFT_SIDEBAR_WIDTH - TITLEBAR_CHROME_COLLAPSED) * left_progress;
         let left_open = left_progress > 0.5;
-        let workspace_name = self
-            .snapshot
-            .selected_workspace()
+        let selected_workspace = self.snapshot.selected_workspace();
+        let selected_workspace_id = selected_workspace.map(|w| w.id);
+        let title_is_manual = selected_workspace
+            .is_some_and(|w| w.title_source == Some(crate::domain::workspace::WorkspaceTitleSource::Manual));
+        let workspace_name = selected_workspace
             .map(|workspace| workspace.name.clone())
             .unwrap_or_else(|| "Sin espacio".to_owned());
-        let project_name = self
-            .snapshot
-            .selected_project()
-            .map(|project| project.name.clone())
-            .unwrap_or_else(|| "Proyecto".to_owned());
-        let show_project_name = project_name != workspace_name;
+        // Prefer live cwd basename so the title tracks `cd` (unless renamed manually).
+        let live_title = if title_is_manual {
+            workspace_name
+        } else {
+            selected_workspace_id
+                .and_then(|id| self.sidebar_workspace_meta.get(&id))
+                .map(|meta| directory_basename(&meta.cwd))
+                .filter(|name| !name.is_empty() && name != "—")
+                .unwrap_or(workspace_name)
+        };
+        let branch_subtitle = selected_workspace_id
+            .and_then(|id| self.sidebar_workspace_meta.get(&id))
+            .and_then(format_sidebar_branch);
+        let path_subtitle = selected_workspace_id
+            .and_then(|id| self.sidebar_workspace_meta.get(&id))
+            .map(|meta| format_sidebar_path(&meta.cwd))
+            .filter(|path| path != "—");
+        let subtitle = match (branch_subtitle.as_deref(), path_subtitle.as_deref()) {
+            (Some(branch), Some(path)) => format!("{branch} · {path}"),
+            (Some(branch), None) => branch.to_owned(),
+            (None, Some(path)) => path.to_owned(),
+            (None, None) => "Local".to_owned(),
+        };
 
         div()
             .h(px(38.0))
@@ -2915,9 +3016,9 @@ impl WorkspaceView {
             .flex_none()
             .flex()
             .items_center()
-            .bg(DARK.titlebar)
+            .bg(colors().titlebar)
             .border_b_1()
-            .border_color(DARK.border_subtle)
+            .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(left_chrome_width))
@@ -2928,12 +3029,12 @@ impl WorkspaceView {
                     .pl(px(86.0))
                     .gap_1()
                     .bg(if left_open {
-                        DARK.sidebar
+                        colors().sidebar
                     } else {
-                        DARK.titlebar
+                        colors().titlebar
                     })
                     .when(left_progress > 0.001, |chrome| {
-                        chrome.border_r_1().border_color(DARK.border_subtle)
+                        chrome.border_r_1().border_color(colors().border_subtle)
                     })
                     .child(
                         self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
@@ -2985,19 +3086,16 @@ impl WorkspaceView {
                                     .truncate()
                                     .text_size(px(12.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(DARK.foreground)
-                                    .child(workspace_name.clone()),
+                                    .text_color(colors().foreground)
+                                    .child(live_title),
                             )
                             .child(
                                 div()
                                     .truncate()
+                                    .font_family("JetBrains Mono")
                                     .text_size(px(10.0))
-                                    .text_color(DARK.subtle)
-                                    .child(if show_project_name {
-                                        format!("/ {project_name}")
-                                    } else {
-                                        "Local".to_owned()
-                                    }),
+                                    .text_color(colors().subtle)
+                                    .child(subtitle),
                             ),
                     ),
             )
@@ -3033,9 +3131,9 @@ impl WorkspaceView {
             .h_full()
             .flex_none()
             .overflow_hidden()
-            .bg(DARK.sidebar)
+            .bg(colors().sidebar)
             .border_r_1()
-            .border_color(DARK.border_subtle)
+            .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(LEFT_SIDEBAR_WIDTH))
@@ -3084,7 +3182,7 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(DARK.sidebar);
+            .bg(colors().sidebar);
 
         if entries.is_empty() {
             panel = panel.child(
@@ -3103,24 +3201,24 @@ impl WorkspaceView {
                             .items_center()
                             .justify_center()
                             .rounded(px(10.0))
-                            .bg(DARK.elevated)
+                            .bg(colors().elevated)
                             .font_family("JetBrains Mono")
                             .text_size(px(11.0))
-                            .text_color(DARK.muted)
+                            .text_color(colors().muted)
                             .child(">_"),
                     )
                     .child(
                         div()
                             .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(DARK.muted)
+                            .text_color(colors().muted)
                             .child("Sin sesiones"),
                     )
                     .child(
                         div()
                             .text_center()
                             .text_size(px(10.5))
-                            .text_color(DARK.subtle)
+                            .text_color(colors().subtle)
                             .child("Usa + para crear una"),
                     ),
             );
@@ -3138,58 +3236,62 @@ impl WorkspaceView {
                         let selected = entry.is_selected;
                         let agent = agent_summaries.get(&workspace_id).cloned();
                         let meta = meta_by_workspace.get(&workspace_id);
-                        let path_label = format_sidebar_path(
-                            meta.map(|m| m.cwd.as_str())
-                                .unwrap_or(entry.working_directory.as_str()),
-                        );
-                        let branch_label = meta.and_then(format_sidebar_branch);
-                        let secondary = match (&branch_label, agent.as_ref()) {
-                            (Some(branch), Some((kind, state))) => format!(
-                                "{branch} · {kind} {}",
-                                agent_runtime_state_label(*state)
-                            ),
-                            (Some(branch), None) => branch.clone(),
-                            (None, Some((kind, state))) => {
-                                format!("{kind} {}", agent_runtime_state_label(*state))
-                            }
-                            (None, None) => {
-                                if selected {
-                                    "Activa".to_owned()
-                                } else {
-                                    "En espera".to_owned()
-                                }
+                        let cwd = meta
+                            .map(|m| m.cwd.as_str())
+                            .unwrap_or(entry.working_directory.as_str());
+                        let path_label = format_sidebar_path(cwd);
+                        // cmux-style primary title: live directory basename unless renamed.
+                        let title_label = if entry.title_is_manual {
+                            entry.workspace_name.clone()
+                        } else {
+                            let live = directory_basename(cwd);
+                            if live.is_empty() || live == "—" {
+                                entry.workspace_name.clone()
+                            } else {
+                                live
                             }
                         };
+                        // Three clean rows: name / branch / path.
+                        // Agent identity+state lives on the badge (mark + status dot).
+                        let branch_label = meta.and_then(format_sidebar_branch);
                         let branch_color = match (
                             meta.map(|m| m.dirty).unwrap_or(false),
                             meta.map(|m| m.behind > 0).unwrap_or(false),
-                            agent.as_ref().map(|item| item.1),
                         ) {
-                            (true, _, _) => DARK.warning,
-                            (_, true, _) => DARK.accent,
-                            (_, _, Some(AgentRuntimeState::Waiting)) => DARK.warning,
-                            (_, _, Some(AgentRuntimeState::Working)) => DARK.accent,
-                            (_, _, Some(AgentRuntimeState::Idle)) => DARK.subtle,
-                            _ if selected => DARK.muted,
-                            _ => DARK.subtle,
+                            (true, _) => colors().warning,
+                            (_, true) => colors().accent,
+                            _ if selected => colors().muted,
+                            _ => colors().subtle,
                         };
+                        let path_color = if selected {
+                            colors().muted
+                        } else {
+                            colors().subtle
+                        };
+                        let title_color = if selected {
+                            colors().foreground
+                        } else {
+                            colors().muted
+                        };
+                        // Explicit text width avoids flex+truncate collapsing labels to "…".
                         div()
                             .id(SharedString::from(format!("workspace-{workspace_id}")))
-                            .h(px(68.0))
-                            .w_full()
-                            .mb(px(1.0))
+                            .h(px(64.0))
+                            .w(px(LEFT_SIDEBAR_WIDTH - 16.0))
+                            .mb(px(2.0))
                             .px_3()
                             .flex()
+                            .flex_row()
                             .items_center()
                             .gap_2()
                             .rounded(px(8.0))
                             .cursor_pointer()
                             .bg(if selected {
-                                DARK.selection
+                                colors().selection
                             } else {
-                                DARK.sidebar
+                                colors().sidebar
                             })
-                            .hover(|item| item.bg(DARK.hover))
+                            .hover(|item| item.bg(colors().hover))
                             .active(|item| item.opacity(0.82))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.select_workspace(project_id, workspace_id, window, cx);
@@ -3218,42 +3320,36 @@ impl WorkspaceView {
                             ))
                             .child(
                                 div()
-                                    .min_w(px(0.0))
-                                    .flex_1()
+                                    .w(px(LEFT_SIDEBAR_TAB_TEXT_WIDTH))
+                                    .flex_none()
+                                    .overflow_hidden()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(2.0))
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(11.5))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(if selected {
-                                                DARK.foreground
-                                            } else {
-                                                DARK.muted
-                                            })
-                                            .child(entry.workspace_name),
-                                    )
-                                    .child(
-                                        div()
-                                            .min_w(px(0.0))
-                                            .truncate()
-                                            .font_family("JetBrains Mono")
-                                            .text_size(px(9.5))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(branch_color)
-                                            .child(secondary),
-                                    )
-                                    .child(
-                                        div()
-                                            .min_w(px(0.0))
-                                            .truncate()
-                                            .font_family("JetBrains Mono")
-                                            .text_size(px(9.0))
-                                            .text_color(DARK.subtle)
-                                            .child(path_label),
-                                    ),
+                                    .justify_center()
+                                    .gap(px(1.0))
+                                    .child(sidebar_tab_line(
+                                        &title_label,
+                                        title_color,
+                                        12.0,
+                                        true,
+                                        false,
+                                    ))
+                                    .when_some(branch_label, |col, branch| {
+                                        col.child(sidebar_tab_line(
+                                            &branch,
+                                            branch_color,
+                                            10.0,
+                                            true,
+                                            true,
+                                        ))
+                                    })
+                                    .child(sidebar_tab_line(
+                                        &path_label,
+                                        path_color,
+                                        9.5,
+                                        false,
+                                        true,
+                                    )),
                             )
                     })),
             );
@@ -3266,18 +3362,14 @@ impl WorkspaceView {
         let rows = self.project_files.clone();
         let selected_path = self.selected_file_path.clone();
         let file_error = self.file_error.clone();
-        let project_name = self
-            .snapshot
-            .selected_project()
-            .map(|project| project.name.clone())
-            .unwrap_or_else(|| "Proyecto".into());
         let project_root = self.project_root();
+        let project_name = directory_basename(&project_root.to_string_lossy());
         let (git_root, git_statuses) = self.diff_view.read(cx).status_index();
         let status_root = git_root.unwrap_or_else(|| project_root.clone());
         let root_status = aggregate_dir_status("", &git_statuses);
         let root_name_color = root_status
             .map(git_status_color)
-            .unwrap_or(DARK.foreground);
+            .unwrap_or(colors().foreground);
 
         div()
             .id("project-files-content")
@@ -3286,7 +3378,7 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(DARK.panel)
+            .bg(colors().panel)
             // Project root row
             .child(
                 div()
@@ -3303,12 +3395,12 @@ impl WorkspaceView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_color(DARK.folder)
+                            .text_color(colors().folder)
                             .child(
                                 svg()
                                     .path("file-icons/folder.svg")
                                     .size(px(14.0))
-                                    .text_color(DARK.folder),
+                                    .text_color(colors().folder),
                             ),
                     )
                     .child(
@@ -3346,14 +3438,14 @@ impl WorkspaceView {
                                 .and_then(|rel| git_statuses.get(rel).copied())
                         };
                         let icon_color = if is_directory {
-                            status.map(git_status_color).unwrap_or(DARK.folder)
+                            status.map(git_status_color).unwrap_or(colors().folder)
                         } else {
                             file_tree_icon_color(row.entry.kind, &row.entry.name)
                         };
                         let name_color = status.map(git_status_color).unwrap_or(if is_directory {
-                            DARK.foreground
+                            colors().foreground
                         } else {
-                            DARK.muted
+                            colors().muted
                         });
                         let depth = row.depth;
                         let expanded = row.expanded;
@@ -3370,11 +3462,11 @@ impl WorkspaceView {
                             .pr_2()
                             .cursor_pointer()
                             .bg(if selected {
-                                DARK.selection
+                                colors().selection
                             } else {
                                 gpui::rgba(0x00000000)
                             })
-                            .hover(|item| item.bg(DARK.hover))
+                            .hover(|item| item.bg(colors().hover))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -3415,7 +3507,7 @@ impl WorkspaceView {
                                                 .top_0()
                                                 .bottom_0()
                                                 .w(px(1.0))
-                                                .bg(DARK.indent_guide),
+                                                .bg(colors().indent_guide),
                                         )
                                     }),
                             )
@@ -3428,7 +3520,7 @@ impl WorkspaceView {
                                     .items_center()
                                     .justify_center()
                                     .text_size(px(9.0))
-                                    .text_color(DARK.subtle)
+                                    .text_color(colors().subtle)
                                     .child(if is_directory {
                                         if expanded {
                                             "▾"
@@ -3469,7 +3561,7 @@ impl WorkspaceView {
                                         gpui::FontWeight::NORMAL
                                     })
                                     .text_color(if selected && status.is_none() {
-                                        DARK.foreground
+                                        colors().foreground
                                     } else {
                                         name_color
                                     })
@@ -3487,9 +3579,9 @@ impl WorkspaceView {
                         .mb_1()
                         .p_2()
                         .rounded(px(5.0))
-                        .bg(DARK.diff_deleted_bg)
+                        .bg(colors().diff_deleted_bg)
                         .text_size(px(9.0))
-                        .text_color(DARK.danger)
+                        .text_color(colors().danger)
                         .child(error),
                 )
             })
@@ -3516,12 +3608,12 @@ impl WorkspaceView {
             .cursor_pointer()
             .text_size(px(11.0))
             .text_color(if active {
-                DARK.foreground
+                colors().foreground
             } else {
-                DARK.subtle
+                colors().subtle
             })
-            .bg(if active { DARK.selection } else { DARK.panel })
-            .hover(|button| button.bg(DARK.hover).text_color(DARK.foreground))
+            .bg(if active { colors().selection } else { colors().panel })
+            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
             .child(label)
     }
@@ -3575,8 +3667,8 @@ impl WorkspaceView {
                     .rounded(px(4.0))
                     .cursor_pointer()
                     .text_size(px(11.0))
-                    .text_color(DARK.subtle)
-                    .hover(|back| back.text_color(DARK.foreground).bg(DARK.hover))
+                    .text_color(colors().subtle)
+                    .hover(|back| back.text_color(colors().foreground).bg(colors().hover))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.left_sidebar_mode = LeftSidebarMode::Sessions;
                         cx.notify();
@@ -3587,17 +3679,17 @@ impl WorkspaceView {
                 div()
                     .text_size(px(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(DARK.muted)
+                    .text_color(colors().muted)
                     .child("PROJECT ROOT"),
             )
             .child(
                 div()
                     .p_2()
                     .rounded(px(6.0))
-                    .bg(DARK.elevated)
+                    .bg(colors().elevated)
                     .font_family("JetBrains Mono")
                     .text_size(px(9.0))
-                    .text_color(DARK.foreground)
+                    .text_color(colors().foreground)
                     .child(root.display().to_string()),
             )
             .children(facts.into_iter().map(|(label, value)| {
@@ -3608,13 +3700,13 @@ impl WorkspaceView {
                         div()
                             .flex_1()
                             .text_size(px(10.0))
-                            .text_color(DARK.subtle)
+                            .text_color(colors().subtle)
                             .child(label),
                     )
                     .child(
                         div()
                             .text_size(px(10.0))
-                            .text_color(DARK.foreground)
+                            .text_color(colors().foreground)
                             .child(value),
                     )
             }))
@@ -3625,28 +3717,28 @@ impl WorkspaceView {
                             .mt_2()
                             .text_size(px(10.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(DARK.muted)
+                            .text_color(colors().muted)
                             .child("SELECCIÓN"),
                     )
                     .child(
                         div()
                             .p_2()
                             .rounded(px(6.0))
-                            .bg(DARK.elevated)
+                            .bg(colors().elevated)
                             .flex()
                             .flex_col()
                             .gap_1()
                             .child(
                                 div()
                                     .text_size(px(10.5))
-                                    .text_color(DARK.foreground)
+                                    .text_color(colors().foreground)
                                     .child(name),
                             )
                             .child(
                                 div()
                                     .font_family("JetBrains Mono")
                                     .text_size(px(8.5))
-                                    .text_color(DARK.subtle)
+                                    .text_color(colors().subtle)
                                     .child(path),
                             ),
                     )
@@ -3654,7 +3746,7 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    fn settings_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.settings_open {
             return None;
         }
@@ -3675,14 +3767,14 @@ impl WorkspaceView {
                 .child(
                     div()
                         .id("settings-modal")
-                        .w(px(440.0))
+                        .w(px(480.0))
                         .max_w_full()
-                        .max_h(px(560.0))
+                        .max_h(px(620.0))
                         .mx_4()
                         .rounded_lg()
                         .border_1()
-                        .border_color(DARK.border_subtle)
-                        .bg(DARK.elevated)
+                        .border_color(colors().border_subtle)
+                        .bg(colors().elevated)
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -3699,36 +3791,45 @@ impl WorkspaceView {
                                 .gap_2()
                                 .px_4()
                                 .border_b_1()
-                                .border_color(DARK.border_subtle)
+                                .border_color(colors().border_subtle)
                                 .child(
                                     div()
                                         .flex_1()
                                         .text_size(px(12.0))
                                         .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(DARK.foreground)
+                                        .text_color(colors().foreground)
                                         .child("Ajustes"),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(DARK.subtle)
+                                        .text_color(colors().subtle)
                                         .child("esc"),
                                 )
                                 .child(self.sidebar_close_button("close-settings-modal", cx, |this, cx| {
                                     this.close_settings(cx);
                                 })),
                         )
-                        .child(self.settings_modal_content(cx)),
+                        .child(self.settings_modal_content(window, cx)),
                 )
                 .into_any_element(),
         )
     }
 
-    fn settings_modal_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn settings_modal_content(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let font_size = self.settings.terminal_font_size;
         let hidden = self.settings.show_hidden_files;
         let left_sidebar = self.settings.left_sidebar_visible;
         let git_panel = self.settings.git_panel_visible;
+        let appearance = self.appearance_mode();
+        let theme_id = self.settings.theme_id.clone();
+        let system_dark =
+            ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
+        let preview_tone = theme::resolve_tone(appearance, system_dark);
         let agent_hooks = self.agent_hook_status.unwrap_or_default();
         let agent_hook_error = self.agent_hook_error.clone();
         let all_agent_hooks_installed = agent_hooks.all_installed();
@@ -3745,14 +3846,70 @@ impl WorkspaceView {
                 div()
                     .text_size(px(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(DARK.muted)
+                    .text_color(colors().muted)
                     .child("APARIENCIA"),
             )
             .child(
                 div()
                     .p_3()
                     .rounded(px(7.0))
-                    .bg(DARK.elevated)
+                    .bg(colors().panel)
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(colors().foreground)
+                            .child("Modo"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(self.settings_mode_button(
+                                "Sistema",
+                                "settings-appearance-system",
+                                appearance == AppearanceMode::System,
+                                cx,
+                                |this, window, cx| {
+                                    this.set_appearance_mode(AppearanceMode::System, window, cx);
+                                },
+                            ))
+                            .child(self.settings_mode_button(
+                                "Claro",
+                                "settings-appearance-light",
+                                appearance == AppearanceMode::Light,
+                                cx,
+                                |this, window, cx| {
+                                    this.set_appearance_mode(AppearanceMode::Light, window, cx);
+                                },
+                            ))
+                            .child(self.settings_mode_button(
+                                "Oscuro",
+                                "settings-appearance-dark",
+                                appearance == AppearanceMode::Dark,
+                                cx,
+                                |this, window, cx| {
+                                    this.set_appearance_mode(AppearanceMode::Dark, window, cx);
+                                },
+                            )),
+                    )
+                    .child(
+                        div()
+                            .mt_1()
+                            .text_size(px(10.5))
+                            .text_color(colors().foreground)
+                            .child("Tema"),
+                    )
+                    .child(self.settings_theme_grid(&theme_id, preview_tone, cx)),
+            )
+            .child(
+                div()
+                    .p_3()
+                    .rounded(px(7.0))
+                    .bg(colors().panel)
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -3764,14 +3921,14 @@ impl WorkspaceView {
                                 div()
                                     .flex_1()
                                     .text_size(px(10.5))
-                                    .text_color(DARK.foreground)
+                                    .text_color(colors().foreground)
                                     .child("Fuente de terminal"),
                             )
                             .child(
                                 div()
                                     .font_family("JetBrains Mono")
                                     .text_size(px(9.0))
-                                    .text_color(DARK.muted)
+                                    .text_color(colors().muted)
                                     .child(format!("{font_size:.0} px")),
                             ),
                     )
@@ -3801,14 +3958,14 @@ impl WorkspaceView {
                 div()
                     .text_size(px(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(DARK.muted)
+                    .text_color(colors().muted)
                     .child("WORKSPACE"),
             )
             .child(
                 div()
                     .rounded(px(7.0))
                     .overflow_hidden()
-                    .bg(DARK.elevated)
+                    .bg(colors().elevated)
                     .child(self.settings_toggle_row(
                         "Archivos ocultos",
                         hidden,
@@ -3848,14 +4005,14 @@ impl WorkspaceView {
                 div()
                     .text_size(px(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(DARK.muted)
+                    .text_color(colors().muted)
                     .child("INTEGRACIONES DE AGENTES"),
             )
             .child(
                 div()
                     .p_3()
                     .rounded(px(7.0))
-                    .bg(DARK.elevated)
+                    .bg(colors().elevated)
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -3863,9 +4020,9 @@ impl WorkspaceView {
                         div()
                             .text_size(px(9.0))
                             .text_color(if all_agent_hooks_installed {
-                                DARK.success
+                                colors().success
                             } else {
-                                DARK.subtle
+                                colors().subtle
                             })
                             .child(if all_agent_hooks_installed {
                                 "Hooks de Claude y Codex listos."
@@ -3881,7 +4038,7 @@ impl WorkspaceView {
                                 div()
                                     .flex_1()
                                     .text_size(px(10.0))
-                                    .text_color(DARK.foreground)
+                                    .text_color(colors().foreground)
                                     .child("Claude Code"),
                             )
                             .child(
@@ -3890,15 +4047,15 @@ impl WorkspaceView {
                                     .py_1()
                                     .rounded(px(4.0))
                                     .bg(if agent_hooks.claude_installed {
-                                        DARK.diff_added_bg
+                                        colors().diff_added_bg
                                     } else {
-                                        DARK.selection
+                                        colors().selection
                                     })
                                     .text_size(px(8.0))
                                     .text_color(if agent_hooks.claude_installed {
-                                        DARK.success
+                                        colors().success
                                     } else {
-                                        DARK.muted
+                                        colors().muted
                                     })
                                     .child(if agent_hooks.claude_installed {
                                         "Instalado"
@@ -3915,7 +4072,7 @@ impl WorkspaceView {
                                 div()
                                     .flex_1()
                                     .text_size(px(10.0))
-                                    .text_color(DARK.foreground)
+                                    .text_color(colors().foreground)
                                     .child("Codex"),
                             )
                             .child(
@@ -3924,15 +4081,15 @@ impl WorkspaceView {
                                     .py_1()
                                     .rounded(px(4.0))
                                     .bg(if agent_hooks.codex_installed {
-                                        DARK.diff_added_bg
+                                        colors().diff_added_bg
                                     } else {
-                                        DARK.selection
+                                        colors().selection
                                     })
                                     .text_size(px(8.0))
                                     .text_color(if agent_hooks.codex_installed {
-                                        DARK.success
+                                        colors().success
                                     } else {
-                                        DARK.muted
+                                        colors().muted
                                     })
                                     .child(if agent_hooks.codex_installed {
                                         "Instalado"
@@ -3945,7 +4102,7 @@ impl WorkspaceView {
                         div()
                             .text_size(px(9.0))
                             .line_height(px(13.0))
-                            .text_color(DARK.subtle)
+                            .text_color(colors().subtle)
                             .child(
                                 "Instala hooks globales para informar estado y permisos. La CLI de Vibra ya está disponible dentro de cada pane.",
                             ),
@@ -3954,7 +4111,7 @@ impl WorkspaceView {
                         div()
                             .text_size(px(9.0))
                             .line_height(px(13.0))
-                            .text_color(DARK.subtle)
+                            .text_color(colors().subtle)
                             .child(
                                 "Después de instalar Codex, aprueba el hook una vez con /hooks.",
                             ),
@@ -3964,7 +4121,7 @@ impl WorkspaceView {
                             div()
                                 .text_size(px(9.0))
                                 .line_height(px(13.0))
-                                .text_color(DARK.danger)
+                                .text_color(colors().danger)
                                 .child(error),
                         )
                     })
@@ -3993,14 +4150,14 @@ impl WorkspaceView {
                 div()
                     .text_size(px(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(DARK.muted)
+                    .text_color(colors().muted)
                     .child("SEGURIDAD"),
             )
             .child(
                 div()
                     .p_3()
                     .rounded(px(7.0))
-                    .bg(DARK.elevated)
+                    .bg(colors().elevated)
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -4012,7 +4169,7 @@ impl WorkspaceView {
                                 div()
                                     .flex_1()
                                     .text_size(px(10.0))
-                                    .text_color(DARK.foreground)
+                                    .text_color(colors().foreground)
                                     .child("OSC 52 clipboard read"),
                             )
                             .child(
@@ -4020,9 +4177,9 @@ impl WorkspaceView {
                                     .px_2()
                                     .py_1()
                                     .rounded(px(4.0))
-                                    .bg(DARK.diff_added_bg)
+                                    .bg(colors().diff_added_bg)
                                     .text_size(px(8.0))
-                                    .text_color(DARK.success)
+                                    .text_color(colors().success)
                                     .child("Confirmación obligatoria"),
                             ),
                     )
@@ -4030,7 +4187,7 @@ impl WorkspaceView {
                         div()
                             .text_size(px(9.0))
                             .line_height(px(13.0))
-                            .text_color(DARK.subtle)
+                            .text_color(colors().subtle)
                             .child("La automatización usa un socket 0600 y un token distinto por pane."),
                     ),
             )
@@ -4053,12 +4210,115 @@ impl WorkspaceView {
             .flex()
             .items_center()
             .justify_center()
-            .bg(DARK.selection)
+            .bg(colors().selection)
             .text_size(px(9.0))
-            .text_color(DARK.muted)
-            .hover(|button| button.bg(DARK.hover).text_color(DARK.foreground))
+            .text_color(colors().muted)
+            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
             .child(label)
+    }
+
+    fn settings_mode_button(
+        &self,
+        label: &'static str,
+        id: &'static str,
+        selected: bool,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .h(px(26.0))
+            .px_3()
+            .rounded(px(5.0))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(if selected {
+                colors().selection
+            } else {
+                colors().elevated
+            })
+            .border_1()
+            .border_color(if selected {
+                colors().accent
+            } else {
+                colors().border_subtle
+            })
+            .text_size(px(9.0))
+            .text_color(if selected {
+                colors().foreground
+            } else {
+                colors().muted
+            })
+            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
+            .child(label)
+    }
+
+    fn settings_theme_grid(
+        &self,
+        active_theme_id: &str,
+        preview_tone: ThemeTone,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut grid = div().flex().flex_col().gap_2();
+        // Two columns of theme cards.
+        let mut row = div().flex().gap_2();
+        for (index, family) in theme::built_in_themes().iter().enumerate() {
+            let selected = family.id == active_theme_id;
+            let theme_id = family.id;
+            let [sidebar, panel, accent] = family.preview(preview_tone);
+            let card = div()
+                .id(SharedString::from(format!("settings-theme-{theme_id}")))
+                .flex_1()
+                .min_w(px(0.0))
+                .p_2()
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .border_1()
+                .border_color(if selected {
+                    colors().accent
+                } else {
+                    colors().border_subtle
+                })
+                .bg(if selected {
+                    colors().selection
+                } else {
+                    colors().elevated
+                })
+                .hover(|card| card.bg(colors().hover))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.set_theme_id(theme_id, window, cx);
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .mb_1()
+                        .child(div().size(px(12.0)).rounded_full().bg(sidebar))
+                        .child(div().size(px(12.0)).rounded_full().bg(panel))
+                        .child(div().size(px(12.0)).rounded_full().bg(accent)),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(colors().foreground)
+                        .child(family.label),
+                );
+            row = row.child(card);
+            if index % 2 == 1 {
+                grid = grid.child(row);
+                row = div().flex().gap_2();
+            }
+        }
+        if theme::built_in_themes().len() % 2 == 1 {
+            grid = grid.child(row.child(div().flex_1()));
+        }
+        grid.into_any_element()
     }
 
     fn settings_toggle_row(
@@ -4077,14 +4337,14 @@ impl WorkspaceView {
             .items_center()
             .cursor_pointer()
             .border_b_1()
-            .border_color(DARK.border_subtle)
-            .hover(|row| row.bg(DARK.hover))
+            .border_color(colors().border_subtle)
+            .hover(|row| row.bg(colors().hover))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
             .child(
                 div()
                     .flex_1()
                     .text_size(px(10.0))
-                    .text_color(DARK.muted)
+                    .text_color(colors().muted)
                     .child(label),
             )
             .child(
@@ -4096,12 +4356,12 @@ impl WorkspaceView {
                     .flex()
                     .justify_end()
                     .bg(if enabled {
-                        DARK.success
+                        colors().success
                     } else {
-                        DARK.selection
+                        colors().selection
                     })
                     .when(!enabled, |toggle| toggle.justify_start())
-                    .child(div().size(px(12.0)).rounded_full().bg(DARK.foreground)),
+                    .child(div().size(px(12.0)).rounded_full().bg(colors().foreground)),
             )
     }
 
@@ -4125,7 +4385,7 @@ impl WorkspaceView {
             .flex_col()
             .min_h(px(0.0))
             .overflow_hidden()
-            .bg(DARK.terminal);
+            .bg(colors().terminal);
         if let Some(editor) = editor {
             panel.child(editor)
         } else {
@@ -4172,16 +4432,16 @@ impl WorkspaceView {
                     .cursor_pointer()
                     .border_b_1()
                     .border_color(if selected {
-                        DARK.muted
+                        colors().muted
                     } else {
                         gpui::rgba(0x00000000)
                     })
                     .text_color(if selected {
-                        DARK.foreground
+                        colors().foreground
                     } else {
-                        DARK.subtle
+                        colors().subtle
                     })
-                    .hover(|tab| tab.text_color(DARK.foreground).bg(DARK.hover))
+                    .hover(|tab| tab.text_color(colors().foreground).bg(colors().hover))
                     .active(|tab| tab.opacity(0.84))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_tab(tab_id, window, cx);
@@ -4210,8 +4470,8 @@ impl WorkspaceView {
                                 .items_center()
                                 .justify_center()
                                 .text_size(px(12.0))
-                                .text_color(DARK.subtle)
-                                .hover(|close| close.bg(DARK.elevated).text_color(DARK.foreground))
+                                .text_color(colors().subtle)
+                                .hover(|close| close.bg(colors().elevated).text_color(colors().foreground))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.close_tab(tab_id, window, cx);
@@ -4227,9 +4487,9 @@ impl WorkspaceView {
             .flex_none()
             .flex()
             .items_center()
-            .bg(DARK.terminal)
+            .bg(colors().terminal)
             .border_b_1()
-            .border_color(DARK.border_subtle)
+            .border_color(colors().border_subtle)
             .child(tab_list)
             .child(
                 div()
@@ -4329,8 +4589,8 @@ impl WorkspaceView {
                 let divider = div()
                     .id(SharedString::from(divider_id))
                     .flex_none()
-                    .bg(DARK.border_subtle)
-                    .hover(|divider| divider.bg(DARK.muted))
+                    .bg(colors().border_subtle)
+                    .hover(|divider| divider.bg(colors().muted))
                     .when(axis == WorkspaceSplitAxis::Horizontal, |divider| {
                         divider.w(px(1.0)).h_full().cursor_ew_resize()
                     })
@@ -4422,7 +4682,7 @@ impl WorkspaceView {
             .min_h(px(0.0))
             .relative()
             .overflow_hidden()
-            .bg(DARK.terminal)
+            .bg(colors().terminal)
             .when_some(panes, |canvas, panes| canvas.child(panes))
             .when(zoomed, |canvas| {
                 canvas.child(
@@ -4433,9 +4693,9 @@ impl WorkspaceView {
                         .px_2()
                         .py_1()
                         .rounded_sm()
-                        .bg(DARK.elevated)
+                        .bg(colors().elevated)
                         .text_xs()
-                        .text_color(DARK.muted)
+                        .text_color(colors().muted)
                         .child("Pane ampliado · ⇧⌘↵ restaurar"),
                 )
             })
@@ -4455,13 +4715,13 @@ impl WorkspaceView {
                                 .items_center()
                                 .justify_center()
                                 .text_size(px(13.0))
-                                .text_color(DARK.muted)
+                                .text_color(colors().muted)
                                 .child(">_"),
                         )
                         .child(
                             div()
                                 .text_size(px(12.0))
-                                .text_color(DARK.muted)
+                                .text_color(colors().muted)
                                 .child("Ninguna terminal seleccionada"),
                         ),
                 )
@@ -4490,9 +4750,9 @@ impl WorkspaceView {
             .h_full()
             .flex_none()
             .overflow_hidden()
-            .bg(DARK.panel)
+            .bg(colors().panel)
             .border_l_1()
-            .border_color(DARK.border_subtle)
+            .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(full_width))
@@ -4509,7 +4769,7 @@ impl WorkspaceView {
                             .pl_3()
                             .pr_2()
                             .border_b_1()
-                            .border_color(DARK.border_subtle)
+                            .border_color(colors().border_subtle)
                             .child(
                                 div()
                                     .min_w(px(0.0))
@@ -4537,17 +4797,17 @@ impl WorkspaceView {
                                                 gpui::FontWeight::NORMAL
                                             })
                                             .text_color(if selected {
-                                                DARK.foreground
+                                                colors().foreground
                                             } else {
-                                                DARK.subtle
+                                                colors().subtle
                                             })
                                             .border_b_1()
                                             .border_color(if selected {
-                                                DARK.muted
+                                                colors().muted
                                             } else {
                                                 gpui::rgba(0x00000000)
                                             })
-                                            .hover(|tab| tab.text_color(DARK.foreground))
+                                            .hover(|tab| tab.text_color(colors().foreground))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.right_sidebar_mode = item_mode;
                                                 match item_mode {
@@ -4607,8 +4867,8 @@ impl WorkspaceView {
                         .mx_4()
                         .rounded_lg()
                         .border_1()
-                        .border_color(DARK.border_subtle)
-                        .bg(DARK.elevated)
+                        .border_color(colors().border_subtle)
+                        .bg(colors().elevated)
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -4622,11 +4882,11 @@ impl WorkspaceView {
                                 .gap_2()
                                 .px_4()
                                 .border_b_1()
-                                .border_color(DARK.border_subtle)
+                                .border_color(colors().border_subtle)
                                 .child(
                                     div()
                                         .font_family("JetBrains Mono")
-                                        .text_color(DARK.subtle)
+                                        .text_color(colors().subtle)
                                         .child(">"),
                                 )
                                 .child(
@@ -4635,9 +4895,9 @@ impl WorkspaceView {
                                         .font_family("JetBrains Mono")
                                         .text_size(px(12.0))
                                         .text_color(if query.is_empty() {
-                                            DARK.subtle
+                                            colors().subtle
                                         } else {
-                                            DARK.foreground
+                                            colors().foreground
                                         })
                                         .child(if query.is_empty() {
                                             placeholder.to_owned()
@@ -4645,7 +4905,7 @@ impl WorkspaceView {
                                             query
                                         }),
                                 )
-                                .child(div().text_xs().text_color(DARK.subtle).child("esc")),
+                                .child(div().text_xs().text_color(colors().subtle).child("esc")),
                         )
                         .child(
                             div()
@@ -4668,11 +4928,11 @@ impl WorkspaceView {
                                         .gap_3()
                                         .cursor_pointer()
                                         .bg(if active {
-                                            DARK.selection
+                                            colors().selection
                                         } else {
-                                            DARK.elevated
+                                            colors().elevated
                                         })
-                                        .hover(|row| row.bg(DARK.hover))
+                                        .hover(|row| row.bg(colors().hover))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.execute_palette_action(action.clone(), window, cx);
                                         }))
@@ -4682,9 +4942,9 @@ impl WorkspaceView {
                                                 .text_center()
                                                 .font_family("JetBrains Mono")
                                                 .text_color(if active {
-                                                    DARK.muted
+                                                    colors().muted
                                                 } else {
-                                                    DARK.subtle
+                                                    colors().subtle
                                                 })
                                                 .child(if active { "›" } else { "·" }),
                                         )
@@ -4695,9 +4955,9 @@ impl WorkspaceView {
                                                 .truncate()
                                                 .text_size(px(11.0))
                                                 .text_color(if active {
-                                                    DARK.foreground
+                                                    colors().foreground
                                                 } else {
-                                                    DARK.muted
+                                                    colors().muted
                                                 })
                                                 .child(item.label),
                                         )
@@ -4705,7 +4965,7 @@ impl WorkspaceView {
                                             div()
                                                 .font_family("JetBrains Mono")
                                                 .text_size(px(8.5))
-                                                .text_color(DARK.subtle)
+                                                .text_color(colors().subtle)
                                                 .child(item.detail),
                                         )
                                 })),
@@ -4718,7 +4978,7 @@ impl WorkspaceView {
                                     .items_center()
                                     .justify_center()
                                     .text_sm()
-                                    .text_color(DARK.subtle)
+                                    .text_color(colors().subtle)
                                     .child("Sin resultados"),
                             )
                         })
@@ -4731,9 +4991,9 @@ impl WorkspaceView {
                                 .justify_end()
                                 .px_3()
                                 .border_t_1()
-                                .border_color(DARK.border_subtle)
+                                .border_color(colors().border_subtle)
                                 .text_xs()
-                                .text_color(DARK.subtle)
+                                .text_color(colors().subtle)
                                 .child("↑↓ navegar · ↵ ejecutar"),
                         ),
                 )
@@ -4782,8 +5042,8 @@ impl WorkspaceView {
                         .py_1()
                         .rounded(px(8.0))
                         .border_1()
-                        .border_color(DARK.border_subtle)
-                        .bg(DARK.elevated)
+                        .border_color(colors().border_subtle)
+                        .bg(colors().elevated)
                         .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
                             cx.stop_propagation();
@@ -4803,11 +5063,11 @@ impl WorkspaceView {
                                 .cursor_pointer()
                                 .text_size(px(11.0))
                                 .text_color(if danger {
-                                    DARK.danger
+                                    colors().danger
                                 } else {
-                                    DARK.foreground
+                                    colors().foreground
                                 })
-                                .hover(|item| item.bg(DARK.hover))
+                                .hover(|item| item.bg(colors().hover))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.run_context_menu_action(action, window, cx);
                                 }))
@@ -4852,8 +5112,8 @@ impl WorkspaceView {
                         .p_4()
                         .rounded_lg()
                         .border_1()
-                        .border_color(DARK.border_subtle)
-                        .bg(DARK.elevated)
+                        .border_color(colors().border_subtle)
+                        .bg(colors().elevated)
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -4865,7 +5125,7 @@ impl WorkspaceView {
                             div()
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(DARK.foreground)
+                                .text_color(colors().foreground)
                                 .child(title),
                         )
                         .child(
@@ -4874,16 +5134,16 @@ impl WorkspaceView {
                                 .px_3()
                                 .rounded(px(5.0))
                                 .border_1()
-                                .border_color(DARK.success)
-                                .bg(DARK.terminal)
+                                .border_color(colors().success)
+                                .bg(colors().terminal)
                                 .flex()
                                 .items_center()
                                 .font_family("JetBrains Mono")
                                 .text_size(px(11.0))
                                 .text_color(if value == "Escribe un nombre…" {
-                                    DARK.subtle
+                                    colors().subtle
                                 } else {
-                                    DARK.foreground
+                                    colors().foreground
                                 })
                                 .child(value),
                         )
@@ -4895,7 +5155,7 @@ impl WorkspaceView {
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(DARK.subtle)
+                                        .text_color(colors().subtle)
                                         .child("↵ confirmar · esc cancelar"),
                                 )
                                 .child(
@@ -4905,9 +5165,9 @@ impl WorkspaceView {
                                         .py_1()
                                         .rounded(px(5.0))
                                         .cursor_pointer()
-                                        .bg(DARK.success)
+                                        .bg(colors().success)
                                         .text_xs()
-                                        .text_color(DARK.terminal)
+                                        .text_color(colors().terminal)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.confirm_rename_prompt(cx);
                                         }))
@@ -4947,8 +5207,8 @@ impl WorkspaceView {
                             .p_4()
                             .rounded_lg()
                             .border_1()
-                            .border_color(DARK.border_subtle)
-                            .bg(DARK.elevated)
+                            .border_color(colors().border_subtle)
+                            .bg(colors().elevated)
                             .shadow_lg()
                             .flex()
                             .flex_col()
@@ -4957,7 +5217,7 @@ impl WorkspaceView {
                                 div()
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(DARK.foreground)
+                                    .text_color(colors().foreground)
                                     .child(title),
                             )
                             .child(
@@ -4966,16 +5226,16 @@ impl WorkspaceView {
                                     .px_3()
                                     .rounded(px(5.0))
                                     .border_1()
-                                    .border_color(DARK.success)
-                                    .bg(DARK.terminal)
+                                    .border_color(colors().success)
+                                    .bg(colors().terminal)
                                     .flex()
                                     .items_center()
                                     .font_family("JetBrains Mono")
                                     .text_size(px(11.0))
                                     .text_color(if value == "Escribe un nombre…" {
-                                        DARK.subtle
+                                        colors().subtle
                                     } else {
-                                        DARK.foreground
+                                        colors().foreground
                                     })
                                     .child(value),
                             )
@@ -4987,7 +5247,7 @@ impl WorkspaceView {
                                     .child(
                                         div()
                                             .text_xs()
-                                            .text_color(DARK.subtle)
+                                            .text_color(colors().subtle)
                                             .child("↵ confirmar · esc cancelar"),
                                     )
                                     .child(
@@ -4997,9 +5257,9 @@ impl WorkspaceView {
                                             .py_1()
                                             .rounded(px(5.0))
                                             .cursor_pointer()
-                                            .bg(DARK.success)
+                                            .bg(colors().success)
                                             .text_xs()
-                                            .text_color(DARK.terminal)
+                                            .text_color(colors().terminal)
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.confirm_file_prompt(cx);
                                             }))
@@ -5031,8 +5291,8 @@ impl WorkspaceView {
                         .p_4()
                         .rounded_lg()
                         .border_1()
-                        .border_color(DARK.border_subtle)
-                        .bg(DARK.elevated)
+                        .border_color(colors().border_subtle)
+                        .bg(colors().elevated)
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -5041,13 +5301,13 @@ impl WorkspaceView {
                             div()
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(DARK.foreground)
+                                .text_color(colors().foreground)
                                 .child(format!("¿Mover “{name}” a la Papelera?")),
                         )
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(DARK.muted)
+                                .text_color(colors().muted)
                                 .child("La operación es recuperable desde la Papelera de macOS."),
                         )
                         .child(
@@ -5058,7 +5318,7 @@ impl WorkspaceView {
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(DARK.subtle)
+                                        .text_color(colors().subtle)
                                         .child("↵ mover · esc cancelar"),
                                 )
                                 .child(
@@ -5068,9 +5328,9 @@ impl WorkspaceView {
                                         .py_1()
                                         .rounded(px(5.0))
                                         .cursor_pointer()
-                                        .bg(DARK.danger)
+                                        .bg(colors().danger)
                                         .text_xs()
-                                        .text_color(DARK.foreground)
+                                        .text_color(colors().foreground)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.confirm_file_trash(cx);
                                         }))
@@ -5091,12 +5351,12 @@ impl WorkspaceView {
                 .items_center()
                 .px_3()
                 .gap_2()
-                .bg(DARK.elevated)
+                .bg(colors().elevated)
                 .border_b_1()
-                .border_color(DARK.danger)
+                .border_color(colors().danger)
                 .text_size(px(10.5))
-                .text_color(DARK.danger)
-                .child(div().size(px(5.0)).rounded_full().bg(DARK.danger))
+                .text_color(colors().danger)
+                .child(div().size(px(5.0)).rounded_full().bg(colors().danger))
                 .child(error.clone())
         })
     }
@@ -5117,8 +5377,8 @@ impl WorkspaceView {
             .justify_center()
             .cursor_pointer()
             .text_size(px(13.0))
-            .text_color(DARK.subtle)
-            .hover(|close| close.bg(DARK.hover).text_color(DARK.foreground))
+            .text_color(colors().subtle)
+            .hover(|close| close.bg(colors().hover).text_color(colors().foreground))
             .active(|close| close.opacity(0.72))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
             .child("×")
@@ -5142,25 +5402,25 @@ impl WorkspaceView {
             .justify_center()
             .cursor_pointer()
             .bg(if selected {
-                DARK.selection
+                colors().selection
             } else {
-                DARK.terminal
+                colors().terminal
             })
             .text_size(px(14.0))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(if selected {
-                DARK.foreground
+                colors().foreground
             } else {
-                DARK.muted
+                colors().muted
             })
-            .hover(|button| button.bg(DARK.hover).text_color(DARK.foreground))
+            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
             .active(|button| button.opacity(0.72))
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
             .child(label)
     }
 
     fn sidebar_icon(left: bool) -> Div {
-        let panel = div().w(px(4.0)).h_full().flex_none().bg(DARK.foreground);
+        let panel = div().w(px(4.0)).h_full().flex_none().bg(colors().foreground);
         let content = div().h_full().flex_1();
         let icon = div()
             .w(px(14.0))
@@ -5169,7 +5429,7 @@ impl WorkspaceView {
             .overflow_hidden()
             .rounded(px(2.0))
             .border_1()
-            .border_color(DARK.muted);
+            .border_color(colors().muted);
 
         if left {
             icon.child(panel).child(content)
@@ -5194,8 +5454,8 @@ impl WorkspaceView {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .bg(DARK.titlebar)
-            .hover(|button| button.bg(DARK.hover))
+            .bg(colors().titlebar)
+            .hover(|button| button.bg(colors().hover))
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
             .child(Self::sidebar_icon(left))
     }
@@ -5203,6 +5463,7 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_appearance_subscription(window, cx);
         if self.initial_terminal_focus_pending {
             self.initial_terminal_focus_pending = false;
             cx.defer_in(window, |this, window, cx| {
@@ -5245,8 +5506,8 @@ impl Render for WorkspaceView {
             .flex_col()
             .font_family(".SystemUIFont")
             .text_size(px(12.0))
-            .text_color(DARK.foreground)
-            .bg(DARK.background)
+            .text_color(colors().foreground)
+            .bg(colors().background)
             .child(self.titlebar(cx));
 
         if let Some(banner) = self.error_banner() {
@@ -5270,7 +5531,7 @@ impl Render for WorkspaceView {
             body = body.child(modal);
         } else if let Some(modal) = self.rename_modal(cx) {
             body = body.child(modal);
-        } else if let Some(modal) = self.settings_modal(cx) {
+        } else if let Some(modal) = self.settings_modal(window, cx) {
             body = body.child(modal);
         }
         if let Some(menu) = self.context_menu_overlay(cx) {
@@ -5376,6 +5637,45 @@ fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
     }
 }
 
+/// One label row inside a sessions sidebar tab (fixed width, ellipsis).
+fn sidebar_tab_line(
+    text: &str,
+    color: gpui::Rgba,
+    size: f32,
+    medium: bool,
+    mono: bool,
+) -> Div {
+    let mut row = div()
+        .w(px(LEFT_SIDEBAR_TAB_TEXT_WIDTH))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .text_size(px(size))
+        .text_color(color)
+        .child(text.to_owned());
+    if medium {
+        row = row.font_weight(gpui::FontWeight::MEDIUM);
+    }
+    if mono {
+        row = row.font_family("JetBrains Mono");
+    }
+    row
+}
+
+/// Directory basename for chrome labels (`/Users/me/Dev/Vibra` → `Vibra`).
+fn directory_basename(path: &str) -> String {
+    let path = path.trim().trim_end_matches(['/', '\\']);
+    if path.is_empty() {
+        return "—".to_owned();
+    }
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| path.to_owned())
+}
+
 /// Short path for sidebar tabs: `~/…`, and collapse long intermediate segments.
 fn format_sidebar_path(path: &str) -> String {
     let path = path.trim();
@@ -5418,29 +5718,18 @@ fn format_sidebar_path(path: &str) -> String {
     }
 }
 
-/// Branch + remote tracking for sidebar tabs (cmux-style).
+/// Branch + dirty/ahead/behind for sidebar tabs (compact cmux-style).
 fn format_sidebar_branch(meta: &SidebarWorkspaceMeta) -> Option<String> {
     let branch = meta.branch.as_ref()?;
     let mut label = branch.clone();
     if meta.dirty {
         label.push('*');
     }
-    if meta.ahead > 0 || meta.behind > 0 {
-        if meta.ahead > 0 {
-            label.push_str(&format!(" ↑{}", meta.ahead));
-        }
-        if meta.behind > 0 {
-            label.push_str(&format!(" ↓{}", meta.behind));
-        }
-    } else if let Some(upstream) = meta.upstream.as_ref() {
-        // Show the remote name when tracking is in sync (e.g. origin).
-        let remote = upstream
-            .split_once('/')
-            .map(|(remote, _)| remote)
-            .unwrap_or(upstream.as_str());
-        if !remote.is_empty() && remote != branch {
-            label.push_str(&format!(" → {remote}"));
-        }
+    if meta.ahead > 0 {
+        label.push_str(&format!(" ↑{}", meta.ahead));
+    }
+    if meta.behind > 0 {
+        label.push_str(&format!(" ↓{}", meta.behind));
     }
     Some(label)
 }
@@ -5451,11 +5740,11 @@ fn ease_out_cubic(t: f32) -> f32 {
     1.0 - inv * inv * inv
 }
 
-/// Icon color for file-tree entries (folders use `DARK.folder` / git tint at the call site).
+/// Icon color for file-tree entries (folders use `colors().folder` / git tint at the call site).
 fn file_tree_icon_color(kind: FileEntryKind, name: &str) -> gpui::Rgba {
     match kind {
-        FileEntryKind::Directory => DARK.folder,
-        FileEntryKind::Symlink => DARK.accent,
+        FileEntryKind::Directory => colors().folder,
+        FileEntryKind::Symlink => colors().accent,
         FileEntryKind::File => {
             let lower = name.to_ascii_lowercase();
             let ext = std::path::Path::new(name)
@@ -5464,24 +5753,24 @@ fn file_tree_icon_color(kind: FileEntryKind, name: &str) -> gpui::Rgba {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             match (lower.as_str(), ext.as_str()) {
-                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => DARK.muted,
+                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => colors().muted,
                 (_, "rs") => gpui::rgb(0xdea584),
-                (_, "md" | "mdx") => DARK.accent,
+                (_, "md" | "mdx") => colors().accent,
                 (_, "json" | "jsonc") => gpui::rgb(0xcbcb41),
-                (_, "lock") => DARK.subtle,
-                (_, "yml" | "yaml") => DARK.muted,
+                (_, "lock") => colors().subtle,
+                (_, "yml" | "yaml") => colors().muted,
                 (_, "gitignore" | "gitattributes") | (".gitignore", _) => gpui::rgb(0xf05033),
-                ("license" | "licence" | "notice" | "copying", _) => DARK.subtle,
+                ("license" | "licence" | "notice" | "copying", _) => colors().subtle,
                 (_, "ts" | "tsx") => gpui::rgb(0x519aba),
                 (_, "js" | "jsx" | "mjs" | "cjs") => gpui::rgb(0xcbcb41),
                 (_, "css" | "scss") => gpui::rgb(0x9b7ed9),
                 (_, "html" | "htm" | "svg") => gpui::rgb(0xe34c26),
                 (_, "py") => gpui::rgb(0x3572a5),
                 (_, "go") => gpui::rgb(0x00add8),
-                (_, "sh" | "bash" | "zsh") => DARK.success,
+                (_, "sh" | "bash" | "zsh") => colors().success,
                 (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => gpui::rgb(0xa074c4),
-                _ if name.starts_with('.') => DARK.subtle,
-                _ => DARK.subtle,
+                _ if name.starts_with('.') => colors().subtle,
+                _ => colors().subtle,
             }
         }
     }
@@ -5565,12 +5854,12 @@ fn relative_repo_path(path: &Path, root: &Path) -> Option<String> {
 
 fn git_status_color(status: GitFileStatus) -> gpui::Rgba {
     match status {
-        GitFileStatus::Modified | GitFileStatus::TypeChanged => DARK.git_modified,
+        GitFileStatus::Modified | GitFileStatus::TypeChanged => colors().git_modified,
         GitFileStatus::Added
         | GitFileStatus::Untracked
         | GitFileStatus::Renamed
-        | GitFileStatus::Copied => DARK.git_added,
-        GitFileStatus::Deleted | GitFileStatus::Conflicted => DARK.git_deleted,
+        | GitFileStatus::Copied => colors().git_added,
+        GitFileStatus::Deleted | GitFileStatus::Conflicted => colors().git_deleted,
     }
 }
 
@@ -5617,39 +5906,39 @@ fn git_status_trailing(status: GitFileStatus) -> Div {
             .font_family("JetBrains Mono")
             .text_size(px(10.0))
             .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(DARK.git_modified)
+            .text_color(colors().git_modified)
             .child("M"),
         GitFileStatus::Renamed => div()
             .flex_none()
             .font_family("JetBrains Mono")
             .text_size(px(10.0))
             .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(DARK.git_added)
+            .text_color(colors().git_added)
             .child("R"),
         GitFileStatus::Copied => div()
             .flex_none()
             .font_family("JetBrains Mono")
             .text_size(px(10.0))
             .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(DARK.git_added)
+            .text_color(colors().git_added)
             .child("C"),
         GitFileStatus::Conflicted => div()
             .flex_none()
             .font_family("JetBrains Mono")
             .text_size(px(10.0))
             .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(DARK.git_deleted)
+            .text_color(colors().git_deleted)
             .child("U"),
         GitFileStatus::Added | GitFileStatus::Untracked => div()
             .size(px(6.0))
             .flex_none()
             .rounded_full()
-            .bg(DARK.git_added),
+            .bg(colors().git_added),
         GitFileStatus::Deleted => div()
             .size(px(6.0))
             .flex_none()
             .rounded_full()
-            .bg(DARK.git_deleted),
+            .bg(colors().git_deleted),
     }
 }
 
@@ -5688,10 +5977,8 @@ mod tests {
             behind: 0,
             dirty: false,
         };
-        assert_eq!(
-            format_sidebar_branch(&synced).as_deref(),
-            Some("feature → origin")
-        );
+        // In-sync remotes stay silent so the branch line stays short.
+        assert_eq!(format_sidebar_branch(&synced).as_deref(), Some("feature"));
     }
 
     #[test]
@@ -5702,5 +5989,13 @@ mod tests {
             "unexpected collapsed path: {long}"
         );
         assert_eq!(format_sidebar_path(""), "—");
+    }
+
+    #[test]
+    fn directory_basename_uses_last_segment() {
+        assert_eq!(directory_basename("/Users/demo/Dev/Vibra"), "Vibra");
+        assert_eq!(directory_basename("/Users/demo/Dev/Vibra/"), "Vibra");
+        assert_eq!(directory_basename("~"), "~");
+        assert_eq!(directory_basename(""), "—");
     }
 }
