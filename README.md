@@ -29,22 +29,25 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - múltiples proyectos, workspaces y tabs persistentes;
 - terminales divididas recursivamente en cuatro direcciones;
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
-- command palette (`⇧⌘P`) y apertura rápida de archivos (`⌘P`).
+- sidebar de sesiones con CWD y rama Git en vivo (ahead/behind/dirty);
+- menús contextuales en sesiones y panes (renombrar, cerrar, dividir, zoom);
+- command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`).
 
 ### Terminal
 
 - PTY nativo y emulación ANSI con `alacritty_terminal`;
 - render GPUI/Metal, truecolor, estilos, cursores, scrollback e IME;
 - teclado xterm y Kitty, mouse SGR, bracketed paste y alternate screen;
+- pegado estilo Warp (`⌘V`): texto con bracketed paste; con imagen en el clipboard y un agente CLI en foco, se envía Ctrl+V para adjuntar capturas;
 - selección, búsqueda, enlaces OSC 8 y clipboard OSC 52 protegido;
 - JetBrains Mono Variable incluida en la aplicación.
 
 ### Files y Diff
 
 - panel derecho unificado con las vistas `Files` y `Diff`;
-- árbol de archivos confinado al proyecto, con operaciones recuperables;
+- árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos, guías de indentación y operaciones recuperables;
 - editor UTF-8 con búsqueda, undo/redo, guardado atómico y `⌘S`;
-- estado Git y diff virtualizado por archivo en una interfaz de solo lectura;
+- Diff de solo lectura estilo Warp: tarjetas expandibles, gutter de línea y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - las mutaciones Git se realizan desde la terminal integrada.
 
 ### Agentes y automatización
@@ -138,14 +141,16 @@ misma versión, más las herramientas Sparkle en `.build/artifacts/sparkle`
 (clave EdDSA en el llavero):
 
 ```bash
-./Scripts/release.sh 0.3.0 --dry-run
-./Scripts/release.sh 0.3.0 --notarize
-./Scripts/release.sh 0.3.1-beta.1 --prerelease
+./Scripts/release.sh 0.3.4 --dry-run
+./Scripts/release.sh 0.3.4
+./Scripts/release.sh 0.3.5-beta.1 --prerelease
+./Scripts/release.sh 0.3.4 --no-notarize   # solo si hace falta omitir notarización
 ```
 
-Un release **estable** crea el DMG universal, firma el appcast, publica en
-GitHub como Latest y actualiza `docs/appcast.xml`. Un **prerelease** no toca el
-feed de Sparkle.
+Un release **estable** crea el DMG universal, firma con Developer ID, notariza
+por defecto (opt-out con `--no-notarize`), firma el appcast, publica en GitHub
+como Latest y actualiza `docs/appcast.xml`. Un **prerelease** no toca el feed
+de Sparkle.
 
 ## Migración de datos
 
@@ -177,9 +182,11 @@ importan una sola vez.
 | `⌃⌥` + flechas | Cambiar proporción del pane |
 | `⌃⌥E` / `⇧⌘↵` | Igualar panes / alternar zoom |
 | `⇧⌘P` / `⌘P` | Paleta de comandos / quick open |
+| `⌘,` | Abrir Settings (modal centrado) |
 | `⌘B` | Mostrar u ocultar sidebar de sesiones |
 | `⌥⌘B` | Mostrar u ocultar panel Files y Diff |
 | `⌘U` | Buscar actualizaciones (Sparkle) |
+| `⌘V` | Pegar (bracketed paste; Ctrl+V con imagen en agentes CLI) |
 | `⌘F`, `⌘G`, `⇧⌘G` | Buscar / siguiente / anterior en terminal |
 | `⌘=`, `⌘-`, `⌘0` | Ajustar o restablecer fuente |
 | `⌘K` | Limpiar pantalla y scrollback |

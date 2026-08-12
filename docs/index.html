@@ -100,17 +100,16 @@
     <a class="button" id="download" href="https://github.com/rubenrca/Vibra/releases/latest">Download for macOS</a>
     <span class="meta" id="meta">Universal · macOS 14 or newer</span>
   </div>
-  <p class="meta">Vibra updates itself: new versions are offered inside the app.</p>
+  <p class="meta">Signed and notarized for Gatekeeper. Vibra updates itself: new versions are offered inside the app.</p>
 
-  <h2>Opening it the first time</h2>
+  <h2>Install</h2>
   <div class="card">
-    <p style="margin:0">Vibra is not yet notarized by Apple, so macOS blocks the first launch. To allow it:</p>
-    <ol>
-      <li>Open the disk image and drag <strong>Vibra</strong> to Applications.</li>
-      <li>Launch it once and dismiss the warning.</li>
-      <li>Go to <strong>System Settings → Privacy &amp; Security</strong>, scroll down, and click <strong>Open Anyway</strong>.</li>
+    <ol style="margin:0">
+      <li>Download the universal disk image and open it.</li>
+      <li>Drag <strong>Vibra</strong> to Applications.</li>
+      <li>Launch it from Applications or Spotlight.</li>
     </ol>
-    <p class="meta" style="margin:0.9rem 0 0">This is only needed once. Updates installed by Vibra itself are not blocked.</p>
+    <p class="meta" style="margin:0.9rem 0 0">Releases from 0.3.4 onward are Developer ID signed and notarized by Apple.</p>
   </div>
 
   <h2>Requirements</h2>
@@ -120,7 +119,7 @@
   </ul>
 
   <h2>Building from source</h2>
-  <p style="margin:0.4rem 0 0">Clone the repository and run <code>swift run Vibra</code>. See the <a href="https://github.com/rubenrca/Vibra">README</a> for details.</p>
+  <p style="margin:0.4rem 0 0">Clone the repository and run <code>cargo run</code>. Requires Rust 1.96+, Xcode, and macOS 14+. See the <a href="https://github.com/rubenrca/Vibra">README</a> for packaging and release scripts.</p>
 
   <footer>
     MIT licensed · <a href="https://github.com/rubenrca/Vibra">Source</a> · <a href="https://github.com/rubenrca/Vibra/releases">All releases</a>
