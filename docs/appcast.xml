@@ -3,20 +3,24 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.1</title>
-            <pubDate>Tue, 11 Aug 2026 18:28:15 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.1</link>
-            <sparkle:version>43</sparkle:version>
-            <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
+            <title>0.3.2</title>
+            <pubDate>Tue, 11 Aug 2026 20:32:20 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.2</link>
+            <sparkle:version>46</sparkle:version>
+            <sparkle:shortVersionString>0.3.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Restore coding-agent brand marks in the sessions sidebar with live idle/working/waiting status.</li>
-  <li>Sanitize monochrome host environment variables (`NO_COLOR`, `FORCE_COLOR`, etc.) when spawning PTYs so agent colors match a dock-launched app.</li>
-  <li>Paint terminal cell backgrounds as a full-bleed grid so full-screen agent TUIs no longer leave a cut-off strip at the pane edge.</li>
-  <li>Keep the shell theme intact: surface fill follows the live TUI color instead of forcing pure black.</li>
+  <li>Restore the macOS application menu (Vibra → Settings…, Check for Updates…, Quit) and basic File / Edit / View / Window menus.</li>
+  <li>Open preferences from the menu or with `⌘,` (same settings panel as the command palette).</li>
+  <li>Rebuild the Diff panel as Warp-style expandable file cards: accordion multi-expand, inline diffs, single line-number gutter, and an “Uncommitted changes” header.</li>
+  <li>Add IDE-style syntax highlighting in the Diff panel (keywords, strings, comments, types, numbers) for Rust, JS/TS, Python, Swift, Go, shell, and common config formats.</li>
+  <li>Resolve coding-agent identity from foreground TTY process, terminal title, then screen text so the Codex mark appears as soon as `codex` starts (not only after a screen banner).</li>
+  <li>Add structured `SetAgentPresence` automation and idempotent Claude/Codex hook setup, so hooks report working, waiting-for-permission, idle, and session end states.</li>
+  <li>Manage Claude/Codex hook integrations from Settings, with installed-state feedback and explicit install/update or uninstall actions.</li>
+  <li>Let agents open and coordinate other agents via `$VIBRA_CLI`: `+agent open/start` (split/tab, `--cwd`, shell-ready wait), named targets, `+agent prompt/wait/read/list/rename/status`, `+pane split/tab --no-focus`, cross-pane `+pane run --pane`, `+agent kinds`, and `+skill`.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.1/Vibra-0.3.1.dmg" length="11543072" type="application/octet-stream" sparkle:edSignature="ChjtLvmQsJF5y0vL/Vxdc6ADPUvxoFiW316RF7G9CdsfKigWWTW2IQSsDvfNFnsSecD+a16aYioRFd3HdFRAAw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.2/Vibra-0.3.2.dmg" length="11863073" type="application/octet-stream" sparkle:edSignature="oNg7+L+XxpWJ8s/wphb3CbKzbxLwxiSNwlU8ETB/B18zHNdBVLxrEqOMmT3lHEgtdCJG5EkE721yo9ostgf/Ag=="/>
         </item>
     </channel>
 </rss>
