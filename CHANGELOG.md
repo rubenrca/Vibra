@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.3.3 — 2026-08-11
+
+- Open Settings as a centered modal (⌘,) instead of embedding preferences in the sessions sidebar.
+- Add right-click context menus on sessions and panes: rename, delete/close, split, and zoom.
+- Route system paste (⌘V) like Warp: inject text with bracketed paste, and for CLI agents with an image on the clipboard send Ctrl+V so tools like Claude Code can attach screenshots.
+- Show live working directory and git branch metadata (ahead/behind/dirty) on each sessions sidebar tab.
+- Remove the left sidebar title bar; collapse sessions with the titlebar control or ⌘B.
+- Restyle the Files tree with open/closed folder SVG icons, expand chevrons, indent guides, and clearer file-type glyphs.
+
 ## 0.3.2 — 2026-08-11
 
 - Restore the macOS application menu (Vibra → Settings…, Check for Updates…, Quit) and basic File / Edit / View / Window menus.

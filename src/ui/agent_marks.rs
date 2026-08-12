@@ -41,6 +41,15 @@ impl AssetSource for VibraAssets {
             "agent-marks/opencode.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../Resources/AgentMarks/opencode.svg"
             ))),
+            "file-icons/folder.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/FileIcons/folder.svg"
+            ))),
+            "file-icons/folder-open.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/FileIcons/folder-open.svg"
+            ))),
+            "file-icons/file.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/FileIcons/file.svg"
+            ))),
             _ => None,
         })
     }
@@ -57,6 +66,9 @@ impl AssetSource for VibraAssets {
             "agent-marks/goose.svg",
             "agent-marks/grok.svg",
             "agent-marks/opencode.svg",
+            "file-icons/folder.svg",
+            "file-icons/folder-open.svg",
+            "file-icons/file.svg",
         ];
         Ok(assets
             .into_iter()

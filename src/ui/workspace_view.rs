@@ -7,7 +7,7 @@ use gpui::{
     AnyElement, Context, Div, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render, SharedString,
     Stateful, Styled, Subscription, Task, Timer, Window, WindowControlArea, div, prelude::*, px,
-    relative,
+    relative, svg,
 };
 use uuid::Uuid;
 
@@ -3287,29 +3287,29 @@ impl WorkspaceView {
             .flex_col()
             .overflow_hidden()
             .bg(DARK.panel)
-            // Project root row — Zed-style
+            // Project root row
             .child(
                 div()
                     .h(px(28.0))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .px_3()
+                    .gap_1p5()
+                    .px_2()
                     .child(
                         div()
-                            .size(px(14.0))
+                            .size(px(16.0))
                             .flex_none()
-                            .rounded(px(3.0))
-                            .bg(DARK.elevated)
-                            .border_1()
-                            .border_color(DARK.border_subtle)
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(8.0))
                             .text_color(DARK.folder)
-                            .child("◆"),
+                            .child(
+                                svg()
+                                    .path("file-icons/folder.svg")
+                                    .size(px(14.0))
+                                    .text_color(DARK.folder),
+                            ),
                     )
                     .child(
                         div()
@@ -3345,30 +3345,25 @@ impl WorkspaceView {
                             rel.as_ref()
                                 .and_then(|rel| git_statuses.get(rel).copied())
                         };
-                        let (glyph, default_glyph_color) =
-                            file_tree_glyph(row.entry.kind, row.expanded, &row.entry.name);
-                        let glyph_color = if is_directory {
-                            status
-                                .map(git_status_color)
-                                .unwrap_or(DARK.folder)
+                        let icon_color = if is_directory {
+                            status.map(git_status_color).unwrap_or(DARK.folder)
                         } else {
-                            default_glyph_color
+                            file_tree_icon_color(row.entry.kind, &row.entry.name)
                         };
-                        let name_color = status
-                            .map(git_status_color)
-                            .unwrap_or(if is_directory {
-                                DARK.foreground
-                            } else {
-                                DARK.muted
-                            });
+                        let name_color = status.map(git_status_color).unwrap_or(if is_directory {
+                            DARK.foreground
+                        } else {
+                            DARK.muted
+                        });
                         let depth = row.depth;
+                        let expanded = row.expanded;
                         let rel_for_click = rel.clone();
                         div()
                             .id(SharedString::from(format!(
                                 "file-row-{}",
                                 path.to_string_lossy()
                             )))
-                            .h(px(22.0))
+                            .h(px(24.0))
                             .w_full()
                             .flex()
                             .items_center()
@@ -3405,22 +3400,61 @@ impl WorkspaceView {
                                     }
                                 }),
                             )
+                            // Indent + soft guide for nested rows.
                             .child(
                                 div()
-                                    .w(px(8.0 + depth as f32 * 12.0))
+                                    .w(px(6.0 + depth as f32 * 12.0))
                                     .h_full()
-                                    .flex_none(),
+                                    .flex_none()
+                                    .relative()
+                                    .when(depth > 0, |indent| {
+                                        indent.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(6.0 + (depth as f32 - 1.0) * 12.0 + 5.0))
+                                                .top_0()
+                                                .bottom_0()
+                                                .w(px(1.0))
+                                                .bg(DARK.indent_guide),
+                                        )
+                                    }),
                             )
+                            // Expand chevron (folders) or spacer (files).
                             .child(
                                 div()
-                                    .w(px(16.0))
+                                    .w(px(12.0))
                                     .flex_none()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_size(px(11.0))
-                                    .text_color(glyph_color)
-                                    .child(glyph),
+                                    .text_size(px(9.0))
+                                    .text_color(DARK.subtle)
+                                    .child(if is_directory {
+                                        if expanded {
+                                            "▾"
+                                        } else {
+                                            "▸"
+                                        }
+                                    } else {
+                                        ""
+                                    }),
+                            )
+                            // Folder / file icon.
+                            .child(
+                                div()
+                                    .w(px(16.0))
+                                    .h(px(16.0))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(icon_color)
+                                    .child(file_tree_icon(
+                                        row.entry.kind,
+                                        expanded,
+                                        &row.entry.name,
+                                        icon_color,
+                                    )),
                             )
                             .child(
                                 div()
@@ -3429,7 +3463,7 @@ impl WorkspaceView {
                                     .truncate()
                                     .pl_1()
                                     .text_size(px(12.0))
-                                    .font_weight(if selected {
+                                    .font_weight(if selected || is_directory {
                                         gpui::FontWeight::MEDIUM
                                     } else {
                                         gpui::FontWeight::NORMAL
@@ -5417,17 +5451,11 @@ fn ease_out_cubic(t: f32) -> f32 {
     1.0 - inv * inv * inv
 }
 
-/// Compact glyph + color for the Files tree (Zed-ish, extension-aware).
-fn file_tree_glyph(
-    kind: FileEntryKind,
-    expanded: bool,
-    name: &str,
-) -> (&'static str, gpui::Rgba) {
+/// Icon color for file-tree entries (folders use `DARK.folder` / git tint at the call site).
+fn file_tree_icon_color(kind: FileEntryKind, name: &str) -> gpui::Rgba {
     match kind {
-        // Folder glyph — open vs closed.
-        FileEntryKind::Directory if expanded => ("▾", DARK.folder),
-        FileEntryKind::Directory => ("▸", DARK.folder),
-        FileEntryKind::Symlink => ("↗", DARK.accent),
+        FileEntryKind::Directory => DARK.folder,
+        FileEntryKind::Symlink => DARK.accent,
         FileEntryKind::File => {
             let lower = name.to_ascii_lowercase();
             let ext = std::path::Path::new(name)
@@ -5436,25 +5464,95 @@ fn file_tree_glyph(
                 .unwrap_or("")
                 .to_ascii_lowercase();
             match (lower.as_str(), ext.as_str()) {
-                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => ("⚙", DARK.muted),
-                (_, "rs") => ("●", gpui::rgb(0xdea584)),
-                (_, "md" | "mdx") => ("M", DARK.accent),
-                (_, "json" | "jsonc") => ("{}", gpui::rgb(0xcbcb41)),
-                (_, "lock") => ("⊟", DARK.subtle),
-                (_, "yml" | "yaml") => ("⚙", DARK.muted),
-                (_, "gitignore" | "gitattributes") | (".gitignore", _) => ("⊘", gpui::rgb(0xf05033)),
-                ("license" | "licence" | "notice" | "copying", _) => ("©", DARK.subtle),
-                (_, "ts" | "tsx") => ("●", gpui::rgb(0x519aba)),
-                (_, "js" | "jsx" | "mjs" | "cjs") => ("●", gpui::rgb(0xcbcb41)),
-                (_, "css" | "scss") => ("#", gpui::rgb(0x563d7c)),
-                (_, "html" | "htm" | "svg") => ("<>", gpui::rgb(0xe34c26)),
-                (_, "py") => ("●", gpui::rgb(0x3572a5)),
-                (_, "go") => ("●", gpui::rgb(0x00add8)),
-                (_, "sh" | "bash" | "zsh") => ("$", DARK.success),
-                (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => ("▣", gpui::rgb(0xa074c4)),
-                _ if name.starts_with('.') => ("·", DARK.subtle),
-                _ => ("·", DARK.subtle),
+                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => DARK.muted,
+                (_, "rs") => gpui::rgb(0xdea584),
+                (_, "md" | "mdx") => DARK.accent,
+                (_, "json" | "jsonc") => gpui::rgb(0xcbcb41),
+                (_, "lock") => DARK.subtle,
+                (_, "yml" | "yaml") => DARK.muted,
+                (_, "gitignore" | "gitattributes") | (".gitignore", _) => gpui::rgb(0xf05033),
+                ("license" | "licence" | "notice" | "copying", _) => DARK.subtle,
+                (_, "ts" | "tsx") => gpui::rgb(0x519aba),
+                (_, "js" | "jsx" | "mjs" | "cjs") => gpui::rgb(0xcbcb41),
+                (_, "css" | "scss") => gpui::rgb(0x9b7ed9),
+                (_, "html" | "htm" | "svg") => gpui::rgb(0xe34c26),
+                (_, "py") => gpui::rgb(0x3572a5),
+                (_, "go") => gpui::rgb(0x00add8),
+                (_, "sh" | "bash" | "zsh") => DARK.success,
+                (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => gpui::rgb(0xa074c4),
+                _ if name.starts_with('.') => DARK.subtle,
+                _ => DARK.subtle,
             }
+        }
+    }
+}
+
+/// Folder / file glyph for the Files tree. Folders use bundled monochrome SVGs;
+/// files keep a compact extension-aware letter/dot so the tree stays light.
+fn file_tree_icon(
+    kind: FileEntryKind,
+    expanded: bool,
+    name: &str,
+    color: gpui::Rgba,
+) -> AnyElement {
+    match kind {
+        FileEntryKind::Directory => {
+            let path = if expanded {
+                "file-icons/folder-open.svg"
+            } else {
+                "file-icons/folder.svg"
+            };
+            svg()
+                .path(path)
+                .size(px(14.0))
+                .text_color(color)
+                .into_any_element()
+        }
+        FileEntryKind::Symlink => div()
+            .font_family("JetBrains Mono")
+            .text_size(px(11.0))
+            .text_color(color)
+            .child("↗")
+            .into_any_element(),
+        FileEntryKind::File => {
+            let lower = name.to_ascii_lowercase();
+            let ext = std::path::Path::new(name)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let glyph = match (lower.as_str(), ext.as_str()) {
+                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => "⚙",
+                (_, "rs") => "Rs",
+                (_, "md" | "mdx") => "Md",
+                (_, "json" | "jsonc") => "{}",
+                (_, "lock") => "L",
+                (_, "yml" | "yaml") => "Y",
+                (_, "gitignore" | "gitattributes") | (".gitignore", _) => "⊘",
+                ("license" | "licence" | "notice" | "copying", _) => "©",
+                (_, "ts" | "tsx") => "Ts",
+                (_, "js" | "jsx" | "mjs" | "cjs") => "Js",
+                (_, "css" | "scss") => "#",
+                (_, "html" | "htm" | "svg") => "<>",
+                (_, "py") => "Py",
+                (_, "go") => "Go",
+                (_, "sh" | "bash" | "zsh") => "$",
+                (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => "▣",
+                _ => {
+                    return svg()
+                        .path("file-icons/file.svg")
+                        .size(px(13.0))
+                        .text_color(color)
+                        .into_any_element();
+                }
+            };
+            div()
+                .font_family("JetBrains Mono")
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_size(px(8.5))
+                .text_color(color)
+                .child(glyph)
+                .into_any_element()
         }
     }
 }
