@@ -432,6 +432,12 @@ impl TerminalHandle for AlacrittyTerminal {
             .or_else(|| process_working_directory(self.process_id))
     }
 
+    fn foreground_process_name(&self) -> Option<String> {
+        self.foreground_process_id()
+            .and_then(process_executable_name)
+            .or_else(|| process_executable_name(self.process_id))
+    }
+
     fn clear_selection(&self) {
         let changed = self.terminal.lock().selection.take().is_some();
         if changed {
@@ -574,6 +580,44 @@ fn process_working_directory(process_id: u32) -> Option<PathBuf> {
 
 #[cfg(not(unix))]
 fn process_working_directory(_: u32) -> Option<PathBuf> {
+    None
+}
+
+/// Executable basename of a process (e.g. `codex`, `claude`, `grok`).
+#[cfg(target_os = "macos")]
+fn process_executable_name(process_id: u32) -> Option<String> {
+    use std::ffi::CStr;
+
+    let mut buffer = [0i8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let bytes = unsafe {
+        libc::proc_pidpath(
+            process_id as libc::c_int,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+        )
+    };
+    if bytes <= 0 {
+        return None;
+    }
+    let path = unsafe { CStr::from_ptr(buffer.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    Path::new(&path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn process_executable_name(process_id: u32) -> Option<String> {
+    let path = std::fs::read_link(format!("/proc/{process_id}/exe")).ok()?;
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+}
+
+#[cfg(not(unix))]
+fn process_executable_name(_: u32) -> Option<String> {
     None
 }
 

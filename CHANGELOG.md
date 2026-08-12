@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+## 0.3.2 — 2026-08-11
+
 - Restore the macOS application menu (Vibra → Settings…, Check for Updates…, Quit) and basic File / Edit / View / Window menus.
 - Open preferences from the menu or with `⌘,` (same settings panel as the command palette).
 - Rebuild the Diff panel as Warp-style expandable file cards: accordion multi-expand, inline diffs, single line-number gutter, and an “Uncommitted changes” header.
 - Add IDE-style syntax highlighting in the Diff panel (keywords, strings, comments, types, numbers) for Rust, JS/TS, Python, Swift, Go, shell, and common config formats.
+- Resolve coding-agent identity from foreground TTY process, terminal title, then screen text so the Codex mark appears as soon as `codex` starts (not only after a screen banner).
+- Add structured `SetAgentPresence` automation and idempotent Claude/Codex hook setup, so hooks report working, waiting-for-permission, idle, and session end states.
+- Manage Claude/Codex hook integrations from Settings, with installed-state feedback and explicit install/update or uninstall actions.
+- Let agents open and coordinate other agents via `$VIBRA_CLI`: `+agent open/start` (split/tab, `--cwd`, shell-ready wait), named targets, `+agent prompt/wait/read/list/rename/status`, `+pane split/tab --no-focus`, cross-pane `+pane run --pane`, `+agent kinds`, and `+skill`.
 
 ## 0.3.1 — 2026-08-11
 

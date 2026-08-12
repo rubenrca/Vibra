@@ -15,7 +15,8 @@ use gpui::{
 use uuid::Uuid;
 
 use crate::ports::terminal::{
-    TerminalAgentPresence, TerminalAgentState, TerminalCell, TerminalCellSide, TerminalCursor,
+    TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentState, TerminalCell,
+    TerminalCellSide, TerminalCursor,
     TerminalCursorShape, TerminalEvent, TerminalHandle, TerminalInputMode, TerminalPoint,
     TerminalPort, TerminalRgb, TerminalSearchDirection, TerminalSelectionType, TerminalSize,
     TerminalSnapshot, TerminalUnderline,
@@ -210,7 +211,13 @@ impl TerminalView {
             loop {
                 Timer::after(WORKING_DIRECTORY_POLL_INTERVAL).await;
                 if this
-                    .update(cx, |this, cx| this.refresh_working_directory(cx))
+                    .update(cx, |this, cx| {
+                        this.refresh_working_directory(cx);
+                        // A foreground job can replace the shell without writing a
+                        // recognizable banner. Poll its identity as a backstop to
+                        // terminal wakeups so its mark still appears promptly.
+                        this.refresh_agent_presence(cx);
+                    })
                     .is_err()
                 {
                     break;
@@ -277,15 +284,76 @@ impl TerminalView {
         self.send(input);
     }
 
+    /// Submit a prompt, honoring bracketed paste when the agent terminal enables it.
+    pub fn send_automation_prompt(&self, text: &str) {
+        let bracketed = self
+            .handle
+            .as_ref()
+            .map(|handle| handle.input_mode().bracketed_paste)
+            .unwrap_or(false);
+        if bracketed {
+            let mut input = b"\x1b[200~".to_vec();
+            input.extend_from_slice(text.as_bytes());
+            input.extend_from_slice(b"\x1b[201~\r");
+            self.send(input);
+        } else {
+            self.send_automation_input(text, true);
+        }
+    }
+
+    pub fn foreground_process_name(&self) -> Option<String> {
+        self.handle
+            .as_ref()
+            .and_then(|handle| handle.foreground_process_name())
+    }
+
+    pub fn is_interactive_shell(&self) -> bool {
+        let Some(name) = self.foreground_process_name() else {
+            // No foreground process reported yet — treat as not ready.
+            return false;
+        };
+        let base = std::path::Path::new(&name)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_else(|| name.to_ascii_lowercase());
+        let base = base.strip_prefix('-').unwrap_or(&base);
+        matches!(
+            base,
+            "sh" | "bash" | "zsh" | "fish" | "nu" | "pwsh" | "powershell" | "cmd" | "dash" | "ksh"
+        )
+    }
+
+    pub fn automation_read_text(&self, lines: usize) -> String {
+        let Some(handle) = self.handle.as_ref() else {
+            return String::new();
+        };
+        let snapshot = handle.snapshot();
+        let take = lines.max(1).min(snapshot.lines.len().max(1));
+        let start = snapshot.lines.len().saturating_sub(take);
+        let mut text = String::new();
+        for line in &snapshot.lines[start..] {
+            for cell in line.iter().filter(|cell| !cell.wide_spacer) {
+                text.push_str(&cell.text);
+            }
+            while text.ends_with(' ') {
+                text.pop();
+            }
+            text.push('\n');
+        }
+        text
+    }
+
     pub fn apply_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
         self.update_font_size(size, false, cx);
     }
 
     fn refresh_agent_presence(&mut self, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.handle.as_ref().map(|handle| handle.snapshot()) else {
+        let Some(handle) = self.handle.as_ref() else {
             return;
         };
-        let presence = detect_agent_presence(&self.title, &snapshot);
+        let snapshot = handle.snapshot();
+        let process_name = handle.foreground_process_name();
+        let presence = detect_agent_presence(&self.title, &snapshot, process_name.as_deref());
         if presence != self.agent_presence {
             self.agent_presence.clone_from(&presence);
             cx.emit(TerminalViewEvent::AgentPresenceChanged {
@@ -327,6 +395,7 @@ impl TerminalView {
             TerminalEvent::Title(title) => {
                 if self.title != title {
                     self.title.clone_from(&title);
+                    self.refresh_agent_presence(cx);
                     cx.emit(TerminalViewEvent::TitleChanged {
                         session_id: self.session_id,
                         title,
@@ -338,6 +407,7 @@ impl TerminalView {
                 let title = "Terminal".to_owned();
                 if self.title != title {
                     self.title.clone_from(&title);
+                    self.refresh_agent_presence(cx);
                     cx.emit(TerminalViewEvent::TitleChanged {
                         session_id: self.session_id,
                         title,
@@ -2208,16 +2278,73 @@ fn is_safe_hyperlink(uri: &str) -> bool {
 fn detect_agent_presence(
     title: &str,
     snapshot: &TerminalSnapshot,
+    process_name: Option<&str>,
 ) -> Option<TerminalAgentPresence> {
+    let screen = visible_screen_text(snapshot);
+    // Identity and activity deliberately use different evidence. Process names
+    // are reliable at startup, titles are the next-best structured signal, and
+    // screen text remains a fallback for wrappers and unsupported terminals.
+    let (kind, kind_source) = process_name
+        .and_then(agent_kind_from_process_name)
+        .map(|kind| (kind, TerminalAgentKindSource::Process))
+        .or_else(|| {
+            agent_kind_from_text(title).map(|kind| (kind, TerminalAgentKindSource::Title))
+        })
+        .or_else(|| {
+            agent_kind_from_text(&screen).map(|kind| (kind, TerminalAgentKindSource::Screen))
+        })?;
+    let state = agent_state_from_text(title, &screen);
+    Some(TerminalAgentPresence {
+        kind: kind.to_owned(),
+        kind_source,
+        state,
+    })
+}
+
+fn visible_screen_text(snapshot: &TerminalSnapshot) -> String {
     let start = snapshot.lines.len().saturating_sub(14);
-    let mut visible = title.to_lowercase();
-    visible.push('\n');
+    let mut text = String::new();
     for line in &snapshot.lines[start..] {
         for cell in line.iter().filter(|cell| !cell.wide_spacer) {
-            visible.push_str(&cell.text.to_lowercase());
+            text.push_str(&cell.text.to_lowercase());
         }
-        visible.push('\n');
+        text.push('\n');
     }
+    text
+}
+
+fn agent_kind_from_process_name(process_name: &str) -> Option<&'static str> {
+    let base = std::path::Path::new(process_name)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| process_name.to_ascii_lowercase());
+    const AGENT_PROCESSES: [(&str, &str); 9] = [
+        ("opencode", "OpenCode"),
+        ("claude", "Claude"),
+        ("codex", "Codex"),
+        ("gemini", "Gemini"),
+        ("grok", "Grok"),
+        ("aider", "Aider"),
+        ("amp", "Amp"),
+        ("pi", "Pi"),
+        ("cursor-agent", "Cursor"),
+    ];
+    AGENT_PROCESSES
+        .iter()
+        .find(|(name, _)| process_name_matches(&base, name))
+        .map(|(_, kind)| *kind)
+}
+
+fn process_name_matches(process_name: &str, agent_name: &str) -> bool {
+    process_name == agent_name
+        || process_name
+            .strip_prefix(agent_name)
+            .and_then(|suffix| suffix.chars().next())
+            .is_some_and(|separator| matches!(separator, '-' | '_' | '.'))
+}
+
+fn agent_kind_from_text(text: &str) -> Option<&'static str> {
+    let text = text.to_lowercase();
     let agents: [(&str, &[&str]); 9] = [
         ("OpenCode", &["opencode"]),
         ("Claude", &["claude code", "claude"]),
@@ -2229,10 +2356,16 @@ fn detect_agent_presence(
         ("Amp", &["sourcegraph amp", "amp thread"]),
         ("Pi", &["pi coding agent", "pi agent"]),
     ];
-    let kind = agents
+    agents
         .iter()
-        .find(|(_, markers)| markers.iter().any(|marker| visible.contains(marker)))?
-        .0;
+        .find(|(_, markers)| markers.iter().any(|marker| text.contains(marker)))
+        .map(|(kind, _)| *kind)
+}
+
+fn agent_state_from_text(title: &str, screen: &str) -> TerminalAgentState {
+    let mut visible = title.to_lowercase();
+    visible.push('\n');
+    visible.push_str(screen);
     let waiting_markers = [
         "allow?",
         "approve",
@@ -2252,7 +2385,7 @@ fn detect_agent_presence(
         "running tool",
         "tokens used",
     ];
-    let state = if waiting_markers
+    if waiting_markers
         .iter()
         .any(|marker| visible.contains(marker))
     {
@@ -2264,11 +2397,7 @@ fn detect_agent_presence(
         TerminalAgentState::Working
     } else {
         TerminalAgentState::Idle
-    };
-    Some(TerminalAgentPresence {
-        kind: kind.to_owned(),
-        state,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -2586,10 +2715,57 @@ mod tests {
             history_size: 0,
         };
 
-        let presence = detect_agent_presence("Terminal", &snapshot).unwrap();
+        let presence = detect_agent_presence("Terminal", &snapshot, None).unwrap();
 
         assert_eq!(presence.kind, "Claude");
         assert_eq!(presence.state, TerminalAgentState::Waiting);
+
+        let title_presence = detect_agent_presence("OpenAI Codex", &snapshot, None).unwrap();
+        assert_eq!(title_presence.kind, "Codex");
+        assert_eq!(title_presence.state, TerminalAgentState::Waiting);
+    }
+
+    #[test]
+    fn process_name_detects_codex_before_screen_banner() {
+        let snapshot = TerminalSnapshot {
+            columns: 80,
+            rows: 1,
+            lines: vec![Arc::from([TerminalCell {
+                row: 0,
+                column: 0,
+                text: "ready".into(),
+                foreground: TerminalRgb::new(255, 255, 255),
+                background: TerminalRgb::new(0, 0, 0),
+                underline_color: TerminalRgb::new(255, 255, 255),
+                bold: false,
+                italic: false,
+                underline: TerminalUnderline::None,
+                strikeout: false,
+                hidden: false,
+                wide_spacer: false,
+                selected: false,
+                hyperlink: None,
+            }])],
+            cursor: None,
+            display_offset: 0,
+            history_size: 0,
+        };
+
+        let presence =
+            detect_agent_presence("Claude Code", &snapshot, Some("codex-code-mode-host")).unwrap();
+        assert_eq!(presence.kind, "Codex");
+        assert_eq!(presence.kind_source, TerminalAgentKindSource::Process);
+        assert_eq!(presence.state, TerminalAgentState::Idle);
+
+        let bare =
+            detect_agent_presence("Terminal", &snapshot, Some("/usr/local/bin/codex")).unwrap();
+        assert_eq!(bare.kind, "Codex");
+        assert_eq!(bare.kind_source, TerminalAgentKindSource::Process);
+
+        let process_with_state_word =
+            detect_agent_presence("Terminal", &snapshot, Some("codex-working")).unwrap();
+        assert_eq!(process_with_state_word.state, TerminalAgentState::Idle);
+        assert!(agent_kind_from_process_name("codexical").is_none());
     }
 
     #[test]

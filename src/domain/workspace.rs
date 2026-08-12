@@ -304,28 +304,68 @@ impl WorkspaceSnapshot {
     }
 
     pub fn create_terminal_tab(&mut self) -> bool {
-        let Some((project_index, workspace_index)) = self.selected_workspace_indices() else {
-            return false;
-        };
+        self.create_terminal_tab_with_focus(true).is_some()
+    }
+
+    /// Creates a terminal tab in the selected workspace.
+    /// When `focus_new` is false the previous selected tab stays selected.
+    pub fn create_terminal_tab_with_focus(
+        &mut self,
+        focus_new: bool,
+    ) -> Option<(Uuid, Uuid)> {
+        self.create_terminal_tab_with_options(focus_new, None)
+    }
+
+    pub fn create_terminal_tab_with_options(
+        &mut self,
+        focus_new: bool,
+        working_directory: Option<String>,
+    ) -> Option<(Uuid, Uuid)> {
+        let (project_index, workspace_index) = self.selected_workspace_indices()?;
         let project = &mut self.projects[project_index];
-        let working_directory = project.root_path.clone();
+        let working_directory =
+            working_directory.unwrap_or_else(|| project.root_path.clone());
         let tab = TabSnapshot::with_session(SessionSnapshot::new(working_directory));
         let tab_id = tab.id;
+        let session_id = tab.selected_session_id?;
         let workspace = &mut project.workspaces.as_mut().expect("normalized")[workspace_index];
         workspace.tabs.push(tab);
-        workspace.selected_tab_id = Some(tab_id);
+        if focus_new {
+            workspace.selected_tab_id = Some(tab_id);
+        }
         project.normalize();
-        true
+        Some((tab_id, session_id))
     }
 
     pub fn split_selected_terminal(&mut self, direction: PaneSplitDirection) -> Option<Uuid> {
+        self.split_selected_terminal_with_focus(direction, true)
+    }
+
+    /// Splits the selected terminal. When `focus_new` is false the original pane
+    /// remains selected so automation can spawn siblings without stealing focus.
+    pub fn split_selected_terminal_with_focus(
+        &mut self,
+        direction: PaneSplitDirection,
+        focus_new: bool,
+    ) -> Option<Uuid> {
+        self.split_selected_terminal_with_options(direction, focus_new, None)
+    }
+
+    pub fn split_selected_terminal_with_options(
+        &mut self,
+        direction: PaneSplitDirection,
+        focus_new: bool,
+        working_directory: Option<String>,
+    ) -> Option<Uuid> {
         let (project_index, workspace_index, tab_index, session_index) =
             self.selected_session_indices()?;
         let project = &mut self.projects[project_index];
         let tab =
             &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
         let selected_id = tab.sessions[session_index].id;
-        let working_directory = tab.sessions[session_index].working_directory.clone();
+        let working_directory = working_directory.unwrap_or_else(|| {
+            tab.sessions[session_index].working_directory.clone()
+        });
         let session = SessionSnapshot::new(working_directory);
         let session_id = session.id;
         let (axis, insert_first) = match direction {
@@ -341,7 +381,9 @@ impl WorkspaceSnapshot {
             return None;
         }
         tab.sessions.push(session);
-        tab.selected_session_id = Some(session_id);
+        if focus_new {
+            tab.selected_session_id = Some(session_id);
+        }
         tab.zoomed_session_id = None;
         project.normalize();
         Some(session_id)
@@ -1362,6 +1404,40 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn split_without_focus_keeps_the_caller_selected() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-nofocus"));
+        let first_id = snapshot.selected_session().unwrap().id;
+        let sibling = snapshot
+            .split_selected_terminal_with_focus(PaneSplitDirection::Right, false)
+            .unwrap();
+        assert_ne!(first_id, sibling);
+        assert_eq!(snapshot.selected_session().unwrap().id, first_id);
+        assert_eq!(
+            snapshot.selected_tab().unwrap().layout.terminal_ids(),
+            vec![first_id, sibling]
+        );
+    }
+
+    #[test]
+    fn create_terminal_tab_without_focus_keeps_previous_tab() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-tab"));
+        let original_tab = snapshot.selected_tab().unwrap().id;
+        let (tab_id, session_id) = snapshot.create_terminal_tab_with_focus(false).unwrap();
+        assert_ne!(tab_id, original_tab);
+        assert_eq!(snapshot.selected_tab().unwrap().id, original_tab);
+        let created = snapshot
+            .selected_workspace()
+            .unwrap()
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .unwrap();
+        assert_eq!(created.selected_session_id, Some(session_id));
     }
 
     #[test]

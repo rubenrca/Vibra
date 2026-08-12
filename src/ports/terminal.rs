@@ -164,9 +164,17 @@ pub enum TerminalAgentState {
     Waiting,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalAgentKindSource {
+    Process,
+    Title,
+    Screen,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalAgentPresence {
     pub kind: String,
+    pub kind_source: TerminalAgentKindSource,
     pub state: TerminalAgentState,
 }
 
@@ -201,6 +209,11 @@ pub trait TerminalHandle: Send + Sync {
     fn snapshot(&self) -> Arc<TerminalSnapshot>;
     fn input_mode(&self) -> TerminalInputMode;
     fn current_working_directory(&self) -> Option<PathBuf> {
+        None
+    }
+    /// Basename (or full path) of the process currently owning the TTY, when known.
+    /// Used to detect coding agents even before their UI prints a brand string.
+    fn foreground_process_name(&self) -> Option<String> {
         None
     }
     fn clear_selection(&self);

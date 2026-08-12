@@ -16,15 +16,19 @@ use crate::domain::workspace::{
     TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis,
 };
 use crate::infrastructure::automation::{
-    AgentRuntimeState, AutomationCommand, AutomationDirection, AutomationIncoming,
-    AutomationResponse, AutomationServer,
+    AgentAttention, AgentHookStatus, AgentKind, AgentPlacement, AgentRuntimeState,
+    AutomationCommand, AutomationDirection, AutomationIncoming, AutomationResponse,
+    AutomationServer, agent_hook_status, agent_launch_command, default_settled_states,
+    install_agent_hooks, uninstall_agent_hooks, validate_agent_name,
 };
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{AppSettings, SettingsRepository};
 use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 use crate::ports::git::{GitFileStatus, GitPort};
 use crate::ports::terminal::TerminalPort;
-use crate::ports::terminal::{TerminalAgentPresence, TerminalAgentState};
+use crate::ports::terminal::{
+    TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentState,
+};
 use crate::ui::agent_marks::agent_sidebar_badge;
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
@@ -48,6 +52,47 @@ const RIGHT_SIDEBAR_FILES_WIDTH: f32 = 300.0;
 const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(160);
 /// ~60 fps ticks; only runs while a sidebar is mid-animation.
 const SIDEBAR_ANIM_FRAME: Duration = Duration::from_millis(16);
+const HOOK_OBSERVATION_TTL: Duration = Duration::from_secs(15 * 60);
+
+#[derive(Clone)]
+struct TerminalAgentObservation {
+    presence: TerminalAgentPresence,
+    observed_at: Instant,
+}
+
+struct PendingAgentLaunch {
+    pane_id: Uuid,
+    kind: AgentKind,
+    timeout_ms: u64,
+    wait_for_agent: bool,
+    command_text: String,
+    payload: serde_json::Value,
+}
+
+struct PendingAgentWait {
+    pane_id: Uuid,
+    timeout_ms: u64,
+    until: Vec<AgentRuntimeState>,
+    payload: serde_json::Value,
+}
+
+#[derive(Clone)]
+struct HookAgentPresence {
+    kind: Option<AgentKind>,
+    state: AgentRuntimeState,
+    attention: Option<AgentAttention>,
+    session_id: Option<String>,
+    observed_at: Instant,
+}
+
+#[derive(Clone)]
+struct ResolvedAgentPresence {
+    kind: String,
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+    kind_source: &'static str,
+    state_source: Option<&'static str>,
+}
 
 #[derive(Clone)]
 struct PaneDividerDrag {
@@ -158,8 +203,12 @@ pub struct WorkspaceView {
     automation_socket: Option<PathBuf>,
     _automation_server: Option<AutomationServer>,
     _automation_task: Option<gpui::Task<()>>,
-    agent_presence: HashMap<Uuid, TerminalAgentPresence>,
-    explicit_agent_states: HashMap<Uuid, AgentRuntimeState>,
+    agent_presence: HashMap<Uuid, TerminalAgentObservation>,
+    hook_agent_presence: HashMap<Uuid, HookAgentPresence>,
+    /// Optional aliases assigned by automation (`+agent open --name …`).
+    agent_names: HashMap<Uuid, String>,
+    agent_hook_status: Option<AgentHookStatus>,
+    agent_hook_error: Option<SharedString>,
     focus_handle: FocusHandle,
     left_sidebar_visible: bool,
     /// Visual open amount for the left sidebar (`0.0` closed … `1.0` open).
@@ -275,6 +324,13 @@ impl WorkspaceView {
             &diff_view,
             |_this, _diff_view, _event: &DiffViewEvent, cx| cx.notify(),
         );
+        let (agent_hook_status, agent_hook_error) = match agent_hook_status() {
+            Ok(status) => (Some(status), None),
+            Err(error) => (
+                None,
+                Some(format!("No se pudo consultar las integraciones: {error}").into()),
+            ),
+        };
         let mut view = Self {
             snapshot,
             repository,
@@ -294,7 +350,10 @@ impl WorkspaceView {
             _automation_server: automation_server,
             _automation_task: automation_task,
             agent_presence: HashMap::new(),
-            explicit_agent_states: HashMap::new(),
+            hook_agent_presence: HashMap::new(),
+            agent_names: HashMap::new(),
+            agent_hook_status,
+            agent_hook_error,
             focus_handle,
             left_sidebar_visible: settings.left_sidebar_visible,
             left_sidebar_progress: if settings.left_sidebar_visible {
@@ -969,7 +1028,8 @@ impl WorkspaceView {
             self.terminal_subscriptions.remove(&session_id);
             self.automation_tokens.remove(&session_id);
             self.agent_presence.remove(&session_id);
-            self.explicit_agent_states.remove(&session_id);
+            self.hook_agent_presence.remove(&session_id);
+            self.agent_names.remove(&session_id);
         }
 
         for session in sessions {
@@ -1056,7 +1116,13 @@ impl WorkspaceView {
                 presence,
             } => {
                 if let Some(presence) = presence {
-                    self.agent_presence.insert(*session_id, presence.clone());
+                    self.agent_presence.insert(
+                        *session_id,
+                        TerminalAgentObservation {
+                            presence: presence.clone(),
+                            observed_at: Instant::now(),
+                        },
+                    );
                 } else {
                     self.agent_presence.remove(session_id);
                 }
@@ -1080,32 +1146,46 @@ impl WorkspaceView {
                 .send(AutomationResponse::failure("capacidad inválida o expirada"));
             return;
         }
-        let result = match request.envelope.command {
-            AutomationCommand::List => Ok(self.automation_pane_list(pane_id)),
-            AutomationCommand::Send { text, newline } => {
-                let Some(terminal) = self.terminals.get(&pane_id) else {
-                    let _ = request
-                        .response
-                        .send(AutomationResponse::failure("el pane ya no existe"));
-                    return;
-                };
-                terminal.read(cx).send_automation_input(&text, newline);
-                Ok(serde_json::json!({ "paneId": pane_id, "sent": text.len() }))
-            }
-            AutomationCommand::Split { direction } => {
-                if !self.snapshot.select_terminal_global(pane_id) {
-                    Err("el pane ya no existe".to_owned())
-                } else {
-                    let direction = automation_split_direction(direction);
-                    match self.snapshot.split_selected_terminal(direction) {
-                        Some(created) => {
-                            self.reconcile_terminal_views(cx);
-                            self.persist(cx);
-                            Ok(serde_json::json!({ "paneId": created }))
-                        }
-                        None => Err("no se pudo dividir el pane".to_owned()),
+
+        // Long-running commands answer asynchronously over the same response channel.
+        match &request.envelope.command {
+            AutomationCommand::AgentOpen { .. } | AutomationCommand::AgentStart { .. } => {
+                let command = request.envelope.command.clone();
+                match self.begin_agent_launch(pane_id, command, cx) {
+                    Ok(launch) => self.spawn_agent_launch(launch, request.response, cx),
+                    Err(error) => {
+                        let _ = request.response.send(AutomationResponse::failure(error));
                     }
                 }
+                return;
+            }
+            AutomationCommand::AgentPrompt { .. } | AutomationCommand::AgentWait { .. } => {
+                let command = request.envelope.command.clone();
+                match self.begin_agent_prompt_or_wait(pane_id, command, cx) {
+                    Ok(pending) => self.spawn_agent_state_wait(pending, request.response, cx),
+                    Err(error) => {
+                        let _ = request.response.send(AutomationResponse::failure(error));
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        let result = match request.envelope.command {
+            AutomationCommand::List => Ok(self.automation_pane_list(pane_id)),
+            AutomationCommand::Send {
+                text,
+                newline,
+                target_pane,
+            } => self.automation_send(pane_id, target_pane, text, newline, cx),
+            AutomationCommand::Split {
+                direction,
+                no_focus,
+                cwd,
+            } => self.automation_split(pane_id, direction, no_focus, cwd, cx),
+            AutomationCommand::CreateTab { no_focus, cwd } => {
+                self.automation_create_tab(pane_id, no_focus, cwd, cx)
             }
             AutomationCommand::Focus { direction } => {
                 if !self.snapshot.select_terminal_global(pane_id) {
@@ -1144,10 +1224,52 @@ impl WorkspaceView {
                     Err("el pane ya no existe".to_owned())
                 }
             }
-            AutomationCommand::AgentStatus => Ok(self.automation_agent_status(pane_id)),
+            AutomationCommand::AgentStatus { target } => self
+                .resolve_automation_target(pane_id, target.as_deref())
+                .map(|target| self.automation_agent_status(target)),
+            AutomationCommand::AgentList => Ok(self.automation_agent_list(pane_id)),
+            AutomationCommand::AgentKinds => {
+                Ok(crate::infrastructure::automation::agent_kinds_payload())
+            }
+            AutomationCommand::AgentRead { target, lines } => {
+                self.automation_agent_read(pane_id, target.as_deref(), lines, cx)
+            }
+            AutomationCommand::AgentRename {
+                target,
+                name,
+                clear,
+            } => self.automation_agent_rename(pane_id, target.as_deref(), name, clear),
+            AutomationCommand::AgentOpen { .. }
+            | AutomationCommand::AgentStart { .. }
+            | AutomationCommand::AgentPrompt { .. }
+            | AutomationCommand::AgentWait { .. } => unreachable!("handled above"),
             AutomationCommand::SetAgentState { state } => {
-                self.explicit_agent_states.insert(pane_id, state);
+                self.set_hook_agent_presence(pane_id, None, state, None, None);
                 cx.notify();
+                Ok(self.automation_agent_status(pane_id))
+            }
+            AutomationCommand::SetAgentPresence {
+                kind,
+                state,
+                attention,
+                session_id,
+            } => {
+                self.set_hook_agent_presence(pane_id, Some(kind), state, attention, session_id);
+                cx.notify();
+                Ok(self.automation_agent_status(pane_id))
+            }
+            AutomationCommand::ClearAgentPresence { session_id } => {
+                let clear = self
+                    .hook_agent_presence
+                    .get(&pane_id)
+                    .is_none_or(|presence| {
+                        session_id.is_none()
+                            || presence.session_id.as_ref() == session_id.as_ref()
+                    });
+                if clear {
+                    self.hook_agent_presence.remove(&pane_id);
+                    cx.notify();
+                }
                 Ok(self.automation_agent_status(pane_id))
             }
         };
@@ -1156,6 +1278,630 @@ impl WorkspaceView {
             Err(error) => AutomationResponse::failure(error),
         };
         let _ = request.response.send(response);
+    }
+
+    fn automation_send(
+        &mut self,
+        caller: Uuid,
+        target_pane: Option<Uuid>,
+        text: String,
+        newline: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<serde_json::Value, String> {
+        let target = target_pane.unwrap_or(caller);
+        if !self.automation_same_project(caller, target) {
+            return Err("el pane destino no está en el mismo proyecto".to_owned());
+        }
+        let Some(terminal) = self.terminals.get(&target) else {
+            return Err("el pane ya no existe".to_owned());
+        };
+        terminal.read(cx).send_automation_input(&text, newline);
+        Ok(serde_json::json!({ "paneId": target, "sent": text.len() }))
+    }
+
+    fn automation_split(
+        &mut self,
+        caller: Uuid,
+        direction: AutomationDirection,
+        no_focus: bool,
+        cwd: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Result<serde_json::Value, String> {
+        if !self.snapshot.select_terminal_global(caller) {
+            return Err("el pane ya no existe".to_owned());
+        }
+        let direction = automation_split_direction(direction);
+        let cwd = cwd.map(|path| path.to_string_lossy().into_owned());
+        let Some(created) = self
+            .snapshot
+            .split_selected_terminal_with_options(direction, !no_focus, cwd)
+        else {
+            return Err("no se pudo dividir el pane".to_owned());
+        };
+        self.reconcile_terminal_views(cx);
+        self.persist(cx);
+        Ok(serde_json::json!({ "paneId": created }))
+    }
+
+    fn automation_create_tab(
+        &mut self,
+        caller: Uuid,
+        no_focus: bool,
+        cwd: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Result<serde_json::Value, String> {
+        if !self.snapshot.select_terminal_global(caller) {
+            return Err("el pane ya no existe".to_owned());
+        }
+        let cwd = cwd.map(|path| path.to_string_lossy().into_owned());
+        let Some((tab_id, session_id)) = self
+            .snapshot
+            .create_terminal_tab_with_options(!no_focus, cwd)
+        else {
+            return Err("no se pudo crear el tab".to_owned());
+        };
+        self.reconcile_terminal_views(cx);
+        self.persist(cx);
+        Ok(serde_json::json!({
+            "tabId": tab_id,
+            "paneId": session_id,
+        }))
+    }
+
+    fn automation_same_project(&self, caller: Uuid, target: Uuid) -> bool {
+        if caller == target {
+            return true;
+        }
+        let caller_project = self.project_id_for_session(caller);
+        let target_project = self.project_id_for_session(target);
+        matches!((caller_project, target_project), (Some(a), Some(b)) if a == b)
+    }
+
+    fn project_id_for_session(&self, session_id: Uuid) -> Option<Uuid> {
+        self.snapshot.projects.iter().find_map(|project| {
+            project
+                .workspaces
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|workspace| &workspace.tabs)
+                .flat_map(|tab| &tab.sessions)
+                .any(|session| session.id == session_id)
+                .then_some(project.id)
+        })
+    }
+
+    fn resolve_automation_target(
+        &self,
+        caller: Uuid,
+        target: Option<&str>,
+    ) -> Result<Uuid, String> {
+        let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(caller);
+        };
+        if let Ok(uuid) = Uuid::parse_str(target) {
+            if !self.automation_same_project(caller, uuid) {
+                return Err("el pane destino no está en el mismo proyecto".to_owned());
+            }
+            if !self.terminals.contains_key(&uuid)
+                && self.project_id_for_session(uuid).is_none()
+            {
+                return Err("el pane destino no existe".to_owned());
+            }
+            return Ok(uuid);
+        }
+        let project_id = self
+            .project_id_for_session(caller)
+            .ok_or_else(|| "el pane caller no pertenece a un proyecto".to_owned())?;
+        let matches: Vec<_> = self
+            .agent_names
+            .iter()
+            .filter(|(pane_id, name)| {
+                name == &target
+                    && self
+                        .project_id_for_session(**pane_id)
+                        .is_some_and(|id| id == project_id)
+            })
+            .map(|(pane_id, _)| *pane_id)
+            .collect();
+        match matches.as_slice() {
+            [only] => Ok(*only),
+            [] => Err(format!("no hay un agente llamado '{target}' en este proyecto")),
+            _ => Err(format!("el nombre '{target}' es ambiguo en este proyecto")),
+        }
+    }
+
+    fn register_agent_name(&mut self, pane_id: Uuid, name: &str) -> Result<(), String> {
+        validate_agent_name(name).map_err(|error| error.to_string())?;
+        let project_id = self
+            .project_id_for_session(pane_id)
+            .ok_or_else(|| "el pane no pertenece a un proyecto".to_owned())?;
+        if let Some((existing, _)) = self.agent_names.iter().find(|(other_id, other_name)| {
+            *other_name == name
+                && **other_id != pane_id
+                && self
+                    .project_id_for_session(**other_id)
+                    .is_some_and(|id| id == project_id)
+        }) {
+            return Err(format!(
+                "el nombre '{name}' ya está en uso por el pane {existing}"
+            ));
+        }
+        self.agent_names.insert(pane_id, name.to_owned());
+        Ok(())
+    }
+
+    fn automation_agent_list(&self, caller: Uuid) -> serde_json::Value {
+        let project_id = self.project_id_for_session(caller);
+        let mut agents = Vec::new();
+        for project in &self.snapshot.projects {
+            if project_id.is_some_and(|id| id != project.id) {
+                continue;
+            }
+            for workspace in project.workspaces.as_deref().unwrap_or_default() {
+                for tab in &workspace.tabs {
+                    for session in &tab.sessions {
+                        let presence = self.resolved_agent_presence(session.id);
+                        let name = self.agent_names.get(&session.id);
+                        if presence.is_none() && name.is_none() {
+                            continue;
+                        }
+                        agents.push(serde_json::json!({
+                            "paneId": session.id,
+                            "tabId": tab.id,
+                            "name": name,
+                            "agent": self.agent_status_value(session.id),
+                            "workingDirectory": session.working_directory,
+                        }));
+                    }
+                }
+            }
+        }
+        serde_json::json!({ "agents": agents })
+    }
+
+    fn automation_agent_read(
+        &self,
+        caller: Uuid,
+        target: Option<&str>,
+        lines: usize,
+        cx: &Context<Self>,
+    ) -> Result<serde_json::Value, String> {
+        let target = self.resolve_automation_target(caller, target)?;
+        let Some(terminal) = self.terminals.get(&target) else {
+            return Err("el pane ya no existe".to_owned());
+        };
+        let text = terminal.read(cx).automation_read_text(lines);
+        Ok(serde_json::json!({
+            "paneId": target,
+            "name": self.agent_names.get(&target),
+            "lines": lines,
+            "text": text,
+            "agent": self.agent_status_value(target),
+        }))
+    }
+
+    fn automation_agent_rename(
+        &mut self,
+        caller: Uuid,
+        target: Option<&str>,
+        name: Option<String>,
+        clear: bool,
+    ) -> Result<serde_json::Value, String> {
+        let target = self.resolve_automation_target(caller, target)?;
+        if clear {
+            self.agent_names.remove(&target);
+        } else if let Some(name) = name.as_ref() {
+            self.register_agent_name(target, name)?;
+        } else {
+            return Err("falta el nombre nuevo".to_owned());
+        }
+        Ok(self.automation_agent_status(target))
+    }
+
+    fn begin_agent_launch(
+        &mut self,
+        caller: Uuid,
+        command: AutomationCommand,
+        cx: &mut Context<Self>,
+    ) -> Result<PendingAgentLaunch, String> {
+        let (
+            kind,
+            placement,
+            direction,
+            no_focus,
+            name,
+            cwd,
+            timeout_ms,
+            wait_for_agent,
+            args,
+            explicit_pane,
+        ) = match command {
+            AutomationCommand::AgentOpen {
+                kind,
+                placement,
+                direction,
+                no_focus,
+                name,
+                cwd,
+                timeout_ms,
+                wait,
+                args,
+            } => (
+                kind,
+                placement,
+                direction,
+                no_focus,
+                name,
+                cwd,
+                timeout_ms,
+                wait,
+                args,
+                None,
+            ),
+            AutomationCommand::AgentStart {
+                kind,
+                pane,
+                name,
+                timeout_ms,
+                wait,
+                args,
+            } => (
+                kind,
+                AgentPlacement::Current,
+                AutomationDirection::Right,
+                true,
+                name,
+                None,
+                timeout_ms,
+                wait,
+                args,
+                pane,
+            ),
+            _ => return Err("comando de launch inválido".to_owned()),
+        };
+
+        if !self.snapshot.select_terminal_global(caller) {
+            return Err("el pane ya no existe".to_owned());
+        }
+
+        let cwd = cwd.map(|path| path.to_string_lossy().into_owned());
+        let mut tab_id = None;
+        let target_pane = match placement {
+            AgentPlacement::Current => {
+                let target = explicit_pane.unwrap_or(caller);
+                if !self.automation_same_project(caller, target) {
+                    return Err("el pane destino no está en el mismo proyecto".to_owned());
+                }
+                if !self.terminals.contains_key(&target) {
+                    return Err("el pane destino ya no existe".to_owned());
+                }
+                target
+            }
+            AgentPlacement::Split => {
+                let direction = automation_split_direction(direction);
+                let Some(created) = self.snapshot.split_selected_terminal_with_options(
+                    direction,
+                    !no_focus,
+                    cwd.clone(),
+                ) else {
+                    return Err("no se pudo dividir el pane".to_owned());
+                };
+                self.reconcile_terminal_views(cx);
+                self.persist(cx);
+                created
+            }
+            AgentPlacement::Tab => {
+                let Some((created_tab, created_pane)) = self
+                    .snapshot
+                    .create_terminal_tab_with_options(!no_focus, cwd.clone())
+                else {
+                    return Err("no se pudo crear el tab".to_owned());
+                };
+                tab_id = Some(created_tab);
+                self.reconcile_terminal_views(cx);
+                self.persist(cx);
+                created_pane
+            }
+        };
+
+        if let Some(name) = name.as_ref() {
+            self.register_agent_name(target_pane, name)?;
+        }
+
+        let command_text = agent_launch_command(kind, &args);
+        let mut payload = serde_json::json!({
+            "paneId": target_pane,
+            "kind": kind.cli_name(),
+            "displayName": kind.display_name(),
+            "command": command_text,
+            "ready": false,
+            "name": name,
+            "cwd": cwd,
+            "agent": self.agent_status_value(target_pane),
+        });
+        if let Some(tab_id) = tab_id {
+            payload["tabId"] = serde_json::json!(tab_id);
+        }
+
+        Ok(PendingAgentLaunch {
+            pane_id: target_pane,
+            kind,
+            timeout_ms,
+            wait_for_agent,
+            command_text,
+            payload,
+        })
+    }
+
+    fn begin_agent_prompt_or_wait(
+        &mut self,
+        caller: Uuid,
+        command: AutomationCommand,
+        cx: &mut Context<Self>,
+    ) -> Result<PendingAgentWait, String> {
+        match command {
+            AutomationCommand::AgentPrompt {
+                target,
+                text,
+                wait,
+                timeout_ms,
+                until,
+            } => {
+                let pane_id = self.resolve_automation_target(caller, target.as_deref())?;
+                let Some(terminal) = self.terminals.get(&pane_id) else {
+                    return Err("el pane destino ya no existe".to_owned());
+                };
+                terminal.read(cx).send_automation_prompt(&text);
+                let until = if until.is_empty() {
+                    default_settled_states()
+                } else {
+                    until
+                };
+                let payload = serde_json::json!({
+                    "paneId": pane_id,
+                    "name": self.agent_names.get(&pane_id),
+                    "submitted": true,
+                    "prompt": text,
+                    "wait": wait,
+                    "agent": self.agent_status_value(pane_id),
+                });
+                if !wait {
+                    // Return immediately via a completed wait with empty until that matches now.
+                    return Ok(PendingAgentWait {
+                        pane_id,
+                        timeout_ms: 1,
+                        until: Vec::new(),
+                        payload,
+                    });
+                }
+                Ok(PendingAgentWait {
+                    pane_id,
+                    timeout_ms,
+                    until,
+                    payload,
+                })
+            }
+            AutomationCommand::AgentWait {
+                target,
+                timeout_ms,
+                until,
+            } => {
+                let pane_id = self.resolve_automation_target(caller, target.as_deref())?;
+                let until = if until.is_empty() {
+                    default_settled_states()
+                } else {
+                    until
+                };
+                Ok(PendingAgentWait {
+                    pane_id,
+                    timeout_ms,
+                    until,
+                    payload: serde_json::json!({
+                        "paneId": pane_id,
+                        "name": self.agent_names.get(&pane_id),
+                        "agent": self.agent_status_value(pane_id),
+                    }),
+                })
+            }
+            _ => Err("comando de wait inválido".to_owned()),
+        }
+    }
+
+    fn spawn_agent_launch(
+        &mut self,
+        launch: PendingAgentLaunch,
+        response: std::sync::mpsc::Sender<AutomationResponse>,
+        cx: &mut Context<Self>,
+    ) {
+        let expected = launch.kind.display_name().to_owned();
+        let pane_id = launch.pane_id;
+        let timeout = Duration::from_millis(launch.timeout_ms.max(1));
+        let wait_for_agent = launch.wait_for_agent;
+        let command_text = launch.command_text;
+        let mut payload = launch.payload;
+        cx.spawn(async move |this, cx| {
+            let deadline = Instant::now() + timeout;
+            // Wait for an interactive shell before launching the agent binary.
+            let mut command_sent = false;
+            while Instant::now() < deadline {
+                let shell_ready = this
+                    .update(cx, |this, cx| {
+                        this.terminals
+                            .get(&pane_id)
+                            .is_some_and(|terminal| terminal.read(cx).is_interactive_shell())
+                    })
+                    .ok()
+                    .unwrap_or(false);
+                if shell_ready {
+                    let sent = this
+                        .update(cx, |this, cx| {
+                            if let Some(terminal) = this.terminals.get(&pane_id) {
+                                terminal
+                                    .read(cx)
+                                    .send_automation_input(&command_text, true);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .ok()
+                        .unwrap_or(false);
+                    command_sent = sent;
+                    break;
+                }
+                Timer::after(Duration::from_millis(150)).await;
+            }
+            if !command_sent {
+                payload["ready"] = serde_json::json!(false);
+                payload["timeout"] = serde_json::json!(true);
+                payload["message"] = serde_json::json!(
+                    "timeout esperando shell interactivo antes de lanzar el agente"
+                );
+                let _ = response.send(AutomationResponse::success(payload));
+                return;
+            }
+            if !wait_for_agent {
+                let status = this
+                    .update(cx, |this, _cx| this.automation_agent_status(pane_id))
+                    .ok();
+                if let Some(status) = status {
+                    payload["agent"] = status
+                        .get("agent")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                }
+                payload["ready"] = serde_json::json!(false);
+                payload["submitted"] = serde_json::json!(true);
+                let _ = response.send(AutomationResponse::success(payload));
+                return;
+            }
+            loop {
+                let ready = this
+                    .update(cx, |this, _cx| {
+                        this.resolved_agent_presence(pane_id)
+                            .is_some_and(|presence| presence.kind.eq_ignore_ascii_case(&expected))
+                    })
+                    .ok()
+                    .unwrap_or(false);
+                if ready {
+                    let status = this
+                        .update(cx, |this, _cx| this.automation_agent_status(pane_id))
+                        .ok();
+                    if let Some(status) = status {
+                        payload["ready"] = serde_json::json!(true);
+                        payload["agent"] = status
+                            .get("agent")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                    }
+                    let _ = response.send(AutomationResponse::success(payload));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    let status = this
+                        .update(cx, |this, _cx| this.automation_agent_status(pane_id))
+                        .ok();
+                    if let Some(status) = status {
+                        payload["agent"] = status
+                            .get("agent")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                    }
+                    payload["ready"] = serde_json::json!(false);
+                    payload["timeout"] = serde_json::json!(true);
+                    payload["message"] = serde_json::json!(format!(
+                        "timeout esperando agente {expected}; el comando ya se envió al pane"
+                    ));
+                    let _ = response.send(AutomationResponse::success(payload));
+                    return;
+                }
+                Timer::after(Duration::from_millis(200)).await;
+            }
+        })
+        .detach();
+    }
+
+    fn spawn_agent_state_wait(
+        &mut self,
+        pending: PendingAgentWait,
+        response: std::sync::mpsc::Sender<AutomationResponse>,
+        cx: &mut Context<Self>,
+    ) {
+        let pane_id = pending.pane_id;
+        let timeout = Duration::from_millis(pending.timeout_ms.max(1));
+        let until = pending.until;
+        let mut payload = pending.payload;
+        // Immediate return path for prompt --no-wait (empty until).
+        if until.is_empty() {
+            let _ = response.send(AutomationResponse::success(payload));
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let deadline = Instant::now() + timeout;
+            // Require an observed transition out of the pre-submit state when possible.
+            let initial = this
+                .update(cx, |this, _cx| {
+                    this.resolved_agent_presence(pane_id)
+                        .and_then(|presence| presence.state)
+                })
+                .ok()
+                .flatten();
+            let mut saw_activity = initial.is_some_and(|state| state == AgentRuntimeState::Working);
+            loop {
+                let current = this
+                    .update(cx, |this, _cx| {
+                        this.resolved_agent_presence(pane_id)
+                            .and_then(|presence| presence.state)
+                    })
+                    .ok()
+                    .flatten();
+                if current == Some(AgentRuntimeState::Working) {
+                    saw_activity = true;
+                }
+                let matched = current.is_some_and(|state| until.contains(&state));
+                // If already settled before any work, accept immediately (standalone wait).
+                // For prompt-after-working, prefer seeing activity first unless already settled
+                // into a requested state after submit.
+                if matched && (saw_activity || initial != current || initial.is_none()) {
+                    let status = this
+                        .update(cx, |this, _cx| this.automation_agent_status(pane_id))
+                        .ok();
+                    if let Some(status) = status {
+                        payload["agent"] = status
+                            .get("agent")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        payload["name"] = status
+                            .get("name")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                    }
+                    payload["matched"] = serde_json::json!(true);
+                    payload["state"] = serde_json::json!(current.map(agent_runtime_state_label));
+                    let _ = response.send(AutomationResponse::success(payload));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    let status = this
+                        .update(cx, |this, _cx| this.automation_agent_status(pane_id))
+                        .ok();
+                    if let Some(status) = status {
+                        payload["agent"] = status
+                            .get("agent")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                    }
+                    payload["matched"] = serde_json::json!(false);
+                    payload["timeout"] = serde_json::json!(true);
+                    payload["state"] = serde_json::json!(current.map(agent_runtime_state_label));
+                    let _ = response.send(AutomationResponse::success(payload));
+                    return;
+                }
+                Timer::after(Duration::from_millis(200)).await;
+            }
+        })
+        .detach();
     }
 
     fn automation_pane_list(&self, caller: Uuid) -> serde_json::Value {
@@ -1181,6 +1927,7 @@ impl WorkspaceView {
                     "title": session.title,
                     "workingDirectory": session.working_directory,
                     "selected": self.snapshot.selected_session().is_some_and(|selected| selected.id == session.id),
+                    "name": self.agent_names.get(&session.id),
                     "agent": agent,
                 })
             })
@@ -1191,22 +1938,93 @@ impl WorkspaceView {
     fn automation_agent_status(&self, pane_id: Uuid) -> serde_json::Value {
         serde_json::json!({
             "paneId": pane_id,
+            "name": self.agent_names.get(&pane_id),
             "agent": self.agent_status_value(pane_id),
         })
     }
 
-    fn agent_status_value(&self, pane_id: Uuid) -> serde_json::Value {
+    fn set_hook_agent_presence(
+        &mut self,
+        pane_id: Uuid,
+        kind: Option<AgentKind>,
+        state: AgentRuntimeState,
+        attention: Option<AgentAttention>,
+        session_id: Option<String>,
+    ) {
+        let now = Instant::now();
+        let entry = self
+            .hook_agent_presence
+            .entry(pane_id)
+            .or_insert_with(|| HookAgentPresence {
+                kind: None,
+                state,
+                attention: None,
+                session_id: None,
+                observed_at: now,
+            });
+        if kind.is_some() {
+            entry.kind = kind;
+        }
+        entry.state = state;
+        entry.attention = attention;
+        if session_id.is_some() {
+            entry.session_id = session_id;
+        }
+        entry.observed_at = now;
+    }
+
+    fn resolved_agent_presence(&self, pane_id: Uuid) -> Option<ResolvedAgentPresence> {
+        let now = Instant::now();
         let detected = self.agent_presence.get(&pane_id);
-        let state = self
-            .explicit_agent_states
+        let hook = self
+            .hook_agent_presence
             .get(&pane_id)
-            .copied()
-            .map(agent_runtime_state_label)
-            .or_else(|| detected.map(|presence| terminal_agent_state_label(presence.state)));
+            .filter(|presence| now.duration_since(presence.observed_at) <= HOOK_OBSERVATION_TTL);
+        let terminal_kind = detected.map(|presence| {
+            (
+                presence.presence.kind.as_str(),
+                presence.presence.kind_source,
+            )
+        });
+        let (kind, kind_source) = match (terminal_kind, hook.and_then(|presence| presence.kind)) {
+            (Some((kind, TerminalAgentKindSource::Process)), _) => (kind.to_owned(), "process"),
+            (_, Some(kind)) => (kind.display_name().to_owned(), "hook"),
+            (Some((kind, TerminalAgentKindSource::Title)), _) => (kind.to_owned(), "title"),
+            (Some((kind, TerminalAgentKindSource::Screen)), _) => (kind.to_owned(), "screen"),
+            (None, None) => return None,
+        };
+        let terminal_state = detected.map(|presence| {
+            (
+                terminal_agent_state_to_runtime_state(presence.presence.state),
+                presence.observed_at,
+            )
+        });
+        let hook_state = hook.map(|presence| (presence.state, presence.observed_at));
+        let (state, state_source, attention) = match (hook_state, terminal_state) {
+            (Some((state, _)), _) => {
+                (Some(state), Some("hook"), hook.and_then(|presence| presence.attention))
+            }
+            (None, Some((state, _))) => (Some(state), Some("heuristic"), None),
+            (None, None) => (None, None, None),
+        };
+        Some(ResolvedAgentPresence {
+            kind,
+            state,
+            attention,
+            kind_source,
+            state_source,
+        })
+    }
+
+    fn agent_status_value(&self, pane_id: Uuid) -> serde_json::Value {
+        let presence = self.resolved_agent_presence(pane_id);
         serde_json::json!({
-            "kind": detected.map(|presence| presence.kind.as_str()),
-            "state": state,
-            "source": if self.explicit_agent_states.contains_key(&pane_id) { "hook" } else { "screen" },
+            "kind": presence.as_ref().map(|presence| presence.kind.as_str()),
+            "state": presence.as_ref().and_then(|presence| presence.state).map(agent_runtime_state_label),
+            "attention": presence.as_ref().and_then(|presence| presence.attention).map(AgentAttention::label),
+            "kindSource": presence.as_ref().map(|presence| presence.kind_source),
+            "stateSource": presence.as_ref().and_then(|presence| presence.state_source),
+            "source": presence.as_ref().and_then(|presence| presence.state_source),
         })
     }
 
@@ -1310,6 +2128,33 @@ impl WorkspaceView {
                 Some(format!("No se pudieron guardar settings: {error}").into());
         }
         cx.notify();
+    }
+
+    fn apply_agent_hook_result(
+        &mut self,
+        result: anyhow::Result<AgentHookStatus>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(status) => {
+                self.agent_hook_status = Some(status);
+                self.agent_hook_error = None;
+            }
+            Err(error) => {
+                self.agent_hook_status = None;
+                self.agent_hook_error =
+                    Some(format!("No se pudo actualizar las integraciones: {error}").into());
+            }
+        }
+        cx.notify();
+    }
+
+    fn install_agent_hooks_from_settings(&mut self, cx: &mut Context<Self>) {
+        self.apply_agent_hook_result(install_agent_hooks(), cx);
+    }
+
+    fn uninstall_agent_hooks_from_settings(&mut self, cx: &mut Context<Self>) {
+        self.apply_agent_hook_result(uninstall_agent_hooks(), cx);
     }
 
     fn set_terminal_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
@@ -1743,19 +2588,8 @@ impl WorkspaceView {
             .iter()
             .flat_map(|tab| &tab.sessions)
             .filter_map(|session| {
-                let detected = self.agent_presence.get(&session.id);
-                let explicit = self.explicit_agent_states.get(&session.id).copied();
-                let state = explicit.or_else(|| {
-                    detected.map(|presence| match presence.state {
-                        TerminalAgentState::Idle => AgentRuntimeState::Idle,
-                        TerminalAgentState::Working => AgentRuntimeState::Working,
-                        TerminalAgentState::Waiting => AgentRuntimeState::Waiting,
-                    })
-                })?;
-                let kind = detected
-                    .map(|presence| presence.kind.clone())
-                    .unwrap_or_else(|| "Agent".into());
-                Some((kind, state))
+                let presence = self.resolved_agent_presence(session.id)?;
+                Some((presence.kind, presence.state?))
             })
             .max_by_key(|(_, state)| match state {
                 AgentRuntimeState::Idle => 0,
@@ -2282,6 +3116,9 @@ impl WorkspaceView {
         let hidden = self.settings.show_hidden_files;
         let left_sidebar = self.settings.left_sidebar_visible;
         let git_panel = self.settings.git_panel_visible;
+        let agent_hooks = self.agent_hook_status.unwrap_or_default();
+        let agent_hook_error = self.agent_hook_error.clone();
+        let all_agent_hooks_installed = agent_hooks.all_installed();
         div()
             .id("settings-sidebar")
             .flex_1()
@@ -2393,6 +3230,151 @@ impl WorkspaceView {
                             }
                         },
                     )),
+            )
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(DARK.muted)
+                    .child("INTEGRACIONES DE AGENTES"),
+            )
+            .child(
+                div()
+                    .p_3()
+                    .rounded(px(7.0))
+                    .bg(DARK.elevated)
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(if all_agent_hooks_installed {
+                                DARK.success
+                            } else {
+                                DARK.subtle
+                            })
+                            .child(if all_agent_hooks_installed {
+                                "Hooks de Claude y Codex listos."
+                            } else {
+                                "Configura los hooks que quieras usar."
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(10.0))
+                                    .text_color(DARK.foreground)
+                                    .child("Claude Code"),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(px(4.0))
+                                    .bg(if agent_hooks.claude_installed {
+                                        DARK.diff_added_bg
+                                    } else {
+                                        DARK.selection
+                                    })
+                                    .text_size(px(8.0))
+                                    .text_color(if agent_hooks.claude_installed {
+                                        DARK.success
+                                    } else {
+                                        DARK.muted
+                                    })
+                                    .child(if agent_hooks.claude_installed {
+                                        "Instalado"
+                                    } else {
+                                        "No instalado"
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(10.0))
+                                    .text_color(DARK.foreground)
+                                    .child("Codex"),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(px(4.0))
+                                    .bg(if agent_hooks.codex_installed {
+                                        DARK.diff_added_bg
+                                    } else {
+                                        DARK.selection
+                                    })
+                                    .text_size(px(8.0))
+                                    .text_color(if agent_hooks.codex_installed {
+                                        DARK.success
+                                    } else {
+                                        DARK.muted
+                                    })
+                                    .child(if agent_hooks.codex_installed {
+                                        "Instalado"
+                                    } else {
+                                        "No instalado"
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .line_height(px(13.0))
+                            .text_color(DARK.subtle)
+                            .child(
+                                "Instala hooks globales para informar estado y permisos. La CLI de Vibra ya está disponible dentro de cada pane.",
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .line_height(px(13.0))
+                            .text_color(DARK.subtle)
+                            .child(
+                                "Después de instalar Codex, aprueba el hook una vez con /hooks.",
+                            ),
+                    )
+                    .when_some(agent_hook_error, |card, error| {
+                        card.child(
+                            div()
+                                .text_size(px(9.0))
+                                .line_height(px(13.0))
+                                .text_color(DARK.danger)
+                                .child(error),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(self.settings_button(
+                                "Instalar / actualizar",
+                                "settings-agent-hooks-install",
+                                cx,
+                                |this, cx| this.install_agent_hooks_from_settings(cx),
+                            ))
+                            .when(agent_hooks.any_installed(), |buttons| {
+                                buttons.child(self.settings_button(
+                                    "Desinstalar",
+                                    "settings-agent-hooks-uninstall",
+                                    cx,
+                                    |this, cx| this.uninstall_agent_hooks_from_settings(cx),
+                                ))
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -3726,10 +4708,10 @@ fn git_status_trailing(status: GitFileStatus) -> Div {
     }
 }
 
-fn terminal_agent_state_label(state: TerminalAgentState) -> &'static str {
+fn terminal_agent_state_to_runtime_state(state: TerminalAgentState) -> AgentRuntimeState {
     match state {
-        TerminalAgentState::Idle => "idle",
-        TerminalAgentState::Working => "working",
-        TerminalAgentState::Waiting => "waiting",
+        TerminalAgentState::Idle => AgentRuntimeState::Idle,
+        TerminalAgentState::Working => AgentRuntimeState::Working,
+        TerminalAgentState::Waiting => AgentRuntimeState::Waiting,
     }
 }

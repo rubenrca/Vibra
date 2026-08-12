@@ -50,9 +50,46 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 ### Agentes y automatización
 
 - detección de Codex, Claude, Gemini, Grok, OpenCode, Cursor, Aider, Amp y Pi;
-- estado idle/working/waiting inferido desde terminal o declarado por hook;
+- identidad resuelta por proceso foreground, título y texto visible; estado por hooks o heurística de terminal;
 - socket Unix local protegido por capacidades UUID;
-- comandos `+pane` y `+agent` disponibles mediante `$VIBRA_CLI`.
+- comandos `+pane` y `+agent` disponibles mediante `$VIBRA_CLI`;
+- un agente (o script) dentro de un pane puede abrir otro agente en split o tab:
+
+```bash
+# One-shot: crea layout y arranca el kind indicado (default: split right, sin robar foco)
+"$VIBRA_CLI" +agent open codex --split right --no-focus --name reviewer
+"$VIBRA_CLI" +agent open claude --tab --no-focus --cwd "$PWD"
+"$VIBRA_CLI" +agent open codex --name builder -- -m o3
+
+# Prompt / wait / read por nombre o pane id
+"$VIBRA_CLI" +agent prompt reviewer "Review the current diff" --wait --timeout 120000
+"$VIBRA_CLI" +agent wait reviewer --until waiting
+"$VIBRA_CLI" +agent read reviewer --lines 120
+"$VIBRA_CLI" +agent list
+"$VIBRA_CLI" +agent status reviewer
+
+# Primitivas de layout
+"$VIBRA_CLI" +pane split right --no-focus --cwd "$PWD"
+"$VIBRA_CLI" +pane tab --no-focus
+"$VIBRA_CLI" +pane run --pane <id> "npm test"
+"$VIBRA_CLI" +agent start --kind codex --pane <id> --name reviewer
+"$VIBRA_CLI" +agent kinds
+"$VIBRA_CLI" +skill
+```
+
+Para instalar los adaptadores de estado de Claude y Codex, usa **Settings →
+Integraciones de agentes** o la CLI:
+
+```bash
+"$VIBRA_CLI" agent setup
+"$VIBRA_CLI" agent status
+"$VIBRA_CLI" agent uninstall codex
+```
+
+El instalador añade únicamente los handlers de Vibra a `~/.claude/settings.json`
+y `~/.codex/hooks.json`, guarda scripts en `~/.vibra/agent-hooks/` y conserva los
+hooks existentes. Los scripts no hacen nada fuera de un pane de Vibra. Después de
+instalar el hook de Codex, ábrelo una vez y apruébalo en `/hooks`.
 
 ## Requisitos
 
