@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.3.6 — 2026-08-14
+
+- Open ⌘N (new session) and ⌘T (new tab) in the current terminal directory instead of the launch/project root.
+- Restyle terminal tabs as compact pills: directory/command labels, close on every tab, split count, and agent status.
+- Distinguish agent attention in the sidebar and tabs: permission requests use a red mark instead of a generic waiting dot.
+- Restore macOS notifications when an agent finishes or needs attention in a hidden session or while Vibra is in the background.
+- Show Claude and Codex hook status separately in Settings, with a toggle for agent notifications.
+- Detect Goose sessions and show a Pi mark for the Pi coding agent.
 
 ## 0.3.5 — 2026-08-12
 

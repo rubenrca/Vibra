@@ -31,6 +31,9 @@ pub struct AppSettings {
     /// `light`, `dark`, or `system`.
     #[serde(default = "default_appearance_mode")]
     pub appearance_mode: String,
+    /// Notify when an agent finishes or needs attention off-screen.
+    #[serde(default = "default_true")]
+    pub agent_notifications: bool,
 }
 
 const fn default_terminal_font_size() -> f32 {
@@ -59,6 +62,7 @@ impl Default for AppSettings {
             git_panel_visible: false,
             theme_id: default_theme_id(),
             appearance_mode: default_appearance_mode(),
+            agent_notifications: true,
         }
     }
 }

@@ -47,19 +47,21 @@ pub enum AgentKind {
     Codex,
     Cursor,
     Gemini,
+    Goose,
     Grok,
     OpenCode,
     Pi,
 }
 
 impl AgentKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Aider,
         Self::Amp,
         Self::Claude,
         Self::Codex,
         Self::Cursor,
         Self::Gemini,
+        Self::Goose,
         Self::Grok,
         Self::OpenCode,
         Self::Pi,
@@ -73,6 +75,7 @@ impl AgentKind {
             Self::Codex => "Codex",
             Self::Cursor => "Cursor",
             Self::Gemini => "Gemini",
+            Self::Goose => "Goose",
             Self::Grok => "Grok",
             Self::OpenCode => "OpenCode",
             Self::Pi => "Pi",
@@ -87,6 +90,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::Cursor => "cursor",
             Self::Gemini => "gemini",
+            Self::Goose => "goose",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
             Self::Pi => "pi",
@@ -101,6 +105,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::Cursor => "cursor-agent",
             Self::Gemini => "gemini",
+            Self::Goose => "goose",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
             Self::Pi => "pi",
@@ -115,6 +120,7 @@ impl AgentKind {
             "codex" => Some(Self::Codex),
             "cursor" | "cursor-agent" => Some(Self::Cursor),
             "gemini" => Some(Self::Gemini),
+            "goose" => Some(Self::Goose),
             "grok" => Some(Self::Grok),
             "opencode" => Some(Self::OpenCode),
             "pi" => Some(Self::Pi),
@@ -2113,6 +2119,8 @@ mod tests {
             "claude 'hello world'"
         );
         assert_eq!(AgentKind::Cursor.executable(), "cursor-agent");
+        assert_eq!(AgentKind::parse("goose"), Some(AgentKind::Goose));
+        assert_eq!(AgentKind::Goose.executable(), "goose");
     }
 
     #[test]

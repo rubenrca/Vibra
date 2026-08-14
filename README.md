@@ -52,7 +52,8 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 ### Agentes y automatización
 
-- detección de Codex, Claude, Gemini, Grok, OpenCode, Cursor, Aider, Amp y Pi;
+- detección de Codex, Claude, Gemini, Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi;
+- avisos de sistema cuando un agente termina o pide permiso fuera de la sesión visible;
 - identidad resuelta por proceso foreground, sesión, título y texto reciente; los aliases siguen al proceso vivo, no al pane;
 - esperas ligadas a la identidad del agente: un reemplazo o timeout falla explícitamente y los launches nuevos hacen rollback;
 - socket Unix local protegido por capacidades UUID;
@@ -146,11 +147,11 @@ misma versión, más las herramientas Sparkle en `.build/artifacts/sparkle`
 (clave EdDSA en el llavero):
 
 ```bash
-./Scripts/release.sh 0.3.5 --dry-run
-./Scripts/release.sh 0.3.5
-./Scripts/release.sh 0.3.5-beta.1 --prerelease
-./Scripts/release.sh 0.3.5 --no-notarize   # solo si hace falta omitir notarización
-./Scripts/release.sh 0.3.5 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
+./Scripts/release.sh 0.3.6 --dry-run
+./Scripts/release.sh 0.3.6
+./Scripts/release.sh 0.3.6-beta.1 --prerelease
+./Scripts/release.sh 0.3.6 --no-notarize   # solo si hace falta omitir notarización
+./Scripts/release.sh 0.3.6 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
 ```
 
 Un release **estable** crea el DMG universal, firma con Developer ID, notariza

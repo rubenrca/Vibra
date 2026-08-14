@@ -5,7 +5,7 @@ use gpui::{
     prelude::*, px, svg,
 };
 
-use crate::infrastructure::automation::AgentRuntimeState;
+use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
 use crate::ui::theme::colors;
 
 /// Bundled agent brand marks served through GPUI's asset source.
@@ -41,6 +41,9 @@ impl AssetSource for VibraAssets {
             "agent-marks/opencode.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../Resources/AgentMarks/opencode.svg"
             ))),
+            "agent-marks/pi.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/AgentMarks/pi.svg"
+            ))),
             "file-icons/folder.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../Resources/FileIcons/folder.svg"
             ))),
@@ -66,6 +69,7 @@ impl AssetSource for VibraAssets {
             "agent-marks/goose.svg",
             "agent-marks/grok.svg",
             "agent-marks/opencode.svg",
+            "agent-marks/pi.svg",
             "file-icons/folder.svg",
             "file-icons/folder-open.svg",
             "file-icons/file.svg",
@@ -99,16 +103,23 @@ fn agent_mark(kind: &str) -> Option<(&'static str, AgentMarkStyle)> {
         // Template silhouette (no black square background) so it recolors with chrome.
         "Grok" => Some(("agent-marks/grok.svg", AgentMarkStyle::Template)),
         "OpenCode" => Some(("agent-marks/opencode.svg", AgentMarkStyle::Template)),
+        "Pi" => Some(("agent-marks/pi.svg", AgentMarkStyle::Template)),
         _ => None,
     }
 }
 
-pub fn agent_status_color(state: Option<AgentRuntimeState>) -> Option<Rgba> {
-    match state {
-        Some(AgentRuntimeState::Waiting) => Some(colors().warning),
-        Some(AgentRuntimeState::Working) => Some(colors().accent),
-        Some(AgentRuntimeState::Idle) => Some(colors().subtle),
-        None => None,
+pub fn agent_status_color(
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+) -> Option<Rgba> {
+    match (state, attention) {
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Permission)) => {
+            Some(colors().danger)
+        }
+        (Some(AgentRuntimeState::Waiting), _) => Some(colors().warning),
+        (Some(AgentRuntimeState::Working), _) => Some(colors().accent),
+        (Some(AgentRuntimeState::Idle), _) => Some(colors().subtle),
+        (None, _) => None,
     }
 }
 
@@ -134,6 +145,7 @@ fn brand_mark(kind: Option<&str>, mark_color: Rgba) -> AnyElement {
 pub fn agent_sidebar_badge(
     kind: Option<&str>,
     state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
     selected: bool,
 ) -> AnyElement {
     let mark_color = if selected {
@@ -141,7 +153,10 @@ pub fn agent_sidebar_badge(
     } else {
         colors().muted
     };
-    let status = agent_status_color(state).or_else(|| selected.then_some(colors().accent));
+    let status =
+        agent_status_color(state, attention).or_else(|| selected.then_some(colors().accent));
+    let needs_permission =
+        attention == Some(AgentAttention::Permission) && state == Some(AgentRuntimeState::Waiting);
 
     div()
         .size(px(32.0))
@@ -152,6 +167,9 @@ pub fn agent_sidebar_badge(
         .justify_center()
         .rounded(px(8.0))
         .bg(colors().elevated)
+        .when(needs_permission, |badge| {
+            badge.border_1().border_color(colors().danger)
+        })
         .child(
             div()
                 .size(px(18.0))
@@ -184,14 +202,29 @@ mod tests {
     fn known_agents_resolve_to_bundled_marks() {
         for kind in [
             "Aider", "Amp", "Claude", "Codex", "Cursor", "Gemini", "Goose", "Grok", "OpenCode",
+            "Pi",
         ] {
             assert!(agent_mark(kind).is_some(), "{kind}");
         }
-        assert!(agent_mark("Pi").is_none());
         assert!(agent_mark("Agent").is_none());
         assert_eq!(
             agent_mark("Grok").map(|(_, style)| style),
             Some(AgentMarkStyle::Template)
+        );
+    }
+
+    #[test]
+    fn permission_uses_danger_instead_of_waiting_warning() {
+        assert_eq!(
+            agent_status_color(
+                Some(AgentRuntimeState::Waiting),
+                Some(AgentAttention::Permission)
+            ),
+            Some(colors().danger)
+        );
+        assert_eq!(
+            agent_status_color(Some(AgentRuntimeState::Waiting), None),
+            Some(colors().warning)
         );
     }
 

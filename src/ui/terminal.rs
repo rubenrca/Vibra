@@ -2427,11 +2427,12 @@ fn agent_kind_from_process_name(process_name: &str) -> Option<&'static str> {
         .file_name()
         .map(|name| name.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_else(|| process_name.to_ascii_lowercase());
-    const AGENT_PROCESSES: [(&str, &str); 9] = [
+    const AGENT_PROCESSES: [(&str, &str); 10] = [
         ("opencode", "OpenCode"),
         ("claude", "Claude"),
         ("codex", "Codex"),
         ("gemini", "Gemini"),
+        ("goose", "Goose"),
         ("grok", "Grok"),
         ("aider", "Aider"),
         ("amp", "Amp"),
@@ -2454,11 +2455,12 @@ fn process_name_matches(process_name: &str, agent_name: &str) -> bool {
 
 fn agent_kind_from_text(text: &str) -> Option<&'static str> {
     let text = text.to_lowercase();
-    let agents: [(&str, &[&str]); 9] = [
+    let agents: [(&str, &[&str]); 10] = [
         ("OpenCode", &["opencode"]),
         ("Claude", &["claude code", "claude"]),
         ("Codex", &["openai codex", "codex"]),
         ("Gemini", &["gemini cli", "gemini"]),
+        ("Goose", &["goose session", "block goose", "goose"]),
         ("Grok", &["grok cli", "grok"]),
         ("Cursor", &["cursor agent"]),
         ("Aider", &["aider"]),
@@ -2884,6 +2886,12 @@ mod tests {
         .unwrap();
         assert_eq!(bare.kind, "Codex");
         assert_eq!(bare.kind_source, TerminalAgentKindSource::Process);
+        assert_eq!(
+            detect_agent_presence("Terminal", &snapshot, None, Some("goose"), Some(46))
+                .unwrap()
+                .kind,
+            "Goose"
+        );
 
         let process_with_state_word =
             detect_agent_presence("Terminal", &snapshot, None, Some("codex-working"), Some(44))

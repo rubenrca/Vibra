@@ -323,8 +323,12 @@ impl WorkspaceSnapshot {
         working_directory: Option<String>,
     ) -> Option<(Uuid, Uuid)> {
         let (project_index, workspace_index) = self.selected_workspace_indices()?;
+        let working_directory = working_directory.unwrap_or_else(|| {
+            self.selected_session()
+                .map(|session| session.working_directory.clone())
+                .unwrap_or_else(|| self.projects[project_index].root_path.clone())
+        });
         let project = &mut self.projects[project_index];
-        let working_directory = working_directory.unwrap_or_else(|| project.root_path.clone());
         let tab = TabSnapshot::with_session(SessionSnapshot::new(working_directory));
         let tab_id = tab.id;
         let session_id = tab.selected_session_id?;
@@ -1560,6 +1564,42 @@ mod tests {
         assert_eq!(
             snapshot.selected_tab().unwrap().layout.terminal_ids(),
             vec![first_id, sibling]
+        );
+    }
+
+    #[test]
+    fn create_terminal_tab_inherits_the_selected_session_working_directory() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-tab-root"));
+        let session_id = snapshot.selected_session().unwrap().id;
+        assert!(
+            snapshot.update_session_working_directory(
+                session_id,
+                Path::new("/tmp/vibra-tab-root/nested")
+            )
+        );
+
+        let (_, created_id) = snapshot.create_terminal_tab_with_focus(true).unwrap();
+        let created = snapshot
+            .terminal_sessions()
+            .into_iter()
+            .find(|session| session.id == created_id)
+            .unwrap();
+        assert_eq!(created.working_directory, "/tmp/vibra-tab-root/nested");
+    }
+
+    #[test]
+    fn create_workspace_opens_at_the_requested_directory() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-ws-root"));
+        snapshot.create_workspace(Path::new("/tmp/vibra-ws-root/nested"));
+
+        let entries = snapshot.workspace_entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].working_directory, "/tmp/vibra-ws-root/nested");
+        assert_eq!(
+            snapshot.selected_session().unwrap().working_directory,
+            "/tmp/vibra-ws-root/nested"
         );
     }
 

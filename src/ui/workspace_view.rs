@@ -21,13 +21,16 @@ use crate::infrastructure::automation::{
     AutomationServer, agent_hook_status, agent_launch_command, default_settled_states,
     install_agent_hooks, uninstall_agent_hooks, validate_agent_name,
 };
+use crate::infrastructure::notifications::{
+    AgentActivitySnapshot, agent_activity_rank, agent_notification_copy, should_notify_agent,
+};
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{AppSettings, SettingsRepository};
 use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 use crate::ports::git::{GitBranchSummary, GitFileStatus, GitPort};
 use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentState};
-use crate::ui::agent_marks::agent_sidebar_badge;
+use crate::ui::agent_marks::{agent_sidebar_badge, agent_status_color};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
 use crate::ui::terminal::{TerminalView, TerminalViewEvent};
@@ -291,8 +294,10 @@ pub struct WorkspaceView {
     agent_state_revisions: HashMap<Uuid, u64>,
     /// Optional aliases assigned by automation (`+agent open --name …`).
     agent_names: HashMap<Uuid, String>,
+    agent_activity_seen: HashMap<Uuid, AgentActivitySnapshot>,
     agent_hook_status: Option<AgentHookStatus>,
     agent_hook_error: Option<SharedString>,
+    window_is_active: bool,
     focus_handle: FocusHandle,
     left_sidebar_visible: bool,
     /// Visual open amount for the left sidebar (`0.0` closed … `1.0` open).
@@ -326,6 +331,7 @@ pub struct WorkspaceView {
     persistence_error: Option<SharedString>,
     /// Subscribed once so system light/dark flips re-resolve the palette.
     _appearance_subscription: Option<Subscription>,
+    _activation_subscription: Option<Subscription>,
 }
 
 pub struct WorkspaceDependencies {
@@ -463,8 +469,10 @@ impl WorkspaceView {
             hook_agent_presence: HashMap::new(),
             agent_state_revisions: HashMap::new(),
             agent_names: HashMap::new(),
+            agent_activity_seen: HashMap::new(),
             agent_hook_status,
             agent_hook_error,
+            window_is_active: true,
             focus_handle,
             left_sidebar_visible: settings.left_sidebar_visible,
             left_sidebar_progress: if settings.left_sidebar_visible {
@@ -498,7 +506,11 @@ impl WorkspaceView {
             pane_resize_dirty: false,
             persistence_error,
             _appearance_subscription: None,
+            _activation_subscription: None,
         };
+        if settings.agent_notifications {
+            crate::infrastructure::notifications::request_authorization();
+        }
         // System appearance is refined on first paint via observe_window_appearance.
         view.apply_theme_preference(true, cx);
         view.reconcile_terminal_views(cx);
@@ -1131,20 +1143,10 @@ impl WorkspaceView {
         self.palette_mode = None;
         match action {
             PaletteAction::NewTerminalTab => {
-                if self.snapshot.create_terminal_tab() {
-                    self.reconcile_terminal_views(cx);
-                    self.persist(cx);
-                    self.focus_selected_terminal(window, cx);
-                }
+                self.open_terminal_tab_in_current_directory(window, cx);
             }
             PaletteAction::NewWorkspace => {
-                self.snapshot.create_workspace(&self.launch_directory);
-                self.reconcile_terminal_views(cx);
-                self.sync_diff_root(cx);
-                self.refresh_project_files();
-                self.refresh_sidebar_workspace_meta(cx);
-                self.persist(cx);
-                self.focus_selected_terminal(window, cx);
+                self.open_workspace_in_current_directory(window, cx);
             }
             PaletteAction::Split(direction) => self.split_pane(direction, window, cx),
             PaletteAction::EqualizePanes => {
@@ -1391,6 +1393,7 @@ impl WorkspaceView {
             self.hook_agent_presence.remove(&session_id);
             self.agent_state_revisions.remove(&session_id);
             self.agent_names.remove(&session_id);
+            self.agent_activity_seen.remove(&session_id);
         }
 
         for session in sessions {
@@ -1488,6 +1491,7 @@ impl WorkspaceView {
                 self.hook_agent_presence.remove(session_id);
                 self.agent_names.remove(session_id);
                 self.bump_agent_state_revision(*session_id);
+                self.publish_agent_activity(*session_id);
                 cx.notify();
             }
             TerminalViewEvent::ContextMenuRequested { session_id, x, y } => {
@@ -1532,6 +1536,7 @@ impl WorkspaceView {
                     self.agent_presence.remove(session_id);
                 }
                 self.bump_agent_state_revision(*session_id);
+                self.publish_agent_activity(*session_id);
                 cx.notify();
             }
             TerminalViewEvent::FontSizeChanged { size } => {
@@ -1651,6 +1656,7 @@ impl WorkspaceView {
             | AutomationCommand::AgentWait { .. } => unreachable!("handled above"),
             AutomationCommand::SetAgentState { state } => {
                 self.set_hook_agent_presence(pane_id, None, state, None, None);
+                self.publish_agent_activity(pane_id);
                 cx.notify();
                 Ok(self.automation_agent_status(pane_id))
             }
@@ -1661,6 +1667,7 @@ impl WorkspaceView {
                 session_id,
             } => {
                 self.set_hook_agent_presence(pane_id, Some(kind), state, attention, session_id);
+                self.publish_agent_activity(pane_id);
                 cx.notify();
                 Ok(self.automation_agent_status(pane_id))
             }
@@ -1675,6 +1682,7 @@ impl WorkspaceView {
                     self.hook_agent_presence.remove(&pane_id);
                     self.agent_names.remove(&pane_id);
                     self.bump_agent_state_revision(pane_id);
+                    self.publish_agent_activity(pane_id);
                     cx.notify();
                 }
                 Ok(self.automation_agent_status(pane_id))
@@ -2634,6 +2642,53 @@ impl WorkspaceView {
         })
     }
 
+    fn session_is_visible(&self, pane_id: Uuid) -> bool {
+        self.snapshot.selected_workspace().is_some_and(|workspace| {
+            workspace
+                .tabs
+                .iter()
+                .find(|tab| Some(tab.id) == workspace.selected_tab_id)
+                .is_some_and(|tab| tab.sessions.iter().any(|session| session.id == pane_id))
+        })
+    }
+
+    fn publish_agent_activity(&mut self, pane_id: Uuid) {
+        let current = self.resolved_agent_presence(pane_id).and_then(|presence| {
+            presence.state.map(|state| AgentActivitySnapshot {
+                kind: presence.kind,
+                state,
+                attention: presence.attention,
+            })
+        });
+        let previous = self.agent_activity_seen.get(&pane_id);
+        if let Some(kind) = should_notify_agent(
+            previous,
+            current.as_ref(),
+            self.session_is_visible(pane_id),
+            self.window_is_active,
+            self.settings.agent_notifications,
+        ) {
+            let agent = current
+                .as_ref()
+                .map(|snapshot| snapshot.kind.as_str())
+                .unwrap_or("Agente");
+            let (title, body) = agent_notification_copy(kind, agent);
+            crate::infrastructure::notifications::deliver(
+                &title,
+                &body,
+                &format!("vibra.agent.{pane_id}"),
+            );
+        }
+        match current {
+            Some(snapshot) => {
+                self.agent_activity_seen.insert(pane_id, snapshot);
+            }
+            None => {
+                self.agent_activity_seen.remove(&pane_id);
+            }
+        }
+    }
+
     fn focus_selected_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(terminal) = self
             .snapshot
@@ -2802,6 +2857,17 @@ impl WorkspaceView {
             }));
     }
 
+    fn ensure_activation_subscription(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self._activation_subscription.is_some() {
+            return;
+        }
+        self.window_is_active = window.is_window_active();
+        self._activation_subscription =
+            Some(cx.observe_window_activation(window, |this, window, _cx| {
+                this.window_is_active = window.is_window_active();
+            }));
+    }
+
     fn set_theme_id(&mut self, theme_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let theme_id = theme::canonicalize_theme_id(theme_id);
         if self.settings.theme_id == theme_id {
@@ -2829,13 +2895,7 @@ impl WorkspaceView {
     }
 
     fn new_workspace(&mut self, _: &NewWorkspace, window: &mut Window, cx: &mut Context<Self>) {
-        self.snapshot.create_workspace(&self.launch_directory);
-        self.reconcile_terminal_views(cx);
-        self.sync_diff_root(cx);
-        self.refresh_project_files();
-        self.refresh_sidebar_workspace_meta(cx);
-        self.persist(cx);
-        self.focus_selected_terminal(window, cx);
+        self.open_workspace_in_current_directory(window, cx);
     }
 
     fn new_terminal_tab(
@@ -2844,7 +2904,31 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.snapshot.create_terminal_tab() {
+        self.open_terminal_tab_in_current_directory(window, cx);
+    }
+
+    fn open_workspace_in_current_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cwd = self.selected_live_cwd(cx);
+        self.snapshot.create_workspace(&cwd);
+        self.reconcile_terminal_views(cx);
+        self.sync_diff_root(cx);
+        self.refresh_project_files();
+        self.refresh_sidebar_workspace_meta(cx);
+        self.persist(cx);
+        self.focus_selected_terminal(window, cx);
+    }
+
+    fn open_terminal_tab_in_current_directory(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cwd = self.selected_live_cwd(cx).to_string_lossy().into_owned();
+        if self
+            .snapshot
+            .create_terminal_tab_with_options(true, Some(cwd))
+            .is_some()
+        {
             self.reconcile_terminal_views(cx);
             self.sync_diff_root(cx);
             self.refresh_project_files();
@@ -3119,11 +3203,7 @@ impl WorkspaceView {
                         false,
                         cx,
                         |this, window, cx| {
-                            this.snapshot.create_workspace(&this.launch_directory);
-                            this.reconcile_terminal_views(cx);
-                            this.sync_diff_root(cx);
-                            this.persist(cx);
-                            this.focus_selected_terminal(window, cx);
+                            this.open_workspace_in_current_directory(window, cx);
                         },
                     ))
                     .child(
@@ -3213,7 +3293,10 @@ impl WorkspaceView {
             )
     }
 
-    fn workspace_agent_summary(&self, workspace_id: Uuid) -> Option<(String, AgentRuntimeState)> {
+    fn workspace_agent_summary(
+        &self,
+        workspace_id: Uuid,
+    ) -> Option<(String, AgentRuntimeState, Option<AgentAttention>)> {
         let workspace = self
             .snapshot
             .projects
@@ -3226,13 +3309,9 @@ impl WorkspaceView {
             .flat_map(|tab| &tab.sessions)
             .filter_map(|session| {
                 let presence = self.resolved_agent_presence(session.id)?;
-                Some((presence.kind, presence.state?))
+                Some((presence.kind, presence.state?, presence.attention))
             })
-            .max_by_key(|(_, state)| match state {
-                AgentRuntimeState::Idle => 0,
-                AgentRuntimeState::Working => 1,
-                AgentRuntimeState::Waiting => 2,
-            })
+            .max_by_key(|(_, state, attention)| agent_activity_rank(*state, *attention))
     }
 
     fn sessions_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -3383,8 +3462,9 @@ impl WorkspaceView {
                                 }),
                             )
                             .child(agent_sidebar_badge(
-                                agent.as_ref().map(|(kind, _)| kind.as_str()),
-                                agent.as_ref().map(|(_, state)| *state),
+                                agent.as_ref().map(|(kind, _, _)| kind.as_str()),
+                                agent.as_ref().map(|(_, state, _)| *state),
+                                agent.as_ref().and_then(|(_, _, attention)| *attention),
                                 selected,
                             ))
                             .child(
@@ -4071,24 +4151,10 @@ impl WorkspaceView {
                                     .text_color(colors().foreground)
                                     .child("Seguimiento de actividad"),
                             )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(px(4.0))
-                                    .bg(if all_agent_hooks_installed {
-                                        colors().diff_added_bg
-                                    } else {
-                                        colors().selection
-                                    })
-                                    .text_size(px(8.0))
-                                    .text_color(if all_agent_hooks_installed {
-                                        colors().success
-                                    } else {
-                                        colors().muted
-                                    })
-                                    .child(agent_tracking_status),
-                            ),
+                            .child(self.settings_status_chip(
+                                agent_tracking_status,
+                                all_agent_hooks_installed,
+                            )),
                     )
                     .child(
                         div()
@@ -4096,9 +4162,14 @@ impl WorkspaceView {
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
                             .child(
-                                "Permite que Vibra sepa cuándo un agente está trabajando, terminó o necesita tu atención. Se configura una sola vez para los agentes compatibles.",
+                                "Los hooks de Claude y Codex dicen si el agente trabaja, terminó o pide permiso. El resto se detecta por el proceso y la pantalla.",
                             ),
                     )
+                    .child(self.settings_hook_status_row(
+                        "Claude",
+                        agent_hooks.claude_installed,
+                    ))
+                    .child(self.settings_hook_status_row("Codex", agent_hooks.codex_installed))
                     .child(
                         div()
                             .text_size(px(9.0))
@@ -4146,6 +4217,35 @@ impl WorkspaceView {
             )
             .child(
                 div()
+                    .rounded(px(7.0))
+                    .overflow_hidden()
+                    .bg(colors().elevated)
+                    .child(self.settings_toggle_row(
+                        "Avisos de agentes",
+                        self.settings.agent_notifications,
+                        "settings-agent-notifications",
+                        cx,
+                        |this, cx| {
+                            this.settings.agent_notifications = !this.settings.agent_notifications;
+                            if this.settings.agent_notifications {
+                                crate::infrastructure::notifications::request_authorization();
+                            }
+                            this.persist_settings(cx);
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .px_1()
+                    .text_size(px(9.0))
+                    .line_height(px(13.0))
+                    .text_color(colors().subtle)
+                    .child(
+                        "Notifica cuando un agente termina o pide permiso, si no estás mirando esa sesión o Vibra está en segundo plano.",
+                    ),
+            )
+            .child(
+                div()
                     .text_size(px(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(colors().muted)
@@ -4188,6 +4288,43 @@ impl WorkspaceView {
                             .text_color(colors().subtle)
                             .child("La automatización usa un socket 0600 y un token distinto por pane."),
                     ),
+            )
+            .into_any_element()
+    }
+
+    fn settings_status_chip(&self, label: &'static str, active: bool) -> AnyElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .bg(if active {
+                colors().diff_added_bg
+            } else {
+                colors().selection
+            })
+            .text_size(px(8.0))
+            .text_color(if active {
+                colors().success
+            } else {
+                colors().muted
+            })
+            .child(label)
+            .into_any_element()
+    }
+
+    fn settings_hook_status_row(&self, label: &'static str, installed: bool) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(10.0))
+                    .text_color(colors().muted)
+                    .child(label),
+            )
+            .child(
+                self.settings_status_chip(if installed { "Activo" } else { "Inactivo" }, installed),
             )
             .into_any_element()
     }
@@ -4406,50 +4543,89 @@ impl WorkspaceView {
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .gap(px(1.0))
-            .px_2()
+            .gap(px(6.0))
             .overflow_x_hidden()
             .children(tabs.into_iter().enumerate().map(|(index, tab)| {
                 let tab_id = tab.id;
                 let selected = Some(tab_id) == selected_tab_id;
-                let title = tab
+                let pane_count = tab.sessions.len();
+                let session = tab
                     .sessions
                     .iter()
                     .find(|session| Some(session.id) == tab.selected_session_id)
-                    .map(|session| session.title.clone())
-                    .unwrap_or_else(|| format!("Terminal {}", index + 1));
+                    .or_else(|| tab.sessions.first());
+                let live_cwd = session.and_then(|session| {
+                    self.terminals
+                        .get(&session.id)
+                        .map(|terminal| {
+                            terminal
+                                .read(cx)
+                                .current_working_directory()
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                        .or_else(|| Some(session.working_directory.clone()))
+                });
+                let title = tab_display_title(
+                    session.map(|session| session.title.as_str()),
+                    live_cwd.as_deref(),
+                    index,
+                );
+                let agent_color = tab
+                    .sessions
+                    .iter()
+                    .filter_map(|session| {
+                        let presence = self.resolved_agent_presence(session.id)?;
+                        let state = presence.state?;
+                        Some((
+                            agent_activity_rank(state, presence.attention),
+                            agent_status_color(presence.state, presence.attention)
+                                .unwrap_or(colors().subtle),
+                        ))
+                    })
+                    .max_by_key(|(rank, _)| *rank)
+                    .map(|(_, color)| color);
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
-                    .h_full()
-                    .min_w(px(96.0))
-                    .max_w(px(168.0))
+                    .h(px(26.0))
+                    .min_w(px(104.0))
+                    .max_w(px(188.0))
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .px_2()
+                    .gap(px(6.0))
+                    .px(px(9.0))
+                    .rounded(px(7.0))
                     .cursor_pointer()
-                    .border_b_1()
-                    .border_color(if selected {
-                        colors().muted
+                    .bg(if selected {
+                        colors().selection
                     } else {
                         gpui::rgba(0x00000000)
                     })
                     .text_color(if selected {
                         colors().foreground
                     } else {
-                        colors().subtle
+                        colors().muted
                     })
-                    .hover(|tab| tab.text_color(colors().foreground).bg(colors().hover))
-                    .active(|tab| tab.opacity(0.84))
+                    .hover(|tab| {
+                        if selected {
+                            tab
+                        } else {
+                            tab.bg(colors().hover).text_color(colors().foreground)
+                        }
+                    })
+                    .active(|tab| tab.opacity(0.88))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_tab(tab_id, window, cx);
                     }))
+                    .when_some(agent_color, |tab, color| {
+                        tab.child(div().size(px(6.0)).flex_none().rounded_full().bg(color))
+                    })
                     .child(
                         div()
                             .min_w(px(0.0))
                             .flex_1()
                             .truncate()
-                            .text_size(px(10.0))
+                            .text_size(px(12.0))
                             .font_weight(if selected {
                                 gpui::FontWeight::MEDIUM
                             } else {
@@ -4457,62 +4633,80 @@ impl WorkspaceView {
                             })
                             .child(title),
                     )
-                    .when(selected, |tab| {
+                    .when(pane_count > 1, |tab| {
                         tab.child(
                             div()
-                                .id(SharedString::from(format!("close-tab-{tab_id}")))
-                                .size(px(14.0))
                                 .flex_none()
-                                .rounded(px(3.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(12.0))
-                                .text_color(colors().subtle)
-                                .hover(|close| {
-                                    close.bg(colors().elevated).text_color(colors().foreground)
+                                .px(px(4.0))
+                                .h(px(14.0))
+                                .rounded(px(4.0))
+                                .bg(if selected {
+                                    colors().elevated
+                                } else {
+                                    colors().selection
                                 })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_tab(tab_id, window, cx);
-                                }))
-                                .child("×"),
+                                .text_size(px(9.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(colors().muted)
+                                .child(pane_count.to_string()),
                         )
                     })
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("close-tab-{tab_id}")))
+                            .size(px(16.0))
+                            .flex_none()
+                            .rounded(px(4.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(12.0))
+                            .text_color(if selected {
+                                colors().muted
+                            } else {
+                                colors().subtle
+                            })
+                            .hover(|close| {
+                                close.bg(colors().elevated).text_color(colors().foreground)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_tab(tab_id, window, cx);
+                            }))
+                            .child("×"),
+                    )
             }));
 
         div()
-            .h(px(30.0))
+            .h(px(36.0))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
+            .px(px(8.0))
+            .gap(px(6.0))
             .bg(colors().terminal)
             .border_b_1()
             .border_color(colors().border_subtle)
             .child(tab_list)
             .child(
                 div()
-                    .h_full()
+                    .id("new-terminal-tab")
+                    .size(px(26.0))
                     .flex_none()
+                    .rounded(px(7.0))
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .px_1()
-                    .child(self.chrome_button(
-                        "+",
-                        "new-terminal-tab",
-                        false,
-                        cx,
-                        |this, window, cx| {
-                            if this.snapshot.create_terminal_tab() {
-                                this.reconcile_terminal_views(cx);
-                                this.sync_diff_root(cx);
-                                this.persist(cx);
-                                this.focus_selected_terminal(window, cx);
-                            }
-                        },
-                    )),
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_size(px(15.0))
+                    .text_color(colors().muted)
+                    .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+                    .active(|button| button.opacity(0.8))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_terminal_tab_in_current_directory(window, cx);
+                    }))
+                    .child("+"),
             )
     }
 
@@ -5294,6 +5488,7 @@ impl WorkspaceView {
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_appearance_subscription(window, cx);
+        self.ensure_activation_subscription(window, cx);
         if self.initial_terminal_focus_pending {
             self.initial_terminal_focus_pending = false;
             cx.defer_in(window, |this, window, cx| {
@@ -5482,6 +5677,62 @@ fn sidebar_tab_line(text: &str, color: gpui::Rgba, size: f32, medium: bool, mono
         row = row.font_family("JetBrains Mono");
     }
     row
+}
+
+fn is_generic_tab_title(title: &str) -> bool {
+    let title = title.trim();
+    if title.is_empty() {
+        return true;
+    }
+    let head = title
+        .split([' ', '—', '–', '-', ':'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(title);
+    matches!(
+        head,
+        "Terminal"
+            | "terminal"
+            | "zsh"
+            | "bash"
+            | "fish"
+            | "sh"
+            | "nu"
+            | "dash"
+            | "login"
+            | "pwsh"
+            | "ksh"
+    )
+}
+
+fn title_path_suffix(title: &str) -> Option<&str> {
+    title
+        .split_once(": ")
+        .map(|(_, rest)| rest.trim())
+        .filter(|rest| rest.starts_with('/') || rest.starts_with('~'))
+}
+
+/// Compact tab label: live directory when the OSC title is just a shell, otherwise the command.
+fn tab_display_title(title: Option<&str>, working_directory: Option<&str>, index: usize) -> String {
+    if let Some(title) = title.filter(|title| !is_generic_tab_title(title)) {
+        if let Some(path) = title_path_suffix(title) {
+            let name = directory_basename(path);
+            if name != "—" {
+                return name;
+            }
+        }
+        let short = title.split_whitespace().next().unwrap_or(title);
+        if short.chars().count() <= 22 {
+            return short.to_owned();
+        }
+        return format!("{}…", short.chars().take(20).collect::<String>());
+    }
+    if let Some(path) = working_directory {
+        let name = directory_basename(path);
+        if name != "—" {
+            return name;
+        }
+    }
+    format!("Terminal {}", index + 1)
 }
 
 /// Directory basename for chrome labels (`/Users/me/Dev/Vibra` → `Vibra`).
@@ -5829,6 +6080,27 @@ mod tests {
         assert_eq!(directory_basename("/Users/demo/Dev/Vibra/"), "Vibra");
         assert_eq!(directory_basename("~"), "~");
         assert_eq!(directory_basename(""), "—");
+    }
+
+    #[test]
+    fn tab_titles_prefer_the_directory_over_generic_shell_names() {
+        assert_eq!(
+            tab_display_title(Some("zsh"), Some("/Users/demo/Dev/Vibra"), 0),
+            "Vibra"
+        );
+        assert_eq!(
+            tab_display_title(
+                Some("ruben@mac: ~/Dev/Vibra/src"),
+                Some("/Users/demo/Dev/Vibra"),
+                0
+            ),
+            "src"
+        );
+        assert_eq!(
+            tab_display_title(Some("claude"), Some("/Users/demo/Dev/Vibra"), 0),
+            "claude"
+        );
+        assert_eq!(tab_display_title(Some("Terminal"), None, 2), "Terminal 3");
     }
 
     #[test]
