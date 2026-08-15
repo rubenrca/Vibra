@@ -122,8 +122,8 @@ mod tests {
 
     #[test]
     fn policy_flags_are_rejected() {
-        let error = assert_no_policy_flags(&["claude".into(), "bypassPermissions".into()])
-            .unwrap_err();
+        let error =
+            assert_no_policy_flags(&["claude".into(), "bypassPermissions".into()]).unwrap_err();
         assert!(matches!(error, HarnessError::Protocol(_)));
     }
 

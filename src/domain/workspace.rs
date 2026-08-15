@@ -365,11 +365,7 @@ impl WorkspaceSnapshot {
         self.normalize();
     }
 
-    pub fn create_hosted_workspace(
-        &mut self,
-        root: &Path,
-        agent: HostedAgentKind,
-    ) -> Option<Uuid> {
+    pub fn create_hosted_workspace(&mut self, root: &Path, agent: HostedAgentKind) -> Option<Uuid> {
         let root_path = root.to_string_lossy().into_owned();
         let directory_name = root
             .file_name()

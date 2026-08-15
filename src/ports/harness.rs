@@ -29,23 +29,12 @@ pub struct HarnessPermissionOption {
 pub enum HarnessEvent {
     Text(String),
     Reasoning(String),
-    ToolCall {
-        id: String,
-        summary: String,
-    },
-    ToolResult {
-        id: String,
-        output: Option<String>,
-    },
+    ToolCall { id: String, summary: String },
+    ToolResult { id: String, output: Option<String> },
     PermissionRequest(HarnessPermissionRequest),
-    Question {
-        id: String,
-        prompt: String,
-    },
+    Question { id: String, prompt: String },
     Commands(Vec<String>),
-    Done {
-        vendor_session_id: Option<String>,
-    },
+    Done { vendor_session_id: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

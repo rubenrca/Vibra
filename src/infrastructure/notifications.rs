@@ -98,12 +98,10 @@ pub fn request_authorization() {
 }
 
 fn running_in_app_bundle() -> bool {
-    std::env::current_exe()
-        .ok()
-        .is_some_and(|path| {
-            path.components()
-                .any(|component| component.as_os_str().to_string_lossy().ends_with(".app"))
-        })
+    std::env::current_exe().ok().is_some_and(|path| {
+        path.components()
+            .any(|component| component.as_os_str().to_string_lossy().ends_with(".app"))
+    })
 }
 
 pub fn deliver(title: &str, body: &str, identifier: &str) {

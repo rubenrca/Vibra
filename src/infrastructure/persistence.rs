@@ -173,22 +173,19 @@ mod tests {
         let repository = WorkspaceRepository::at(root.join("workspace.json"));
         let mut expected = WorkspaceSnapshot::default();
         expected
-            .create_hosted_workspace(Path::new("/tmp/vibra-hosted-round-trip"), HostedAgentKind::Grok)
+            .create_hosted_workspace(
+                Path::new("/tmp/vibra-hosted-round-trip"),
+                HostedAgentKind::Grok,
+            )
             .unwrap();
-        expected.update_vendor_session_id(
-            expected.selected_session().unwrap().id,
-            "g-sess-1",
-        );
+        expected.update_vendor_session_id(expected.selected_session().unwrap().id, "g-sess-1");
 
         repository.save(&expected).unwrap();
         let actual = repository.load().unwrap().unwrap();
 
         assert_eq!(actual.schema_version, CURRENT_WORKSPACE_SCHEMA_VERSION);
         let session = actual.selected_session().unwrap();
-        assert_eq!(
-            session.surface.hosted_agent(),
-            Some(HostedAgentKind::Grok)
-        );
+        assert_eq!(session.surface.hosted_agent(), Some(HostedAgentKind::Grok));
         assert_eq!(session.surface.vendor_session_id(), Some("g-sess-1"));
         fs::remove_dir_all(root).unwrap();
     }

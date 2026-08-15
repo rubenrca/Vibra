@@ -46,22 +46,22 @@ impl HostedConversation {
         let mut index = 0;
         while index < args.len() {
             let arg = args[index].as_str();
-            if matches!(arg, "-m" | "--model") {
-                if let Some(value) = args.get(index + 1) {
-                    self.preferred_model = Some(value.clone());
-                    index += 2;
-                    continue;
-                }
+            if matches!(arg, "-m" | "--model")
+                && let Some(value) = args.get(index + 1)
+            {
+                self.preferred_model = Some(value.clone());
+                index += 2;
+                continue;
             }
-            if matches!(arg, "-c" | "--effort" | "--reasoning") {
-                if let Some(value) = args.get(index + 1) {
-                    let effort = value
-                        .strip_prefix("model_reasoning_effort=")
-                        .unwrap_or(value);
-                    self.preferred_effort = Some(effort.to_owned());
-                    index += 2;
-                    continue;
-                }
+            if matches!(arg, "-c" | "--effort" | "--reasoning")
+                && let Some(value) = args.get(index + 1)
+            {
+                let effort = value
+                    .strip_prefix("model_reasoning_effort=")
+                    .unwrap_or(value);
+                self.preferred_effort = Some(effort.to_owned());
+                index += 2;
+                continue;
             }
             if matches!(
                 arg,
@@ -160,9 +160,10 @@ impl HostedConversation {
     }
 
     pub fn encode_permission_reply(&mut self, option_id: &str) -> Result<Vec<u8>, HarnessError> {
-        let request = self.pending_permission.clone().ok_or_else(|| {
-            HarnessError::Protocol("no hay un permiso pendiente".into())
-        })?;
+        let request = self
+            .pending_permission
+            .clone()
+            .ok_or_else(|| HarnessError::Protocol("no hay un permiso pendiente".into()))?;
         if !request.options.iter().any(|option| option.id == option_id) {
             return Err(HarnessError::Protocol(format!(
                 "la opción {option_id} no la ofreció el agente"
@@ -385,7 +386,11 @@ impl HostedConversation {
         let summary = value
             .pointer("/params/command")
             .and_then(Value::as_str)
-            .or_else(|| value.pointer("/params/item/command").and_then(Value::as_str))
+            .or_else(|| {
+                value
+                    .pointer("/params/item/command")
+                    .and_then(Value::as_str)
+            })
             .unwrap_or("Approve command?");
         let permission = HarnessPermissionRequest {
             id,
@@ -486,10 +491,7 @@ impl HostedConversation {
                 self.remember_session(Some(session));
                 self.grok_session_ready = true;
             }
-            if let Some(options) = result
-                .get("configOptions")
-                .and_then(Value::as_array)
-            {
+            if let Some(options) = result.get("configOptions").and_then(Value::as_array) {
                 for option in options {
                     if option.get("category").and_then(Value::as_str) == Some("model")
                         && let Some(choices) = option.get("choices").and_then(Value::as_array)
@@ -533,10 +535,7 @@ impl HostedConversation {
         let mut options = Vec::new();
         if let Some(entries) = params.get("options").and_then(Value::as_array) {
             for entry in entries {
-                let option_id = entry
-                    .get("optionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
+                let option_id = entry.get("optionId").and_then(Value::as_str).unwrap_or("");
                 if option_id.is_empty() {
                     continue;
                 }
@@ -636,10 +635,7 @@ fn claude_assistant_events(value: &Value) -> Vec<HarnessEvent> {
                     .and_then(Value::as_str)
                     .unwrap_or("tool")
                     .to_owned();
-                let name = block
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool");
+                let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
                 events.push(HarnessEvent::ToolCall {
                     id,
                     summary: name.to_owned(),
@@ -706,7 +702,9 @@ fn grok_update_events(params: &Value, commands: &mut Vec<String>) -> Vec<Harness
                 .and_then(Value::as_str)
                 .or_else(|| update.get("text").and_then(Value::as_str));
             match (kind, text) {
-                ("agent_thought_chunk", Some(text)) => vec![HarnessEvent::Reasoning(text.to_owned())],
+                ("agent_thought_chunk", Some(text)) => {
+                    vec![HarnessEvent::Reasoning(text.to_owned())]
+                }
                 (_, Some(text)) => vec![HarnessEvent::Text(text.to_owned())],
                 _ => Vec::new(),
             }
@@ -798,10 +796,13 @@ mod tests {
     #[test]
     fn claude_init_and_result_keep_vendor_session_id() {
         let mut conv = HostedConversation::new(HostedAgentKind::Claude, None);
-        conv.ingest_line(r#"{"type":"system","subtype":"init","session_id":"sess-9","model":"opus"}"#);
+        conv.ingest_line(
+            r#"{"type":"system","subtype":"init","session_id":"sess-9","model":"opus"}"#,
+        );
         assert_eq!(conv.vendor_session_id(), Some("sess-9"));
         assert_eq!(conv.advertised_models(), &["opus"]);
-        let events = conv.ingest_line(r#"{"type":"result","subtype":"success","session_id":"sess-9"}"#);
+        let events =
+            conv.ingest_line(r#"{"type":"result","subtype":"success","session_id":"sess-9"}"#);
         assert_eq!(
             events,
             vec![HarnessEvent::Done {
@@ -875,7 +876,10 @@ mod tests {
         let events = conv.ingest_line(
             r#"{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"rm -rf /"}}"#,
         );
-        assert!(matches!(events.first(), Some(HarnessEvent::PermissionRequest(_))));
+        assert!(matches!(
+            events.first(),
+            Some(HarnessEvent::PermissionRequest(_))
+        ));
         assert!(conv.encode_permission_reply("yolo").is_err());
         let reply = conv.encode_permission_reply("decline").unwrap();
         let json = &payload_strings(&reply)[0];

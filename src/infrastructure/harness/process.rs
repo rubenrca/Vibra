@@ -88,7 +88,9 @@ impl HostedProcess {
         stdin
             .write_all(bytes)
             .and_then(|_| stdin.flush())
-            .map_err(|error| HarnessError::Protocol(format!("no se pudo escribir al agente: {error}")))
+            .map_err(|error| {
+                HarnessError::Protocol(format!("no se pudo escribir al agente: {error}"))
+            })
     }
 
     pub fn kill(&mut self) {
@@ -120,7 +122,9 @@ fn resolve_program(name: &str) -> Option<PathBuf> {
     }
     dirs.push(PathBuf::from("/opt/homebrew/bin"));
     dirs.push(PathBuf::from("/usr/local/bin"));
-    dirs.into_iter().map(|dir| dir.join(name)).find(|path| path.is_file())
+    dirs.into_iter()
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
 }
 
 fn compose_path(command: &mut Command, program: &Path) {
