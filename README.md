@@ -24,40 +24,36 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 ## Funciones principales
 
-Vibra es un viewport de chats para Claude Code, Codex y Grok Build. El usuario
-abre una sesión de agente y escribe; no lanza un shell. El harness es el CLI
-oficial (stream-json, `codex app-server`, `grok agent stdio`). Vibra no cambia
-política, prompt ni tools. «Abrir TUI» reanuda la misma sesión del vendor
-cuando el CLI lo permite. Las sesiones PTY ya guardadas siguen abriéndose como
-legado.
-
 ### Workspaces, tabs y panes
 
-- ⌘N / ⌘T / File → picker Claude · Codex · Grok (chat alojado);
-- múltiples proyectos y chats persistentes;
-- splits de chats lado a lado;
+- múltiples proyectos, workspaces y tabs persistentes;
+- terminales divididas recursivamente en cuatro direcciones;
+- foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
 - sidebar de sesiones con CWD y rama Git en vivo (ahead/behind/dirty);
 - menús contextuales en sesiones y panes (renombrar, cerrar, dividir, zoom);
 - command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`).
 
 ### Terminal
 
-- PTY solo para legado y «Abrir TUI» (`claude --resume=…`, `codex resume …`);
-- emulación ANSI con `alacritty_terminal`;
-- render GPUI/Metal, truecolor, estilos, cursores, scrollback e IME.
+- PTY nativo y emulación ANSI con `alacritty_terminal`;
+- render GPUI/Metal, truecolor, estilos, cursores, scrollback e IME;
+- teclado xterm y Kitty, mouse SGR, bracketed paste y alternate screen;
+- pegado estilo Warp (`⌘V`): texto con bracketed paste; con imagen en el clipboard y un agente CLI en foco, se envía Ctrl+V para adjuntar capturas;
+- selección, búsqueda, enlaces OSC 8 y clipboard OSC 52 protegido;
+- JetBrains Mono Variable incluida en la aplicación.
 
-### Files y Diff
+### Files y Git
 
-- panel derecho unificado con las vistas `Files` y `Diff`;
+- panel derecho unificado con las vistas `Files` y `Git`;
 - árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos y guías de indentación;
 - editor UTF-8 con búsqueda, undo/redo, guardado atómico y `⌘S`;
-- Diff de solo lectura estilo Warp: tarjetas expandibles, gutter de línea y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
+- panel Git con tres vistas: working tree, cambios de la rama frente a la base por defecto, e historial de commits con grafo de lanes;
+- diffs de solo lectura estilo Warp: tarjetas expandibles, gutter de línea y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - las mutaciones Git se realizan desde la terminal integrada.
 
 ### Agentes y automatización
 
-- chats alojados de Claude, Codex y Grok; permisos pass-through (nunca auto-approve);
-- `+agent open claude|codex|grok` crea un chat, no un PTY; `prompt`/`wait`/`read` hablan el wire;
+- detección de Codex, Claude, Gemini, Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi;
 - avisos de sistema cuando un agente termina o pide permiso fuera de la sesión visible;
 - identidad resuelta por proceso foreground, sesión, título y texto reciente; los aliases siguen al proceso vivo, no al pane;
 - esperas ligadas a la identidad del agente: un reemplazo o timeout falla explícitamente y los launches nuevos hacen rollback;
@@ -186,7 +182,7 @@ importan una sola vez.
 
 | Atajo | Acción |
 | --- | --- |
-| `⌘N` / `⌘T` / `⌘W` | Nueva sesión / nuevo chat / cerrar editor o chat |
+| `⌘N` / `⌘T` / `⌘W` | Nuevo workspace / nuevo tab / cerrar editor o terminal |
 | `⌘D` / `⇧⌘D` | Dividir a la derecha / abajo |
 | `⌃⌥⌘` + flechas | Dividir en cualquier dirección |
 | `⌥⌘` + flechas | Enfocar pane vecino |
@@ -196,7 +192,7 @@ importan una sola vez.
 | `⇧⌘P` / `⌘P` | Paleta de comandos / quick open |
 | `⌘,` | Abrir Settings (modal centrado) |
 | `⌘B` | Mostrar u ocultar sidebar de sesiones |
-| `⌥⌘B` | Mostrar u ocultar panel Files y Diff |
+| `⌥⌘B` | Mostrar u ocultar panel Files y Git |
 | `⌘U` | Buscar actualizaciones (Sparkle) |
 | `⌘V` | Pegar (bracketed paste; Ctrl+V con imagen en agentes CLI) |
 | `⌘F`, `⌘G`, `⇧⌘G` | Buscar / siguiente / anterior en terminal |

@@ -127,10 +127,6 @@ impl AgentKind {
             _ => None,
         }
     }
-
-    pub fn hosted_kind(self) -> Option<crate::domain::workspace::HostedAgentKind> {
-        crate::domain::workspace::HostedAgentKind::parse(self.cli_name())
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

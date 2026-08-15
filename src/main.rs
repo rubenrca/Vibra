@@ -177,8 +177,8 @@ fn run() -> Result<()> {
                 Menu {
                     name: "File".into(),
                     items: vec![
-                        MenuItem::action("New Session", NewWorkspace),
-                        MenuItem::action("New Chat", NewTerminalTab),
+                        MenuItem::action("New Workspace", NewWorkspace),
+                        MenuItem::action("New Terminal Tab", NewTerminalTab),
                         MenuItem::separator(),
                         MenuItem::action("Close Terminal", CloseTerminal),
                     ],
@@ -194,7 +194,7 @@ fn run() -> Result<()> {
                     name: "View".into(),
                     items: vec![
                         MenuItem::action("Toggle Sessions Sidebar", ToggleLeftSidebar),
-                        MenuItem::action("Toggle Files / Diff", ToggleRightSidebar),
+                        MenuItem::action("Toggle Files / Git", ToggleRightSidebar),
                         MenuItem::separator(),
                         MenuItem::action("Command Palette", ToggleCommandPalette),
                         MenuItem::action("Quick Open", QuickOpen),

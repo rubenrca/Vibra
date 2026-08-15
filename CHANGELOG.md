@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.7 — 2026-08-15
+
 - Turn the right-sidebar Diff tab into a Git panel with three views: working tree, branch changes versus the default base, and a commit history with a lane graph.
 - Keep a single user-resizable width for both sidebars instead of changing the Git panel width per view.
 

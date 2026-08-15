@@ -2,7 +2,6 @@ pub mod alacritty;
 pub mod automation;
 pub mod files;
 pub mod git;
-pub mod harness;
 pub mod notifications;
 pub mod paths;
 pub mod persistence;

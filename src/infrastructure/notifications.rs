@@ -87,21 +87,9 @@ pub fn agent_notification_copy(kind: AgentNotificationKind, agent: &str) -> (Str
 
 pub fn request_authorization() {
     #[cfg(target_os = "macos")]
-    {
-        if !running_in_app_bundle() {
-            return;
-        }
-        unsafe {
-            vibra_notification_request_authorization();
-        }
+    unsafe {
+        vibra_notification_request_authorization();
     }
-}
-
-fn running_in_app_bundle() -> bool {
-    std::env::current_exe().ok().is_some_and(|path| {
-        path.components()
-            .any(|component| component.as_os_str().to_string_lossy().ends_with(".app"))
-    })
 }
 
 pub fn deliver(title: &str, body: &str, identifier: &str) {
