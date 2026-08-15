@@ -3,128 +3,272 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vibra — a native macOS workspace for agentic coding</title>
-<meta name="description" content="Vibra keeps terminal sessions, projects, and coding agents in one focused macOS workspace.">
+<title>Vibra — la terminal que necesitas para vibe coding</title>
+<meta name="description" content="La terminal que necesitas para vibe coding. App nativa para macOS: terminales, proyectos y agentes en un solo lugar.">
+<meta name="theme-color" content="#050505">
+<meta property="og:title" content="Vibra">
+<meta property="og:description" content="La terminal que necesitas para vibe coding.">
+<meta property="og:image" content="hero.jpg">
+<meta property="og:type" content="website">
+<link rel="icon" href="icon.png" type="image/png">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <style>
   :root {
-    color-scheme: light dark;
-    --bg: #fbfbfa;
-    --fg: #16150f;
-    --muted: #6d6a5d;
-    --line: rgba(22, 21, 15, 0.12);
-    --accent: #16150f;
-    --accent-fg: #fbfbfa;
-    --card: rgba(22, 21, 15, 0.035);
+    color-scheme: dark;
+    --bg: #050505;
+    --fg: #efece4;
+    --muted: rgba(239, 236, 228, 0.58);
+    --faint: rgba(239, 236, 228, 0.28);
+    --cream: #efe8dc;
+    --cream-fg: #11100c;
+    --glow-warm: rgba(214, 154, 82, 0.2);
+    --glow-cool: rgba(88, 148, 196, 0.14);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #121211;
-      --fg: #eceae2;
-      --muted: #9a978a;
-      --line: rgba(236, 234, 226, 0.14);
-      --accent: #eceae2;
-      --accent-fg: #121211;
-      --card: rgba(236, 234, 226, 0.05);
-    }
-  }
+
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0;
+    min-height: 100dvh;
     background: var(--bg);
     color: var(--fg);
-    font: 16px/1.6 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    font: 16px/1.5 "Instrument Sans", ui-sans-serif, -apple-system, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
-  main { max-width: 44rem; margin: 0 auto; padding: 9vh 1.5rem 6rem; }
-  h1 {
-    font-size: clamp(2.4rem, 7vw, 3.4rem);
-    letter-spacing: -0.035em;
-    line-height: 1.05;
-    margin: 0 0 0.6rem;
+
+  .stage {
+    position: relative;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    isolation: isolate;
   }
-  .tagline { font-size: 1.15rem; color: var(--muted); margin: 0 0 2.5rem; max-width: 32rem; }
-  .download { display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: center; margin-bottom: 0.9rem; }
-  .button {
-    display: inline-block;
-    background: var(--accent);
-    color: var(--accent-fg);
-    text-decoration: none;
-    font-weight: 600;
-    font-size: 1rem;
-    padding: 0.85rem 1.6rem;
-    border-radius: 10px;
-    transition: opacity 0.15s ease;
+
+  .atmosphere {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
   }
-  .button:hover { opacity: 0.82; }
-  .meta { color: var(--muted); font-size: 0.9rem; }
-  h2 {
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: var(--muted);
-    margin: 3.2rem 0 0.9rem;
-    font-weight: 600;
+  .atmosphere .photo,
+  .atmosphere .photo-blur {
+    position: absolute;
+    left: 50%;
+    top: 1.4rem;
+    width: min(900px, 80vw);
+    height: auto;
+    transform: translateX(-50%);
+    object-fit: contain;
   }
-  ul { padding-left: 1.15rem; margin: 0; }
-  li { margin-bottom: 0.35rem; }
-  .card {
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 1.1rem 1.3rem;
+  .atmosphere .photo-blur {
+    width: min(1080px, 92vw);
+    top: 0;
+    opacity: 0.75;
+    filter: blur(36px) saturate(1.08);
+    -webkit-mask-image: radial-gradient(ellipse 68% 64% at 50% 42%, #000 8%, transparent 74%);
+    mask-image: radial-gradient(ellipse 68% 64% at 50% 42%, #000 8%, transparent 74%);
   }
-  ol { padding-left: 1.3rem; margin: 0.4rem 0 0; }
-  code {
+  .atmosphere .photo {
+    -webkit-mask-image:
+      radial-gradient(ellipse 56% 58% at 50% 42%, #000 12%, rgba(0, 0, 0, 0.55) 38%, transparent 72%),
+      linear-gradient(to bottom, transparent 0%, #000 10%, #000 58%, transparent 90%);
+    mask-image:
+      radial-gradient(ellipse 56% 58% at 50% 42%, #000 12%, rgba(0, 0, 0, 0.55) 38%, transparent 72%),
+      linear-gradient(to bottom, transparent 0%, #000 10%, #000 58%, transparent 90%);
+    -webkit-mask-composite: source-in;
+    mask-composite: intersect;
+  }
+  .atmosphere .wash {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 38% 30% at 50% 30%, var(--glow-cool), transparent 72%),
+      radial-gradient(ellipse 30% 24% at 48% 44%, var(--glow-warm), transparent 74%),
+      linear-gradient(to bottom, transparent 0%, transparent 56%, rgba(5, 5, 5, 0.5) 76%, var(--bg) 90%);
+  }
+  .glyph {
+    position: absolute;
+    color: rgba(232, 210, 168, 0.22);
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 0.88em;
-    background: var(--card);
-    padding: 0.12em 0.4em;
-    border-radius: 5px;
+    font-size: 13px;
+    user-select: none;
   }
-  a { color: inherit; }
-  footer {
-    margin-top: 4rem;
-    padding-top: 1.5rem;
-    border-top: 1px solid var(--line);
+  .g1 { top: 18%; left: 12%; }
+  .g2 { top: 34%; right: 14%; }
+  .g3 { top: 52%; left: 18%; }
+  .g4 { top: 26%; right: 22%; }
+  .g5 { top: 62%; right: 16%; }
+
+  header {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.15rem 1.5rem;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    color: inherit;
+    text-decoration: none;
+    font-weight: 560;
+    letter-spacing: -0.02em;
+  }
+  .brand img {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+  }
+  .nav-link {
     color: var(--muted);
-    font-size: 0.88rem;
+    text-decoration: none;
+    font-size: 0.92rem;
+    transition: color 0.15s ease;
+  }
+  .nav-link:hover { color: var(--fg); }
+
+  main {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    text-align: center;
+    padding: 0 1.4rem 7.5rem;
+  }
+
+  h1 {
+    margin: 0;
+    font-family: "Instrument Serif", "Iowan Old Style", Palatino, Georgia, serif;
+    font-weight: 400;
+    font-size: clamp(2.8rem, 8vw, 5.15rem);
+    line-height: 0.98;
+    letter-spacing: -0.025em;
+  }
+  .lede {
+    margin: 1.15rem 0 0;
+    max-width: 28rem;
+    color: var(--muted);
+    font-size: 1.05rem;
+    font-weight: 400;
+  }
+
+  .cta {
+    margin-top: 2.15rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.85rem;
+  }
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 13.5rem;
+    background: var(--cream);
+    color: var(--cream-fg);
+    text-decoration: none;
+    font-weight: 560;
+    font-size: 0.98rem;
+    letter-spacing: -0.01em;
+    padding: 0.92rem 1.7rem;
+    border-radius: 999px;
+    transition: transform 0.18s ease, background 0.18s ease;
+  }
+  .button:hover {
+    background: #f6f1e8;
+    transform: translateY(-1px);
+  }
+  .meta {
+    color: var(--faint);
+    font-size: 0.82rem;
+    letter-spacing: 0.01em;
+  }
+
+  footer {
+    position: absolute;
+    z-index: 2;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    justify-content: center;
+    gap: 1.1rem;
+    padding: 1.3rem 1.4rem 1.5rem;
+    color: var(--faint);
+    font-size: 0.8rem;
+  }
+  footer a {
+    color: inherit;
+    text-decoration: none;
+  }
+  footer a:hover { color: var(--muted); }
+
+  @media (max-width: 640px) {
+    header { padding: 1rem 1.1rem; }
+    main { padding: 0 1.15rem 6.4rem; }
+    .atmosphere .photo {
+      width: min(640px, 90vw);
+      top: 3rem;
+    }
+    .atmosphere .photo-blur {
+      width: min(780px, 104vw);
+      top: 1.6rem;
+    }
+    .glyph { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .button { transition: none; }
+    .button:hover { transform: none; }
   }
 </style>
 </head>
 <body>
-<main>
-  <h1>Vibra</h1>
-  <p class="tagline">A fast, native macOS workspace for agentic coding. Terminal sessions, projects, and coding agents in one place.</p>
+  <div class="stage">
+    <div class="atmosphere" aria-hidden="true">
+      <img class="photo-blur" src="hero.jpg" alt="" width="1536" height="1024">
+      <img class="photo" src="hero.jpg" alt="" width="1536" height="1024">
+      <div class="wash"></div>
+      <span class="glyph g1">+</span>
+      <span class="glyph g2">×</span>
+      <span class="glyph g3">=</span>
+      <span class="glyph g4">+</span>
+      <span class="glyph g5">×</span>
+    </div>
 
-  <div class="download">
-    <a class="button" id="download" href="https://github.com/rubenrca/Vibra/releases/latest">Download for macOS</a>
-    <span class="meta" id="meta">Universal · macOS 14 or newer</span>
+    <header>
+      <a class="brand" href="./">
+        <img src="icon.png" alt="">
+        Vibra
+      </a>
+      <a class="nav-link" href="https://github.com/rubenrca/Vibra">GitHub</a>
+    </header>
+
+    <main>
+      <h1>La terminal que necesitas<br>para vibe coding.</h1>
+      <p class="lede">App nativa para macOS. Terminales, proyectos y agentes, en un solo lugar.</p>
+      <div class="cta">
+        <a class="button" id="download" href="https://github.com/rubenrca/Vibra/releases/latest">Download for macOS</a>
+        <span class="meta" id="meta">Universal · macOS 14+ · Signed &amp; notarized</span>
+      </div>
+    </main>
+
+    <footer>
+      <span>MIT</span>
+      <a href="https://github.com/rubenrca/Vibra">Source</a>
+      <a href="https://github.com/rubenrca/Vibra/releases">Releases</a>
+    </footer>
   </div>
-  <p class="meta">Signed and notarized for Gatekeeper. Vibra updates itself: new versions are offered inside the app.</p>
-
-  <h2>Install</h2>
-  <div class="card">
-    <ol style="margin:0">
-      <li>Download the universal disk image and open it.</li>
-      <li>Drag <strong>Vibra</strong> to Applications.</li>
-      <li>Launch it from Applications or Spotlight.</li>
-    </ol>
-    <p class="meta" style="margin:0.9rem 0 0">Releases from 0.3.4 onward are Developer ID signed and notarized by Apple.</p>
-  </div>
-
-  <h2>Requirements</h2>
-  <ul>
-    <li>macOS 14 or newer</li>
-    <li>Apple Silicon or Intel</li>
-  </ul>
-
-  <h2>Building from source</h2>
-  <p style="margin:0.4rem 0 0">Clone the repository and run <code>cargo run</code>. Requires Rust 1.96+, Xcode, and macOS 14+. See the <a href="https://github.com/rubenrca/Vibra">README</a> for packaging and release scripts.</p>
-
-  <footer>
-    MIT licensed · <a href="https://github.com/rubenrca/Vibra">Source</a> · <a href="https://github.com/rubenrca/Vibra/releases">All releases</a>
-  </footer>
-</main>
 
 <script>
 // The appcast is the single source of truth for what the current release is, so
@@ -156,7 +300,8 @@ fetch('appcast.xml', { cache: 'no-cache' })
       version ? 'Download Vibra ' + version : 'Download Vibra';
 
     var size = length ? ' · ' + (length / 1048576).toFixed(1) + ' MB' : '';
-    document.getElementById('meta').textContent = 'Universal · macOS 14 or newer' + size;
+    document.getElementById('meta').textContent =
+      'Universal · macOS 14+ · Signed & notarized' + size;
   })
   .catch(function () {
     // Leave the link pointing at the releases page: still correct, just less direct.
