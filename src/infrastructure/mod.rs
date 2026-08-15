@@ -1,5 +1,6 @@
 pub mod alacritty;
 pub mod automation;
+pub mod harness;
 pub mod files;
 pub mod git;
 pub mod notifications;

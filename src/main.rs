@@ -177,8 +177,8 @@ fn run() -> Result<()> {
                 Menu {
                     name: "File".into(),
                     items: vec![
-                        MenuItem::action("New Workspace", NewWorkspace),
-                        MenuItem::action("New Terminal Tab", NewTerminalTab),
+                        MenuItem::action("New Session", NewWorkspace),
+                        MenuItem::action("New Chat", NewTerminalTab),
                         MenuItem::separator(),
                         MenuItem::action("Close Terminal", CloseTerminal),
                     ],

@@ -3,7 +3,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 4;
 pub const DEFAULT_PANE_SPLIT_RATIO: u16 = 5_000;
 const MIN_PANE_SPLIT_RATIO: u16 = 1_000;
 const MAX_PANE_SPLIT_RATIO: u16 = 9_000;
@@ -146,12 +146,85 @@ pub enum PaneBranch {
     Second,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HostedAgentKind {
+    Claude,
+    Codex,
+    Grok,
+}
+
+impl HostedAgentKind {
+    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Grok];
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
+            Self::Grok => "Grok",
+        }
+    }
+
+    pub const fn cli_name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Grok => "grok",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "grok" => Some(Self::Grok),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionSurface {
+    #[default]
+    Terminal,
+    Hosted {
+        agent: HostedAgentKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vendor_session_id: Option<String>,
+    },
+}
+
+impl SessionSurface {
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Terminal)
+    }
+
+    pub const fn hosted_agent(&self) -> Option<HostedAgentKind> {
+        match self {
+            Self::Hosted { agent, .. } => Some(*agent),
+            Self::Terminal => None,
+        }
+    }
+
+    pub fn vendor_session_id(&self) -> Option<&str> {
+        match self {
+            Self::Hosted {
+                vendor_session_id, ..
+            } => vendor_session_id.as_deref(),
+            Self::Terminal => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSnapshot {
     pub id: Uuid,
     pub title: String,
     pub working_directory: String,
+    #[serde(default)]
+    pub surface: SessionSurface,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +268,7 @@ impl WorkspaceSnapshot {
         self.schema_version = CURRENT_WORKSPACE_SCHEMA_VERSION;
     }
 
+    #[allow(dead_code)]
     pub fn create_workspace(&mut self, root: &Path) {
         let root_path = root.to_string_lossy().into_owned();
         let directory_name = root
@@ -243,6 +317,168 @@ impl WorkspaceSnapshot {
         }
 
         self.normalize();
+    }
+
+    /// Project + empty workspace so the new-chat picker has a cwd/root
+    /// without minting a terminal session.
+    pub fn ensure_project(&mut self, root: &Path) {
+        let root_path = root.to_string_lossy().into_owned();
+        if let Some(project) = self
+            .projects
+            .iter()
+            .find(|project| project.root_path == root_path)
+        {
+            self.selected_project_id = Some(project.id);
+            self.normalize();
+            return;
+        }
+
+        let directory_name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Vibra")
+            .to_owned();
+        let workspace = TerminalWorkspaceSnapshot {
+            id: Uuid::new_v4(),
+            name: directory_name.clone(),
+            title_source: Some(WorkspaceTitleSource::Automatic),
+            selected_tab_id: None,
+            tabs: Vec::new(),
+        };
+        let workspace_id = workspace.id;
+        let project_id = Uuid::new_v4();
+        self.projects.push(ProjectSnapshot {
+            id: project_id,
+            name: directory_name,
+            root_path,
+            sessions: Vec::new(),
+            selected_session_id: None,
+            visible_session_ids: None,
+            split_axis: None,
+            tabs: None,
+            selected_tab_id: None,
+            workspaces: Some(vec![workspace]),
+            selected_workspace_id: Some(workspace_id),
+        });
+        self.selected_project_id = Some(project_id);
+        self.normalize();
+    }
+
+    pub fn create_hosted_workspace(
+        &mut self,
+        root: &Path,
+        agent: HostedAgentKind,
+    ) -> Option<Uuid> {
+        let root_path = root.to_string_lossy().into_owned();
+        let directory_name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(agent.display_name())
+            .to_owned();
+        let session = SessionSnapshot::hosted(root_path.clone(), agent);
+        let session_id = session.id;
+        let tab = TabSnapshot::with_session(session);
+        let workspace = TerminalWorkspaceSnapshot {
+            id: Uuid::new_v4(),
+            name: directory_name.clone(),
+            title_source: Some(WorkspaceTitleSource::Automatic),
+            selected_tab_id: Some(tab.id),
+            tabs: vec![tab],
+        };
+
+        if let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.root_path == root_path)
+        {
+            let workspace_id = workspace.id;
+            project.workspaces.get_or_insert_default().push(workspace);
+            project.selected_workspace_id = Some(workspace_id);
+            self.selected_project_id = Some(project.id);
+        } else {
+            let project_id = Uuid::new_v4();
+            let workspace_id = workspace.id;
+            self.projects.push(ProjectSnapshot {
+                id: project_id,
+                name: directory_name,
+                root_path,
+                sessions: Vec::new(),
+                selected_session_id: None,
+                visible_session_ids: None,
+                split_axis: None,
+                tabs: None,
+                selected_tab_id: None,
+                workspaces: Some(vec![workspace]),
+                selected_workspace_id: Some(workspace_id),
+            });
+            self.selected_project_id = Some(project_id);
+        }
+
+        self.normalize();
+        Some(session_id)
+    }
+
+    pub fn create_hosted_tab(
+        &mut self,
+        agent: HostedAgentKind,
+        working_directory: Option<String>,
+    ) -> Option<Uuid> {
+        let (project_index, workspace_index) = self.selected_workspace_indices()?;
+        let working_directory = working_directory.unwrap_or_else(|| {
+            self.selected_session()
+                .map(|session| session.working_directory.clone())
+                .unwrap_or_else(|| self.projects[project_index].root_path.clone())
+        });
+        let project = &mut self.projects[project_index];
+        let session = SessionSnapshot::hosted(working_directory, agent);
+        let session_id = session.id;
+        let tab = TabSnapshot::with_session(session);
+        let tab_id = tab.id;
+        let workspace = &mut project.workspaces.as_mut().expect("normalized")[workspace_index];
+        workspace.tabs.push(tab);
+        workspace.selected_tab_id = Some(tab_id);
+        project.normalize();
+        Some(session_id)
+    }
+
+    pub fn create_hosted_split(
+        &mut self,
+        direction: PaneSplitDirection,
+        focus_new: bool,
+        agent: HostedAgentKind,
+        working_directory: Option<String>,
+    ) -> Option<Uuid> {
+        let (project_index, workspace_index, tab_index, session_index) =
+            self.selected_session_indices()?;
+        let project = &mut self.projects[project_index];
+        let tab =
+            &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
+        let selected_id = tab.sessions[session_index].id;
+        let working_directory = working_directory
+            .unwrap_or_else(|| tab.sessions[session_index].working_directory.clone());
+        let session = SessionSnapshot::hosted(working_directory, agent);
+        let session_id = session.id;
+        let (axis, insert_first) = match direction {
+            PaneSplitDirection::Left => (WorkspaceSplitAxis::Horizontal, true),
+            PaneSplitDirection::Right => (WorkspaceSplitAxis::Horizontal, false),
+            PaneSplitDirection::Up => (WorkspaceSplitAxis::Vertical, true),
+            PaneSplitDirection::Down => (WorkspaceSplitAxis::Vertical, false),
+        };
+        if !tab
+            .layout
+            .split_terminal(selected_id, session_id, axis, insert_first)
+        {
+            return None;
+        }
+        tab.sessions.push(session);
+        if focus_new {
+            tab.selected_session_id = Some(session_id);
+        }
+        tab.zoomed_session_id = None;
+        project.normalize();
+        Some(session_id)
     }
 
     /// Relocates workspaces created from an unsafe launcher fallback (typically `/`).
@@ -307,12 +543,14 @@ impl WorkspaceSnapshot {
         changed
     }
 
+    #[allow(dead_code)]
     pub fn create_terminal_tab(&mut self) -> bool {
         self.create_terminal_tab_with_focus(true).is_some()
     }
 
     /// Creates a terminal tab in the selected workspace.
     /// When `focus_new` is false the previous selected tab stays selected.
+    #[allow(dead_code)]
     pub fn create_terminal_tab_with_focus(&mut self, focus_new: bool) -> Option<(Uuid, Uuid)> {
         self.create_terminal_tab_with_options(focus_new, None)
     }
@@ -369,7 +607,10 @@ impl WorkspaceSnapshot {
         let selected_id = tab.sessions[session_index].id;
         let working_directory = working_directory
             .unwrap_or_else(|| tab.sessions[session_index].working_directory.clone());
-        let session = SessionSnapshot::new(working_directory);
+        let session = match tab.sessions[session_index].surface.hosted_agent() {
+            Some(agent) => SessionSnapshot::hosted(working_directory, agent),
+            None => SessionSnapshot::new(working_directory),
+        };
         let session_id = session.id;
         let (axis, insert_first) = match direction {
             PaneSplitDirection::Left => (WorkspaceSplitAxis::Horizontal, true),
@@ -809,12 +1050,26 @@ impl WorkspaceSnapshot {
             .find(|session| Some(session.id) == tab.selected_session_id)
     }
 
-    pub fn terminal_sessions(&self) -> Vec<SessionSnapshot> {
+    pub fn all_sessions(&self) -> Vec<SessionSnapshot> {
         self.projects
             .iter()
             .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
             .flat_map(|workspace| &workspace.tabs)
             .flat_map(|tab| tab.sessions.iter().cloned())
+            .collect()
+    }
+
+    pub fn terminal_sessions(&self) -> Vec<SessionSnapshot> {
+        self.all_sessions()
+            .into_iter()
+            .filter(|session| session.surface.is_terminal())
+            .collect()
+    }
+
+    pub fn hosted_sessions(&self) -> Vec<SessionSnapshot> {
+        self.all_sessions()
+            .into_iter()
+            .filter(|session| session.surface.hosted_agent().is_some())
             .collect()
     }
 
@@ -839,6 +1094,41 @@ impl WorkspaceSnapshot {
                         }
                         session.title = title.to_owned();
                         project.normalize();
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn update_vendor_session_id(&mut self, session_id: Uuid, vendor_session_id: &str) -> bool {
+        let vendor_session_id = vendor_session_id.trim();
+        if vendor_session_id.is_empty() {
+            return false;
+        }
+        for project in &mut self.projects {
+            let Some(workspaces) = project.workspaces.as_mut() else {
+                continue;
+            };
+            for workspace in workspaces {
+                for tab in &mut workspace.tabs {
+                    if let Some(session) = tab
+                        .sessions
+                        .iter_mut()
+                        .find(|session| session.id == session_id)
+                    {
+                        let SessionSurface::Hosted {
+                            vendor_session_id: stored,
+                            ..
+                        } = &mut session.surface
+                        else {
+                            return false;
+                        };
+                        if stored.as_deref() == Some(vendor_session_id) {
+                            return false;
+                        }
+                        *stored = Some(vendor_session_id.to_owned());
                         return true;
                     }
                 }
@@ -971,7 +1261,7 @@ impl ProjectSnapshot {
         for workspace in workspaces.iter_mut() {
             workspace.normalize();
         }
-        workspaces.retain(|workspace| !workspace.tabs.is_empty());
+        // Empty workspaces stay: they are the landing canvas for the new-chat picker.
 
         if workspaces.is_empty() {
             self.selected_workspace_id = None;
@@ -995,6 +1285,15 @@ impl ProjectSnapshot {
             .iter()
             .find(|workspace| Some(workspace.id) == self.selected_workspace_id)
             .unwrap_or(&workspaces[0]);
+        if selected_workspace.tabs.is_empty() {
+            self.tabs = Some(Vec::new());
+            self.selected_tab_id = None;
+            self.sessions.clear();
+            self.selected_session_id = None;
+            self.visible_session_ids = Some(Vec::new());
+            self.split_axis = None;
+            return;
+        }
         let selected_tab = selected_workspace
             .tabs
             .iter()
@@ -1481,6 +1780,19 @@ impl SessionSnapshot {
             id: Uuid::new_v4(),
             title: "Terminal".to_owned(),
             working_directory,
+            surface: SessionSurface::Terminal,
+        }
+    }
+
+    pub fn hosted(working_directory: String, agent: HostedAgentKind) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            title: agent.display_name().to_owned(),
+            working_directory,
+            surface: SessionSurface::Hosted {
+                agent,
+                vendor_session_id: None,
+            },
         }
     }
 }
@@ -1586,6 +1898,64 @@ mod tests {
             .find(|session| session.id == created_id)
             .unwrap();
         assert_eq!(created.working_directory, "/tmp/vibra-tab-root/nested");
+    }
+
+    #[test]
+    fn missing_surface_deserializes_as_legacy_terminal() {
+        let encoded = serde_json::json!({
+            "id": "aab81c01-c781-4381-90ef-44f986f9dc74",
+            "title": "Terminal",
+            "workingDirectory": "/tmp/legacy"
+        });
+        let session: SessionSnapshot = serde_json::from_value(encoded).unwrap();
+        assert!(session.surface.is_terminal());
+    }
+
+    #[test]
+    fn hosted_workspace_is_not_a_terminal_session() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        let session_id = snapshot
+            .create_hosted_workspace(Path::new("/tmp/vibra-hosted"), HostedAgentKind::Claude)
+            .unwrap();
+        let session = snapshot.selected_session().unwrap();
+        assert_eq!(session.id, session_id);
+        assert_eq!(
+            session.surface.hosted_agent(),
+            Some(HostedAgentKind::Claude)
+        );
+        assert!(snapshot.terminal_sessions().is_empty());
+        assert_eq!(snapshot.hosted_sessions().len(), 1);
+    }
+
+    #[test]
+    fn ensure_project_does_not_mint_a_terminal() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.ensure_project(Path::new("/tmp/vibra-empty"));
+        assert!(snapshot.selected_project().is_some());
+        assert!(snapshot.selected_session().is_none());
+        assert!(snapshot.terminal_sessions().is_empty());
+    }
+
+    #[test]
+    fn splitting_a_hosted_chat_creates_another_hosted_chat() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot
+            .create_hosted_workspace(Path::new("/tmp/vibra-split-hosted"), HostedAgentKind::Grok)
+            .unwrap();
+        let sibling = snapshot
+            .split_selected_terminal(PaneSplitDirection::Right)
+            .unwrap();
+        let sibling_session = snapshot
+            .hosted_sessions()
+            .into_iter()
+            .find(|session| session.id == sibling)
+            .unwrap();
+        assert_eq!(
+            sibling_session.surface.hosted_agent(),
+            Some(HostedAgentKind::Grok)
+        );
+        assert_eq!(snapshot.terminal_sessions().len(), 0);
+        assert_eq!(snapshot.hosted_sessions().len(), 2);
     }
 
     #[test]

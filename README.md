@@ -24,23 +24,27 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 ## Funciones principales
 
+Vibra es un viewport de chats para Claude Code, Codex y Grok Build. El usuario
+abre una sesión de agente y escribe; no lanza un shell. El harness es el CLI
+oficial (stream-json, `codex app-server`, `grok agent stdio`). Vibra no cambia
+política, prompt ni tools. «Abrir TUI» reanuda la misma sesión del vendor
+cuando el CLI lo permite. Las sesiones PTY ya guardadas siguen abriéndose como
+legado.
+
 ### Workspaces, tabs y panes
 
-- múltiples proyectos, workspaces y tabs persistentes;
-- terminales divididas recursivamente en cuatro direcciones;
-- foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
+- ⌘N / ⌘T / File → picker Claude · Codex · Grok (chat alojado);
+- múltiples proyectos y chats persistentes;
+- splits de chats lado a lado;
 - sidebar de sesiones con CWD y rama Git en vivo (ahead/behind/dirty);
 - menús contextuales en sesiones y panes (renombrar, cerrar, dividir, zoom);
 - command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`).
 
 ### Terminal
 
-- PTY nativo y emulación ANSI con `alacritty_terminal`;
-- render GPUI/Metal, truecolor, estilos, cursores, scrollback e IME;
-- teclado xterm y Kitty, mouse SGR, bracketed paste y alternate screen;
-- pegado estilo Warp (`⌘V`): texto con bracketed paste; con imagen en el clipboard y un agente CLI en foco, se envía Ctrl+V para adjuntar capturas;
-- selección, búsqueda, enlaces OSC 8 y clipboard OSC 52 protegido;
-- JetBrains Mono Variable incluida en la aplicación.
+- PTY solo para legado y «Abrir TUI» (`claude --resume=…`, `codex resume …`);
+- emulación ANSI con `alacritty_terminal`;
+- render GPUI/Metal, truecolor, estilos, cursores, scrollback e IME.
 
 ### Files y Diff
 
@@ -52,7 +56,8 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 ### Agentes y automatización
 
-- detección de Codex, Claude, Gemini, Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi;
+- chats alojados de Claude, Codex y Grok; permisos pass-through (nunca auto-approve);
+- `+agent open claude|codex|grok` crea un chat, no un PTY; `prompt`/`wait`/`read` hablan el wire;
 - avisos de sistema cuando un agente termina o pide permiso fuera de la sesión visible;
 - identidad resuelta por proceso foreground, sesión, título y texto reciente; los aliases siguen al proceso vivo, no al pane;
 - esperas ligadas a la identidad del agente: un reemplazo o timeout falla explícitamente y los launches nuevos hacen rollback;
@@ -181,7 +186,7 @@ importan una sola vez.
 
 | Atajo | Acción |
 | --- | --- |
-| `⌘N` / `⌘T` / `⌘W` | Nuevo workspace / nuevo tab / cerrar editor o terminal |
+| `⌘N` / `⌘T` / `⌘W` | Nueva sesión / nuevo chat / cerrar editor o chat |
 | `⌘D` / `⇧⌘D` | Dividir a la derecha / abajo |
 | `⌃⌥⌘` + flechas | Dividir en cualquier dirección |
 | `⌥⌘` + flechas | Enfocar pane vecino |

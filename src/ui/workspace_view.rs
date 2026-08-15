@@ -12,8 +12,8 @@ use gpui::{
 use uuid::Uuid;
 
 use crate::domain::workspace::{
-    PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
-    TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis,
+    HostedAgentKind, PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection,
+    PaneSplitDirection, TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis,
 };
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentKind, AgentPlacement, AgentRuntimeState,
@@ -33,6 +33,7 @@ use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence, Ter
 use crate::ui::agent_marks::{agent_sidebar_badge, agent_status_color};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
+use crate::ui::hosted_agent::{HostedAgentView, HostedAgentViewEvent};
 use crate::ui::terminal::{TerminalView, TerminalViewEvent};
 use crate::ui::theme::{self, AppearanceMode, ThemeTone, colors};
 use crate::{
@@ -185,10 +186,16 @@ enum PaletteMode {
     Files,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewChatPlacement {
+    Workspace,
+    Tab,
+}
+
 #[derive(Debug, Clone)]
 enum PaletteAction {
-    NewTerminalTab,
-    NewWorkspace,
+    NewChatWorkspace,
+    NewChatTab,
     Split(PaneSplitDirection),
     EqualizePanes,
     TogglePaneZoom,
@@ -285,6 +292,8 @@ pub struct WorkspaceView {
     editor_subscription: Option<Subscription>,
     terminals: HashMap<Uuid, Entity<TerminalView>>,
     terminal_subscriptions: HashMap<Uuid, Subscription>,
+    hosted: HashMap<Uuid, Entity<HostedAgentView>>,
+    hosted_subscriptions: HashMap<Uuid, Subscription>,
     automation_tokens: HashMap<Uuid, Uuid>,
     automation_socket: Option<PathBuf>,
     _automation_server: Option<AutomationServer>,
@@ -318,6 +327,7 @@ pub struct WorkspaceView {
     palette_selected: usize,
     palette_files: Vec<PathBuf>,
     settings_open: bool,
+    new_chat_picker: Option<NewChatPlacement>,
     context_menu: Option<ContextMenuState>,
     rename_prompt: Option<RenamePrompt>,
     right_sidebar_visible: bool,
@@ -377,9 +387,15 @@ impl WorkspaceView {
             }
         };
         let mut snapshot_changed = snapshot.relocate_root(Path::new("/"), &launch_directory);
+        let mut open_new_chat_picker = false;
         if snapshot.projects.is_empty() {
-            snapshot.create_workspace(&launch_directory);
+            snapshot.ensure_project(&launch_directory);
             snapshot_changed = true;
+            open_new_chat_picker = true;
+        } else if snapshot.hosted_sessions().is_empty() {
+            // Legacy terminal workspaces still load; offer a hosted chat so
+            // the product surface is visible instead of looking like 0.3.6.
+            open_new_chat_picker = true;
         }
         if snapshot_changed && let Err(error) = repository.save(&snapshot) {
             persistence_error = Some(format!("No se pudo guardar el workspace: {error}").into());
@@ -461,6 +477,8 @@ impl WorkspaceView {
             editor_subscription: None,
             terminals: HashMap::new(),
             terminal_subscriptions: HashMap::new(),
+            hosted: HashMap::new(),
+            hosted_subscriptions: HashMap::new(),
             automation_tokens: HashMap::new(),
             automation_socket,
             _automation_server: automation_server,
@@ -495,6 +513,11 @@ impl WorkspaceView {
             palette_selected: 0,
             palette_files: Vec::new(),
             settings_open: false,
+            new_chat_picker: if open_new_chat_picker {
+                Some(NewChatPlacement::Workspace)
+            } else {
+                None
+            },
             context_menu: None,
             rename_prompt: None,
             right_sidebar_visible: settings.git_panel_visible,
@@ -514,6 +537,7 @@ impl WorkspaceView {
         // System appearance is refined on first paint via observe_window_appearance.
         view.apply_theme_preference(true, cx);
         view.reconcile_terminal_views(cx);
+        view.reconcile_hosted_views(cx);
         view.sync_diff_root(cx);
         view.refresh_project_files();
         view.refresh_sidebar_workspace_meta(cx);
@@ -848,7 +872,7 @@ impl WorkspaceView {
                 .cloned()
                 .or_else(|| {
                     self.snapshot
-                        .terminal_sessions()
+                        .all_sessions()
                         .into_iter()
                         .find(|session| session.id == session_id)
                         .map(|session| session.title)
@@ -1023,14 +1047,14 @@ impl WorkspaceView {
         let mut items = match mode {
             PaletteMode::Commands => vec![
                 PaletteItem {
-                    label: "Terminal: New tab".into(),
+                    label: "Nuevo chat".into(),
                     detail: "⌘T".into(),
-                    action: PaletteAction::NewTerminalTab,
+                    action: PaletteAction::NewChatTab,
                 },
                 PaletteItem {
-                    label: "Workspace: New".into(),
+                    label: "Nueva sesión".into(),
                     detail: "⌘N".into(),
-                    action: PaletteAction::NewWorkspace,
+                    action: PaletteAction::NewChatWorkspace,
                 },
                 PaletteItem {
                     label: "Pane: Split right".into(),
@@ -1142,11 +1166,11 @@ impl WorkspaceView {
     ) {
         self.palette_mode = None;
         match action {
-            PaletteAction::NewTerminalTab => {
-                self.open_terminal_tab_in_current_directory(window, cx);
+            PaletteAction::NewChatTab => {
+                self.open_new_chat_picker(NewChatPlacement::Tab, cx);
             }
-            PaletteAction::NewWorkspace => {
-                self.open_workspace_in_current_directory(window, cx);
+            PaletteAction::NewChatWorkspace => {
+                self.open_new_chat_picker(NewChatPlacement::Workspace, cx);
             }
             PaletteAction::Split(direction) => self.split_pane(direction, window, cx),
             PaletteAction::EqualizePanes => {
@@ -1199,6 +1223,13 @@ impl WorkspaceView {
         if self.settings_open {
             if matches!(key.as_str(), "escape" | "esc") {
                 self.close_settings(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if self.new_chat_picker.is_some() {
+            if matches!(key.as_str(), "escape" | "esc") {
+                self.close_new_chat_picker(cx);
             }
             cx.stop_propagation();
             return;
@@ -1444,6 +1475,139 @@ impl WorkspaceView {
             );
             self.terminals.insert(session_id, terminal);
             self.terminal_subscriptions.insert(session_id, subscription);
+        }
+        self.reconcile_hosted_views(cx);
+    }
+
+    fn reconcile_hosted_views(&mut self, cx: &mut Context<Self>) {
+        let sessions = self.snapshot.hosted_sessions();
+        let live_ids: HashSet<_> = sessions.iter().map(|session| session.id).collect();
+        let stale_ids: Vec<_> = self
+            .hosted
+            .keys()
+            .filter(|session_id| !live_ids.contains(session_id))
+            .copied()
+            .collect();
+        for session_id in stale_ids {
+            self.hosted.remove(&session_id);
+            self.hosted_subscriptions.remove(&session_id);
+            self.agent_names.remove(&session_id);
+            self.agent_activity_seen.remove(&session_id);
+        }
+        for session in sessions {
+            if self.hosted.contains_key(&session.id) {
+                continue;
+            }
+            let Some(agent) = session.surface.hosted_agent() else {
+                continue;
+            };
+            let vendor_session_id = session.surface.vendor_session_id().map(str::to_owned);
+            let working_directory = PathBuf::from(&session.working_directory);
+            let session_id = session.id;
+            let token = *self
+                .automation_tokens
+                .entry(session_id)
+                .or_insert_with(Uuid::new_v4);
+            let mut environment = HashMap::new();
+            environment.insert("VIBRA_PANE_ID".into(), session_id.to_string());
+            environment.insert("VIBRA_AUTOMATION_TOKEN".into(), token.to_string());
+            if let Ok(executable) = std::env::current_exe() {
+                environment.insert(
+                    "VIBRA_CLI".into(),
+                    executable.to_string_lossy().into_owned(),
+                );
+            }
+            if let Some(socket) = &self.automation_socket {
+                environment.insert(
+                    "VIBRA_AUTOMATION_SOCKET".into(),
+                    socket.to_string_lossy().into_owned(),
+                );
+            }
+            let view = cx.new(|cx| {
+                HostedAgentView::new(
+                    session_id,
+                    agent,
+                    session.title.clone(),
+                    working_directory,
+                    vendor_session_id,
+                    environment,
+                    cx,
+                )
+            });
+            let subscription =
+                cx.subscribe(&view, |this, _view, event: &HostedAgentViewEvent, cx| {
+                    this.handle_hosted_event(event, cx);
+                });
+            self.hosted.insert(session.id, view);
+            self.hosted_subscriptions.insert(session.id, subscription);
+        }
+    }
+
+    fn handle_hosted_event(&mut self, event: &HostedAgentViewEvent, cx: &mut Context<Self>) {
+        match event {
+            HostedAgentViewEvent::VendorSession {
+                session_id,
+                vendor_session_id,
+            } => {
+                if self
+                    .snapshot
+                    .update_vendor_session_id(*session_id, vendor_session_id)
+                {
+                    self.persist(cx);
+                }
+            }
+            HostedAgentViewEvent::RuntimeState {
+                session_id,
+                state,
+                attention,
+            } => {
+                let kind = self
+                    .snapshot
+                    .hosted_sessions()
+                    .into_iter()
+                    .find(|session| session.id == *session_id)
+                    .and_then(|session| session.surface.hosted_agent())
+                    .and_then(|agent| AgentKind::parse(agent.cli_name()));
+                if let Some(kind) = kind {
+                    self.set_hook_agent_presence(*session_id, Some(kind), *state, *attention, None);
+                    self.publish_agent_activity(*session_id);
+                    cx.notify();
+                }
+            }
+            HostedAgentViewEvent::OpenTui {
+                agent,
+                vendor_session_id,
+                working_directory,
+                ..
+            } => {
+                self.open_vendor_tui(*agent, vendor_session_id, working_directory, cx);
+            }
+        }
+    }
+
+    fn open_vendor_tui(
+        &mut self,
+        agent: HostedAgentKind,
+        vendor_session_id: &str,
+        working_directory: &Path,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(argv) = crate::infrastructure::harness::tui_resume_argv(agent, vendor_session_id)
+        else {
+            return;
+        };
+        let cwd = working_directory.to_string_lossy().into_owned();
+        let Some((_, session_id)) = self
+            .snapshot
+            .create_terminal_tab_with_options(true, Some(cwd))
+        else {
+            return;
+        };
+        self.reconcile_terminal_views(cx);
+        self.persist(cx);
+        if let Some(terminal) = self.terminals.get(&session_id) {
+            let command = argv.join(" ");
+            let _ = terminal.read(cx).send_automation_prompt(&command);
         }
     }
 
@@ -1755,10 +1919,28 @@ impl WorkspaceView {
             return Err("el pane ya no existe".to_owned());
         }
         let cwd = cwd.map(|path| path.to_string_lossy().into_owned());
-        let Some((tab_id, session_id)) = self
+        let caller_agent = self
             .snapshot
-            .create_terminal_tab_with_options(!no_focus, cwd)
-        else {
+            .all_sessions()
+            .into_iter()
+            .find(|session| session.id == caller)
+            .and_then(|session| session.surface.hosted_agent());
+        let created = if let Some(agent) = caller_agent {
+            self.snapshot
+                .create_hosted_tab(agent, cwd)
+                .map(|session_id| {
+                    let tab_id = self
+                        .snapshot
+                        .selected_tab()
+                        .map(|tab| tab.id)
+                        .unwrap_or(session_id);
+                    (tab_id, session_id)
+                })
+        } else {
+            self.snapshot
+                .create_terminal_tab_with_options(!no_focus, cwd)
+        };
+        let Some((tab_id, session_id)) = created else {
             self.restore_automation_selection(previous_selection);
             return Err("no se pudo crear el tab".to_owned());
         };
@@ -1917,10 +2099,14 @@ impl WorkspaceView {
         if self.resolved_agent_presence(target).is_none() {
             return Err("el destino no contiene un agente activo".to_owned());
         }
-        let Some(terminal) = self.terminals.get(&target) else {
-            return Err("el pane ya no existe".to_owned());
+        let text = if let Some(hosted) = self.hosted.get(&target) {
+            hosted.read(cx).transcript_text(lines)
+        } else {
+            let Some(terminal) = self.terminals.get(&target) else {
+                return Err("el pane ya no existe".to_owned());
+            };
+            terminal.read(cx).automation_read_text(lines)
         };
-        let text = terminal.read(cx).automation_read_text(lines);
         Ok(serde_json::json!({
             "paneId": target,
             "name": self.agent_names.get(&target),
@@ -2004,42 +2190,49 @@ impl WorkspaceView {
             _ => return Err("comando de launch inválido".to_owned()),
         };
 
+        let Some(hosted_kind) = kind.hosted_kind() else {
+            return Err("no hay superficie alojada para este agente".to_owned());
+        };
         let project_id = self
             .project_id_for_session(caller)
             .ok_or_else(|| "el pane ya no existe".to_owned())?;
         let previous_selection = self.snapshot.selected_session().map(|session| session.id);
         let cwd = cwd.map(|path| path.to_string_lossy().into_owned());
         let mut tab_id = None;
-        let current_target = if placement == AgentPlacement::Current {
-            let target = explicit_pane.unwrap_or(caller);
-            if !self.automation_same_project(caller, target) {
-                return Err("el pane destino no está en el mismo proyecto".to_owned());
-            }
-            if !self.terminals.contains_key(&target) {
-                return Err("el pane destino ya no existe".to_owned());
-            }
-            if self.resolved_agent_presence(target).is_some() {
-                return Err("el pane destino ya contiene un agente activo".to_owned());
-            }
-            Some(target)
-        } else {
-            None
-        };
         if let Some(name) = name.as_deref() {
-            self.ensure_agent_name_available_in_project(project_id, name, current_target)?;
+            self.ensure_agent_name_available_in_project(project_id, name, None)?;
         }
 
         let mut created_pane = false;
         let target_pane = match placement {
-            AgentPlacement::Current => current_target.expect("current target resolved above"),
+            AgentPlacement::Current => {
+                let target = explicit_pane.unwrap_or(caller);
+                if !self.automation_same_project(caller, target) {
+                    return Err("el pane destino no está en el mismo proyecto".to_owned());
+                }
+                if self.hosted.contains_key(&target) {
+                    target
+                } else {
+                    if !self.snapshot.select_terminal_global(caller) {
+                        return Err("el pane ya no existe".to_owned());
+                    }
+                    let Some(created) = self.snapshot.create_hosted_tab(hosted_kind, cwd.clone())
+                    else {
+                        return Err("no se pudo crear el chat".to_owned());
+                    };
+                    created_pane = true;
+                    created
+                }
+            }
             AgentPlacement::Split => {
                 if !self.snapshot.select_terminal_global(caller) {
                     return Err("el pane ya no existe".to_owned());
                 }
                 let direction = automation_split_direction(direction);
-                let Some(created) = self.snapshot.split_selected_terminal_with_options(
+                let Some(created) = self.snapshot.create_hosted_split(
                     direction,
                     !no_focus,
+                    hosted_kind,
                     cwd.clone(),
                 ) else {
                     self.restore_automation_selection(previous_selection);
@@ -2052,14 +2245,15 @@ impl WorkspaceView {
                 if !self.snapshot.select_terminal_global(caller) {
                     return Err("el pane ya no existe".to_owned());
                 }
-                let Some((created_tab, created_session)) = self
-                    .snapshot
-                    .create_terminal_tab_with_options(!no_focus, cwd.clone())
+                let Some(created_session) =
+                    self.snapshot.create_hosted_tab(hosted_kind, cwd.clone())
                 else {
                     self.restore_automation_selection(previous_selection);
                     return Err("no se pudo crear el tab".to_owned());
                 };
-                tab_id = Some(created_tab);
+                if let Some(tab) = self.snapshot.selected_tab() {
+                    tab_id = Some(tab.id);
+                }
                 created_pane = true;
                 created_session
             }
@@ -2071,6 +2265,11 @@ impl WorkspaceView {
         if created_pane {
             self.reconcile_terminal_views(cx);
             self.persist(cx);
+        }
+        if !args.is_empty()
+            && let Some(hosted) = self.hosted.get(&target_pane)
+        {
+            hosted.update(cx, |hosted, _cx| hosted.apply_launch_args(&args));
         }
 
         if let Some(name) = name.as_ref() {
@@ -2130,18 +2329,22 @@ impl WorkspaceView {
                     .get(&pane_id)
                     .copied()
                     .unwrap_or_default();
-                let Some(terminal) = self.terminals.get(&pane_id) else {
-                    return Err("el pane destino ya no existe".to_owned());
-                };
-                if presence.process_id.is_some()
-                    && terminal.read(cx).foreground_process_id() != presence.process_id
-                {
-                    return Err(
-                        "el proceso del agente cambió antes de enviar el prompt; inténtalo de nuevo"
-                            .to_owned(),
-                    );
+                if let Some(hosted) = self.hosted.get(&pane_id) {
+                    hosted.update(cx, |hosted, cx| hosted.prompt(&text, cx))?;
+                } else {
+                    let Some(terminal) = self.terminals.get(&pane_id) else {
+                        return Err("el pane destino ya no existe".to_owned());
+                    };
+                    if presence.process_id.is_some()
+                        && terminal.read(cx).foreground_process_id() != presence.process_id
+                    {
+                        return Err(
+                            "el proceso del agente cambió antes de enviar el prompt; inténtalo de nuevo"
+                                .to_owned(),
+                        );
+                    }
+                    terminal.read(cx).send_automation_prompt(&text)?;
                 }
-                terminal.read(cx).send_automation_prompt(&text)?;
                 let until = if until.is_empty() {
                     default_settled_states()
                 } else {
@@ -2247,7 +2450,67 @@ impl WorkspaceView {
         let name_assigned = launch.name_assigned;
         cx.spawn(async move |this, cx| {
             let deadline = Instant::now() + timeout;
-            // Wait for an interactive shell before launching the agent binary.
+            let hosted = this
+                .update(cx, |this, _cx| this.hosted.contains_key(&pane_id))
+                .ok()
+                .unwrap_or(false);
+            if hosted {
+                if !wait_for_agent {
+                    let status = this
+                        .update(cx, |this, _cx| this.automation_agent_status(pane_id))
+                        .ok();
+                    if let Some(status) = status {
+                        payload["agent"] = status
+                            .get("agent")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                    }
+                    payload["ready"] = serde_json::json!(true);
+                    payload["submitted"] = serde_json::json!(true);
+                    let _ = response.send(AutomationResponse::success(payload));
+                    return;
+                }
+                loop {
+                    let ready = this
+                        .update(cx, |this, _cx| {
+                            this.hosted.contains_key(&pane_id)
+                                && this.resolved_agent_presence(pane_id).is_some()
+                        })
+                        .ok()
+                        .unwrap_or(false);
+                    if ready {
+                        let status = this
+                            .update(cx, |this, _cx| this.automation_agent_status(pane_id))
+                            .ok();
+                        if let Some(status) = status {
+                            payload["agent"] = status
+                                .get("agent")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
+                        }
+                        payload["ready"] = serde_json::json!(true);
+                        let _ = response.send(AutomationResponse::success(payload));
+                        return;
+                    }
+                    if Instant::now() >= deadline {
+                        let _ = this.update(cx, |this, cx| {
+                            this.rollback_agent_launch(
+                                pane_id,
+                                created_pane,
+                                previous_selection,
+                                name_assigned,
+                                cx,
+                            );
+                        });
+                        let _ = response.send(AutomationResponse::failure(
+                            "timeout esperando el chat alojado",
+                        ));
+                        return;
+                    }
+                    Timer::after(Duration::from_millis(150)).await;
+                }
+            }
+            // Legacy PTY launch is no longer a product path.
             let mut command_sent = false;
             while Instant::now() < deadline {
                 let shell_ready = this
@@ -2599,7 +2862,26 @@ impl WorkspaceView {
             (_, Some(kind)) => (kind.display_name().to_owned(), "hook"),
             (Some((kind, TerminalAgentKindSource::Title)), _) => (kind.to_owned(), "title"),
             (Some((kind, TerminalAgentKindSource::Screen)), _) => (kind.to_owned(), "screen"),
-            (None, None) => return None,
+            (None, None) => {
+                let hosted = self
+                    .snapshot
+                    .all_sessions()
+                    .into_iter()
+                    .find_map(|session| {
+                        (session.id == pane_id)
+                            .then_some(session.surface.hosted_agent())
+                            .flatten()
+                    })?;
+                return Some(ResolvedAgentPresence {
+                    kind: hosted.display_name().to_owned(),
+                    state: Some(AgentRuntimeState::Idle),
+                    attention: None,
+                    kind_source: "surface",
+                    state_source: None,
+                    process_id: None,
+                    session_id: None,
+                });
+            }
         };
         let terminal_state = detected.map(|presence| {
             (
@@ -2690,11 +2972,14 @@ impl WorkspaceView {
     }
 
     fn focus_selected_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(terminal) = self
-            .snapshot
-            .selected_session()
-            .and_then(|session| self.terminals.get(&session.id))
-        {
+        let Some(session) = self.snapshot.selected_session() else {
+            return;
+        };
+        if let Some(hosted) = self.hosted.get(&session.id) {
+            hosted.read(cx).focus_handle(cx).focus(window);
+            return;
+        }
+        if let Some(terminal) = self.terminals.get(&session.id) {
             terminal.read(cx).focus_handle(cx).focus(window);
         }
     }
@@ -2894,48 +3179,59 @@ impl WorkspaceView {
         self.persist_settings(cx);
     }
 
-    fn new_workspace(&mut self, _: &NewWorkspace, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_workspace_in_current_directory(window, cx);
+    fn new_workspace(&mut self, _: &NewWorkspace, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_new_chat_picker(NewChatPlacement::Workspace, cx);
     }
 
-    fn new_terminal_tab(
+    fn new_terminal_tab(&mut self, _: &NewTerminalTab, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_new_chat_picker(NewChatPlacement::Tab, cx);
+    }
+
+    fn open_new_chat_picker(&mut self, placement: NewChatPlacement, cx: &mut Context<Self>) {
+        let placement = match placement {
+            NewChatPlacement::Tab if self.snapshot.selected_workspace().is_none() => {
+                NewChatPlacement::Workspace
+            }
+            other => other,
+        };
+        self.palette_mode = None;
+        self.settings_open = false;
+        self.context_menu = None;
+        self.rename_prompt = None;
+        self.new_chat_picker = Some(placement);
+        cx.notify();
+    }
+
+    fn close_new_chat_picker(&mut self, cx: &mut Context<Self>) {
+        self.new_chat_picker = None;
+        cx.notify();
+    }
+
+    fn confirm_new_chat(
         &mut self,
-        _: &NewTerminalTab,
+        agent: HostedAgentKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_terminal_tab_in_current_directory(window, cx);
-    }
-
-    fn open_workspace_in_current_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.selected_live_cwd(cx);
-        self.snapshot.create_workspace(&cwd);
-        self.reconcile_terminal_views(cx);
+        let created = match self.new_chat_picker {
+            Some(NewChatPlacement::Tab) => self
+                .snapshot
+                .create_hosted_tab(agent, Some(cwd.to_string_lossy().into_owned())),
+            Some(NewChatPlacement::Workspace) | None => {
+                self.snapshot.create_hosted_workspace(&cwd, agent)
+            }
+        };
+        self.new_chat_picker = None;
+        if created.is_none() {
+            return;
+        }
+        self.reconcile_hosted_views(cx);
         self.sync_diff_root(cx);
         self.refresh_project_files();
         self.refresh_sidebar_workspace_meta(cx);
         self.persist(cx);
         self.focus_selected_terminal(window, cx);
-    }
-
-    fn open_terminal_tab_in_current_directory(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let cwd = self.selected_live_cwd(cx).to_string_lossy().into_owned();
-        if self
-            .snapshot
-            .create_terminal_tab_with_options(true, Some(cwd))
-            .is_some()
-        {
-            self.reconcile_terminal_views(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files();
-            self.refresh_sidebar_workspace_meta(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
-        }
     }
 
     fn close_terminal(&mut self, _: &CloseTerminal, window: &mut Window, cx: &mut Context<Self>) {
@@ -3202,8 +3498,8 @@ impl WorkspaceView {
                         "new-workspace-toolbar",
                         false,
                         cx,
-                        |this, window, cx| {
-                            this.open_workspace_in_current_directory(window, cx);
+                        |this, _, cx| {
+                            this.open_new_chat_picker(NewChatPlacement::Workspace, cx);
                         },
                     ))
                     .child(
@@ -3332,6 +3628,40 @@ impl WorkspaceView {
             .overflow_hidden()
             .bg(colors().sidebar);
 
+        panel = panel.child(
+            div()
+                .h(px(50.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .px_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(colors().muted)
+                        .child("Sesiones"),
+                )
+                .child(
+                    div()
+                        .id("new-session-sidebar")
+                        .size(px(28.0))
+                        .rounded(px(8.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .text_size(px(16.0))
+                        .text_color(colors().muted)
+                        .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open_new_chat_picker(NewChatPlacement::Workspace, cx);
+                        }))
+                        .child("+"),
+                ),
+        );
+
         if entries.is_empty() {
             panel = panel.child(
                 div()
@@ -3344,11 +3674,11 @@ impl WorkspaceView {
                     .gap_3()
                     .child(
                         div()
-                            .size(px(42.0))
+                            .size(px(36.0))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(10.0))
+                            .rounded(px(9.0))
                             .bg(colors().elevated)
                             .font_family("JetBrains Mono")
                             .text_size(px(11.0))
@@ -3388,7 +3718,6 @@ impl WorkspaceView {
                             .map(|m| m.cwd.as_str())
                             .unwrap_or(entry.working_directory.as_str());
                         let path_label = format_sidebar_path(cwd);
-                        // cmux-style primary title: live directory basename unless renamed.
                         let title_label = if entry.title_is_manual {
                             entry.workspace_name.clone()
                         } else {
@@ -3399,8 +3728,6 @@ impl WorkspaceView {
                                 live
                             }
                         };
-                        // Three clean rows: name / branch / path.
-                        // Agent identity+state lives on the badge (mark + status dot).
                         let branch_label = meta.and_then(format_sidebar_branch);
                         let branch_color = match (
                             meta.map(|m| m.dirty).unwrap_or(false),
@@ -3421,10 +3748,12 @@ impl WorkspaceView {
                         } else {
                             colors().muted
                         };
-                        // Explicit text width avoids flex+truncate collapsing labels to "…".
+                        let (context_label, context_color) = branch_label
+                            .map(|branch| (branch, branch_color))
+                            .unwrap_or((path_label, path_color));
                         div()
                             .id(SharedString::from(format!("workspace-{workspace_id}")))
-                            .h(px(64.0))
+                            .h(px(54.0))
                             .w(px(LEFT_SIDEBAR_WIDTH - 16.0))
                             .mb(px(2.0))
                             .px_3()
@@ -3475,29 +3804,20 @@ impl WorkspaceView {
                                     .flex()
                                     .flex_col()
                                     .justify_center()
-                                    .gap(px(1.0))
+                                    .gap(px(3.0))
                                     .child(sidebar_tab_line(
                                         &title_label,
                                         title_color,
-                                        12.0,
+                                        12.5,
                                         true,
                                         false,
                                     ))
-                                    .when_some(branch_label, |col, branch| {
-                                        col.child(sidebar_tab_line(
-                                            &branch,
-                                            branch_color,
-                                            10.0,
-                                            true,
-                                            true,
-                                        ))
-                                    })
                                     .child(sidebar_tab_line(
-                                        &path_label,
-                                        path_color,
-                                        9.5,
+                                        &context_label,
+                                        context_color,
+                                        10.5,
                                         false,
-                                        true,
+                                        false,
                                     )),
                             )
                     })),
@@ -3858,6 +4178,129 @@ impl WorkspaceView {
                     )
             })
             .into_any_element()
+    }
+
+    fn new_chat_picker_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.new_chat_picker?;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::rgba(0x08080acc))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.close_new_chat_picker(cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .id("new-chat-picker")
+                        .w(px(420.0))
+                        .max_w_full()
+                        .mx_4()
+                        .rounded(px(22.0))
+                        .border_1()
+                        .border_color(colors().border_subtle)
+                        .bg(colors().panel)
+                        .shadow_lg()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            div()
+                                .min_h(px(76.0))
+                                .flex_none()
+                                .flex()
+                                .flex_col()
+                                .justify_center()
+                                .gap_1()
+                                .px_5()
+                                .border_b_1()
+                                .border_color(colors().border_subtle)
+                                .child(
+                                    div()
+                                        .text_size(px(15.0))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(colors().foreground)
+                                        .child("Nueva sesión"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(colors().subtle)
+                                        .child("Elige cómo quieres iniciar la conversación"),
+                                ),
+                        )
+                        .child(div().flex().flex_col().p_3().gap_2().children(
+                            HostedAgentKind::ALL.into_iter().map(|agent| {
+                                let name = agent.display_name();
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "new-chat-{}",
+                                        agent.cli_name()
+                                    )))
+                                    .w_full()
+                                    .min_h(px(58.0))
+                                    .px_4()
+                                    .py_3()
+                                    .rounded(px(12.0))
+                                    .border_1()
+                                    .border_color(colors().border_subtle)
+                                    .bg(colors().background)
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .cursor_pointer()
+                                    .hover(|style| {
+                                        style.bg(colors().hover).border_color(colors().selection)
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.confirm_new_chat(agent, window, cx);
+                                    }))
+                                    .child(agent_sidebar_badge(Some(name), None, None, false))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.5))
+                                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                                    .text_color(colors().foreground)
+                                                    .child(name),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.0))
+                                                    .text_color(colors().subtle)
+                                                    .child("Conversación alojada"),
+                                            ),
+                                    )
+                            }),
+                        ))
+                        .child(
+                            div()
+                                .h(px(42.0))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .px_5()
+                                .border_t_1()
+                                .border_color(colors().border_subtle)
+                                .text_size(px(10.5))
+                                .text_color(colors().subtle)
+                                .child("⌘N nueva sesión · ⌘T nueva pestaña"),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn settings_modal(
@@ -4512,6 +4955,9 @@ impl WorkspaceView {
             .selected_workspace()
             .and_then(|workspace| workspace.selected_tab_id);
 
+        let hosted_canvas = self.snapshot.selected_tab().is_some_and(|tab| {
+            tab.sessions.len() == 1 && tab.sessions[0].surface.hosted_agent().is_some()
+        });
         let panel = div()
             .flex_1()
             .min_w(px(360.0))
@@ -4520,11 +4966,16 @@ impl WorkspaceView {
             .flex_col()
             .min_h(px(0.0))
             .overflow_hidden()
-            .bg(colors().terminal);
+            .bg(if hosted_canvas {
+                colors().background
+            } else {
+                colors().terminal
+            });
         if let Some(editor) = editor {
             panel.child(editor)
+        } else if hosted_canvas {
+            panel.child(self.terminal_canvas(cx))
         } else {
-            // Always show the tab strip so a single session still has title + new-tab chrome.
             panel
                 .child(self.tab_bar(tabs, selected_tab_id, cx))
                 .child(self.terminal_canvas(cx))
@@ -4703,8 +5154,8 @@ impl WorkspaceView {
                     .text_color(colors().muted)
                     .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
                     .active(|button| button.opacity(0.8))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_terminal_tab_in_current_directory(window, cx);
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_new_chat_picker(NewChatPlacement::Tab, cx);
                     }))
                     .child("+"),
             )
@@ -4719,6 +5170,7 @@ impl WorkspaceView {
         match layout {
             PaneLayoutSnapshot::Terminal { id } => {
                 let session_id = *id;
+                let hosted = self.hosted.get(&session_id).cloned();
                 let terminal = self.terminals.get(&session_id).cloned();
                 div()
                     .id(SharedString::from(format!("pane-{session_id}")))
@@ -4744,6 +5196,7 @@ impl WorkspaceView {
                             cx.stop_propagation();
                         }),
                     )
+                    .when_some(hosted, |pane, hosted| pane.child(hosted))
                     .when_some(terminal, |pane, terminal| pane.child(terminal))
                     .into_any_element()
             }
@@ -4857,16 +5310,73 @@ impl WorkspaceView {
         });
         let is_empty = panes.is_none();
         let zoomed = tab.as_ref().and_then(|tab| tab.zoomed_session_id).is_some();
+        let hosted = tab.as_ref().is_some_and(|tab| {
+            tab.sessions.len() == 1 && tab.sessions[0].surface.hosted_agent().is_some()
+        });
 
-        // Full-bleed: no padding. Agent TUIs paint pure black; any inset against
-        // chrome makes the background look “cut off”.
         div()
             .flex_1()
             .min_h(px(0.0))
             .relative()
             .overflow_hidden()
-            .bg(colors().terminal)
+            .bg(if hosted {
+                colors().background
+            } else {
+                colors().terminal
+            })
             .when_some(panes, |canvas, panes| canvas.child(panes))
+            .when(is_empty, |canvas| {
+                canvas.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_4()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_size(px(18.0))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(colors().foreground)
+                                        .child("Empieza una conversación"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.5))
+                                        .text_color(colors().subtle)
+                                        .child("Tu sesión aparecerá aquí"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("empty-new-chat")
+                                .px_5()
+                                .py(px(10.0))
+                                .rounded(px(999.0))
+                                .border_1()
+                                .border_color(colors().border_subtle)
+                                .bg(colors().elevated)
+                                .cursor_pointer()
+                                .hover(|style| style.bg(colors().hover))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.open_new_chat_picker(NewChatPlacement::Workspace, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .text_size(px(13.0))
+                                        .text_color(colors().foreground)
+                                        .child("Nueva sesión"),
+                                ),
+                        ),
+                )
+            })
             .when(zoomed, |canvas| {
                 canvas.child(
                     div()
@@ -4880,33 +5390,6 @@ impl WorkspaceView {
                         .text_xs()
                         .text_color(colors().muted)
                         .child("Pane ampliado · ⇧⌘↵ restaurar"),
-                )
-            })
-            .when(is_empty, |canvas| {
-                canvas.child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .size(px(32.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(13.0))
-                                .text_color(colors().muted)
-                                .child(">_"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(colors().muted)
-                                .child("Ninguna terminal seleccionada"),
-                        ),
                 )
             })
     }
@@ -5553,6 +6036,8 @@ impl Render for WorkspaceView {
         if let Some(modal) = self.palette_modal(cx) {
             body = body.child(modal);
         } else if let Some(modal) = self.rename_modal(cx) {
+            body = body.child(modal);
+        } else if let Some(modal) = self.new_chat_picker_modal(cx) {
             body = body.child(modal);
         } else if let Some(modal) = self.settings_modal(window, cx) {
             body = body.child(modal);
