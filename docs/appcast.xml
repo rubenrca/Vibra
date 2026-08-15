@@ -3,22 +3,18 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.6</title>
-            <pubDate>Fri, 14 Aug 2026 15:41:53 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.6</link>
-            <sparkle:version>58</sparkle:version>
-            <sparkle:shortVersionString>0.3.6</sparkle:shortVersionString>
+            <title>0.3.7</title>
+            <pubDate>Sat, 15 Aug 2026 14:45:49 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.7</link>
+            <sparkle:version>64</sparkle:version>
+            <sparkle:shortVersionString>0.3.7</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Open ⌘N (new session) and ⌘T (new tab) in the current terminal directory instead of the launch/project root.</li>
-  <li>Restyle terminal tabs as compact pills: directory/command labels, close on every tab, split count, and agent status.</li>
-  <li>Distinguish agent attention in the sidebar and tabs: permission requests use a red mark instead of a generic waiting dot.</li>
-  <li>Restore macOS notifications when an agent finishes or needs attention in a hidden session or while Vibra is in the background.</li>
-  <li>Show Claude and Codex hook status separately in Settings, with a toggle for agent notifications.</li>
-  <li>Detect Goose sessions and show a Pi mark for the Pi coding agent.</li>
+  <li>Turn the right-sidebar Diff tab into a Git panel with three views: working tree, branch changes versus the default base, and a commit history with a lane graph.</li>
+  <li>Keep a single user-resizable width for both sidebars instead of changing the Git panel width per view.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.6/Vibra-0.3.6.dmg" length="12098658" type="application/octet-stream" sparkle:edSignature="4klT7CB7rvXAQfJPn+nCngLv6khjbsFuoU/+ck5ZggR5T7W6ohv77ZLTsPl2quHxR+kuEFcTxWu+7GzDHONtCw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.7/Vibra-0.3.7.dmg" length="12343789" type="application/octet-stream" sparkle:edSignature="AtpPx3uAgMlhoCshqqf+g4eaXo0MQCsvBtq/+ruH6EcOAYCT2UrkXgNVeKSM3P0CB+rvLovkD85ewQSOJRzaDA=="/>
         </item>
     </channel>
 </rss>
