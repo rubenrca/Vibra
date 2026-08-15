@@ -8,8 +8,8 @@ use std::thread;
 use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
-    GitBranchSummary, GitDiff, GitDiffRow, GitDiffRowKind, GitFileChange, GitFileStatus, GitPort,
-    GitRepositorySnapshot,
+    GitBranchChanges, GitBranchSummary, GitCommit, GitDiff, GitDiffRow, GitDiffRowKind,
+    GitFileChange, GitFileStatus, GitHistory, GitPort, GitRepositorySnapshot,
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
@@ -285,6 +285,173 @@ impl GitPort for GitCliPort {
             truncated,
         })
     }
+
+    fn branch_changes(&self, root: &Path) -> Result<Option<GitBranchChanges>> {
+        let Some(root) = repository_root(root)? else {
+            return Ok(None);
+        };
+        let Some(snapshot) = self.snapshot(&root)? else {
+            return Ok(None);
+        };
+        let Some(base) = compare_base(&root, &snapshot.branch)? else {
+            return Ok(Some(GitBranchChanges {
+                snapshot,
+                base: String::new(),
+                merge_base: String::new(),
+                commits_ahead: 0,
+            }));
+        };
+        let merge_base = merge_base(&root, &base)?;
+        let mut changes = diff_name_status(&root, &merge_base)?;
+        let mut stats = HashMap::<String, (usize, usize)>::new();
+        collect_numstat_against(&root, &merge_base, &mut stats)?;
+        for change in &mut changes {
+            if let Some((additions, deletions)) = stats.get(&change.path) {
+                change.additions = Some(*additions);
+                change.deletions = Some(*deletions);
+            }
+        }
+        let seen: HashMap<String, ()> = changes
+            .iter()
+            .map(|change| (change.path.clone(), ()))
+            .collect();
+        for change in snapshot.changes {
+            if change.untracked && !seen.contains_key(&change.path) {
+                changes.push(change);
+            }
+        }
+        changes.sort_by(|left, right| {
+            change_priority(left)
+                .cmp(&change_priority(right))
+                .then_with(|| left.path.to_lowercase().cmp(&right.path.to_lowercase()))
+        });
+        let additions = changes.iter().filter_map(|change| change.additions).sum();
+        let deletions = changes.iter().filter_map(|change| change.deletions).sum();
+        let commits_ahead = rev_count(&root, &format!("{merge_base}..HEAD"))?;
+        Ok(Some(GitBranchChanges {
+            snapshot: GitRepositorySnapshot {
+                root,
+                branch: snapshot.branch,
+                upstream: snapshot.upstream,
+                ahead: snapshot.ahead,
+                behind: snapshot.behind,
+                changes,
+                additions,
+                deletions,
+            },
+            base,
+            merge_base,
+            commits_ahead,
+        }))
+    }
+
+    fn history(&self, root: &Path, limit: usize) -> Result<Option<GitHistory>> {
+        let Some(root) = repository_root(root)? else {
+            return Ok(None);
+        };
+        let limit = limit.clamp(1, 500);
+        let branch = current_branch(&root)?;
+        let head = rev_parse(&root, "HEAD")?.unwrap_or_default();
+        let total = rev_count(&root, "HEAD").unwrap_or(0);
+        let output = run_git(
+            &root,
+            [
+                "log",
+                &format!("-{limit}"),
+                "--topo-order",
+                "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%at%x1f%as%x1f%P",
+            ],
+        )?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("does not have any commits")
+                || stderr.contains("bad default revision")
+                || stderr.contains("unknown revision")
+            {
+                return Ok(Some(GitHistory {
+                    branch,
+                    head,
+                    total: 0,
+                    commits: Vec::new(),
+                    truncated: false,
+                }));
+            }
+            ensure_success(&output, "git log")?;
+        }
+        let commits = parse_history(&String::from_utf8_lossy(&output.stdout));
+        let truncated = total > commits.len();
+        Ok(Some(GitHistory {
+            branch,
+            head,
+            total,
+            commits,
+            truncated,
+        }))
+    }
+
+    fn diff_against(
+        &self,
+        repository: &Path,
+        revision: &str,
+        change: &GitFileChange,
+    ) -> Result<GitDiff> {
+        validate_relative_path(&change.path)?;
+        validate_revision(revision)?;
+        if change.untracked || revision.is_empty() {
+            return self.diff(repository, change);
+        }
+        let root =
+            repository_root(repository)?.context("el repositorio dejó de estar disponible")?;
+        let mut rows = Vec::new();
+        let mut additions = 0;
+        let mut deletions = 0;
+        let mut binary = false;
+        let mut truncated = false;
+        let patch = run_git_diff(
+            &root,
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--unified=3",
+                revision,
+                "--",
+                &change.path,
+            ],
+            "git diff revision",
+            false,
+        )?;
+        append_patch(
+            &patch,
+            None,
+            &mut rows,
+            &mut additions,
+            &mut deletions,
+            &mut binary,
+            &mut truncated,
+        );
+        if rows.is_empty() {
+            rows.push(GitDiffRow {
+                old_line: None,
+                new_line: None,
+                kind: GitDiffRowKind::Notice,
+                text: if binary {
+                    "El archivo contiene datos binarios y no tiene vista textual.".into()
+                } else {
+                    "Git no devolvió cambios textuales para este archivo.".into()
+                },
+            });
+        }
+        Ok(GitDiff {
+            path: change.path.clone(),
+            old_path: change.old_path.clone(),
+            rows,
+            additions,
+            deletions,
+            binary,
+            truncated,
+        })
+    }
 }
 
 fn repository_root(root: &Path) -> Result<Option<PathBuf>> {
@@ -483,6 +650,248 @@ fn line_count(contents: &[u8]) -> usize {
         contents.iter().filter(|byte| **byte == b'\n').count()
             + usize::from(contents.last() != Some(&b'\n'))
     }
+}
+
+fn validate_revision(revision: &str) -> Result<()> {
+    if revision.is_empty() {
+        return Ok(());
+    }
+    if revision.starts_with('-')
+        || revision.contains('\0')
+        || revision.contains(char::is_whitespace)
+    {
+        bail!("Git devolvió una revisión no segura");
+    }
+    Ok(())
+}
+
+fn current_branch(root: &Path) -> Result<String> {
+    let output = run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if !output.status.success() {
+        return Ok("HEAD".into());
+    }
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok(if name.is_empty() || name == "HEAD" {
+        "detached".into()
+    } else {
+        name
+    })
+}
+
+fn rev_parse(root: &Path, rev: &str) -> Result<Option<String>> {
+    validate_revision(rev)?;
+    let output = run_git(root, ["rev-parse", "--verify", "--quiet", rev])?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!value.is_empty()).then_some(value))
+}
+
+fn rev_count(root: &Path, range: &str) -> Result<usize> {
+    let output = run_git(root, ["rev-list", "--count", range])?;
+    if !output.status.success() {
+        return Ok(0);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0))
+}
+
+fn merge_base(root: &Path, other: &str) -> Result<String> {
+    validate_revision(other)?;
+    let output = run_git(root, ["merge-base", "HEAD", other])?;
+    ensure_success(&output, "git merge-base")?;
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if value.is_empty() {
+        bail!("Git no encontró un ancestro común con {other}");
+    }
+    Ok(value)
+}
+
+fn short_ref_name(rev: &str) -> &str {
+    rev.rsplit('/').next().unwrap_or(rev)
+}
+
+fn compare_base(root: &Path, branch: &str) -> Result<Option<String>> {
+    let default_base = default_base_branch(root)?;
+    let upstream = rev_parse_symbolic(root, "@{upstream}")?;
+    let on_default = default_base
+        .as_deref()
+        .is_some_and(|base| short_ref_name(base) == branch);
+    if let Some(default_base) = default_base.as_ref()
+        && !on_default
+    {
+        return Ok(Some(default_base.clone()));
+    }
+    if let Some(upstream) = upstream {
+        return Ok(Some(upstream));
+    }
+    Ok(default_base)
+}
+
+fn default_base_branch(root: &Path) -> Result<Option<String>> {
+    if let Some(symbolic) = rev_parse_symbolic(root, "refs/remotes/origin/HEAD")? {
+        let name = symbolic
+            .strip_prefix("refs/remotes/")
+            .unwrap_or(&symbolic)
+            .to_owned();
+        if rev_parse(root, &name)?.is_some() {
+            return Ok(Some(name));
+        }
+    }
+    for candidate in [
+        "origin/main",
+        "origin/master",
+        "origin/develop",
+        "main",
+        "master",
+        "develop",
+    ] {
+        if rev_parse(root, candidate)?.is_some() {
+            return Ok(Some(candidate.to_owned()));
+        }
+    }
+    Ok(None)
+}
+
+fn rev_parse_symbolic(root: &Path, rev: &str) -> Result<Option<String>> {
+    let output = run_git(
+        root,
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", rev],
+    )?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!value.is_empty() && value != "HEAD").then_some(value))
+}
+
+fn diff_name_status(root: &Path, revision: &str) -> Result<Vec<GitFileChange>> {
+    validate_revision(revision)?;
+    let output = run_git(
+        root,
+        [
+            "diff",
+            "--name-status",
+            "--no-ext-diff",
+            "--find-renames",
+            revision,
+        ],
+    )?;
+    ensure_success(&output, "git diff --name-status")?;
+    Ok(parse_name_status(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_name_status(output: &str) -> Vec<GitFileChange> {
+    let mut changes = Vec::new();
+    for line in output.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.split('\t');
+        let Some(code) = fields.next() else {
+            continue;
+        };
+        let status = match code.chars().next().unwrap_or('M') {
+            'A' => GitFileStatus::Added,
+            'D' => GitFileStatus::Deleted,
+            'R' => GitFileStatus::Renamed,
+            'C' => GitFileStatus::Copied,
+            'T' => GitFileStatus::TypeChanged,
+            'U' => GitFileStatus::Conflicted,
+            _ => GitFileStatus::Modified,
+        };
+        let (path, old_path) = if matches!(status, GitFileStatus::Renamed | GitFileStatus::Copied) {
+            let old = fields.next().unwrap_or_default().to_owned();
+            let new = fields.next().unwrap_or_default().to_owned();
+            (new, Some(old))
+        } else {
+            (fields.next().unwrap_or_default().to_owned(), None)
+        };
+        if path.is_empty() {
+            continue;
+        }
+        changes.push(GitFileChange {
+            status,
+            staged: false,
+            unstaged: true,
+            untracked: false,
+            path,
+            old_path,
+            additions: None,
+            deletions: None,
+        });
+    }
+    changes
+}
+
+fn collect_numstat_against(
+    root: &Path,
+    revision: &str,
+    stats: &mut HashMap<String, (usize, usize)>,
+) -> Result<()> {
+    validate_revision(revision)?;
+    let output = run_git(root, ["diff", "--no-ext-diff", "--numstat", revision])?;
+    ensure_success(&output, "git diff --numstat")?;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.splitn(3, '\t');
+        let (Some(additions), Some(deletions), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let (Ok(additions), Ok(deletions)) =
+            (additions.parse::<usize>(), deletions.parse::<usize>())
+        else {
+            continue;
+        };
+        let entry = stats.entry(path.to_owned()).or_default();
+        entry.0 += additions;
+        entry.1 += deletions;
+    }
+    Ok(())
+}
+
+fn parse_history(output: &str) -> Vec<GitCommit> {
+    let mut commits = Vec::new();
+    for line in output.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.split('\u{1f}');
+        let (
+            Some(sha),
+            Some(short_sha),
+            Some(subject),
+            Some(author),
+            Some(timestamp),
+            Some(date),
+            Some(parents),
+        ) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        )
+        else {
+            continue;
+        };
+        commits.push(GitCommit {
+            sha: sha.to_owned(),
+            short_sha: short_sha.to_owned(),
+            subject: subject.to_owned(),
+            author: author.to_owned(),
+            date: date.to_owned(),
+            timestamp: timestamp.parse().unwrap_or(0),
+            parents: parents.split_whitespace().map(str::to_owned).collect(),
+        });
+    }
+    commits
 }
 
 fn validate_relative_path(path: &str) -> Result<()> {
@@ -702,6 +1111,62 @@ mod tests {
         assert_eq!(rows[1].old_line, Some(4));
         assert_eq!(rows[2].new_line, Some(4));
         assert_eq!((additions, deletions), (1, 1));
+    }
+
+    #[test]
+    fn history_lists_commits_newest_first_with_parents() {
+        let root = repository();
+        fs::write(root.join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+        git(&root, &["add", "tracked.txt"]);
+        git(&root, &["commit", "-qm", "second"]);
+        let history = GitCliPort.history(&root, 20).unwrap().unwrap();
+
+        assert_eq!(history.total, 2);
+        assert_eq!(history.commits.len(), 2);
+        assert_eq!(history.commits[0].subject, "second");
+        assert_eq!(history.commits[1].subject, "initial");
+        assert_eq!(
+            history.commits[0].parents,
+            vec![history.commits[1].sha.clone()]
+        );
+        assert!(history.commits[1].parents.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_changes_include_committed_files_against_the_base() {
+        let root = repository();
+        git(&root, &["checkout", "-qb", "feature"]);
+        fs::write(root.join("feature.txt"), "on the branch\n").unwrap();
+        git(&root, &["add", "feature.txt"]);
+        git(&root, &["commit", "-qm", "add feature"]);
+        fs::write(root.join("tracked.txt"), "one\nchanged\n").unwrap();
+
+        let changes = GitCliPort.branch_changes(&root).unwrap().unwrap();
+        assert_eq!(changes.commits_ahead, 1);
+        assert!(!changes.base.is_empty());
+        assert!(changes.snapshot.changes.iter().any(|change| {
+            change.path == "feature.txt" && change.status == GitFileStatus::Added
+        }));
+        assert!(
+            changes
+                .snapshot
+                .changes
+                .iter()
+                .any(|change| change.path == "tracked.txt")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parse_history_splits_unit_separated_fields() {
+        let commits = parse_history(
+            "aaa\x1faaa\x1fsubject\x1fAda\x1f1700000000\x1f2023-11-14\x1fbbb ccc\n\
+             bbb\x1fbbb\x1froot\x1fAda\x1f1690000000\x1f2023-07-22\x1f\n",
+        );
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].parents, vec!["bbb", "ccc"]);
+        assert!(commits[1].parents.is_empty());
     }
 
     #[test]

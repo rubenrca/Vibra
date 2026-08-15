@@ -25,7 +25,10 @@ use crate::infrastructure::notifications::{
     AgentActivitySnapshot, agent_activity_rank, agent_notification_copy, should_notify_agent,
 };
 use crate::infrastructure::persistence::WorkspaceRepository;
-use crate::infrastructure::settings::{AppSettings, SettingsRepository};
+use crate::infrastructure::settings::{
+    AppSettings, MAX_LEFT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH, MIN_LEFT_SIDEBAR_WIDTH,
+    MIN_RIGHT_SIDEBAR_WIDTH, SettingsRepository,
+};
 use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 use crate::ports::git::{GitBranchSummary, GitFileStatus, GitPort};
 use crate::ports::terminal::TerminalPort;
@@ -44,14 +47,12 @@ use crate::{
     ToggleLeftSidebar, TogglePaneZoom, ToggleRightSidebar,
 };
 
-/// Full width of the left sessions/info sidebar.
-const LEFT_SIDEBAR_WIDTH: f32 = 240.0;
-/// Text column inside a sessions tab: sidebar − list pad − item pad − badge − gap.
-const LEFT_SIDEBAR_TAB_TEXT_WIDTH: f32 = LEFT_SIDEBAR_WIDTH - 16.0 - 24.0 - 32.0 - 8.0;
 /// Titlebar chrome width when the left sidebar is fully collapsed.
 const TITLEBAR_CHROME_COLLAPSED: f32 = 148.0;
-/// Full width of the Files panel on the right.
-const RIGHT_SIDEBAR_FILES_WIDTH: f32 = 300.0;
+/// Titlebar chrome width when the right sidebar is fully collapsed (toggle only).
+const TITLEBAR_RIGHT_CHROME_COLLAPSED: f32 = 40.0;
+/// Padding + badge + gap reserved beside the sessions tab text column.
+const LEFT_SIDEBAR_TAB_CHROME: f32 = 16.0 + 24.0 + 32.0 + 8.0;
 /// Open/close duration — short enough to feel snappy, long enough to read as motion.
 const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(160);
 /// ~60 fps ticks; only runs while a sidebar is mid-animation.
@@ -160,6 +161,14 @@ struct PaneDividerDrag {
 struct PaneDividerDragView {
     axis: WorkspaceSplitAxis,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SidebarResizeEdge {
+    Left,
+    Right,
+}
+
+struct SidebarResizeDragView;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LeftSidebarMode {
@@ -277,6 +286,16 @@ impl Render for PaneDividerDragView {
     }
 }
 
+impl Render for SidebarResizeDragView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(2.0))
+            .h(px(48.0))
+            .rounded_full()
+            .bg(colors().muted)
+    }
+}
+
 pub struct WorkspaceView {
     snapshot: WorkspaceSnapshot,
     repository: WorkspaceRepository,
@@ -338,6 +357,7 @@ pub struct WorkspaceView {
     _sidebar_anim_task: Option<Task<()>>,
     initial_terminal_focus_pending: bool,
     pane_resize_dirty: bool,
+    sidebar_resize_dirty: bool,
     persistence_error: Option<SharedString>,
     /// Subscribed once so system light/dark flips re-resolve the palette.
     _appearance_subscription: Option<Subscription>,
@@ -527,6 +547,7 @@ impl WorkspaceView {
             _sidebar_anim_task: None,
             initial_terminal_focus_pending: true,
             pane_resize_dirty: false,
+            sidebar_resize_dirty: false,
             persistence_error,
             _appearance_subscription: None,
             _activation_subscription: None,
@@ -1092,7 +1113,7 @@ impl WorkspaceView {
                     action: PaletteAction::ShowSessions,
                 },
                 PaletteItem {
-                    label: "Sidebar: Toggle Files / Diff".into(),
+                    label: "Sidebar: Toggle Files / Git".into(),
                     detail: "⌥⌘B".into(),
                     action: PaletteAction::ToggleGit,
                 },
@@ -3061,6 +3082,83 @@ impl WorkspaceView {
             self.pane_resize_dirty = false;
             self.persist(cx);
         }
+        if self.sidebar_resize_dirty {
+            self.sidebar_resize_dirty = false;
+            self.persist_settings(cx);
+        }
+    }
+
+    fn left_sidebar_width(&self) -> f32 {
+        self.settings.left_sidebar_width
+    }
+
+    fn right_sidebar_width(&self) -> f32 {
+        self.settings.right_sidebar_width
+    }
+
+    fn left_sidebar_tab_text_width(&self) -> f32 {
+        (self.left_sidebar_width() - LEFT_SIDEBAR_TAB_CHROME).max(80.0)
+    }
+
+    fn set_sidebar_width(&mut self, edge: SidebarResizeEdge, width: f32, cx: &mut Context<Self>) {
+        let width = match edge {
+            SidebarResizeEdge::Left => width.clamp(MIN_LEFT_SIDEBAR_WIDTH, MAX_LEFT_SIDEBAR_WIDTH),
+            SidebarResizeEdge::Right => {
+                width.clamp(MIN_RIGHT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH)
+            }
+        };
+        let current = match edge {
+            SidebarResizeEdge::Left => self.settings.left_sidebar_width,
+            SidebarResizeEdge::Right => self.settings.right_sidebar_width,
+        };
+        if (current - width).abs() < 0.5 {
+            return;
+        }
+        match edge {
+            SidebarResizeEdge::Left => self.settings.left_sidebar_width = width,
+            SidebarResizeEdge::Right => self.settings.right_sidebar_width = width,
+        }
+        self.sidebar_resize_dirty = true;
+        cx.notify();
+    }
+
+    fn on_sidebar_resize_move(
+        &mut self,
+        event: &DragMoveEvent<SidebarResizeEdge>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let edge = *event.drag(cx);
+        let x: f32 = event.event.position.x.into();
+        let left: f32 = event.bounds.left().into();
+        let right: f32 = event.bounds.right().into();
+        let width = match edge {
+            SidebarResizeEdge::Left => x - left,
+            SidebarResizeEdge::Right => right - x,
+        };
+        self.set_sidebar_width(edge, width, cx);
+    }
+
+    fn sidebar_resize_handle(
+        &self,
+        id: &'static str,
+        edge: SidebarResizeEdge,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let docked_end = matches!(edge, SidebarResizeEdge::Right);
+        div()
+            .id(id)
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .when(docked_end, |handle| handle.left_0())
+            .when(!docked_end, |handle| handle.right_0())
+            .w(px(8.0))
+            .cursor_ew_resize()
+            .on_drag(edge, |edge, _, _, cx| {
+                let _ = edge;
+                cx.new(|_| SidebarResizeDragView)
+            })
     }
 
     fn persist(&mut self, cx: &mut Context<Self>) {
@@ -3424,9 +3522,23 @@ impl WorkspaceView {
 
     fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let left_progress = self.left_sidebar_progress;
-        let left_chrome_width = TITLEBAR_CHROME_COLLAPSED
-            + (LEFT_SIDEBAR_WIDTH - TITLEBAR_CHROME_COLLAPSED) * left_progress;
+        let right_progress = self.right_sidebar_progress;
+        // Match the painted sidebar width exactly when open so the titlebar
+        // divider lines up with Files / Git.
+        let left_chrome_width = if left_progress > 0.99 {
+            self.left_sidebar_width()
+        } else {
+            TITLEBAR_CHROME_COLLAPSED
+                + (self.left_sidebar_width() - TITLEBAR_CHROME_COLLAPSED) * left_progress
+        };
+        let right_chrome_width = if right_progress > 0.99 {
+            self.right_sidebar_width()
+        } else {
+            TITLEBAR_RIGHT_CHROME_COLLAPSED
+                + (self.right_sidebar_width() - TITLEBAR_RIGHT_CHROME_COLLAPSED) * right_progress
+        };
         let left_open = left_progress > 0.5;
+        let right_open = right_progress > 0.5;
         let selected_workspace = self.snapshot.selected_workspace();
         let selected_workspace_id = selected_workspace.map(|w| w.id);
         let title_is_manual = selected_workspace.is_some_and(|w| {
@@ -3546,12 +3658,21 @@ impl WorkspaceView {
             )
             .child(
                 div()
+                    .w(px(right_chrome_width))
                     .h_full()
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_end()
                     .pr_2()
+                    .bg(if right_open {
+                        colors().panel
+                    } else {
+                        colors().titlebar
+                    })
+                    .when(right_progress > 0.001, |chrome| {
+                        chrome.border_l_1().border_color(colors().border_subtle)
+                    })
                     .child(self.sidebar_button(
                         "toggle-right-sidebar",
                         false,
@@ -3568,25 +3689,35 @@ impl WorkspaceView {
             LeftSidebarMode::Sessions => self.sessions_sidebar_content(cx),
             LeftSidebarMode::Info => self.info_sidebar_content(cx),
         };
-        let width = LEFT_SIDEBAR_WIDTH * self.left_sidebar_progress;
+        let full_width = self.left_sidebar_width();
+        let width = full_width * self.left_sidebar_progress;
+        let show_handle = self.left_sidebar_progress > 0.99;
         // Outer clips to animated width; inner keeps full layout so content doesn't reflow.
         // No title chrome — sessions fill the column; collapse via titlebar / ⌘B.
         div()
             .w(px(width))
             .h_full()
             .flex_none()
+            .relative()
             .overflow_hidden()
             .bg(colors().sidebar)
             .border_r_1()
             .border_color(colors().border_subtle)
             .child(
                 div()
-                    .w(px(LEFT_SIDEBAR_WIDTH))
+                    .w(px(full_width))
                     .h_full()
                     .flex()
                     .flex_col()
                     .child(content),
             )
+            .when(show_handle, |sidebar| {
+                sidebar.child(self.sidebar_resize_handle(
+                    "resize-left-sidebar",
+                    SidebarResizeEdge::Left,
+                    cx,
+                ))
+            })
     }
 
     fn workspace_agent_summary(
@@ -3754,7 +3885,7 @@ impl WorkspaceView {
                         div()
                             .id(SharedString::from(format!("workspace-{workspace_id}")))
                             .h(px(54.0))
-                            .w(px(LEFT_SIDEBAR_WIDTH - 16.0))
+                            .w(px(self.left_sidebar_width() - 16.0))
                             .mb(px(2.0))
                             .px_3()
                             .flex()
@@ -3798,7 +3929,7 @@ impl WorkspaceView {
                             ))
                             .child(
                                 div()
-                                    .w(px(LEFT_SIDEBAR_TAB_TEXT_WIDTH))
+                                    .w(px(self.left_sidebar_tab_text_width()))
                                     .flex_none()
                                     .overflow_hidden()
                                     .flex()
@@ -4555,7 +4686,7 @@ impl WorkspaceView {
                         },
                     ))
                     .child(self.settings_toggle_row(
-                        "Files / Diff al iniciar",
+                        "Files / Git al iniciar",
                         git_panel,
                         "settings-git-visible",
                         cx,
@@ -5396,18 +5527,16 @@ impl WorkspaceView {
 
     fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.right_sidebar_mode;
-        let full_width = match mode {
-            RightSidebarMode::Files => RIGHT_SIDEBAR_FILES_WIDTH,
-            RightSidebarMode::Diff => self.diff_view.read(cx).preferred_width(),
-        };
+        let full_width = self.right_sidebar_width();
         let width = full_width * self.right_sidebar_progress;
+        let show_handle = self.right_sidebar_progress > 0.99;
         let content = match mode {
             RightSidebarMode::Files => self.files_sidebar_content(cx),
             RightSidebarMode::Diff => self.diff_view.clone().into_any_element(),
         };
         let modes = [
-            (RightSidebarMode::Files, "Files"),
-            (RightSidebarMode::Diff, "Diff"),
+            (RightSidebarMode::Files, "Files", "chrome-icons/files.svg"),
+            (RightSidebarMode::Diff, "Git", "chrome-icons/git-branch.svg"),
         ];
 
         // Outer clips to animated width; inner keeps full panel layout.
@@ -5415,6 +5544,7 @@ impl WorkspaceView {
             .w(px(width))
             .h_full()
             .flex_none()
+            .relative()
             .overflow_hidden()
             .bg(colors().panel)
             .border_l_1()
@@ -5427,7 +5557,9 @@ impl WorkspaceView {
                     .flex_col()
                     .child(
                         div()
-                            .h(px(30.0))
+                            // Keep this strip identical to the terminal tab bar so both
+                            // bottom borders meet on the same horizontal pixel.
+                            .h(px(36.0))
                             .flex_none()
                             .flex()
                             .items_center()
@@ -5443,33 +5575,22 @@ impl WorkspaceView {
                                     .h_full()
                                     .flex()
                                     .items_center()
-                                    .children(modes.into_iter().map(|(item_mode, label)| {
+                                    .children(modes.into_iter().map(|(item_mode, label, icon)| {
                                         let selected = item_mode == mode;
                                         div()
                                             .id(SharedString::from(format!("utility-mode-{label}")))
                                             .h_full()
-                                            .px_2()
+                                            .relative()
+                                            .w(px(32.0))
                                             .mr_2()
                                             .flex()
                                             .items_center()
                                             .justify_center()
                                             .cursor_pointer()
-                                            .text_size(px(10.0))
-                                            .font_weight(if selected {
-                                                gpui::FontWeight::MEDIUM
-                                            } else {
-                                                gpui::FontWeight::NORMAL
-                                            })
                                             .text_color(if selected {
                                                 colors().foreground
                                             } else {
                                                 colors().subtle
-                                            })
-                                            .border_b_1()
-                                            .border_color(if selected {
-                                                colors().muted
-                                            } else {
-                                                gpui::rgba(0x00000000)
                                             })
                                             .hover(|tab| tab.text_color(colors().foreground))
                                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -5490,19 +5611,36 @@ impl WorkspaceView {
                                                 }
                                                 cx.notify();
                                             }))
-                                            .child(label)
+                                            .child(svg().path(icon).size(px(15.0)).text_color(
+                                                if selected {
+                                                    colors().foreground
+                                                } else {
+                                                    colors().subtle
+                                                },
+                                            ))
+                                            .when(selected, |tab| {
+                                                tab.child(
+                                                    div()
+                                                        .absolute()
+                                                        .left_0()
+                                                        .right_0()
+                                                        .bottom(px(-1.0))
+                                                        .h(px(1.0))
+                                                        .bg(colors().muted),
+                                                )
+                                            })
                                     })),
-                            )
-                            .child(self.sidebar_close_button(
-                                "close-right-sidebar",
-                                cx,
-                                |this, cx| {
-                                    this.set_right_sidebar_visible(false, true, cx);
-                                },
-                            )),
+                            ),
                     )
                     .child(content),
             )
+            .when(show_handle, |sidebar| {
+                sidebar.child(self.sidebar_resize_handle(
+                    "resize-right-sidebar",
+                    SidebarResizeEdge::Right,
+                    cx,
+                ))
+            })
     }
 
     fn palette_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -6022,7 +6160,12 @@ impl Render for WorkspaceView {
             body = body.child(banner);
         }
 
-        let mut layout = div().flex_1().min_h(px(0.0)).flex();
+        let mut layout = div()
+            .id("workspace-columns")
+            .flex_1()
+            .min_h(px(0.0))
+            .flex()
+            .on_drag_move(cx.listener(Self::on_sidebar_resize_move));
         // Keep sidebars mounted while progress > 0 so close animations can finish.
         if self.left_sidebar_progress > 0.001 {
             layout = layout.child(self.sidebar(cx));
@@ -6148,7 +6291,7 @@ fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
 /// One label row inside a sessions sidebar tab (fixed width, ellipsis).
 fn sidebar_tab_line(text: &str, color: gpui::Rgba, size: f32, medium: bool, mono: bool) -> Div {
     let mut row = div()
-        .w(px(LEFT_SIDEBAR_TAB_TEXT_WIDTH))
+        .w_full()
         .overflow_hidden()
         .whitespace_nowrap()
         .text_ellipsis()

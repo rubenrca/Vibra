@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Turn the right-sidebar Diff tab into a Git panel with three views: working tree, branch changes versus the default base, and a commit history with a lane graph.
+- Keep a single user-resizable width for both sidebars instead of changing the Git panel width per view.
+
 ## 0.3.6 — 2026-08-14
 
 - Open ⌘N (new session) and ⌘T (new tab) in the current terminal directory instead of the launch/project root.

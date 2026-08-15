@@ -386,28 +386,30 @@ fn flush_code(
             spans.push(SyntaxSpan { range: s..i, kind });
             continue;
         }
-        // Two-char operators
+        // Two-char operators — compare bytes so UTF-8 lines cannot panic on a
+        // mid-character slice (e.g. "é" in a diff).
         if i + 1 < end {
-            let two = &line[i..i + 2];
+            let two = [bytes[i], bytes[i + 1]];
             if matches!(
                 two,
-                "=>" | "->"
-                    | "::"
-                    | "=="
-                    | "!="
-                    | "<="
-                    | ">="
-                    | "&&"
-                    | "||"
-                    | "+="
-                    | "-="
-                    | "*="
-                    | "/="
-                    | "<<"
-                    | ">>"
-                    | ".."
-                    | "??"
-                    | "?."
+                [b'=', b'>']
+                    | [b'-', b'>']
+                    | [b':', b':']
+                    | [b'=', b'=']
+                    | [b'!', b'=']
+                    | [b'<', b'=']
+                    | [b'>', b'=']
+                    | [b'&', b'&']
+                    | [b'|', b'|']
+                    | [b'+', b'=']
+                    | [b'-', b'=']
+                    | [b'*', b'=']
+                    | [b'/', b'=']
+                    | [b'<', b'<']
+                    | [b'>', b'>']
+                    | [b'.', b'.']
+                    | [b'?', b'?']
+                    | [b'?', b'.']
             ) {
                 spans.push(SyntaxSpan {
                     range: i..i + 2,
@@ -861,6 +863,31 @@ mod tests {
         assert_eq!(language_from_path("src/main.rs"), Language::Rust);
         assert_eq!(language_from_path("a/b/theme.ts"), Language::TypeScript);
         assert_eq!(language_from_path("README.md"), Language::Markdown);
+    }
+
+    #[test]
+    fn utf8_diff_lines_do_not_panic() {
+        let rows = [
+            GitDiffRow {
+                old_line: Some(1),
+                new_line: Some(1),
+                kind: GitDiffRowKind::Context,
+                text: "autor = \"Rubén Collao\"".into(),
+            },
+            GitDiffRow {
+                old_line: None,
+                new_line: Some(2),
+                kind: GitDiffRowKind::Addition,
+                text: "let ok => true; // café".into(),
+            },
+        ];
+        let spans = highlight_diff_rows("src/main.rs", &rows);
+        assert_eq!(spans.len(), 2);
+        assert!(
+            spans[1]
+                .iter()
+                .any(|span| span.kind == SyntaxKind::Operator)
+        );
     }
 
     fn line_slice<'a>(line: &'a str, range: &Range<usize>) -> &'a str {

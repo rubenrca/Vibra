@@ -53,6 +53,12 @@ impl AssetSource for VibraAssets {
             "file-icons/file.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../Resources/FileIcons/file.svg"
             ))),
+            "chrome-icons/files.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/ChromeIcons/files.svg"
+            ))),
+            "chrome-icons/git-branch.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/ChromeIcons/git-branch.svg"
+            ))),
             _ => None,
         })
     }
@@ -73,6 +79,8 @@ impl AssetSource for VibraAssets {
             "file-icons/folder.svg",
             "file-icons/folder-open.svg",
             "file-icons/file.svg",
+            "chrome-icons/files.svg",
+            "chrome-icons/git-branch.svg",
         ];
         Ok(assets
             .into_iter()

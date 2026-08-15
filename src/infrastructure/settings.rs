@@ -25,6 +25,10 @@ pub struct AppSettings {
     pub left_sidebar_visible: bool,
     #[serde(default)]
     pub git_panel_visible: bool,
+    #[serde(default = "default_left_sidebar_width")]
+    pub left_sidebar_width: f32,
+    #[serde(default = "default_right_sidebar_width")]
+    pub right_sidebar_width: f32,
     /// Built-in palette id (e.g. `midnight`, `moss`).
     #[serde(default = "default_theme_id")]
     pub theme_id: String,
@@ -44,6 +48,21 @@ const fn default_true() -> bool {
     true
 }
 
+pub const DEFAULT_LEFT_SIDEBAR_WIDTH: f32 = 240.0;
+pub const DEFAULT_RIGHT_SIDEBAR_WIDTH: f32 = 420.0;
+pub const MIN_LEFT_SIDEBAR_WIDTH: f32 = 188.0;
+pub const MAX_LEFT_SIDEBAR_WIDTH: f32 = 420.0;
+pub const MIN_RIGHT_SIDEBAR_WIDTH: f32 = 280.0;
+pub const MAX_RIGHT_SIDEBAR_WIDTH: f32 = 720.0;
+
+const fn default_left_sidebar_width() -> f32 {
+    DEFAULT_LEFT_SIDEBAR_WIDTH
+}
+
+const fn default_right_sidebar_width() -> f32 {
+    DEFAULT_RIGHT_SIDEBAR_WIDTH
+}
+
 fn default_theme_id() -> String {
     "midnight".to_string()
 }
@@ -60,6 +79,8 @@ impl Default for AppSettings {
             show_hidden_files: false,
             left_sidebar_visible: true,
             git_panel_visible: false,
+            left_sidebar_width: DEFAULT_LEFT_SIDEBAR_WIDTH,
+            right_sidebar_width: DEFAULT_RIGHT_SIDEBAR_WIDTH,
             theme_id: default_theme_id(),
             appearance_mode: default_appearance_mode(),
             agent_notifications: true,
@@ -73,6 +94,18 @@ impl AppSettings {
             self.terminal_font_size = default_terminal_font_size();
         }
         self.terminal_font_size = self.terminal_font_size.clamp(8.0, 32.0);
+        if !self.left_sidebar_width.is_finite() {
+            self.left_sidebar_width = DEFAULT_LEFT_SIDEBAR_WIDTH;
+        }
+        self.left_sidebar_width = self
+            .left_sidebar_width
+            .clamp(MIN_LEFT_SIDEBAR_WIDTH, MAX_LEFT_SIDEBAR_WIDTH);
+        if !self.right_sidebar_width.is_finite() {
+            self.right_sidebar_width = DEFAULT_RIGHT_SIDEBAR_WIDTH;
+        }
+        self.right_sidebar_width = self
+            .right_sidebar_width
+            .clamp(MIN_RIGHT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH);
         if !KNOWN_THEME_IDS.contains(&self.theme_id.as_str()) {
             self.theme_id = default_theme_id();
         }
@@ -217,6 +250,8 @@ mod tests {
         assert!(settings.show_hidden_files);
         assert!(!settings.left_sidebar_visible);
         assert!(settings.git_panel_visible);
+        assert!((settings.left_sidebar_width - DEFAULT_LEFT_SIDEBAR_WIDTH).abs() < f32::EPSILON);
+        assert!((settings.right_sidebar_width - DEFAULT_RIGHT_SIDEBAR_WIDTH).abs() < f32::EPSILON);
         assert!(canonical.exists());
         fs::remove_dir_all(root).unwrap();
     }
