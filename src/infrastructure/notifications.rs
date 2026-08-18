@@ -39,11 +39,17 @@ pub fn should_notify_agent(
     if !notifications_enabled {
         return None;
     }
-    let current = current?;
-    let previous = previous?;
     if session_visible && window_active {
         return None;
     }
+    let Some(previous) = previous else {
+        return None;
+    };
+    let Some(current) = current else {
+        // Process gone / session-end: still a finish if it was working.
+        return (previous.state == AgentRuntimeState::Working)
+            .then_some(AgentNotificationKind::Finished);
+    };
     if previous.kind.eq_ignore_ascii_case(&current.kind)
         && previous.state == current.state
         && previous.attention == current.attention
@@ -163,6 +169,14 @@ mod tests {
         assert_eq!(
             should_notify_agent(Some(&working), Some(&idle), true, false, true),
             Some(AgentNotificationKind::Finished)
+        );
+        assert_eq!(
+            should_notify_agent(Some(&working), None, false, true, true),
+            Some(AgentNotificationKind::Finished)
+        );
+        assert_eq!(
+            should_notify_agent(Some(&idle), None, false, true, true),
+            None
         );
     }
 
