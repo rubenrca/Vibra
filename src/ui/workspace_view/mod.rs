@@ -30,9 +30,9 @@ use crate::infrastructure::settings::{
     MIN_RIGHT_SIDEBAR_WIDTH, SettingsRepository,
 };
 use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
-use crate::ports::git::{GitBranchSummary, GitFileStatus, GitPort};
+use crate::ports::git::{GitBranchSummary, GitPort};
 use crate::ports::terminal::TerminalPort;
-use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentState};
+use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
 use crate::ui::agent_marks::{agent_sidebar_badge, agent_status_color};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
@@ -63,7 +63,7 @@ const PROMPT_ACTIVITY_GRACE: Duration = Duration::from_secs(10);
 
 /// Cached git metadata for a workspace sidebar tab (cmux-style).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SidebarWorkspaceMeta {
+pub(crate) struct SidebarWorkspaceMeta {
     cwd: String,
     branch: Option<String>,
     upstream: Option<String>,
@@ -182,7 +182,7 @@ enum RightSidebarMode {
 }
 
 #[derive(Debug, Clone)]
-struct ProjectFileRow {
+pub(crate) struct ProjectFileRow {
     entry: FileEntry,
     depth: usize,
     expanded: bool,
@@ -349,6 +349,13 @@ pub struct WorkspaceView {
     pane_resize_dirty: bool,
     sidebar_resize_dirty: bool,
     persistence_error: Option<SharedString>,
+    persist_generation: u64,
+    _persist_task: Option<Task<()>>,
+    files_request_id: u64,
+    _files_task: Option<Task<()>>,
+    palette_request_id: u64,
+    _palette_task: Option<Task<()>>,
+    home_directory: Option<PathBuf>,
     /// Subscribed once so system light/dark flips re-resolve the palette.
     _appearance_subscription: Option<Subscription>,
     _activation_subscription: Option<Subscription>,
@@ -454,9 +461,10 @@ impl WorkspaceView {
                 Timer::after(SIDEBAR_GIT_POLL_INTERVAL).await;
                 if this
                     .update(cx, |this, cx| {
-                        if this.left_sidebar_visible
-                            && this.left_sidebar_mode == LeftSidebarMode::Sessions
-                        {
+                        if crate::ui::idle::should_poll_sidebar_git(
+                            this.left_sidebar_visible,
+                            this.left_sidebar_mode == LeftSidebarMode::Sessions,
+                        ) {
                             this.refresh_sidebar_workspace_meta(cx);
                         }
                     })
@@ -526,6 +534,13 @@ impl WorkspaceView {
             pane_resize_dirty: false,
             sidebar_resize_dirty: false,
             persistence_error,
+            persist_generation: 0,
+            _persist_task: None,
+            files_request_id: 0,
+            _files_task: None,
+            palette_request_id: 0,
+            _palette_task: None,
+            home_directory: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
             _appearance_subscription: None,
             _activation_subscription: None,
         };
@@ -536,9 +551,16 @@ impl WorkspaceView {
         view.apply_theme_preference(true, cx);
         view.reconcile_terminal_views(cx);
         view.sync_diff_root(cx);
-        view.refresh_project_files();
+        view.refresh_project_files(cx);
         view.refresh_sidebar_workspace_meta(cx);
+        view.sync_git_panel_visibility(cx);
         view
+    }
+
+    fn sync_git_panel_visibility(&self, cx: &mut Context<Self>) {
+        let visible = self.right_sidebar_visible || self.right_sidebar_progress > 0.001;
+        self.diff_view
+            .update(cx, |diff_view, cx| diff_view.set_panel_visible(visible, cx));
     }
 
     fn sync_diff_root(&self, cx: &mut Context<Self>) {
@@ -711,37 +733,51 @@ impl WorkspaceView {
         }));
     }
 
-    fn refresh_project_files(&mut self) {
+    fn refresh_project_files(&mut self, cx: &mut Context<Self>) {
         // Snapshot cwd is updated on WorkingDirectoryChanged; enough for tree rebuilds.
         let root = self.project_root();
         self.expanded_directories.insert(root.clone());
-        let mut rows = Vec::new();
-        let result = collect_project_files(
-            self.file_port.as_ref(),
-            &root,
-            &root,
-            0,
-            &self.expanded_directories,
-            self.show_hidden_files,
-            &mut rows,
-        );
-        match result {
-            Ok(()) => {
-                self.project_files = rows;
-                self.file_error = None;
-                if self
-                    .selected_file_path
-                    .as_ref()
-                    .is_some_and(|path| !path.exists())
-                {
-                    self.selected_file_path = None;
+        self.files_request_id = self.files_request_id.wrapping_add(1);
+        let request_id = self.files_request_id;
+        let expanded = self.expanded_directories.clone();
+        let show_hidden = self.show_hidden_files;
+        let port = self.file_port.clone();
+        let selected = self.selected_file_path.clone();
+        let task = cx.background_spawn(async move {
+            let mut rows = Vec::new();
+            let result = collect_project_files(
+                port.as_ref(),
+                &root,
+                &root,
+                0,
+                &expanded,
+                show_hidden,
+                &mut rows,
+            );
+            (result, rows, selected)
+        });
+        self._files_task = Some(cx.spawn(async move |this, cx| {
+            let (result, rows, selected) = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if request_id != this.files_request_id {
+                    return;
                 }
-            }
-            Err(error) => {
-                self.project_files = rows;
-                self.file_error = Some(error.to_string().into());
-            }
-        }
+                match result {
+                    Ok(()) => {
+                        this.project_files = rows;
+                        this.file_error = None;
+                        if selected.as_ref().is_some_and(|path| !path.exists()) {
+                            this.selected_file_path = None;
+                        }
+                    }
+                    Err(error) => {
+                        this.project_files = rows;
+                        this.file_error = Some(error.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
     }
 
     fn toggle_directory(&mut self, path: &Path, cx: &mut Context<Self>) {
@@ -749,7 +785,7 @@ impl WorkspaceView {
             self.expanded_directories.insert(path.to_path_buf());
         }
         self.selected_file_path = Some(path.to_path_buf());
-        self.refresh_project_files();
+        self.refresh_project_files(cx);
         cx.notify();
     }
 
@@ -781,7 +817,7 @@ impl WorkspaceView {
                         cx.notify();
                     }
                     EditorViewEvent::Saved => {
-                        this.refresh_project_files();
+                        this.refresh_project_files(cx);
                         this.diff_view
                             .update(cx, |diff_view, cx| diff_view.refresh_now(cx));
                         cx.notify();
@@ -805,13 +841,25 @@ impl WorkspaceView {
         self.rename_prompt = None;
         self.palette_files.clear();
         if mode == PaletteMode::Files {
+            self.palette_request_id = self.palette_request_id.wrapping_add(1);
+            let request_id = self.palette_request_id;
             let root = self.project_root();
-            let _ = collect_search_files(
-                self.file_port.as_ref(),
-                &root,
-                &root,
-                &mut self.palette_files,
-            );
+            let port = self.file_port.clone();
+            let task = cx.background_spawn(async move {
+                let mut files = Vec::new();
+                let _ = collect_search_files(port.as_ref(), &root, &root, &mut files);
+                files
+            });
+            self._palette_task = Some(cx.spawn(async move |this, cx| {
+                let files = task.await;
+                let _ = this.update(cx, |this, cx| {
+                    if request_id != this.palette_request_id {
+                        return;
+                    }
+                    this.palette_files = files;
+                    cx.notify();
+                });
+            }));
         }
         cx.notify();
     }
@@ -819,6 +867,7 @@ impl WorkspaceView {
     fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_open = true;
         self.palette_mode = None;
+        self.palette_files.clear();
         self.context_menu = None;
         self.rename_prompt = None;
         cx.notify();
@@ -978,7 +1027,7 @@ impl WorkspaceView {
                 if self.snapshot.close_workspace(project_id, workspace_id) {
                     self.reconcile_terminal_views(cx);
                     self.sync_diff_root(cx);
-                    self.refresh_project_files();
+                    self.refresh_project_files(cx);
                     self.persist(cx);
                     self.focus_selected_terminal(window, cx);
                 }
@@ -991,7 +1040,7 @@ impl WorkspaceView {
                     self.agent_names.remove(&session_id);
                     self.reconcile_terminal_views(cx);
                     self.sync_diff_root(cx);
-                    self.refresh_project_files();
+                    self.refresh_project_files(cx);
                     self.persist(cx);
                     self.focus_selected_terminal(window, cx);
                 }
@@ -1010,6 +1059,7 @@ impl WorkspaceView {
                 if self.snapshot.select_terminal_global(session_id)
                     && self.snapshot.toggle_selected_pane_zoom()
                 {
+                    self.sync_terminal_surface_visibility(cx);
                     self.persist(cx);
                     self.focus_selected_terminal(window, cx);
                     cx.notify();
@@ -1027,6 +1077,7 @@ impl WorkspaceView {
     ) {
         if self.palette_mode.is_some() {
             self.palette_mode = None;
+            self.palette_files.clear();
             cx.notify();
         } else {
             self.open_palette(PaletteMode::Commands, cx);
@@ -1111,20 +1162,32 @@ impl WorkspaceView {
             ],
             PaletteMode::Files => {
                 let root = self.project_root();
+                let query = self.palette_query.to_lowercase();
+                let tokens: Vec<_> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
                 self.palette_files
                     .iter()
-                    .map(|path| PaletteItem {
-                        label: path
+                    .filter_map(|path| {
+                        let label = path
                             .strip_prefix(&root)
                             .unwrap_or(path)
                             .display()
-                            .to_string(),
-                        detail: path
-                            .extension()
-                            .map(|extension| extension.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
-                        action: PaletteAction::OpenFile(path.clone()),
+                            .to_string();
+                        if !tokens.is_empty() {
+                            let haystack = label.to_lowercase();
+                            if !tokens.iter().all(|token| haystack.contains(token)) {
+                                return None;
+                            }
+                        }
+                        Some(PaletteItem {
+                            label,
+                            detail: path
+                                .extension()
+                                .map(|extension| extension.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                            action: PaletteAction::OpenFile(path.clone()),
+                        })
                     })
+                    .take(100)
                     .collect()
             }
         };
@@ -1143,15 +1206,17 @@ impl WorkspaceView {
                     }),
             );
         }
-        let query = self.palette_query.to_lowercase();
-        if !query.is_empty() {
-            let tokens: Vec<_> = query.split_whitespace().collect();
-            items.retain(|item| {
-                let haystack = item.label.to_lowercase();
-                tokens.iter().all(|token| haystack.contains(token))
-            });
+        if mode == PaletteMode::Commands {
+            let query = self.palette_query.to_lowercase();
+            if !query.is_empty() {
+                let tokens: Vec<_> = query.split_whitespace().collect();
+                items.retain(|item| {
+                    let haystack = item.label.to_lowercase();
+                    tokens.iter().all(|token| haystack.contains(token))
+                });
+            }
+            items.truncate(100);
         }
-        items.truncate(100);
         items
     }
 
@@ -1177,6 +1242,7 @@ impl WorkspaceView {
             }
             PaletteAction::TogglePaneZoom => {
                 if self.snapshot.toggle_selected_pane_zoom() {
+                    self.sync_terminal_surface_visibility(cx);
                     self.persist(cx);
                 }
             }
@@ -1192,7 +1258,7 @@ impl WorkspaceView {
             }
             PaletteAction::ShowFiles => {
                 self.right_sidebar_mode = RightSidebarMode::Files;
-                self.refresh_project_files();
+                self.refresh_project_files(cx);
                 self.set_right_sidebar_visible(true, true, cx);
             }
             PaletteAction::ShowInfo => {
@@ -1335,6 +1401,7 @@ impl WorkspaceView {
         }
         self.right_sidebar_visible = visible;
         self.settings.git_panel_visible = visible;
+        self.sync_git_panel_visibility(cx);
         if persist {
             self.persist_settings(cx);
         }
@@ -1466,6 +1533,19 @@ impl WorkspaceView {
             self.terminals.insert(session_id, terminal);
             self.terminal_subscriptions.insert(session_id, subscription);
         }
+        self.sync_terminal_surface_visibility(cx);
+    }
+
+    fn visible_terminal_ids(&self) -> HashSet<Uuid> {
+        self.snapshot.painted_session_ids()
+    }
+
+    fn sync_terminal_surface_visibility(&self, cx: &mut Context<Self>) {
+        let visible = self.visible_terminal_ids();
+        for (session_id, terminal) in &self.terminals {
+            let shown = visible.contains(session_id);
+            terminal.update(cx, |terminal, _| terminal.set_surface_visible(shown));
+        }
     }
 
     fn handle_terminal_view_event(&mut self, event: &TerminalViewEvent, cx: &mut Context<Self>) {
@@ -1495,7 +1575,7 @@ impl WorkspaceView {
                             entry.starts_with(&new_root) || new_root.starts_with(entry)
                         });
                         self.expanded_directories.insert(new_root);
-                        self.refresh_project_files();
+                        self.refresh_project_files(cx);
                     }
                 }
                 // Path/branch/title in the sessions sidebar follow the live cwd.
@@ -1627,6 +1707,7 @@ impl WorkspaceView {
                     .focus_terminal(automation_focus_direction(direction))
                 {
                     let selected = self.snapshot.selected_session().map(|session| session.id);
+                    self.sync_terminal_surface_visibility(cx);
                     self.sync_diff_root(cx);
                     self.persist(cx);
                     Ok(serde_json::json!({ "paneId": selected }))
@@ -1650,6 +1731,7 @@ impl WorkspaceView {
                 if self.snapshot.select_terminal_global(pane_id)
                     && self.snapshot.toggle_selected_pane_zoom()
                 {
+                    self.sync_terminal_surface_visibility(cx);
                     self.persist(cx);
                     Ok(serde_json::json!({ "paneId": pane_id, "zoomToggled": true }))
                 } else {
@@ -2691,6 +2773,7 @@ impl WorkspaceView {
         ) {
             let agent = current
                 .as_ref()
+                .or(previous)
                 .map(|snapshot| snapshot.kind.as_str())
                 .unwrap_or("Agente");
             let (title, body) = agent_notification_copy(kind, agent);
@@ -2728,8 +2811,9 @@ impl WorkspaceView {
 
     fn select_terminal(&mut self, session_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.select_terminal(session_id) {
+            self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
         }
@@ -2770,8 +2854,9 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.snapshot.focus_terminal(direction) {
+            self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
         }
@@ -2779,8 +2864,9 @@ impl WorkspaceView {
 
     fn cycle_pane(&mut self, offset: isize, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.cycle_terminal(offset) {
+            self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
         }
@@ -2877,6 +2963,20 @@ impl WorkspaceView {
     }
 
     fn persist(&mut self, cx: &mut Context<Self>) {
+        self.persist_generation = self.persist_generation.wrapping_add(1);
+        let generation = self.persist_generation;
+        self._persist_task = Some(cx.spawn(async move |this, cx| {
+            Timer::after(Duration::from_millis(400)).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.persist_generation != generation {
+                    return;
+                }
+                this.flush_persist(cx);
+            });
+        }));
+    }
+
+    fn flush_persist(&mut self, cx: &mut Context<Self>) {
         self.persistence_error = self
             .repository
             .save(&self.snapshot)
@@ -3010,7 +3110,7 @@ impl WorkspaceView {
         self.snapshot.create_workspace(&cwd);
         self.reconcile_terminal_views(cx);
         self.sync_diff_root(cx);
-        self.refresh_project_files();
+        self.refresh_project_files(cx);
         self.refresh_sidebar_workspace_meta(cx);
         self.persist(cx);
         self.focus_selected_terminal(window, cx);
@@ -3029,7 +3129,7 @@ impl WorkspaceView {
         {
             self.reconcile_terminal_views(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
@@ -3044,7 +3144,7 @@ impl WorkspaceView {
         if self.snapshot.close_selected_terminal() {
             self.reconcile_terminal_views(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
@@ -3130,6 +3230,7 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.snapshot.toggle_selected_pane_zoom() {
+            self.sync_terminal_surface_visibility(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
         }
@@ -3171,8 +3272,9 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.snapshot.cycle_workspace(-1) {
+            self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
         }
@@ -3180,8 +3282,9 @@ impl WorkspaceView {
 
     fn next_workspace(&mut self, _: &NextWorkspace, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.cycle_workspace(1) {
+            self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
         }
@@ -3195,8 +3298,9 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.snapshot.select_workspace(project_id, workspace_id) {
+            self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
@@ -3205,8 +3309,9 @@ impl WorkspaceView {
 
     fn select_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.select_tab(tab_id) {
+            self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
@@ -3217,7 +3322,7 @@ impl WorkspaceView {
         if self.snapshot.close_tab(tab_id) {
             self.reconcile_terminal_views(cx);
             self.sync_diff_root(cx);
-            self.refresh_project_files();
+            self.refresh_project_files(cx);
             self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
@@ -3266,7 +3371,7 @@ impl WorkspaceView {
             .and_then(format_sidebar_branch);
         let path_subtitle = selected_workspace_id
             .and_then(|id| self.sidebar_workspace_meta.get(&id))
-            .map(|meta| format_sidebar_path(&meta.cwd))
+            .map(|meta| format_sidebar_path(&meta.cwd, self.home_directory.as_deref()))
             .filter(|path| path != "—");
         let subtitle = match (branch_subtitle.as_deref(), path_subtitle.as_deref()) {
             (Some(branch), Some(path)) => format!("{branch} · {path}"),
@@ -3518,7 +3623,7 @@ impl WorkspaceView {
                         let cwd = meta
                             .map(|m| m.cwd.as_str())
                             .unwrap_or(entry.working_directory.as_str());
-                        let path_label = format_sidebar_path(cwd);
+                        let path_label = format_sidebar_path(cwd, self.home_directory.as_deref());
                         // cmux-style primary title: live directory basename unless renamed.
                         let title_label = if entry.title_is_manual {
                             entry.workspace_name.clone()
@@ -4229,7 +4334,7 @@ impl WorkspaceView {
                         |this, cx| {
                             this.show_hidden_files = !this.show_hidden_files;
                             this.settings.show_hidden_files = this.show_hidden_files;
-                            this.refresh_project_files();
+                            this.refresh_project_files(cx);
                             this.persist_settings(cx);
                         },
                     ))
@@ -5114,7 +5219,7 @@ impl WorkspaceView {
                                                 this.right_sidebar_mode = item_mode;
                                                 match item_mode {
                                                     RightSidebarMode::Files => {
-                                                        this.refresh_project_files()
+                                                        this.refresh_project_files(cx)
                                                     }
                                                     RightSidebarMode::Diff => {
                                                         this.sync_diff_root(cx);
@@ -5625,6 +5730,7 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_terminal_surface_visibility(cx);
         self.ensure_appearance_subscription(window, cx);
         self.ensure_activation_subscription(window, cx);
         if self.initial_terminal_focus_pending {
@@ -5707,478 +5813,21 @@ impl Render for WorkspaceView {
     }
 }
 
-fn collect_project_files(
-    port: &dyn FileSystemPort,
-    root: &Path,
-    directory: &Path,
-    depth: usize,
-    expanded: &HashSet<PathBuf>,
-    show_hidden: bool,
-    output: &mut Vec<ProjectFileRow>,
-) -> anyhow::Result<()> {
-    const MAX_VISIBLE_FILE_ROWS: usize = 5_000;
-    if output.len() >= MAX_VISIBLE_FILE_ROWS {
-        return Ok(());
-    }
-    for entry in port.list_directory(root, directory, show_hidden)? {
-        if output.len() >= MAX_VISIBLE_FILE_ROWS {
-            break;
-        }
-        let is_expanded = entry.kind == FileEntryKind::Directory && expanded.contains(&entry.path);
-        let child_path = entry.path.clone();
-        let is_directory = entry.kind == FileEntryKind::Directory;
-        output.push(ProjectFileRow {
-            entry,
-            depth,
-            expanded: is_expanded,
-        });
-        if is_directory && is_expanded {
-            collect_project_files(
-                port,
-                root,
-                &child_path,
-                depth + 1,
-                expanded,
-                show_hidden,
-                output,
-            )?;
-        }
-    }
-    Ok(())
-}
+mod automation;
+mod chrome;
+mod files;
 
-fn collect_search_files(
-    port: &dyn FileSystemPort,
-    root: &Path,
-    directory: &Path,
-    output: &mut Vec<PathBuf>,
-) -> anyhow::Result<()> {
-    const MAX_INDEXED_FILES: usize = 20_000;
-    if output.len() >= MAX_INDEXED_FILES {
-        return Ok(());
-    }
-    for entry in port.list_directory(root, directory, false)? {
-        if output.len() >= MAX_INDEXED_FILES {
-            break;
-        }
-        match entry.kind {
-            FileEntryKind::Directory
-                if !matches!(
-                    entry.name.as_str(),
-                    "target" | "node_modules" | "dist" | "build" | ".next" | "DerivedData"
-                ) =>
-            {
-                collect_search_files(port, root, &entry.path, output)?;
-            }
-            FileEntryKind::File => output.push(entry.path),
-            FileEntryKind::Directory | FileEntryKind::Symlink => {}
-        }
-    }
-    Ok(())
-}
-
-fn automation_split_direction(direction: AutomationDirection) -> PaneSplitDirection {
-    match direction {
-        AutomationDirection::Left => PaneSplitDirection::Left,
-        AutomationDirection::Right => PaneSplitDirection::Right,
-        AutomationDirection::Up => PaneSplitDirection::Up,
-        AutomationDirection::Down => PaneSplitDirection::Down,
-    }
-}
-
-fn automation_focus_direction(direction: AutomationDirection) -> PaneFocusDirection {
-    match direction {
-        AutomationDirection::Left => PaneFocusDirection::Left,
-        AutomationDirection::Right => PaneFocusDirection::Right,
-        AutomationDirection::Up => PaneFocusDirection::Up,
-        AutomationDirection::Down => PaneFocusDirection::Down,
-    }
-}
-
-fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
-    match state {
-        AgentRuntimeState::Idle => "idle",
-        AgentRuntimeState::Working => "working",
-        AgentRuntimeState::Waiting => "waiting",
-    }
-}
-
-/// One label row inside a sessions sidebar tab (fixed width, ellipsis).
-fn sidebar_tab_line(text: &str, color: gpui::Rgba, size: f32, medium: bool, mono: bool) -> Div {
-    let mut row = div()
-        .w_full()
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_ellipsis()
-        .text_size(px(size))
-        .text_color(color)
-        .child(text.to_owned());
-    if medium {
-        row = row.font_weight(gpui::FontWeight::MEDIUM);
-    }
-    if mono {
-        row = row.font_family("JetBrains Mono");
-    }
-    row
-}
-
-fn is_generic_tab_title(title: &str) -> bool {
-    let title = title.trim();
-    if title.is_empty() {
-        return true;
-    }
-    let head = title
-        .split([' ', '—', '–', '-', ':'])
-        .find(|part| !part.is_empty())
-        .unwrap_or(title);
-    matches!(
-        head,
-        "Terminal"
-            | "terminal"
-            | "zsh"
-            | "bash"
-            | "fish"
-            | "sh"
-            | "nu"
-            | "dash"
-            | "login"
-            | "pwsh"
-            | "ksh"
-    )
-}
-
-fn title_path_suffix(title: &str) -> Option<&str> {
-    title
-        .split_once(": ")
-        .map(|(_, rest)| rest.trim())
-        .filter(|rest| rest.starts_with('/') || rest.starts_with('~'))
-}
-
-/// Compact tab label: live directory when the OSC title is just a shell, otherwise the command.
-fn tab_display_title(title: Option<&str>, working_directory: Option<&str>, index: usize) -> String {
-    if let Some(title) = title.filter(|title| !is_generic_tab_title(title)) {
-        if let Some(path) = title_path_suffix(title) {
-            let name = directory_basename(path);
-            if name != "—" {
-                return name;
-            }
-        }
-        let short = title.split_whitespace().next().unwrap_or(title);
-        if short.chars().count() <= 22 {
-            return short.to_owned();
-        }
-        return format!("{}…", short.chars().take(20).collect::<String>());
-    }
-    if let Some(path) = working_directory {
-        let name = directory_basename(path);
-        if name != "—" {
-            return name;
-        }
-    }
-    format!("Terminal {}", index + 1)
-}
-
-/// Directory basename for chrome labels (`/Users/me/Dev/Vibra` → `Vibra`).
-fn directory_basename(path: &str) -> String {
-    let path = path.trim().trim_end_matches(['/', '\\']);
-    if path.is_empty() {
-        return "—".to_owned();
-    }
-    Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| path.to_owned())
-}
-
-/// Short path for sidebar tabs: `~/…`, and collapse long intermediate segments.
-fn format_sidebar_path(path: &str) -> String {
-    let path = path.trim();
-    if path.is_empty() {
-        return "—".to_owned();
-    }
-    let display = if let Some(home) =
-        directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
-    {
-        let home_str = home.to_string_lossy();
-        if path == home_str.as_ref() {
-            "~".to_owned()
-        } else if let Some(rest) = path
-            .strip_prefix(home_str.as_ref())
-            .and_then(|rest| rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')))
-        {
-            format!("~/{rest}")
-        } else {
-            path.to_owned()
-        }
-    } else {
-        path.to_owned()
-    };
-
-    let components: Vec<&str> = display
-        .split(['/', '\\'])
-        .filter(|part| !part.is_empty())
-        .collect();
-    if components.len() <= 3 {
-        return display;
-    }
-    // Keep root marker + last two segments: ~/…/src/app
-    let head = components[0];
-    let tail = &components[components.len() - 2..];
-    if head == "~" {
-        format!("~/…/{}/{}", tail[0], tail[1])
-    } else if display.starts_with('/') {
-        format!("/…/{}/{}", tail[0], tail[1])
-    } else {
-        format!("…/{}/{}", tail[0], tail[1])
-    }
-}
-
-/// Branch + dirty/ahead/behind for sidebar tabs (compact cmux-style).
-fn format_sidebar_branch(meta: &SidebarWorkspaceMeta) -> Option<String> {
-    let branch = meta.branch.as_ref()?;
-    let mut label = branch.clone();
-    if meta.dirty {
-        label.push('*');
-    }
-    if meta.ahead > 0 {
-        label.push_str(&format!(" ↑{}", meta.ahead));
-    }
-    if meta.behind > 0 {
-        label.push_str(&format!(" ↓{}", meta.behind));
-    }
-    Some(label)
-}
-
-/// Smooth ease-out for sidebar width (`t` in `0.0..=1.0`).
-fn ease_out_cubic(t: f32) -> f32 {
-    let inv = 1.0 - t;
-    1.0 - inv * inv * inv
-}
-
-/// Icon color for file-tree entries (folders use `colors().folder` / git tint at the call site).
-fn file_tree_icon_color(kind: FileEntryKind, name: &str) -> gpui::Rgba {
-    match kind {
-        FileEntryKind::Directory => colors().folder,
-        FileEntryKind::Symlink => colors().accent,
-        FileEntryKind::File => {
-            let lower = name.to_ascii_lowercase();
-            let ext = std::path::Path::new(name)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            match (lower.as_str(), ext.as_str()) {
-                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => colors().muted,
-                (_, "rs") => gpui::rgb(0xdea584),
-                (_, "md" | "mdx") => colors().accent,
-                (_, "json" | "jsonc") => gpui::rgb(0xcbcb41),
-                (_, "lock") => colors().subtle,
-                (_, "yml" | "yaml") => colors().muted,
-                (_, "gitignore" | "gitattributes") | (".gitignore", _) => gpui::rgb(0xf05033),
-                ("license" | "licence" | "notice" | "copying", _) => colors().subtle,
-                (_, "ts" | "tsx") => gpui::rgb(0x519aba),
-                (_, "js" | "jsx" | "mjs" | "cjs") => gpui::rgb(0xcbcb41),
-                (_, "css" | "scss") => gpui::rgb(0x9b7ed9),
-                (_, "html" | "htm" | "svg") => gpui::rgb(0xe34c26),
-                (_, "py") => gpui::rgb(0x3572a5),
-                (_, "go") => gpui::rgb(0x00add8),
-                (_, "sh" | "bash" | "zsh") => colors().success,
-                (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => gpui::rgb(0xa074c4),
-                _ if name.starts_with('.') => colors().subtle,
-                _ => colors().subtle,
-            }
-        }
-    }
-}
-
-/// Folder / file glyph for the Files tree. Folders use bundled monochrome SVGs;
-/// files keep a compact extension-aware letter/dot so the tree stays light.
-fn file_tree_icon(
-    kind: FileEntryKind,
-    expanded: bool,
-    name: &str,
-    color: gpui::Rgba,
-) -> AnyElement {
-    match kind {
-        FileEntryKind::Directory => {
-            let path = if expanded {
-                "file-icons/folder-open.svg"
-            } else {
-                "file-icons/folder.svg"
-            };
-            svg()
-                .path(path)
-                .size(px(14.0))
-                .text_color(color)
-                .into_any_element()
-        }
-        FileEntryKind::Symlink => div()
-            .font_family("JetBrains Mono")
-            .text_size(px(11.0))
-            .text_color(color)
-            .child("↗")
-            .into_any_element(),
-        FileEntryKind::File => {
-            let lower = name.to_ascii_lowercase();
-            let ext = std::path::Path::new(name)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let glyph = match (lower.as_str(), ext.as_str()) {
-                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => "⚙",
-                (_, "rs") => "Rs",
-                (_, "md" | "mdx") => "Md",
-                (_, "json" | "jsonc") => "{}",
-                (_, "lock") => "L",
-                (_, "yml" | "yaml") => "Y",
-                (_, "gitignore" | "gitattributes") | (".gitignore", _) => "⊘",
-                ("license" | "licence" | "notice" | "copying", _) => "©",
-                (_, "ts" | "tsx") => "Ts",
-                (_, "js" | "jsx" | "mjs" | "cjs") => "Js",
-                (_, "css" | "scss") => "#",
-                (_, "html" | "htm" | "svg") => "<>",
-                (_, "py") => "Py",
-                (_, "go") => "Go",
-                (_, "sh" | "bash" | "zsh") => "$",
-                (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => "▣",
-                _ => {
-                    return svg()
-                        .path("file-icons/file.svg")
-                        .size(px(13.0))
-                        .text_color(color)
-                        .into_any_element();
-                }
-            };
-            div()
-                .font_family("JetBrains Mono")
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_size(px(8.5))
-                .text_color(color)
-                .child(glyph)
-                .into_any_element()
-        }
-    }
-}
-
-fn relative_repo_path(path: &Path, root: &Path) -> Option<String> {
-    path.strip_prefix(root)
-        .ok()
-        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
-}
-
-fn git_status_color(status: GitFileStatus) -> gpui::Rgba {
-    match status {
-        GitFileStatus::Modified | GitFileStatus::TypeChanged => colors().git_modified,
-        GitFileStatus::Added
-        | GitFileStatus::Untracked
-        | GitFileStatus::Renamed
-        | GitFileStatus::Copied => colors().git_added,
-        GitFileStatus::Deleted | GitFileStatus::Conflicted => colors().git_deleted,
-    }
-}
-
-fn git_status_rank(status: GitFileStatus) -> u8 {
-    match status {
-        GitFileStatus::Conflicted => 0,
-        GitFileStatus::Deleted => 1,
-        GitFileStatus::Modified | GitFileStatus::TypeChanged => 2,
-        GitFileStatus::Renamed | GitFileStatus::Copied => 3,
-        GitFileStatus::Added => 4,
-        GitFileStatus::Untracked => 5,
-    }
-}
-
-/// Roll up git status of files under a directory (empty `rel` = repo root).
-fn aggregate_dir_status(
-    rel: &str,
-    statuses: &HashMap<String, GitFileStatus>,
-) -> Option<GitFileStatus> {
-    let mut best: Option<GitFileStatus> = None;
-    for (path, status) in statuses {
-        let under = if rel.is_empty() {
-            true
-        } else {
-            path == rel || path.starts_with(&format!("{rel}/"))
-        };
-        if !under {
-            continue;
-        }
-        best = Some(match best {
-            None => *status,
-            Some(current) if git_status_rank(*status) < git_status_rank(current) => *status,
-            Some(current) => current,
-        });
-    }
-    best
-}
-
-/// Right-side indicator: letter for modified/renamed, colored dots for add/delete.
-fn git_status_trailing(status: GitFileStatus) -> Div {
-    match status {
-        GitFileStatus::Modified | GitFileStatus::TypeChanged => div()
-            .flex_none()
-            .font_family("JetBrains Mono")
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(colors().git_modified)
-            .child("M"),
-        GitFileStatus::Renamed => div()
-            .flex_none()
-            .font_family("JetBrains Mono")
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(colors().git_added)
-            .child("R"),
-        GitFileStatus::Copied => div()
-            .flex_none()
-            .font_family("JetBrains Mono")
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(colors().git_added)
-            .child("C"),
-        GitFileStatus::Conflicted => div()
-            .flex_none()
-            .font_family("JetBrains Mono")
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(colors().git_deleted)
-            .child("U"),
-        GitFileStatus::Added | GitFileStatus::Untracked => div()
-            .size(px(6.0))
-            .flex_none()
-            .rounded_full()
-            .bg(colors().git_added),
-        GitFileStatus::Deleted => div()
-            .size(px(6.0))
-            .flex_none()
-            .rounded_full()
-            .bg(colors().git_deleted),
-    }
-}
-
-fn terminal_agent_state_to_runtime_state(state: TerminalAgentState) -> AgentRuntimeState {
-    match state {
-        TerminalAgentState::Idle => AgentRuntimeState::Idle,
-        TerminalAgentState::Working => AgentRuntimeState::Working,
-        TerminalAgentState::Waiting => AgentRuntimeState::Waiting,
-    }
-}
-
-fn agent_wait_matches(
-    current: Option<AgentRuntimeState>,
-    until: &[AgentRuntimeState],
-    require_activity: bool,
-    saw_activity: bool,
-) -> bool {
-    current.is_some_and(|state| until.contains(&state)) && (!require_activity || saw_activity)
-}
+pub(crate) use automation::*;
+pub(crate) use chrome::*;
+pub(crate) use files::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    use crate::domain::workspace::WorkspaceSnapshot;
+    use uuid::Uuid;
 
     #[test]
     fn sidebar_branch_label_includes_tracking_and_dirty_marker() {
@@ -6209,12 +5858,15 @@ mod tests {
 
     #[test]
     fn sidebar_path_collapses_long_segments() {
-        let long = format_sidebar_path("/Users/demo/very/deep/nested/project/src");
+        let long = format_sidebar_path(
+            "/Users/demo/very/deep/nested/project/src",
+            Some(Path::new("/Users/demo")),
+        );
         assert!(
             long.contains('…') || long.ends_with("project/src") || long.ends_with("nested/project"),
             "unexpected collapsed path: {long}"
         );
-        assert_eq!(format_sidebar_path(""), "—");
+        assert_eq!(format_sidebar_path("", None), "—");
     }
 
     #[test]
@@ -6296,5 +5948,195 @@ mod tests {
             process_id: Some(10),
             session_id: Some("a".into()),
         }));
+    }
+
+    struct SilentTerminalPort;
+
+    struct SilentTerminalHandle {
+        events: async_channel::Receiver<crate::ports::terminal::TerminalEvent>,
+        _keep_sender: async_channel::Sender<crate::ports::terminal::TerminalEvent>,
+    }
+
+    impl crate::ports::terminal::TerminalPort for SilentTerminalPort {
+        fn backend_name(&self) -> &'static str {
+            "silent"
+        }
+
+        fn spawn(
+            &self,
+            _: Uuid,
+            _: &Path,
+            _: &std::collections::HashMap<String, String>,
+        ) -> anyhow::Result<std::sync::Arc<dyn crate::ports::terminal::TerminalHandle>> {
+            let (sender, events) = async_channel::unbounded();
+            Ok(std::sync::Arc::new(SilentTerminalHandle {
+                events,
+                _keep_sender: sender,
+            }))
+        }
+    }
+
+    impl crate::ports::terminal::TerminalHandle for SilentTerminalHandle {
+        fn events(&self) -> async_channel::Receiver<crate::ports::terminal::TerminalEvent> {
+            self.events.clone()
+        }
+        fn send_input(&self, _: Vec<u8>) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: crate::ports::terminal::TerminalSize) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn scroll(&self, _: i32) {}
+        fn clear_scrollback(&self) {}
+        fn snapshot(&self) -> std::sync::Arc<crate::ports::terminal::TerminalSnapshot> {
+            std::sync::Arc::new(crate::ports::terminal::TerminalSnapshot {
+                columns: 80,
+                rows: 24,
+                lines: Vec::new(),
+                cursor: None,
+                display_offset: 0,
+                history_size: 0,
+            })
+        }
+        fn input_mode(&self) -> crate::ports::terminal::TerminalInputMode {
+            crate::ports::terminal::TerminalInputMode::default()
+        }
+        fn clear_selection(&self) {}
+        fn start_selection(
+            &self,
+            _: crate::ports::terminal::TerminalSelectionType,
+            _: crate::ports::terminal::TerminalPoint,
+            _: crate::ports::terminal::TerminalCellSide,
+        ) {
+        }
+        fn update_selection(
+            &self,
+            _: crate::ports::terminal::TerminalPoint,
+            _: crate::ports::terminal::TerminalCellSide,
+        ) {
+        }
+        fn selection_text(&self) -> Option<String> {
+            None
+        }
+        fn search(
+            &self,
+            _: &str,
+            _: crate::ports::terminal::TerminalSearchDirection,
+        ) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+        fn hyperlink_at(&self, _: crate::ports::terminal::TerminalPoint) -> Option<String> {
+            None
+        }
+        fn acknowledge_wakeup(&self) {}
+        fn shutdown(&self) {}
+    }
+
+    #[gpui::test]
+    fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAppContext) {
+        use crate::infrastructure::files::LocalFileSystemPort;
+        use crate::infrastructure::git::GitCliPort;
+        use crate::infrastructure::persistence::WorkspaceRepository;
+        use crate::infrastructure::settings::SettingsRepository;
+        use std::sync::Arc;
+
+        let root = std::env::temp_dir().join(format!("vibra-surface-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let repository = WorkspaceRepository::at(root.join("workspace.json"));
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(&root);
+        snapshot.create_terminal_tab();
+        let first_project = snapshot.selected_project_id.unwrap();
+        let first_workspace = snapshot.selected_workspace().unwrap().id;
+        snapshot.create_workspace(&root);
+        let second_workspace = snapshot.selected_workspace().unwrap().id;
+        repository.save(&snapshot).unwrap();
+        let settings_repository = SettingsRepository::at(root.join("settings.json"));
+        let settings = crate::infrastructure::settings::AppSettings {
+            agent_notifications: false,
+            ..crate::infrastructure::settings::AppSettings::default()
+        };
+        settings_repository.save(&settings).unwrap();
+
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    let focus_handle = cx.focus_handle();
+                    focus_handle.focus(window);
+                    cx.new(|cx| {
+                        WorkspaceView::new(
+                            WorkspaceDependencies {
+                                repository,
+                                settings_repository,
+                                terminal_port: Arc::new(SilentTerminalPort),
+                                file_port: Arc::new(LocalFileSystemPort),
+                                git_port: Arc::new(GitCliPort),
+                            },
+                            root.clone(),
+                            focus_handle,
+                            cx,
+                        )
+                    })
+                })
+            })
+            .unwrap();
+
+        window
+            .update(cx, |view, window, cx| {
+                let first = view
+                    .snapshot
+                    .projects
+                    .iter()
+                    .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
+                    .find(|workspace| workspace.id == first_workspace)
+                    .unwrap();
+                let first_tab = first.tabs[0].id;
+                let second_tab = first.tabs[1].id;
+                let first_session = first.tabs[0].sessions[0].id;
+                let second_session = first.tabs[1].sessions[0].id;
+                let other_session = view.snapshot.selected_session().unwrap().id;
+                assert_eq!(
+                    view.snapshot.selected_workspace().unwrap().id,
+                    second_workspace
+                );
+                assert!(view.terminals[&other_session].read(cx).is_surface_visible());
+                assert!(!view.terminals[&first_session].read(cx).is_surface_visible());
+                assert!(
+                    !view.terminals[&second_session]
+                        .read(cx)
+                        .is_surface_visible()
+                );
+
+                view.select_workspace(first_project, first_workspace, window, cx);
+                assert!(
+                    view.terminals[&second_session]
+                        .read(cx)
+                        .is_surface_visible()
+                );
+                assert!(
+                    !view.terminals[&other_session].read(cx).is_surface_visible(),
+                    "sessions in the unselected workspace must stop cwd/agent polls"
+                );
+
+                view.select_tab(first_tab, window, cx);
+                assert!(view.terminals[&first_session].read(cx).is_surface_visible());
+                assert!(
+                    !view.terminals[&second_session]
+                        .read(cx)
+                        .is_surface_visible(),
+                    "the unselected tab must not keep cwd/agent polls running"
+                );
+
+                view.select_tab(second_tab, window, cx);
+                assert!(!view.terminals[&first_session].read(cx).is_surface_visible());
+                assert!(
+                    view.terminals[&second_session]
+                        .read(cx)
+                        .is_surface_visible()
+                );
+            })
+            .unwrap();
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
