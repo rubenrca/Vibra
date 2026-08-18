@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -307,12 +308,14 @@ impl WorkspaceSnapshot {
         changed
     }
 
+    #[allow(dead_code)]
     pub fn create_terminal_tab(&mut self) -> bool {
         self.create_terminal_tab_with_focus(true).is_some()
     }
 
     /// Creates a terminal tab in the selected workspace.
     /// When `focus_new` is false the previous selected tab stays selected.
+    #[allow(dead_code)]
     pub fn create_terminal_tab_with_focus(&mut self, focus_new: bool) -> Option<(Uuid, Uuid)> {
         self.create_terminal_tab_with_options(focus_new, None)
     }
@@ -802,6 +805,17 @@ impl WorkspaceSnapshot {
             .find(|tab| Some(tab.id) == workspace.selected_tab_id)
     }
 
+    /// Sessions that should be painted (selected tab, or the zoomed pane).
+    pub fn painted_session_ids(&self) -> HashSet<Uuid> {
+        let Some(tab) = self.selected_tab() else {
+            return HashSet::new();
+        };
+        if let Some(zoomed) = tab.zoomed_session_id {
+            return HashSet::from([zoomed]);
+        }
+        tab.sessions.iter().map(|session| session.id).collect()
+    }
+
     pub fn selected_session(&self) -> Option<&SessionSnapshot> {
         let tab = self.selected_tab()?;
         tab.sessions
@@ -991,26 +1005,14 @@ impl ProjectSnapshot {
             self.selected_workspace_id = workspaces.first().map(|workspace| workspace.id);
         }
 
-        let selected_workspace = workspaces
-            .iter()
-            .find(|workspace| Some(workspace.id) == self.selected_workspace_id)
-            .unwrap_or(&workspaces[0]);
-        let selected_tab = selected_workspace
-            .tabs
-            .iter()
-            .find(|tab| Some(tab.id) == selected_workspace.selected_tab_id)
-            .unwrap_or(&selected_workspace.tabs[0]);
-
-        self.sessions = workspaces
-            .iter()
-            .flat_map(|workspace| workspace.tabs.iter())
-            .flat_map(|tab| tab.sessions.iter().cloned())
-            .collect();
-        self.selected_session_id = selected_tab.selected_session_id;
-        self.visible_session_ids = Some(selected_tab.layout.terminal_ids());
-        self.split_axis = selected_tab.layout.root_axis();
-        self.tabs = Some(selected_workspace.tabs.clone());
-        self.selected_tab_id = selected_workspace.selected_tab_id;
+        // Schema 3 lives entirely on `workspaces`. Do not mirror Swift-era
+        // sessions/tabs copies — they doubled persisted JSON and clone cost.
+        self.sessions.clear();
+        self.selected_session_id = None;
+        self.visible_session_ids = None;
+        self.split_axis = None;
+        self.tabs = None;
+        self.selected_tab_id = None;
     }
 
     fn migrate_legacy_tabs(&self) -> Vec<TabSnapshot> {
@@ -1191,6 +1193,7 @@ impl PaneLayoutSnapshot {
         }
     }
 
+    #[allow(dead_code)]
     pub fn root_axis(&self) -> Option<WorkspaceSplitAxis> {
         match self {
             Self::Terminal { .. } => None,
@@ -1738,7 +1741,11 @@ mod tests {
 
         snapshot.normalize();
 
-        assert_eq!(snapshot.projects[0].sessions.len(), 1);
+        assert!(
+            snapshot.projects[0].sessions.is_empty(),
+            "schema 3 must not dual-write legacy session copies"
+        );
+        assert!(snapshot.projects[0].tabs.is_none());
         assert_eq!(snapshot.selected_session().unwrap().id, session_id);
     }
 
@@ -1793,8 +1800,71 @@ mod tests {
 
         assert!(snapshot.update_session_title(session_id, "zsh — tests"));
         assert_eq!(snapshot.selected_session().unwrap().title, "zsh — tests");
-        assert_eq!(snapshot.projects[0].sessions[0].title, "zsh — tests");
+        assert!(
+            snapshot.projects[0].sessions.is_empty(),
+            "title updates must not rewrite the Swift-era sessions vector"
+        );
         assert!(!snapshot.update_session_title(session_id, "zsh — tests"));
+    }
+
+    #[test]
+    fn painted_session_ids_follow_tab_workspace_and_zoom() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-paint-a"));
+        let first_tab = snapshot.selected_tab().unwrap().id;
+        let first_session = snapshot.selected_session().unwrap().id;
+        snapshot.create_terminal_tab();
+        let second_tab = snapshot.selected_tab().unwrap().id;
+        let second_session = snapshot.selected_session().unwrap().id;
+        assert_ne!(first_session, second_session);
+
+        assert_eq!(
+            snapshot.painted_session_ids(),
+            HashSet::from([second_session]),
+            "new tab is selected and should be the only painted session"
+        );
+
+        assert!(snapshot.select_tab(first_tab));
+        assert_eq!(
+            snapshot.painted_session_ids(),
+            HashSet::from([first_session])
+        );
+        assert!(snapshot.select_tab(second_tab));
+        assert_eq!(
+            snapshot.painted_session_ids(),
+            HashSet::from([second_session])
+        );
+
+        snapshot.create_workspace(Path::new("/tmp/vibra-paint-b"));
+        let other_workspace = snapshot.selected_workspace().unwrap().id;
+        let other_session = snapshot.selected_session().unwrap().id;
+        let other_project = snapshot.selected_project_id.unwrap();
+        assert_eq!(
+            snapshot.painted_session_ids(),
+            HashSet::from([other_session])
+        );
+        let first_project = snapshot.projects[0].id;
+        let first_workspace = snapshot.projects[0].workspaces.as_ref().unwrap()[0].id;
+        assert!(snapshot.select_workspace(first_project, first_workspace));
+        assert_eq!(
+            snapshot.painted_session_ids(),
+            HashSet::from([second_session]),
+            "returning to the first workspace paints its selected tab"
+        );
+        assert!(snapshot.select_workspace(other_project, other_workspace));
+        assert_eq!(
+            snapshot.painted_session_ids(),
+            HashSet::from([other_session])
+        );
+
+        snapshot.split_selected_terminal(PaneSplitDirection::Right);
+        let split_ids = snapshot.painted_session_ids();
+        assert_eq!(split_ids.len(), 2);
+        assert!(snapshot.toggle_selected_pane_zoom());
+        let zoomed = snapshot.selected_session().unwrap().id;
+        assert_eq!(snapshot.painted_session_ids(), HashSet::from([zoomed]));
+        assert!(snapshot.toggle_selected_pane_zoom());
+        assert_eq!(snapshot.painted_session_ids(), split_ids);
     }
 
     #[test]

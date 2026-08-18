@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::infrastructure::paths::{application_support_directory, gpui_preview_support_directory};
+use crate::infrastructure::paths::{
+    application_support_directory, atomic_write, gpui_preview_support_directory,
+};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
@@ -135,7 +137,7 @@ impl SettingsRepository {
     }
 
     #[cfg(test)]
-    fn at(path: impl Into<PathBuf>) -> Self {
+    pub fn at(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
             preview_path: None,
@@ -176,11 +178,8 @@ impl SettingsRepository {
 
     pub fn save(&self, settings: &AppSettings) -> Result<()> {
         self.import_preview_settings()?;
-        let parent = self.path.parent().context("settings.json no tiene padre")?;
-        fs::create_dir_all(parent)?;
-        let temporary = self.path.with_extension("json.tmp");
-        fs::write(&temporary, serde_json::to_vec_pretty(settings)?)?;
-        fs::rename(&temporary, &self.path)?;
+        let data = serde_json::to_vec(settings)?;
+        atomic_write(&self.path, &data)?;
         Ok(())
     }
 

@@ -1,9 +1,9 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use uuid::Uuid;
+
+use crate::infrastructure::paths::{AtomicWriteOptions, atomic_write_with};
 
 use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort, TextFileSnapshot};
 
@@ -87,29 +87,15 @@ impl FileSystemPort for LocalFileSystemPort {
         if text_fingerprint(&current) != expected_fingerprint {
             bail!("el archivo cambió fuera de Vibra; recárgalo antes de guardar");
         }
-        let parent = path
-            .parent()
-            .context("el archivo no tiene directorio padre")?;
-        let file_name = path
-            .file_name()
-            .context("el archivo no tiene nombre")?
-            .to_string_lossy();
-        let temporary = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        fs::set_permissions(&temporary, fs::metadata(&path)?.permissions())?;
-        if let Err(error) = output.write_all(contents.as_bytes()) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error.into());
-        }
-        output.sync_all()?;
-        drop(output);
-        if let Err(error) = fs::rename(&temporary, &path) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error.into());
-        }
+        atomic_write_with(
+            &path,
+            contents.as_bytes(),
+            AtomicWriteOptions {
+                unix_mode: None,
+                sync: true,
+                preserve_permissions_from: Some(&path),
+            },
+        )?;
         Ok(text_fingerprint(contents.as_bytes()))
     }
 }
@@ -165,6 +151,7 @@ fn text_fingerprint(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     fn temporary_root() -> PathBuf {
         let root = std::env::temp_dir().join(format!("vibra-files-{}", Uuid::new_v4()));
