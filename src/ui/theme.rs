@@ -587,16 +587,43 @@ fn active_slot() -> &'static RwLock<Theme> {
 }
 
 /// Colors currently painted by the app shell.
+///
+/// One `RwLock` read per thread per generation — later calls reuse a
+/// thread-local copy until [`set_active`] bumps the generation.
 pub fn colors() -> Theme {
-    *active_slot()
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    use std::cell::Cell;
+    use std::sync::atomic::Ordering;
+
+    thread_local! {
+        static CACHED: Cell<Option<(u64, Theme)>> = const { Cell::new(None) };
+    }
+
+    let generation = theme_generation().load(Ordering::Acquire);
+    CACHED.with(|cached| {
+        if let Some((cached_generation, theme)) = cached.get()
+            && cached_generation == generation
+        {
+            return theme;
+        }
+        let theme = *active_slot()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cached.set(Some((generation, theme)));
+        theme
+    })
+}
+
+fn theme_generation() -> &'static std::sync::atomic::AtomicU64 {
+    use std::sync::atomic::AtomicU64;
+    static GENERATION: AtomicU64 = AtomicU64::new(1);
+    &GENERATION
 }
 
 pub fn set_active(theme: Theme) {
     *active_slot()
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = theme;
+    theme_generation().fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
 /// Resolve preference and install it as the active palette. Returns the result.
