@@ -42,7 +42,8 @@ impl TerminalRgb {
 pub struct TerminalCell {
     pub row: usize,
     pub column: usize,
-    pub text: String,
+    /// `None` is a single ASCII space and allocates nothing.
+    glyph: Option<Box<str>>,
     pub foreground: TerminalRgb,
     pub background: TerminalRgb,
     pub underline_color: TerminalRgb,
@@ -53,7 +54,95 @@ pub struct TerminalCell {
     pub hidden: bool,
     pub wide_spacer: bool,
     pub selected: bool,
-    pub hyperlink: Option<String>,
+    pub hyperlink: Option<Box<str>>,
+}
+
+impl TerminalCell {
+    pub fn encode_glyph(text: &str) -> Option<Box<str>> {
+        if text == " " {
+            None
+        } else {
+            Some(Box::from(text))
+        }
+    }
+
+    pub fn blank(row: usize, column: usize) -> Self {
+        Self {
+            row,
+            column,
+            glyph: None,
+            foreground: TerminalRgb::new(0, 0, 0),
+            background: TerminalRgb::new(0, 0, 0),
+            underline_color: TerminalRgb::new(0, 0, 0),
+            bold: false,
+            italic: false,
+            underline: TerminalUnderline::None,
+            strikeout: false,
+            hidden: false,
+            wide_spacer: false,
+            selected: false,
+            hyperlink: None,
+        }
+    }
+
+    pub fn with_text(
+        row: usize,
+        column: usize,
+        text: &str,
+        foreground: TerminalRgb,
+        background: TerminalRgb,
+    ) -> Self {
+        Self {
+            row,
+            column,
+            glyph: Self::encode_glyph(text),
+            foreground,
+            background,
+            underline_color: foreground,
+            bold: false,
+            italic: false,
+            underline: TerminalUnderline::None,
+            strikeout: false,
+            hidden: false,
+            wide_spacer: false,
+            selected: false,
+            hyperlink: None,
+        }
+    }
+
+    pub fn set_hyperlink(&mut self, uri: Option<&str>) {
+        self.hyperlink = uri.map(Box::from);
+    }
+
+    pub fn text(&self) -> &str {
+        self.glyph.as_deref().unwrap_or(" ")
+    }
+
+    #[cfg(test)]
+    pub fn glyph_is_heap_allocated(&self) -> bool {
+        self.glyph.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blank_cells_do_not_allocate_a_heap_string() {
+        let blank = TerminalCell::blank(0, 0);
+        assert_eq!(blank.text(), " ");
+        assert!(!blank.glyph_is_heap_allocated());
+        let glyph = TerminalCell::with_text(
+            0,
+            1,
+            "A",
+            TerminalRgb::new(1, 2, 3),
+            TerminalRgb::new(0, 0, 0),
+        );
+        assert_eq!(glyph.text(), "A");
+        assert!(glyph.glyph_is_heap_allocated());
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

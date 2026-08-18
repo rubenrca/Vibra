@@ -699,22 +699,23 @@ fn terminal_snapshot<T: EventListener>(terminal: &Term<T>) -> TerminalSnapshot {
             .underline_color()
             .map(|color| resolve_color(color, cell.flags, colors, true))
             .unwrap_or(foreground);
-        lines[point.line][point.column.0] = TerminalCell {
-            row: point.line,
-            column: point.column.0,
-            text,
+        let mut painted = TerminalCell::with_text(
+            point.line,
+            point.column.0,
+            &text,
             foreground,
-            background: resolve_color(background, cell.flags, colors, false),
-            underline_color,
-            bold: cell.flags.contains(Flags::BOLD),
-            italic: cell.flags.contains(Flags::ITALIC),
-            underline: underline_style(cell.flags),
-            strikeout: cell.flags.contains(Flags::STRIKEOUT),
-            hidden: cell.flags.contains(Flags::HIDDEN),
-            wide_spacer: cell.flags.contains(Flags::WIDE_CHAR_SPACER),
-            selected,
-            hyperlink: cell.hyperlink().map(|hyperlink| hyperlink.uri().to_owned()),
-        };
+            resolve_color(background, cell.flags, colors, false),
+        );
+        painted.underline_color = underline_color;
+        painted.bold = cell.flags.contains(Flags::BOLD);
+        painted.italic = cell.flags.contains(Flags::ITALIC);
+        painted.underline = underline_style(cell.flags);
+        painted.strikeout = cell.flags.contains(Flags::STRIKEOUT);
+        painted.hidden = cell.flags.contains(Flags::HIDDEN);
+        painted.wide_spacer = cell.flags.contains(Flags::WIDE_CHAR_SPACER);
+        painted.selected = selected;
+        painted.set_hyperlink(cell.hyperlink().as_ref().map(|hyperlink| hyperlink.uri()));
+        lines[point.line][point.column.0] = painted;
     }
 
     let cursor = point_to_viewport(display_offset, renderable.cursor.point)
@@ -795,22 +796,23 @@ fn terminal_snapshot_with_damage<T: EventListener>(
             .underline_color()
             .map(|color| resolve_color(color, cell.flags, colors, true))
             .unwrap_or(foreground);
-        Arc::make_mut(&mut lines[point.line])[point.column.0] = TerminalCell {
-            row: point.line,
-            column: point.column.0,
-            text,
+        let mut painted = TerminalCell::with_text(
+            point.line,
+            point.column.0,
+            &text,
             foreground,
-            background: resolve_color(background, cell.flags, colors, false),
-            underline_color,
-            bold: cell.flags.contains(Flags::BOLD),
-            italic: cell.flags.contains(Flags::ITALIC),
-            underline: underline_style(cell.flags),
-            strikeout: cell.flags.contains(Flags::STRIKEOUT),
-            hidden: cell.flags.contains(Flags::HIDDEN),
-            wide_spacer: cell.flags.contains(Flags::WIDE_CHAR_SPACER),
-            selected,
-            hyperlink: cell.hyperlink().map(|hyperlink| hyperlink.uri().to_owned()),
-        };
+            resolve_color(background, cell.flags, colors, false),
+        );
+        painted.underline_color = underline_color;
+        painted.bold = cell.flags.contains(Flags::BOLD);
+        painted.italic = cell.flags.contains(Flags::ITALIC);
+        painted.underline = underline_style(cell.flags);
+        painted.strikeout = cell.flags.contains(Flags::STRIKEOUT);
+        painted.hidden = cell.flags.contains(Flags::HIDDEN);
+        painted.wide_spacer = cell.flags.contains(Flags::WIDE_CHAR_SPACER);
+        painted.selected = selected;
+        painted.set_hyperlink(cell.hyperlink().as_ref().map(|hyperlink| hyperlink.uri()));
+        Arc::make_mut(&mut lines[point.line])[point.column.0] = painted;
     }
 
     let cursor = point_to_viewport(display_offset, renderable.cursor.point)
@@ -933,22 +935,11 @@ fn dim(color: TerminalRgb) -> TerminalRgb {
 }
 
 fn blank_cell(row: usize, column: usize) -> TerminalCell {
-    TerminalCell {
-        row,
-        column,
-        text: " ".to_owned(),
-        foreground: FOREGROUND,
-        background: BACKGROUND,
-        underline_color: FOREGROUND,
-        bold: false,
-        italic: false,
-        underline: TerminalUnderline::None,
-        strikeout: false,
-        hidden: false,
-        wide_spacer: false,
-        selected: false,
-        hyperlink: None,
-    }
+    let mut cell = TerminalCell::blank(row, column);
+    cell.foreground = FOREGROUND;
+    cell.background = BACKGROUND;
+    cell.underline_color = FOREGROUND;
+    cell
 }
 
 fn underline_style(flags: Flags) -> TerminalUnderline {
@@ -1262,8 +1253,8 @@ mod tests {
         assert_eq!(snapshot.lines.len(), 3);
         assert!(snapshot.lines.iter().all(|line| line.len() == 4));
         assert_eq!(snapshot.lines[0][0].row, 0);
-        assert_eq!(snapshot.lines[0][0].text, " ");
-        assert_eq!(snapshot.lines[1][1].text, "A");
+        assert_eq!(snapshot.lines[0][0].text(), " ");
+        assert_eq!(snapshot.lines[1][1].text(), "A");
         assert_eq!(
             snapshot.lines[1][1].hyperlink.as_deref(),
             Some("https://example.com")
@@ -1295,7 +1286,7 @@ mod tests {
         assert!(Arc::ptr_eq(&previous.lines[0], &current.lines[0]));
         assert!(!Arc::ptr_eq(&previous.lines[1], &current.lines[1]));
         assert!(Arc::ptr_eq(&previous.lines[2], &current.lines[2]));
-        assert_eq!(current.lines[1][2].text, "B");
+        assert_eq!(current.lines[1][2].text(), "B");
     }
 
     #[test]
@@ -1358,15 +1349,11 @@ mod tests {
                 .lines
                 .iter()
                 .flat_map(|line| line.iter())
-                .any(|cell| cell.text == "P" && cell.foreground == TerminalRgb::new(12, 34, 56))
+                .any(|cell| cell.text() == "P" && cell.foreground == TerminalRgb::new(12, 34, 56))
                 && snapshot
                     .lines
                     .iter()
-                    .map(|line| {
-                        line.iter()
-                            .map(|cell| cell.text.as_str())
-                            .collect::<String>()
-                    })
+                    .map(|line| line.iter().map(|cell| cell.text()).collect::<String>())
                     .any(|line| line.contains("PTY_OK"));
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1441,11 +1428,7 @@ mod tests {
             found_tail = snapshot
                 .lines
                 .iter()
-                .map(|line| {
-                    line.iter()
-                        .map(|cell| cell.text.as_str())
-                        .collect::<String>()
-                })
+                .map(|line| line.iter().map(|cell| cell.text()).collect::<String>())
                 .any(|line| line.contains("STRESS_DONE"));
             std::thread::sleep(Duration::from_millis(10));
         }

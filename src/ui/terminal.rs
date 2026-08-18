@@ -152,6 +152,7 @@ pub struct TerminalView {
     bell_active: bool,
     agent_presence: Option<TerminalAgentPresence>,
     render_cache: Arc<Mutex<TerminalRenderCache>>,
+    surface_visible: bool,
     _focus_subscriptions: Vec<Subscription>,
     _event_task: Option<Task<()>>,
     _cursor_task: Task<()>,
@@ -198,7 +199,10 @@ impl TerminalView {
                 Timer::after(CURSOR_BLINK_INTERVAL).await;
                 if this
                     .update(cx, |this, cx| {
-                        if this.terminal_focused && this.cursor_blinking {
+                        if crate::ui::idle::should_run_cursor_blink(
+                            this.terminal_focused,
+                            this.cursor_blinking,
+                        ) {
                             this.cursor_visible = !this.cursor_visible;
                             cx.notify();
                         } else if !this.cursor_visible {
@@ -217,6 +221,9 @@ impl TerminalView {
                 Timer::after(WORKING_DIRECTORY_POLL_INTERVAL).await;
                 if this
                     .update(cx, |this, cx| {
+                        if !crate::ui::idle::should_poll_terminal_idle(this.surface_visible) {
+                            return;
+                        }
                         this.refresh_working_directory(cx);
                         // A foreground job can replace the shell without writing a
                         // recognizable banner. Poll its identity as a backstop to
@@ -260,6 +267,7 @@ impl TerminalView {
             bell_active: false,
             agent_presence: None,
             render_cache: Arc::new(Mutex::new(TerminalRenderCache::default())),
+            surface_visible: true,
             _focus_subscriptions: Vec::new(),
             _event_task: event_task,
             _cursor_task: cursor_task,
@@ -272,6 +280,15 @@ impl TerminalView {
         if let Some(handle) = &self.handle {
             handle.shutdown();
         }
+    }
+
+    pub fn set_surface_visible(&mut self, visible: bool) {
+        self.surface_visible = visible;
+    }
+
+    #[cfg(test)]
+    pub fn is_surface_visible(&self) -> bool {
+        self.surface_visible
     }
 
     pub fn current_working_directory(&self) -> PathBuf {
@@ -351,7 +368,7 @@ impl TerminalView {
         let mut text = String::new();
         for line in &snapshot.lines[start..] {
             for cell in line.iter().filter(|cell| !cell.wide_spacer) {
-                text.push_str(&cell.text);
+                text.push_str(cell.text());
             }
             while text.ends_with(' ') {
                 text.pop();
@@ -369,10 +386,17 @@ impl TerminalView {
         let Some(handle) = self.handle.as_ref() else {
             return;
         };
-        let snapshot = handle.snapshot();
-        let recent_text = handle.recent_text(14);
         let process_name = handle.foreground_process_name();
         let process_id = handle.foreground_process_id();
+        if process_name
+            .as_deref()
+            .is_some_and(is_interactive_shell_process_name)
+            && self.agent_presence.is_none()
+        {
+            return;
+        }
+        let snapshot = handle.snapshot();
+        let recent_text = handle.recent_text(14);
         let presence = detect_agent_presence(
             &self.title,
             &snapshot,
@@ -1840,7 +1864,7 @@ fn shape_snapshot_line(
                 color: Some(to_hsla(foreground)),
             }),
         });
-        text.push_str(&piece);
+        text.push_str(piece);
     }
     context.window.text_system().shape_line(
         text.into(),
@@ -1910,11 +1934,11 @@ fn scrollbar_metrics(
     Some((track, thumb))
 }
 
-fn display_text(cell: &TerminalCell) -> String {
-    if cell.hidden || cell.wide_spacer || cell.text.contains('\n') {
-        " ".to_owned()
+fn display_text(cell: &TerminalCell) -> &str {
+    if cell.hidden || cell.wide_spacer || cell.text().contains('\n') {
+        " "
     } else {
-        cell.text.clone()
+        cell.text()
     }
 }
 
@@ -2415,7 +2439,7 @@ fn visible_screen_text(snapshot: &TerminalSnapshot) -> String {
     let mut text = String::new();
     for line in &snapshot.lines[start..] {
         for cell in line.iter().filter(|cell| !cell.wide_spacer) {
-            text.push_str(&cell.text.to_lowercase());
+            text.push_str(&cell.text().to_lowercase());
         }
         text.push('\n');
     }
@@ -2582,21 +2606,12 @@ mod tests {
                     .map(|row| {
                         Arc::from(
                             (0..80)
-                                .map(|column| TerminalCell {
-                                    row,
-                                    column,
-                                    text: " ".into(),
-                                    foreground: TerminalRgb::new(0xe5, 0xe5, 0xe6),
-                                    background: TerminalRgb::new(0x10, 0x10, 0x11),
-                                    underline_color: TerminalRgb::new(0xe5, 0xe5, 0xe6),
-                                    bold: false,
-                                    italic: false,
-                                    underline: TerminalUnderline::None,
-                                    strikeout: false,
-                                    hidden: false,
-                                    wide_spacer: false,
-                                    selected: false,
-                                    hyperlink: None,
+                                .map(|column| {
+                                    let mut cell = TerminalCell::blank(row, column);
+                                    cell.foreground = TerminalRgb::new(0xe5, 0xe5, 0xe6);
+                                    cell.background = TerminalRgb::new(0x10, 0x10, 0x11);
+                                    cell.underline_color = TerminalRgb::new(0xe5, 0xe5, 0xe6);
+                                    cell
                                 })
                                 .collect::<Vec<_>>(),
                         )
@@ -2805,22 +2820,13 @@ mod tests {
         let snapshot = TerminalSnapshot {
             columns: 80,
             rows: 1,
-            lines: vec![Arc::from([TerminalCell {
-                row: 0,
-                column: 0,
-                text: "Claude Code — allow? [y/n]".into(),
-                foreground: TerminalRgb::new(255, 255, 255),
-                background: TerminalRgb::new(0, 0, 0),
-                underline_color: TerminalRgb::new(255, 255, 255),
-                bold: false,
-                italic: false,
-                underline: TerminalUnderline::None,
-                strikeout: false,
-                hidden: false,
-                wide_spacer: false,
-                selected: false,
-                hyperlink: None,
-            }])],
+            lines: vec![Arc::from([TerminalCell::with_text(
+                0,
+                0,
+                "Claude Code — allow? [y/n]",
+                TerminalRgb::new(255, 255, 255),
+                TerminalRgb::new(0, 0, 0),
+            )])],
             cursor: None,
             display_offset: 0,
             history_size: 0,
@@ -2842,22 +2848,13 @@ mod tests {
         let snapshot = TerminalSnapshot {
             columns: 80,
             rows: 1,
-            lines: vec![Arc::from([TerminalCell {
-                row: 0,
-                column: 0,
-                text: "ready".into(),
-                foreground: TerminalRgb::new(255, 255, 255),
-                background: TerminalRgb::new(0, 0, 0),
-                underline_color: TerminalRgb::new(255, 255, 255),
-                bold: false,
-                italic: false,
-                underline: TerminalUnderline::None,
-                strikeout: false,
-                hidden: false,
-                wide_spacer: false,
-                selected: false,
-                hyperlink: None,
-            }])],
+            lines: vec![Arc::from([TerminalCell::with_text(
+                0,
+                0,
+                "ready",
+                TerminalRgb::new(255, 255, 255),
+                TerminalRgb::new(0, 0, 0),
+            )])],
             cursor: None,
             display_offset: 0,
             history_size: 0,
