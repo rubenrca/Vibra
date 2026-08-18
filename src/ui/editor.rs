@@ -1,9 +1,10 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton, Render,
-    SharedString, Window, div, prelude::*, px,
+    Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
+    ListHorizontalSizingBehavior, Render, SharedString, Window, div, prelude::*, px, uniform_list,
 };
 
 use crate::ports::files::{FileSystemPort, TextFileSnapshot};
@@ -12,6 +13,23 @@ use crate::ui::theme::colors;
 pub enum EditorViewEvent {
     Close,
     Saved,
+}
+
+#[derive(Debug, Clone)]
+struct EditorEdit {
+    at: usize,
+    removed: String,
+    inserted: String,
+}
+
+fn apply_edit(contents: &mut String, edit: &EditorEdit, reverse: bool) {
+    if reverse {
+        let end = edit.at + edit.inserted.len();
+        contents.replace_range(edit.at..end.min(contents.len()), &edit.removed);
+    } else {
+        let end = edit.at + edit.removed.len();
+        contents.replace_range(edit.at..end.min(contents.len()), &edit.inserted);
+    }
 }
 
 pub struct EditorView {
@@ -25,8 +43,8 @@ pub struct EditorView {
     search_active: bool,
     search_query: String,
     current_match: usize,
-    undo_stack: Vec<String>,
-    redo_stack: Vec<String>,
+    undo_stack: VecDeque<EditorEdit>,
+    redo_stack: VecDeque<EditorEdit>,
     error: Option<SharedString>,
     close_confirmation: bool,
     file_port: Arc<dyn FileSystemPort>,
@@ -53,8 +71,8 @@ impl EditorView {
             search_active: false,
             search_query: String::new(),
             current_match: 0,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
             error: None,
             close_confirmation: false,
             file_port,
@@ -65,20 +83,26 @@ impl EditorView {
         self.contents != self.saved_contents
     }
 
-    fn checkpoint(&mut self) {
-        if self.undo_stack.last() != Some(&self.contents) {
-            self.undo_stack.push(self.contents.clone());
-            if self.undo_stack.len() > 100 {
-                self.undo_stack.remove(0);
-            }
+    fn push_edit(&mut self, edit: EditorEdit) {
+        apply_edit(&mut self.contents, &edit, false);
+        self.undo_stack.push_back(edit);
+        if self.undo_stack.len() > 100 {
+            self.undo_stack.pop_front();
         }
         self.redo_stack.clear();
     }
 
     fn insert(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.checkpoint();
-        self.contents.insert_str(self.cursor, text);
-        self.cursor += text.len();
+        if text.is_empty() {
+            return;
+        }
+        let at = self.cursor;
+        self.push_edit(EditorEdit {
+            at,
+            removed: String::new(),
+            inserted: text.to_owned(),
+        });
+        self.cursor = at + text.len();
         self.error = None;
         cx.notify();
     }
@@ -88,8 +112,12 @@ impl EditorView {
         if previous == self.cursor {
             return;
         }
-        self.checkpoint();
-        self.contents.replace_range(previous..self.cursor, "");
+        let removed = self.contents[previous..self.cursor].to_owned();
+        self.push_edit(EditorEdit {
+            at: previous,
+            removed,
+            inserted: String::new(),
+        });
         self.cursor = previous;
         self.error = None;
         cx.notify();
@@ -100,29 +128,33 @@ impl EditorView {
         if next == self.cursor {
             return;
         }
-        self.checkpoint();
-        self.contents.replace_range(self.cursor..next, "");
+        let removed = self.contents[self.cursor..next].to_owned();
+        self.push_edit(EditorEdit {
+            at: self.cursor,
+            removed,
+            inserted: String::new(),
+        });
         self.error = None;
         cx.notify();
     }
 
     fn undo(&mut self, cx: &mut Context<Self>) {
-        let Some(previous) = self.undo_stack.pop() else {
+        let Some(edit) = self.undo_stack.pop_back() else {
             return;
         };
-        self.redo_stack
-            .push(std::mem::replace(&mut self.contents, previous));
-        self.cursor = self.cursor.min(self.contents.len());
+        apply_edit(&mut self.contents, &edit, true);
+        self.cursor = edit.at.min(self.contents.len());
+        self.redo_stack.push_back(edit);
         cx.notify();
     }
 
     fn redo(&mut self, cx: &mut Context<Self>) {
-        let Some(next) = self.redo_stack.pop() else {
+        let Some(edit) = self.redo_stack.pop_back() else {
             return;
         };
-        self.undo_stack
-            .push(std::mem::replace(&mut self.contents, next));
-        self.cursor = self.cursor.min(self.contents.len());
+        apply_edit(&mut self.contents, &edit, false);
+        self.cursor = (edit.at + edit.inserted.len()).min(self.contents.len());
+        self.undo_stack.push_back(edit);
         cx.notify();
     }
 
@@ -250,10 +282,6 @@ impl EditorView {
         cx.stop_propagation();
         cx.notify();
     }
-
-    fn cursor_for_line(&self, line_start: usize, line: &str) -> usize {
-        (line_start + line.len()).min(self.contents.len())
-    }
 }
 
 impl Render for EditorView {
@@ -272,20 +300,10 @@ impl Render for EditorView {
         let match_count = if search_query.is_empty() {
             0
         } else {
-            self.contents.matches(&search_query).count()
+            self.contents.match_indices(&search_query).count()
         };
         let (cursor_line, cursor_column) = line_and_column(&self.contents, self.cursor);
-        let mut offset = 0;
-        let lines: Vec<_> = self
-            .contents
-            .split('\n')
-            .enumerate()
-            .map(|(index, line)| {
-                let line_start = offset;
-                offset += line.len() + 1;
-                (index, line_start, line.to_owned())
-            })
-            .collect();
+        let line_count = self.contents.bytes().filter(|byte| *byte == b'\n').count() + 1;
 
         div()
             .size_full()
@@ -426,72 +444,81 @@ impl Render for EditorView {
                 )
             })
             .child(
-                div()
-                    .id("editor-scroll")
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .overflow_x_scroll()
-                    .overflow_y_scroll()
-                    .py_2()
-                    .font_family("JetBrains Mono")
-                    .text_size(px(11.0))
-                    .line_height(px(18.0))
-                    .children(lines.into_iter().map(|(index, line_start, line)| {
-                        let active = index + 1 == cursor_line;
-                        let matches = !search_query.is_empty() && line.contains(&search_query);
-                        let display = if active {
-                            let cursor_in_line =
-                                self.cursor.saturating_sub(line_start).min(line.len());
-                            let cursor_in_line =
-                                previous_or_same_char_boundary(&line, cursor_in_line);
-                            format!("{}▏{}", &line[..cursor_in_line], &line[cursor_in_line..])
-                        } else {
-                            line.clone()
-                        };
-                        div()
-                            .id(SharedString::from(format!("editor-line-{}", index + 1)))
-                            .min_w_full()
-                            .h(px(18.0))
-                            .flex()
-                            .items_center()
-                            .whitespace_nowrap()
-                            .bg(if active {
-                                colors().selection
-                            } else if matches {
-                                colors().diff_hunk_bg
-                            } else {
-                                colors().background
+                uniform_list(
+                    "editor-scroll",
+                    line_count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
+                        let palette = colors();
+                        range
+                            .filter_map(|index| {
+                                let (line_start, line) = nth_line(&this.contents, index)?;
+                                let active = index + 1 == cursor_line;
+                                let matches =
+                                    !search_query.is_empty() && line.contains(&search_query);
+                                let display = if active {
+                                    let cursor_in_line =
+                                        this.cursor.saturating_sub(line_start).min(line.len());
+                                    let cursor_in_line =
+                                        previous_or_same_char_boundary(line, cursor_in_line);
+                                    format!(
+                                        "{}▏{}",
+                                        &line[..cursor_in_line],
+                                        &line[cursor_in_line..]
+                                    )
+                                } else {
+                                    line.to_owned()
+                                };
+                                Some(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "editor-line-{}",
+                                            index + 1
+                                        )))
+                                        .min_w_full()
+                                        .h(px(18.0))
+                                        .flex()
+                                        .items_center()
+                                        .whitespace_nowrap()
+                                        .bg(if active {
+                                            palette.selection
+                                        } else if matches {
+                                            palette.diff_hunk_bg
+                                        } else {
+                                            palette.background
+                                        })
+                                        .child(
+                                            div()
+                                                .w(px(54.0))
+                                                .h_full()
+                                                .flex_none()
+                                                .flex()
+                                                .items_center()
+                                                .justify_end()
+                                                .pr_3()
+                                                .border_r_1()
+                                                .border_color(palette.border_subtle)
+                                                .text_color(palette.subtle)
+                                                .child((index + 1).to_string()),
+                                        )
+                                        .child(
+                                            div()
+                                                .pl_3()
+                                                .pr_6()
+                                                .text_color(palette.muted)
+                                                .child(display),
+                                        ),
+                                )
                             })
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| {
-                                    this.cursor = this.cursor_for_line(line_start, &line);
-                                    this.focus_handle.focus(window);
-                                    cx.notify();
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .w(px(54.0))
-                                    .h_full()
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_end()
-                                    .pr_3()
-                                    .border_r_1()
-                                    .border_color(colors().border_subtle)
-                                    .text_color(colors().subtle)
-                                    .child((index + 1).to_string()),
-                            )
-                            .child(
-                                div()
-                                    .pl_3()
-                                    .pr_6()
-                                    .text_color(colors().muted)
-                                    .child(display),
-                            )
-                    })),
+                            .collect()
+                    }),
+                )
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+                .flex_1()
+                .min_h(px(0.0))
+                .py_2()
+                .font_family("JetBrains Mono")
+                .text_size(px(11.0))
+                .line_height(px(18.0)),
             )
             .child(
                 div()
@@ -608,6 +635,17 @@ impl Focusable for EditorView {
     }
 }
 
+fn nth_line(contents: &str, index: usize) -> Option<(usize, &str)> {
+    let mut start = 0;
+    for (current, line) in contents.split('\n').enumerate() {
+        if current == index {
+            return Some((start, line));
+        }
+        start += line.len() + 1;
+    }
+    None
+}
+
 fn previous_char_boundary(text: &str, cursor: usize) -> usize {
     if cursor == 0 {
         return 0;
@@ -687,6 +725,34 @@ fn line_and_column(text: &str, cursor: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undo_patches_do_not_retain_full_buffer_copies() {
+        let mut contents = "hello world".repeat(80);
+        let original_len = contents.len();
+        let mut stack = VecDeque::new();
+        for _ in 0..40 {
+            let edit = EditorEdit {
+                at: contents.len(),
+                removed: String::new(),
+                inserted: "x".into(),
+            };
+            apply_edit(&mut contents, &edit, false);
+            stack.push_back(edit);
+        }
+        let retained: usize = stack
+            .iter()
+            .map(|edit| edit.removed.len() + edit.inserted.len())
+            .sum();
+        assert!(
+            retained < original_len,
+            "undo must store patches ({retained} bytes), not {original_len}-byte copies"
+        );
+        for edit in stack.iter().rev() {
+            apply_edit(&mut contents, edit, true);
+        }
+        assert_eq!(contents, "hello world".repeat(80));
+    }
 
     #[test]
     fn cursor_helpers_preserve_utf8_and_vertical_columns() {
