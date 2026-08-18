@@ -57,9 +57,12 @@ pub struct DiffView {
     /// Paths currently expanded (accordion — multiple allowed, Warp-style).
     expanded: HashSet<String>,
     /// Cached diffs for expanded (and recently expanded) paths.
-    diffs: HashMap<String, GitDiff>,
+    diffs: HashMap<String, Arc<GitDiff>>,
     /// Per-row syntax spans aligned with `diffs[path].rows`.
-    highlights: HashMap<String, Vec<Vec<SyntaxSpan>>>,
+    highlights: HashMap<String, Arc<Vec<Vec<SyntaxSpan>>>>,
+    status_root: Option<PathBuf>,
+    status_index: Arc<HashMap<String, GitFileStatus>>,
+    panel_visible: bool,
     /// Paths currently loading a diff.
     loading: HashSet<String>,
     refreshing: bool,
@@ -92,7 +95,9 @@ impl DiffView {
                 Timer::after(POLL_INTERVAL).await;
                 if this
                     .update(cx, |this, cx| {
-                        if !this.refreshing {
+                        if crate::ui::idle::should_poll_git_snapshot(this.panel_visible)
+                            && !this.refreshing
+                        {
                             this.refresh(false, cx);
                         }
                     })
@@ -113,6 +118,9 @@ impl DiffView {
             expanded: HashSet::new(),
             diffs: HashMap::new(),
             highlights: HashMap::new(),
+            status_root: None,
+            status_index: Arc::new(HashMap::new()),
+            panel_visible: false,
             loading: HashSet::new(),
             refreshing: false,
             branch_refreshing: false,
@@ -135,17 +143,33 @@ impl DiffView {
     }
 
     /// Repo root + relative path → status, for coloring the Files tree (Zed-style).
-    pub fn status_index(&self) -> (Option<PathBuf>, HashMap<String, GitFileStatus>) {
-        match &self.snapshot {
+    pub fn status_index(&self) -> (Option<PathBuf>, Arc<HashMap<String, GitFileStatus>>) {
+        (self.status_root.clone(), self.status_index.clone())
+    }
+
+    pub fn set_panel_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.panel_visible == visible {
+            return;
+        }
+        self.panel_visible = visible;
+        if visible && !self.refreshing {
+            self.refresh(false, cx);
+        }
+    }
+
+    fn rebuild_status_index(
+        snapshot: Option<&GitRepositorySnapshot>,
+    ) -> (Option<PathBuf>, Arc<HashMap<String, GitFileStatus>>) {
+        match snapshot {
             Some(snapshot) => {
                 let map = snapshot
                     .changes
                     .iter()
                     .map(|change| (change.path.replace('\\', "/"), change.status))
                     .collect();
-                (Some(snapshot.root.clone()), map)
+                (Some(snapshot.root.clone()), Arc::new(map))
             }
-            None => (None, HashMap::new()),
+            None => (None, Arc::new(HashMap::new())),
         }
     }
 
@@ -244,10 +268,18 @@ impl DiffView {
                     return;
                 }
                 this.refreshing = false;
+                let mut changed = true;
                 match result {
-                    Ok(Some(snapshot)) => this.apply_snapshot(snapshot, cx),
+                    Ok(Some(snapshot)) => {
+                        if this.snapshot.as_ref() == Some(&snapshot) {
+                            changed = false;
+                        }
+                        this.apply_snapshot(snapshot, cx);
+                    }
                     Ok(None) => {
                         this.snapshot = None;
+                        this.status_root = None;
+                        this.status_index = Arc::new(HashMap::new());
                         if this.mode == GitPanelMode::Worktree {
                             this.expanded.clear();
                             this.diffs.clear();
@@ -261,7 +293,9 @@ impl DiffView {
                         this.error = Some(format!("Git: {error:#}").into());
                     }
                 }
-                cx.notify();
+                if changed {
+                    cx.notify();
+                }
             });
         }));
     }
@@ -353,12 +387,16 @@ impl DiffView {
         self.loading.retain(|path| live_paths.contains(path));
         self.pending_loads
             .retain(|path, _| live_paths.contains(path));
-        self.diffs.clear();
-        self.highlights.clear();
-        let to_reload: Vec<String> = self.expanded.iter().cloned().collect();
+        let to_reload: Vec<String> = self
+            .expanded
+            .iter()
+            .filter(|path| !self.diffs.contains_key(*path))
+            .cloned()
+            .collect();
         for path in to_reload {
             self.load_diff(path, cx);
         }
+        self.evict_diff_caches();
     }
 
     fn apply_snapshot(&mut self, snapshot: GitRepositorySnapshot, cx: &mut Context<Self>) {
@@ -369,8 +407,21 @@ impl DiffView {
         if self.mode == GitPanelMode::Worktree {
             self.sync_expanded_with_changes(&snapshot, cx);
         }
+        let (root, index) = Self::rebuild_status_index(Some(&snapshot));
+        self.status_root = root;
+        self.status_index = index;
         self.snapshot = Some(snapshot);
         cx.emit(DiffViewEvent);
+    }
+
+    fn evict_diff_caches(&mut self) {
+        const MAX_CACHED_DIFFS: usize = 16;
+        if self.diffs.len() <= MAX_CACHED_DIFFS {
+            return;
+        }
+        self.diffs.retain(|path, _| self.expanded.contains(path));
+        self.highlights
+            .retain(|path, _| self.expanded.contains(path));
     }
 
     fn expand_path(&mut self, path: String, cx: &mut Context<Self>) {
@@ -456,8 +507,10 @@ impl DiffView {
                 match result {
                     Ok(diff) => {
                         let highlights = highlight_diff_rows(&path_for_task, &diff.rows);
-                        this.highlights.insert(path_for_task.clone(), highlights);
-                        this.diffs.insert(path_for_task, diff);
+                        this.highlights
+                            .insert(path_for_task.clone(), Arc::new(highlights));
+                        this.diffs.insert(path_for_task, Arc::new(diff));
+                        this.evict_diff_caches();
                         this.error = None;
                     }
                     Err(error) => this.error = Some(format!("Git: {error:#}").into()),
@@ -768,10 +821,10 @@ impl DiffView {
     }
 
     fn file_cards(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let changes = self
+        let change_count = self
             .active_snapshot()
-            .map(|snapshot| snapshot.changes.clone())
-            .unwrap_or_default();
+            .map(|snapshot| snapshot.changes.len())
+            .unwrap_or(0);
 
         div()
             .id("git-file-cards")
@@ -784,12 +837,10 @@ impl DiffView {
             .flex()
             .flex_col()
             .gap_2()
-            .children(
-                changes
-                    .into_iter()
-                    .map(|change| self.file_card(change, cx))
-                    .collect::<Vec<_>>(),
-            )
+            .children((0..change_count).filter_map(|index| {
+                let change = self.active_snapshot()?.changes.get(index)?.clone();
+                Some(self.file_card(change, cx))
+            }))
     }
 
     fn file_card(&self, change: GitFileChange, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -940,7 +991,7 @@ impl DiffView {
     fn inline_diff_body(
         &self,
         path: &str,
-        diff: Option<GitDiff>,
+        diff: Option<Arc<GitDiff>>,
         loading: bool,
         cx: &mut Context<Self>,
     ) -> Div {

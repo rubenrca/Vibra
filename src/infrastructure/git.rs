@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -13,7 +12,6 @@ use crate::ports::git::{
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
-const MAX_UNTRACKED_STAT_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct GitCliPort;
@@ -84,14 +82,8 @@ impl GitPort for GitCliPort {
         collect_numstat(&root, true, &mut stats)?;
         for change in &mut changes {
             if change.untracked {
-                let path = root.join(&change.path);
-                if path.metadata().is_ok_and(|metadata| {
-                    metadata.is_file() && metadata.len() <= MAX_UNTRACKED_STAT_BYTES
-                }) && let Ok(contents) = fs::read(&path)
-                {
-                    change.additions = Some(line_count(&contents));
-                    change.deletions = Some(0);
-                }
+                // Poll path: do not slurp untracked files just to count lines.
+                continue;
             } else if let Some((additions, deletions)) = stats.get(&change.path) {
                 change.additions = Some(*additions);
                 change.deletions = Some(*deletions);
@@ -290,12 +282,21 @@ impl GitPort for GitCliPort {
         let Some(root) = repository_root(root)? else {
             return Ok(None);
         };
-        let Some(snapshot) = self.snapshot(&root)? else {
+        let Some(summary) = self.branch_summary(&root)? else {
             return Ok(None);
         };
-        let Some(base) = compare_base(&root, &snapshot.branch)? else {
+        let Some(base) = compare_base(&root, &summary.branch)? else {
             return Ok(Some(GitBranchChanges {
-                snapshot,
+                snapshot: GitRepositorySnapshot {
+                    root,
+                    branch: summary.branch,
+                    upstream: summary.upstream,
+                    ahead: summary.ahead,
+                    behind: summary.behind,
+                    changes: Vec::new(),
+                    additions: 0,
+                    deletions: 0,
+                },
                 base: String::new(),
                 merge_base: String::new(),
                 commits_ahead: 0,
@@ -315,9 +316,18 @@ impl GitPort for GitCliPort {
             .iter()
             .map(|change| (change.path.clone(), ()))
             .collect();
-        for change in snapshot.changes {
-            if change.untracked && !seen.contains_key(&change.path) {
-                changes.push(change);
+        for path in untracked_paths(&root)? {
+            if !seen.contains_key(&path) {
+                changes.push(GitFileChange {
+                    status: GitFileStatus::Untracked,
+                    staged: false,
+                    unstaged: false,
+                    untracked: true,
+                    path,
+                    old_path: None,
+                    additions: None,
+                    deletions: None,
+                });
             }
         }
         changes.sort_by(|left, right| {
@@ -331,10 +341,10 @@ impl GitPort for GitCliPort {
         Ok(Some(GitBranchChanges {
             snapshot: GitRepositorySnapshot {
                 root,
-                branch: snapshot.branch,
-                upstream: snapshot.upstream,
-                ahead: snapshot.ahead,
-                behind: snapshot.behind,
+                branch: summary.branch,
+                upstream: summary.upstream,
+                ahead: summary.ahead,
+                behind: summary.behind,
                 changes,
                 additions,
                 deletions,
@@ -612,6 +622,26 @@ fn change_priority(change: &GitFileChange) -> u8 {
     }
 }
 
+fn untracked_paths(root: &Path) -> Result<Vec<String>> {
+    let output = run_git(
+        root,
+        [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ],
+    )?;
+    ensure_success(&output, "git ls-files --others")?;
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect())
+}
+
 fn collect_numstat(
     root: &Path,
     cached: bool,
@@ -641,15 +671,6 @@ fn collect_numstat(
         entry.1 += deletions;
     }
     Ok(())
-}
-
-fn line_count(contents: &[u8]) -> usize {
-    if contents.is_empty() {
-        0
-    } else {
-        contents.iter().filter(|byte| **byte == b'\n').count()
-            + usize::from(contents.last() != Some(&b'\n'))
-    }
 }
 
 fn validate_revision(revision: &str) -> Result<()> {
@@ -1005,6 +1026,7 @@ fn parse_hunk_lines(header: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use uuid::Uuid;
 
     fn git(root: &Path, arguments: &[&str]) {
@@ -1057,7 +1079,10 @@ mod tests {
             .iter()
             .find(|change| change.path == "new file.txt")
             .unwrap();
-        assert_eq!(untracked.additions, Some(2));
+        assert!(
+            untracked.additions.is_none(),
+            "worktree poll must not slurp untracked files for line counts"
+        );
         let diff = port.diff(&root, untracked).unwrap();
         assert_eq!(diff.additions, 2);
         assert!(diff.rows.iter().any(|row| row.text == "new"));
