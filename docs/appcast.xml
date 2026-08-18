@@ -3,18 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.7</title>
-            <pubDate>Sat, 15 Aug 2026 14:45:49 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.7</link>
-            <sparkle:version>64</sparkle:version>
-            <sparkle:shortVersionString>0.3.7</sparkle:shortVersionString>
+            <title>0.3.8</title>
+            <pubDate>Tue, 18 Aug 2026 19:12:04 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.8</link>
+            <sparkle:version>74</sparkle:version>
+            <sparkle:shortVersionString>0.3.8</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Turn the right-sidebar Diff tab into a Git panel with three views: working tree, branch changes versus the default base, and a commit history with a lane graph.</li>
-  <li>Keep a single user-resizable width for both sidebars instead of changing the Git panel width per view.</li>
+  <li>Pause terminal, Git, and sidebar work when those surfaces are hidden so idle CPU stays low.</li>
+  <li>Notify when an agent finishes even if the process exits or the session ends, and keep `cargo run` from crashing on notification setup.</li>
+  <li>Save `workspace.json` as compact JSON, skip unchanged writes, and stop duplicating legacy Swift session data.</li>
+  <li>Use less memory in the editor, file tree, and terminal grid on large files and long sessions.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.7/Vibra-0.3.7.dmg" length="12343789" type="application/octet-stream" sparkle:edSignature="AtpPx3uAgMlhoCshqqf+g4eaXo0MQCsvBtq/+ruH6EcOAYCT2UrkXgNVeKSM3P0CB+rvLovkD85ewQSOJRzaDA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.8/Vibra-0.3.8.dmg" length="12297585" type="application/octet-stream" sparkle:edSignature="PRWaQOQITwdGuTBMx6CCwZ/R/1jHhvpA7Wmjrmcm30s+azT98X0WZMpHOHP//by4I0jlXZPv7GUgJZKDvLvxDQ=="/>
         </item>
     </channel>
 </rss>
