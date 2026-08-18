@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.3.8 — 2026-08-18
+
+- Pause terminal, Git, and sidebar work when those surfaces are hidden so idle CPU stays low.
+- Notify when an agent finishes even if the process exits or the session ends, and keep `cargo run` from crashing on notification setup.
+- Save `workspace.json` as compact JSON, skip unchanged writes, and stop duplicating legacy Swift session data.
+- Use less memory in the editor, file tree, and terminal grid on large files and long sessions.
+
 ## 0.3.7 — 2026-08-15
 
 - Turn the right-sidebar Diff tab into a Git panel with three views: working tree, branch changes versus the default base, and a commit history with a lane graph.
