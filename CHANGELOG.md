@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.9 — 2026-08-21
 
 - Add a Servers tab in the right sidebar that lists TCP listeners from workspace terminals and from processes whose working directory is inside an open project, with jump-to-pane, open URL, and stop.
 
