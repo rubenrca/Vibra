@@ -3,20 +3,17 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.8</title>
-            <pubDate>Tue, 18 Aug 2026 19:12:04 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.8</link>
-            <sparkle:version>74</sparkle:version>
-            <sparkle:shortVersionString>0.3.8</sparkle:shortVersionString>
+            <title>0.3.9</title>
+            <pubDate>Fri, 21 Aug 2026 10:54:52 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.9</link>
+            <sparkle:version>78</sparkle:version>
+            <sparkle:shortVersionString>0.3.9</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Pause terminal, Git, and sidebar work when those surfaces are hidden so idle CPU stays low.</li>
-  <li>Notify when an agent finishes even if the process exits or the session ends, and keep `cargo run` from crashing on notification setup.</li>
-  <li>Save `workspace.json` as compact JSON, skip unchanged writes, and stop duplicating legacy Swift session data.</li>
-  <li>Use less memory in the editor, file tree, and terminal grid on large files and long sessions.</li>
+  <li>Add a Servers tab in the right sidebar that lists TCP listeners from workspace terminals and from processes whose working directory is inside an open project, with jump-to-pane, open URL, and stop.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.8/Vibra-0.3.8.dmg" length="12297585" type="application/octet-stream" sparkle:edSignature="PRWaQOQITwdGuTBMx6CCwZ/R/1jHhvpA7Wmjrmcm30s+azT98X0WZMpHOHP//by4I0jlXZPv7GUgJZKDvLvxDQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.9/Vibra-0.3.9.dmg" length="12437262" type="application/octet-stream" sparkle:edSignature="7VL3yqnlmhYG4Vh9eKc4BOJ4JaNrRxD1QeaqgZ06ihfggjZ7saIy9HnqozbyIUkNm0TOjV5GDo4D66RfQGU9CA=="/>
         </item>
     </channel>
 </rss>
