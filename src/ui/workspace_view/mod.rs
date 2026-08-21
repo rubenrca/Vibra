@@ -3176,9 +3176,14 @@ impl WorkspaceView {
             return;
         }
         self.window_is_active = window.is_window_active();
+        self.servers_view
+            .update(cx, |view, cx| view.set_window_active(self.window_is_active, cx));
         self._activation_subscription =
-            Some(cx.observe_window_activation(window, |this, window, _cx| {
+            Some(cx.observe_window_activation(window, |this, window, cx| {
                 this.window_is_active = window.is_window_active();
+                let active = this.window_is_active;
+                this.servers_view
+                    .update(cx, |view, cx| view.set_window_active(active, cx));
             }));
     }
 

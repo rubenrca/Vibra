@@ -12,6 +12,7 @@ use crate::infrastructure::process::{
     GroupedServer, ListenPort, group_listen_sockets, openable_http_url, path_is_under, process_cwd,
     scan_listen_sockets, scan_listen_sockets_under, terminate_pid,
 };
+use crate::ui::idle::should_poll_servers;
 use crate::ui::theme::colors;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_000);
@@ -60,8 +61,8 @@ pub struct ServersView {
     roots: Vec<ServerRoot>,
     servers: Vec<ServerProcess>,
     panel_visible: bool,
+    window_active: bool,
     refreshing: bool,
-    error: Option<SharedString>,
     request_id: u64,
     _scan_task: Option<Task<()>>,
     _poll_task: Task<()>,
@@ -76,7 +77,7 @@ impl ServersView {
                 Timer::after(POLL_INTERVAL).await;
                 if this
                     .update(cx, |this, cx| {
-                        if crate::ui::idle::should_poll_servers(this.panel_visible)
+                        if should_poll_servers(this.panel_visible, this.window_active)
                             && !this.refreshing
                         {
                             this.refresh(false, cx);
@@ -92,8 +93,8 @@ impl ServersView {
             roots: Vec::new(),
             servers: Vec::new(),
             panel_visible: false,
+            window_active: true,
             refreshing: false,
-            error: None,
             request_id: 0,
             _scan_task: None,
             _poll_task: poll_task,
@@ -110,6 +111,16 @@ impl ServersView {
         }
         self.panel_visible = visible;
         if visible && !self.refreshing {
+            self.refresh(false, cx);
+        }
+    }
+
+    pub fn set_window_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.window_active == active {
+            return;
+        }
+        self.window_active = active;
+        if active && self.panel_visible && !self.refreshing {
             self.refresh(false, cx);
         }
     }
@@ -136,7 +147,6 @@ impl ServersView {
         }
         self.refreshing = true;
         if notify_loading {
-            self.error = None;
             cx.notify();
         }
         self.request_id = self.request_id.wrapping_add(1);
@@ -150,7 +160,6 @@ impl ServersView {
                     return;
                 }
                 this.refreshing = false;
-                this.error = None;
                 if this.servers != result {
                     this.servers = result;
                 }
@@ -164,9 +173,9 @@ impl ServersView {
         let meta = if self.refreshing && count == 0 {
             "…".to_owned()
         } else if count == 1 {
-            "1 server".to_owned()
+            "1 servidor".to_owned()
         } else {
-            format!("{count} servers")
+            format!("{count} servidores")
         };
         div()
             .w_full()
@@ -449,24 +458,25 @@ fn matching_root<'a>(
     roots: &'a [ServerRoot],
 ) -> Option<&'a ServerRoot> {
     let cwd = cwd?;
-    roots
-        .iter()
-        .filter(|root| path_is_under(cwd, &root.cwd) || path_is_under(cwd, &root.project_root))
-        .max_by_key(|root| {
-            let cwd_len = path_is_under(cwd, &root.cwd)
-                .then_some(root.cwd.as_os_str().len())
-                .unwrap_or(0);
-            let project_len = path_is_under(cwd, &root.project_root)
-                .then_some(root.project_root.as_os_str().len())
-                .unwrap_or(0);
-            cwd_len.max(project_len)
-        })
+    let mut best: Option<(usize, &ServerRoot)> = None;
+    for root in roots {
+        let mut depth = 0;
+        if path_is_under(cwd, &root.cwd) {
+            depth = root.cwd.as_os_str().len();
+        }
+        if path_is_under(cwd, &root.project_root) {
+            depth = depth.max(root.project_root.as_os_str().len());
+        }
+        if depth > 0 && best.is_none_or(|(best_depth, _)| best_depth < depth) {
+            best = Some((depth, root));
+        }
+    }
+    best.map(|(_, root)| root)
 }
 
 impl Render for ServersView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let empty = self.servers.is_empty();
-        let error = self.error.clone();
         div()
             .size_full()
             .flex()
@@ -474,20 +484,6 @@ impl Render for ServersView {
             .overflow_hidden()
             .bg(colors().panel)
             .child(self.header())
-            .when_some(error, |view, error| {
-                view.child(
-                    div()
-                        .flex_none()
-                        .px_3()
-                        .py_2()
-                        .bg(colors().diff_deleted_bg)
-                        .border_b_1()
-                        .border_color(colors().danger)
-                        .text_size(px(9.0))
-                        .text_color(colors().danger)
-                        .child(error),
-                )
-            })
             .when(empty, |view| view.child(self.empty_state()))
             .when(!empty, |view| view.child(self.cards(cx)))
     }

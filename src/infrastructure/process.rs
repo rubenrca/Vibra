@@ -377,6 +377,7 @@ fn scan_listen_sockets_under_macos(roots: &[&Path]) -> Vec<ListenSocket> {
     if count <= 0 {
         return Vec::new();
     }
+    let normalized_roots: Vec<PathBuf> = roots.iter().map(|root| normalize_path(root)).collect();
     let self_pid = std::process::id();
     let mut sockets = Vec::new();
     for pid in pids.into_iter().take(count as usize) {
@@ -386,7 +387,11 @@ fn scan_listen_sockets_under_macos(roots: &[&Path]) -> Vec<ListenSocket> {
         let Some(cwd) = process_cwd_macos(pid) else {
             continue;
         };
-        if !roots.iter().any(|root| path_is_under(&cwd, root)) {
+        let cwd = normalize_path(&cwd);
+        if !normalized_roots
+            .iter()
+            .any(|root| cwd.starts_with(root))
+        {
             continue;
         }
         sockets.extend(scan_pid_listen_sockets(pid));

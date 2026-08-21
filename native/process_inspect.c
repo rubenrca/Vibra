@@ -313,19 +313,18 @@ int vibra_list_user_pids(uint32_t *out, int capacity)
     if (out == NULL || capacity <= 0) {
         return 0;
     }
-    /* `proc_listallpids(NULL, 0)` is either a byte count or a pid count
-       depending on OS rev; allocate a large fixed buffer instead. */
+    /* `proc_listallpids` returns a pid count: the libproc wrapper already
+       divides the raw byte count by sizeof(int). */
     enum { ALL_CAP = 8192 };
     int *all = malloc(sizeof(int) * ALL_CAP);
     if (all == NULL) {
         return 0;
     }
-    int bytes = proc_listallpids(all, (int)(sizeof(int) * ALL_CAP));
-    if (bytes <= 0) {
+    int count = proc_listallpids(all, (int)(sizeof(int) * ALL_CAP));
+    if (count <= 0) {
         free(all);
         return 0;
     }
-    int count = bytes / (int)sizeof(int);
     if (count > ALL_CAP) {
         count = ALL_CAP;
     }

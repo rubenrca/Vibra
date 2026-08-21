@@ -42,9 +42,7 @@ pub fn should_notify_agent(
     if session_visible && window_active {
         return None;
     }
-    let Some(previous) = previous else {
-        return None;
-    };
+    let previous = previous?;
     let Some(current) = current else {
         // Process gone / session-end: still a finish if it was working.
         return (previous.state == AgentRuntimeState::Working)
