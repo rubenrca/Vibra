@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a Servers tab in the right sidebar that lists TCP listeners from workspace terminals and from processes whose working directory is inside an open project, with jump-to-pane, open URL, and stop.
+
 ## 0.3.8 — 2026-08-18
 
 - Pause terminal, Git, and sidebar work when those surfaces are hidden so idle CPU stays low.

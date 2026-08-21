@@ -42,14 +42,15 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - selección, búsqueda, enlaces OSC 8 y clipboard OSC 52 protegido;
 - JetBrains Mono Variable incluida en la aplicación.
 
-### Files y Git
+### Files, Git y Servers
 
-- panel derecho unificado con las vistas `Files` y `Git`;
+- panel derecho unificado con las vistas `Files`, `Git` y `Servers`;
 - árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos y guías de indentación;
 - editor UTF-8 con búsqueda, undo/redo, guardado atómico y `⌘S`;
 - panel Git con tres vistas: working tree, cambios de la rama frente a la base por defecto, e historial de commits con grafo de lanes;
 - diffs de solo lectura estilo Warp: tarjetas expandibles, gutter de línea y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
-- las mutaciones Git se realizan desde la terminal integrada.
+- las mutaciones Git se realizan desde la terminal integrada;
+- pestaña `Servers` con procesos en escucha TCP de los PTY (vite, next, etc.), salto al pane, abrir URL y detener.
 
 ### Agentes y automatización
 
@@ -192,7 +193,7 @@ importan una sola vez.
 | `⇧⌘P` / `⌘P` | Paleta de comandos / quick open |
 | `⌘,` | Abrir Settings (modal centrado) |
 | `⌘B` | Mostrar u ocultar sidebar de sesiones |
-| `⌥⌘B` | Mostrar u ocultar panel Files y Git |
+| `⌥⌘B` | Mostrar u ocultar panel Files, Git y Servers |
 | `⌘U` | Buscar actualizaciones (Sparkle) |
 | `⌘V` | Pegar (bracketed paste; Ctrl+V con imagen en agentes CLI) |
 | `⌘F`, `⌘G`, `⇧⌘G` | Buscar / siguiente / anterior en terminal |

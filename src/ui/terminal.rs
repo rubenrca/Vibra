@@ -342,6 +342,12 @@ impl TerminalView {
             .and_then(|handle| handle.foreground_process_id())
     }
 
+    pub fn session_process_id(&self) -> Option<u32> {
+        self.handle
+            .as_ref()
+            .and_then(|handle| handle.session_process_id())
+    }
+
     pub fn is_interactive_shell(&self) -> bool {
         let Some(name) = self.foreground_process_name() else {
             // No foreground process reported yet — treat as not ready.

@@ -447,6 +447,10 @@ impl TerminalHandle for AlacrittyTerminal {
         self.foreground_process_group_id()
     }
 
+    fn session_process_id(&self) -> Option<u32> {
+        Some(self.process_id)
+    }
+
     fn recent_text(&self, lines: usize) -> Option<String> {
         let terminal = self.terminal.lock();
         let grid = terminal.grid();

@@ -5,5 +5,6 @@ pub mod git;
 pub mod notifications;
 pub mod paths;
 pub mod persistence;
+pub mod process;
 pub mod settings;
 pub mod sparkle;

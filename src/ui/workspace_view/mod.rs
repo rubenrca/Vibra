@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
-    TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis,
+    TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis, WorkspaceTitleSource,
 };
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentKind, AgentPlacement, AgentRuntimeState,
@@ -36,6 +36,7 @@ use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
 use crate::ui::agent_marks::{agent_sidebar_badge, agent_status_color};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
+use crate::ui::servers::{ServerRoot, ServersView, ServersViewEvent};
 use crate::ui::terminal::{TerminalView, TerminalViewEvent};
 use crate::ui::theme::{self, AppearanceMode, ThemeTone, colors};
 use crate::{
@@ -179,6 +180,7 @@ enum LeftSidebarMode {
 enum RightSidebarMode {
     Files,
     Diff,
+    Servers,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +206,7 @@ enum PaletteAction {
     ToggleGit,
     ShowSessions,
     ShowFiles,
+    ShowServers,
     ShowInfo,
     ShowSettings,
     SelectWorkspace {
@@ -300,6 +303,10 @@ pub struct WorkspaceView {
     git_port: Arc<dyn GitPort>,
     diff_view: Entity<DiffView>,
     _diff_subscription: Subscription,
+    servers_view: Entity<ServersView>,
+    _servers_subscription: Subscription,
+    _servers_observe: Subscription,
+    pending_focus_session: Option<Uuid>,
     editor: Option<Entity<EditorView>>,
     editor_subscription: Option<Subscription>,
     terminals: HashMap<Uuid, Entity<TerminalView>>,
@@ -449,6 +456,16 @@ impl WorkspaceView {
             &diff_view,
             |_this, _diff_view, _event: &DiffViewEvent, cx| cx.notify(),
         );
+        let servers_view = cx.new(ServersView::new);
+        let servers_subscription = cx.subscribe(
+            &servers_view,
+            |this, _, event: &ServersViewEvent, cx| match event {
+                ServersViewEvent::FocusPane(session_id) => {
+                    this.focus_session_from_sidebar(*session_id, cx);
+                }
+            },
+        );
+        let servers_observe = cx.observe(&servers_view, |_this, _, cx| cx.notify());
         let (agent_hook_status, agent_hook_error) = match agent_hook_status() {
             Ok(status) => (Some(status), None),
             Err(error) => (
@@ -485,6 +502,10 @@ impl WorkspaceView {
             git_port,
             diff_view,
             _diff_subscription: diff_subscription,
+            servers_view,
+            _servers_subscription: servers_subscription,
+            _servers_observe: servers_observe,
+            pending_focus_session: None,
             editor: None,
             editor_subscription: None,
             terminals: HashMap::new(),
@@ -554,6 +575,7 @@ impl WorkspaceView {
         view.refresh_project_files(cx);
         view.refresh_sidebar_workspace_meta(cx);
         view.sync_git_panel_visibility(cx);
+        view.sync_servers_panel(cx);
         view
     }
 
@@ -561,6 +583,84 @@ impl WorkspaceView {
         let visible = self.right_sidebar_visible || self.right_sidebar_progress > 0.001;
         self.diff_view
             .update(cx, |diff_view, cx| diff_view.set_panel_visible(visible, cx));
+    }
+
+    fn sync_servers_panel(&self, cx: &mut Context<Self>) {
+        let visible = self.right_sidebar_visible || self.right_sidebar_progress > 0.001;
+        let roots = self.collect_server_roots(cx);
+        self.servers_view.update(cx, |view, cx| {
+            view.set_roots(roots, cx);
+            view.set_panel_visible(visible, cx);
+        });
+    }
+
+    fn collect_server_roots(&self, cx: &Context<Self>) -> Vec<ServerRoot> {
+        let workspace_count = self.snapshot.workspace_entries().len();
+        let mut roots = Vec::new();
+        for project in &self.snapshot.projects {
+            for workspace in project.workspaces.as_deref().unwrap_or_default() {
+                let meta = self.sidebar_workspace_meta.get(&workspace.id);
+                let primary_cwd = workspace.primary_working_directory();
+                let cwd = meta
+                    .map(|meta| meta.cwd.as_str())
+                    .or(primary_cwd.as_deref())
+                    .unwrap_or("");
+                let workspace_label =
+                    if workspace.title_source == Some(WorkspaceTitleSource::Manual) {
+                        workspace.name.clone()
+                    } else {
+                        let live = directory_basename(cwd);
+                        if live.is_empty() || live == "—" {
+                            workspace.name.clone()
+                        } else {
+                            live
+                        }
+                    };
+                for (tab_index, tab) in workspace.tabs.iter().enumerate() {
+                    for session in &tab.sessions {
+                        let Some(terminal) = self.terminals.get(&session.id) else {
+                            continue;
+                        };
+                        let terminal = terminal.read(cx);
+                        let Some(pid) = terminal.session_process_id() else {
+                            continue;
+                        };
+                        let live_cwd = terminal.current_working_directory();
+                        let live_cwd_str = live_cwd.to_string_lossy().into_owned();
+                        let tab_label = tab_display_title(
+                            Some(session.title.as_str()),
+                            Some(live_cwd_str.as_str()),
+                            tab_index,
+                        );
+                        let label = if workspace_count > 1 {
+                            format!("{workspace_label} · {tab_label}")
+                        } else {
+                            tab_label
+                        };
+                        roots.push(ServerRoot {
+                            pane_id: session.id,
+                            label,
+                            pid,
+                            cwd: live_cwd,
+                            project_root: PathBuf::from(&project.root_path),
+                        });
+                    }
+                }
+            }
+        }
+        roots
+    }
+
+    fn focus_session_from_sidebar(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        if self.snapshot.select_terminal_global(session_id) {
+            self.sync_terminal_surface_visibility(cx);
+            self.sync_diff_root(cx);
+            self.refresh_project_files(cx);
+            self.refresh_sidebar_workspace_meta(cx);
+            self.persist(cx);
+        }
+        self.pending_focus_session = Some(session_id);
+        cx.notify();
     }
 
     fn sync_diff_root(&self, cx: &mut Context<Self>) {
@@ -1150,6 +1250,11 @@ impl WorkspaceView {
                     action: PaletteAction::ShowFiles,
                 },
                 PaletteItem {
+                    label: "Sidebar: Servers".into(),
+                    detail: String::new(),
+                    action: PaletteAction::ShowServers,
+                },
+                PaletteItem {
                     label: "Sidebar: Info".into(),
                     detail: String::new(),
                     action: PaletteAction::ShowInfo,
@@ -1259,6 +1364,13 @@ impl WorkspaceView {
             PaletteAction::ShowFiles => {
                 self.right_sidebar_mode = RightSidebarMode::Files;
                 self.refresh_project_files(cx);
+                self.set_right_sidebar_visible(true, true, cx);
+            }
+            PaletteAction::ShowServers => {
+                self.right_sidebar_mode = RightSidebarMode::Servers;
+                self.sync_servers_panel(cx);
+                self.servers_view
+                    .update(cx, |view, cx| view.refresh_now(cx));
                 self.set_right_sidebar_visible(true, true, cx);
             }
             PaletteAction::ShowInfo => {
@@ -1402,6 +1514,7 @@ impl WorkspaceView {
         self.right_sidebar_visible = visible;
         self.settings.git_panel_visible = visible;
         self.sync_git_panel_visibility(cx);
+        self.sync_servers_panel(cx);
         if persist {
             self.persist_settings(cx);
         }
@@ -1534,6 +1647,7 @@ impl WorkspaceView {
             self.terminal_subscriptions.insert(session_id, subscription);
         }
         self.sync_terminal_surface_visibility(cx);
+        self.sync_servers_panel(cx);
     }
 
     fn visible_terminal_ids(&self) -> HashSet<Uuid> {
@@ -1552,6 +1666,7 @@ impl WorkspaceView {
         match event {
             TerminalViewEvent::TitleChanged { session_id, title } => {
                 if self.snapshot.update_session_title(*session_id, title) {
+                    self.sync_servers_panel(cx);
                     self.persist(cx);
                 }
             }
@@ -1580,6 +1695,7 @@ impl WorkspaceView {
                 }
                 // Path/branch/title in the sessions sidebar follow the live cwd.
                 self.refresh_sidebar_workspace_meta(cx);
+                self.sync_servers_panel(cx);
                 if changed {
                     self.persist(cx);
                 } else {
@@ -5152,13 +5268,20 @@ impl WorkspaceView {
         let full_width = self.right_sidebar_width();
         let width = full_width * self.right_sidebar_progress;
         let show_handle = self.right_sidebar_progress > 0.99;
+        let server_count = self.servers_view.read(cx).server_count();
         let content = match mode {
             RightSidebarMode::Files => self.files_sidebar_content(cx),
             RightSidebarMode::Diff => self.diff_view.clone().into_any_element(),
+            RightSidebarMode::Servers => self.servers_view.clone().into_any_element(),
         };
         let modes = [
             (RightSidebarMode::Files, "Files", "chrome-icons/files.svg"),
             (RightSidebarMode::Diff, "Git", "chrome-icons/git-branch.svg"),
+            (
+                RightSidebarMode::Servers,
+                "Servers",
+                "chrome-icons/radio.svg",
+            ),
         ];
 
         // Outer clips to animated width; inner keeps full panel layout.
@@ -5230,6 +5353,12 @@ impl WorkspaceView {
                                                             },
                                                         );
                                                     }
+                                                    RightSidebarMode::Servers => {
+                                                        this.sync_servers_panel(cx);
+                                                        this.servers_view.update(cx, |view, cx| {
+                                                            view.refresh_now(cx)
+                                                        });
+                                                    }
                                                 }
                                                 cx.notify();
                                             }))
@@ -5240,6 +5369,21 @@ impl WorkspaceView {
                                                     colors().subtle
                                                 },
                                             ))
+                                            .when(
+                                                item_mode == RightSidebarMode::Servers
+                                                    && server_count > 0,
+                                                |tab| {
+                                                    tab.child(
+                                                        div()
+                                                            .absolute()
+                                                            .top(px(8.0))
+                                                            .right(px(5.0))
+                                                            .size(px(6.0))
+                                                            .rounded_full()
+                                                            .bg(colors().success),
+                                                    )
+                                                },
+                                            )
                                             .when(selected, |tab| {
                                                 tab.child(
                                                     div()
@@ -5737,6 +5881,11 @@ impl Render for WorkspaceView {
             self.initial_terminal_focus_pending = false;
             cx.defer_in(window, |this, window, cx| {
                 this.focus_selected_terminal(window, cx);
+            });
+        }
+        if let Some(session_id) = self.pending_focus_session.take() {
+            cx.defer_in(window, move |this, window, cx| {
+                this.focus_terminal(session_id, window, cx);
             });
         }
         let mut body = div()

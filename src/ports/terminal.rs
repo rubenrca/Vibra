@@ -312,6 +312,10 @@ pub trait TerminalHandle: Send + Sync {
     fn foreground_process_id(&self) -> Option<u32> {
         None
     }
+    /// Session leader of the PTY (the login shell), when known.
+    fn session_process_id(&self) -> Option<u32> {
+        None
+    }
     /// Text from the bottom of the terminal buffer, independent of the user's
     /// current scroll position. Implementations may fall back to `None`.
     fn recent_text(&self, _lines: usize) -> Option<String> {

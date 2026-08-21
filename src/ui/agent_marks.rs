@@ -59,6 +59,9 @@ impl AssetSource for VibraAssets {
             "chrome-icons/git-branch.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../Resources/ChromeIcons/git-branch.svg"
             ))),
+            "chrome-icons/radio.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/ChromeIcons/radio.svg"
+            ))),
             _ => None,
         })
     }
@@ -81,6 +84,7 @@ impl AssetSource for VibraAssets {
             "file-icons/file.svg",
             "chrome-icons/files.svg",
             "chrome-icons/git-branch.svg",
+            "chrome-icons/radio.svg",
         ];
         Ok(assets
             .into_iter()
@@ -244,6 +248,11 @@ mod tests {
             .unwrap()
             .expect("claude mark should be embedded");
         assert!(bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml"));
+        let radio = assets
+            .load("chrome-icons/radio.svg")
+            .unwrap()
+            .expect("servers tab icon should be embedded");
+        assert!(radio.starts_with(b"<svg") || radio.starts_with(b"<?xml"));
         assert!(assets.load("missing.svg").unwrap().is_none());
     }
 }

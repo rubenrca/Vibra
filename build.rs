@@ -7,6 +7,8 @@ fn main() {
     println!("cargo:rerun-if-changed=native/sparkle_bridge.h");
     println!("cargo:rerun-if-changed=native/notification_bridge.m");
     println!("cargo:rerun-if-changed=native/notification_bridge.h");
+    println!("cargo:rerun-if-changed=native/process_inspect.c");
+    println!("cargo:rerun-if-changed=native/process_inspect.h");
     println!("cargo:rerun-if-env-changed=VIBRA_SPARKLE_FRAMEWORK");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -20,6 +22,10 @@ fn main() {
         .include(manifest_dir.join("native"))
         .flag("-fobjc-arc")
         .compile("vibra_notification_bridge");
+    cc::Build::new()
+        .file(manifest_dir.join("native/process_inspect.c"))
+        .include(manifest_dir.join("native"))
+        .compile("vibra_process_inspect");
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=UserNotifications");
     if let Some(framework_dir) = find_sparkle_framework(&manifest_dir) {
