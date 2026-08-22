@@ -5170,6 +5170,7 @@ impl WorkspaceView {
             Some(ReorderDrag::Tab(id)) if cx.has_active_drag() => Some(id),
             _ => None,
         };
+        let tab_ids = tabs.iter().map(|tab| tab.id).collect::<Vec<_>>();
         let tab_list = div()
             .h_full()
             .flex_1()
@@ -5184,6 +5185,8 @@ impl WorkspaceView {
             })
             .children(tabs.into_iter().enumerate().map(|(index, tab)| {
                 let tab_id = tab.id;
+                let after_tab_id = tab_ids.get(index + 1).copied();
+                let tab_order = tab_ids.clone();
                 let selected = Some(tab_id) == selected_tab_id;
                 let pane_count = tab.sessions.len();
                 let session = tab
@@ -5296,7 +5299,16 @@ impl WorkspaceView {
                                 .is_some_and(|drag| drag.tab_id != tab_id)
                         })
                         .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
-                            this.reorder_tab(drag.tab_id, Some(tab_id), window, cx);
+                            let dragged_from_left = tab_order
+                                .iter()
+                                .position(|id| *id == drag.tab_id)
+                                .is_some_and(|source_index| source_index < index);
+                            let before_tab_id = if dragged_from_left {
+                                after_tab_id
+                            } else {
+                                Some(tab_id)
+                            };
+                            this.reorder_tab(drag.tab_id, before_tab_id, window, cx);
                         }))
                         .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().hover))
                     })
