@@ -5226,6 +5226,10 @@ impl WorkspaceView {
                 let is_source = dragging_tab == Some(tab_id);
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
+                    // The tab selector lives in the transparent native titlebar on macOS.
+                    // Occlude its hitbox so a tab drag is handled by GPUI's DnD instead of
+                    // falling through to AppKit's window-drag gesture.
+                    .occlude()
                     .h(px(26.0))
                     .min_w(px(0.0))
                     .flex_1()
@@ -5353,6 +5357,9 @@ impl WorkspaceView {
             .items_center()
             .px(px(12.0))
             .bg(colors().terminal)
+            // Also cover the padding and drop targets between tabs; otherwise beginning a
+            // drag from those gaps can still move the native window.
+            .occlude()
             .child(tab_list)
     }
 
