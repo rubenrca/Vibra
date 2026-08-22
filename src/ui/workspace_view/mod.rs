@@ -3742,8 +3742,6 @@ impl WorkspaceView {
             .flex()
             .items_center()
             .bg(colors().titlebar)
-            .border_b_1()
-            .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(left_chrome_width))
@@ -3757,9 +3755,6 @@ impl WorkspaceView {
                         colors().sidebar
                     } else {
                         colors().titlebar
-                    })
-                    .when(left_progress > 0.001, |chrome| {
-                        chrome.border_r_1().border_color(colors().border_subtle)
                     })
                     .child(
                         self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
@@ -3834,9 +3829,6 @@ impl WorkspaceView {
                     } else {
                         colors().titlebar
                     })
-                    .when(right_progress > 0.001, |chrome| {
-                        chrome.border_l_1().border_color(colors().border_subtle)
-                    })
                     .child(self.sidebar_button(
                         "toggle-right-sidebar",
                         false,
@@ -3865,8 +3857,6 @@ impl WorkspaceView {
             .relative()
             .overflow_hidden()
             .bg(colors().sidebar)
-            .border_r_1()
-            .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(full_width))
@@ -5431,8 +5421,6 @@ impl WorkspaceView {
             .px(px(8.0))
             .gap(px(6.0))
             .bg(colors().terminal)
-            .border_b_1()
-            .border_color(colors().border_subtle)
             .child(tab_list)
             .child(
                 div()
@@ -5747,8 +5735,6 @@ impl WorkspaceView {
             .relative()
             .overflow_hidden()
             .bg(colors().panel)
-            .border_l_1()
-            .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(full_width))
@@ -5757,8 +5743,8 @@ impl WorkspaceView {
                     .flex_col()
                     .child(
                         div()
-                            // Keep this strip identical to the terminal tab bar so both
-                            // bottom borders meet on the same horizontal pixel.
+                            // This uses the same pill selection language as terminal tabs.
+                            // Surface contrast, rather than a separator, defines the panel.
                             .h(px(36.0))
                             .flex_none()
                             .flex()
@@ -5766,8 +5752,6 @@ impl WorkspaceView {
                             .gap_0()
                             .pl_3()
                             .pr_2()
-                            .border_b_1()
-                            .border_color(colors().border_subtle)
                             .child(
                                 div()
                                     .min_w(px(0.0))
@@ -5779,20 +5763,29 @@ impl WorkspaceView {
                                         let selected = item_mode == mode;
                                         div()
                                             .id(SharedString::from(format!("utility-mode-{label}")))
-                                            .h_full()
+                                            .h(px(26.0))
                                             .relative()
                                             .w(px(32.0))
                                             .mr_2()
+                                            .rounded(px(7.0))
                                             .flex()
                                             .items_center()
                                             .justify_center()
                                             .cursor_pointer()
+                                            .bg(if selected {
+                                                colors().selection
+                                            } else {
+                                                gpui::rgba(0x00000000)
+                                            })
                                             .text_color(if selected {
                                                 colors().foreground
                                             } else {
                                                 colors().subtle
                                             })
-                                            .hover(|tab| tab.text_color(colors().foreground))
+                                            .hover(|tab| {
+                                                tab.bg(colors().hover)
+                                                    .text_color(colors().foreground)
+                                            })
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.right_sidebar_mode = item_mode;
                                                 match item_mode {
@@ -5839,17 +5832,6 @@ impl WorkspaceView {
                                                     )
                                                 },
                                             )
-                                            .when(selected, |tab| {
-                                                tab.child(
-                                                    div()
-                                                        .absolute()
-                                                        .left_0()
-                                                        .right_0()
-                                                        .bottom(px(-1.0))
-                                                        .h(px(1.0))
-                                                        .bg(colors().muted),
-                                                )
-                                            })
                                     })),
                             ),
                     )
