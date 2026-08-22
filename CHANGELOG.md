@@ -3,6 +3,7 @@
 ## 0.3.10 — 2026-08-21
 
 - Drag terminal tabs and session-sidebar entries to reorder them, and drag split panes by their handle to swap places.
+- Keep terminal-tab drags from moving the app window on macOS.
 - Jump to tabs with ⌘1–⌘8, and to the last tab with ⌘9, matching Ghostty.
 
 ## 0.3.9 — 2026-08-21

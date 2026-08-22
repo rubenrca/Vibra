@@ -3708,6 +3708,9 @@ impl WorkspaceView {
                 .h_full()
                 .flex_1()
                 .window_control_area(WindowControlArea::Drag)
+                .on_mouse_down(MouseButton::Left, |_, _, _| {
+                    crate::infrastructure::window::start_drag();
+                })
                 .into_any_element()
         };
 
@@ -3721,7 +3724,11 @@ impl WorkspaceView {
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
         } else {
-            center_chrome = center_chrome.window_control_area(WindowControlArea::Drag);
+            center_chrome = center_chrome
+                .window_control_area(WindowControlArea::Drag)
+                .on_mouse_down(MouseButton::Left, |_, _, _| {
+                    crate::infrastructure::window::start_drag();
+                });
         }
 
         div()
@@ -3760,7 +3767,10 @@ impl WorkspaceView {
                         div()
                             .h_full()
                             .flex_1()
-                            .window_control_area(WindowControlArea::Drag),
+                            .window_control_area(WindowControlArea::Drag)
+                            .on_mouse_down(MouseButton::Left, |_, _, _| {
+                                crate::infrastructure::window::start_drag();
+                            }),
                     ),
             )
             .child(center_chrome)
@@ -5700,7 +5710,10 @@ impl WorkspaceView {
                 div()
                     .h_full()
                     .flex_1()
-                    .window_control_area(WindowControlArea::Drag),
+                    .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(MouseButton::Left, |_, _, _| {
+                        crate::infrastructure::window::start_drag();
+                    }),
             )
             .into_any_element()
     }

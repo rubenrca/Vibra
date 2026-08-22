@@ -246,11 +246,13 @@ fn run() -> Result<()> {
                     window_min_size: Some(size(px(900.0), px(580.0))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Vibra".into()),
-                        // Keep Vibra's interactive chrome below the native macOS titlebar.
-                        // In a transparent titlebar AppKit claims tab drags as window drags.
-                        appears_transparent: false,
+                        appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(14.0), px(14.0))),
                     }),
+                    // On macOS, `is_movable: true` lets AppKit claim drags that begin on
+                    // interactive titlebar controls. Vibra opts into window movement only on
+                    // the explicit empty regions of its custom titlebar instead.
+                    is_movable: !cfg!(target_os = "macos"),
                     ..Default::default()
                 },
                 |window, cx| {

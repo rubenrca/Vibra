@@ -7,6 +7,8 @@ fn main() {
     println!("cargo:rerun-if-changed=native/sparkle_bridge.h");
     println!("cargo:rerun-if-changed=native/notification_bridge.m");
     println!("cargo:rerun-if-changed=native/notification_bridge.h");
+    println!("cargo:rerun-if-changed=native/window_bridge.m");
+    println!("cargo:rerun-if-changed=native/window_bridge.h");
     println!("cargo:rerun-if-changed=native/process_inspect.c");
     println!("cargo:rerun-if-changed=native/process_inspect.h");
     println!("cargo:rerun-if-env-changed=VIBRA_SPARKLE_FRAMEWORK");
@@ -24,10 +26,16 @@ fn main() {
         .flag("-fobjc-exceptions")
         .compile("vibra_notification_bridge");
     cc::Build::new()
+        .file(manifest_dir.join("native/window_bridge.m"))
+        .include(manifest_dir.join("native"))
+        .flag("-fobjc-arc")
+        .compile("vibra_window_bridge");
+    cc::Build::new()
         .file(manifest_dir.join("native/process_inspect.c"))
         .include(manifest_dir.join("native"))
         .compile("vibra_process_inspect");
     println!("cargo:rustc-link-lib=framework=Foundation");
+    println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=UserNotifications");
     if let Some(framework_dir) = find_sparkle_framework(&manifest_dir) {
         let parent = framework_dir

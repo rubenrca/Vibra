@@ -8,3 +8,4 @@ pub mod persistence;
 pub mod process;
 pub mod settings;
 pub mod sparkle;
+pub mod window;
