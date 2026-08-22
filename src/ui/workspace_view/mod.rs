@@ -3748,6 +3748,9 @@ impl WorkspaceView {
                     } else {
                         colors().titlebar
                     })
+                    .when(left_progress > 0.001, |chrome| {
+                        chrome.border_r_1().border_color(colors().border_subtle)
+                    })
                     .child(
                         self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
                             if !this.left_sidebar_visible {
@@ -3778,6 +3781,9 @@ impl WorkspaceView {
                     } else {
                         colors().titlebar
                     })
+                    .when(right_progress > 0.001, |chrome| {
+                        chrome.border_l_1().border_color(colors().border_subtle)
+                    })
                     .child(self.sidebar_button(
                         "toggle-right-sidebar",
                         false,
@@ -3806,6 +3812,8 @@ impl WorkspaceView {
             .relative()
             .overflow_hidden()
             .bg(colors().sidebar)
+            .border_r_1()
+            .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(full_width))
@@ -5350,7 +5358,7 @@ impl WorkspaceView {
             });
 
         div()
-            .h(px(36.0))
+            .h_full()
             .w_full()
             .flex_none()
             .flex()
@@ -5358,6 +5366,8 @@ impl WorkspaceView {
             .px(px(8.0))
             .gap(px(6.0))
             .bg(colors().terminal)
+            .border_b_1()
+            .border_color(colors().border_subtle)
             .child(tab_list)
     }
 
@@ -5646,6 +5656,8 @@ impl WorkspaceView {
             .relative()
             .overflow_hidden()
             .bg(colors().panel)
+            .border_l_1()
+            .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(full_width))
@@ -5654,8 +5666,8 @@ impl WorkspaceView {
                     .flex_col()
                     .child(
                         div()
-                            // This uses the same pill selection language as terminal tabs.
-                            // Surface contrast, rather than a separator, defines the panel.
+                            // Pill selection matches terminal tabs; the bottom edge separates
+                            // this mode picker from its content, without framing each control.
                             .h(px(36.0))
                             .flex_none()
                             .flex()
@@ -5663,6 +5675,8 @@ impl WorkspaceView {
                             .gap_0()
                             .pl_3()
                             .pr_2()
+                            .border_b_1()
+                            .border_color(colors().border_subtle)
                             .child(
                                 div()
                                     .min_w(px(0.0))
