@@ -3,17 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.9</title>
-            <pubDate>Fri, 21 Aug 2026 10:54:52 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.9</link>
-            <sparkle:version>78</sparkle:version>
-            <sparkle:shortVersionString>0.3.9</sparkle:shortVersionString>
+            <title>0.3.10</title>
+            <pubDate>Sat, 22 Aug 2026 14:57:35 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.10</link>
+            <sparkle:version>102</sparkle:version>
+            <sparkle:shortVersionString>0.3.10</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Add a Servers tab in the right sidebar that lists TCP listeners from workspace terminals and from processes whose working directory is inside an open project, with jump-to-pane, open URL, and stop.</li>
+  <li>Drag terminal tabs and session-sidebar entries to reorder them, and drag split panes by their handle to swap places.</li>
+  <li>Keep terminal-tab drags from moving the app window on macOS.</li>
+  <li>Jump to tabs with ⌘1–⌘8, and to the last tab with ⌘9, matching Ghostty.</li>
+  <li>Give every split pane a compact identity header with its alias, live command or directory, agent status, and focused-pane identity across tabs, Sessions, Servers, and context menus.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.9/Vibra-0.3.9.dmg" length="12437262" type="application/octet-stream" sparkle:edSignature="7VL3yqnlmhYG4Vh9eKc4BOJ4JaNrRxD1QeaqgZ06ihfggjZ7saIy9HnqozbyIUkNm0TOjV5GDo4D66RfQGU9CA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.10/Vibra-0.3.10.dmg" length="12508772" type="application/octet-stream" sparkle:edSignature="pNM4KWZ2LDq+NSKJ2Ln0Ejnf62zX8zkLFxp/tEhtaQV/5arIXr5vAEsavLTqDhvnQfhFKtGolV34nzoYZdYPBw=="/>
         </item>
     </channel>
 </rss>
