@@ -3691,16 +3691,6 @@ impl WorkspaceView {
         };
         let left_open = left_progress > 0.5;
         let right_open = right_progress > 0.5;
-        let tabs = self
-            .snapshot
-            .selected_workspace()
-            .map(|workspace| workspace.tabs.clone())
-            .unwrap_or_default();
-        let selected_tab_id = self
-            .snapshot
-            .selected_workspace()
-            .and_then(|workspace| workspace.selected_tab_id);
-        let show_tab_selector = self.editor.is_none() && tabs.len() > 1;
         let right_chrome_content = if right_open {
             self.utility_mode_tabs(cx)
         } else {
@@ -3711,18 +3701,16 @@ impl WorkspaceView {
                 .into_any_element()
         };
 
-        let mut center_chrome = div()
+        let center_chrome = div()
             .h_full()
             .flex_1()
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .bg(colors().terminal);
-        if show_tab_selector {
-            center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
-        } else {
-            center_chrome = center_chrome.window_control_area(WindowControlArea::Drag);
-        }
+            .bg(colors().terminal)
+            // Keep native titlebar dragging in its own strip. The terminal-tab selector is
+            // rendered immediately below this strip so AppKit can never steal its DnD gesture.
+            .window_control_area(WindowControlArea::Drag);
 
         div()
             .h(px(38.0))
@@ -5132,6 +5120,19 @@ impl WorkspaceView {
     fn center_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = self.editor.clone();
 
+        let tabs = if editor.is_none() {
+            self.snapshot
+                .selected_workspace()
+                .map(|workspace| workspace.tabs.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let selected_tab_id = self
+            .snapshot
+            .selected_workspace()
+            .and_then(|workspace| workspace.selected_tab_id);
+
         let panel = div()
             .flex_1()
             .min_w(px(360.0))
@@ -5144,6 +5145,11 @@ impl WorkspaceView {
         if let Some(editor) = editor {
             panel.child(editor)
         } else {
+            let panel = if tabs.len() > 1 {
+                panel.child(self.tab_bar(tabs, selected_tab_id, cx))
+            } else {
+                panel
+            };
             panel.child(self.terminal_canvas(cx))
         }
     }
@@ -5226,10 +5232,6 @@ impl WorkspaceView {
                 let is_source = dragging_tab == Some(tab_id);
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
-                    // The tab selector lives in the transparent native titlebar on macOS.
-                    // Occlude its hitbox so a tab drag is handled by GPUI's DnD instead of
-                    // falling through to AppKit's window-drag gesture.
-                    .occlude()
                     .h(px(26.0))
                     .min_w(px(0.0))
                     .flex_1()
@@ -5350,16 +5352,13 @@ impl WorkspaceView {
             });
 
         div()
-            .h_full()
+            .h(px(34.0))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
             .px(px(12.0))
             .bg(colors().terminal)
-            // Also cover the padding and drop targets between tabs; otherwise beginning a
-            // drag from those gaps can still move the native window.
-            .occlude()
             .child(tab_list)
     }
 
