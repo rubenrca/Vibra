@@ -3712,6 +3712,15 @@ impl WorkspaceView {
             .selected_workspace()
             .and_then(|workspace| workspace.selected_tab_id);
         let show_terminal_tabs = self.editor.is_none();
+        let right_chrome_content = if right_open {
+            self.utility_mode_tabs(cx)
+        } else {
+            div()
+                .h_full()
+                .flex_1()
+                .window_control_area(WindowControlArea::Drag)
+                .into_any_element()
+        };
 
         let mut center_chrome = div()
             .h_full()
@@ -3774,8 +3783,8 @@ impl WorkspaceView {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .justify_end()
                     .pr_2()
+                    .overflow_hidden()
                     .bg(if right_open {
                         colors().panel
                     } else {
@@ -3784,6 +3793,10 @@ impl WorkspaceView {
                     .when(right_progress > 0.001, |chrome| {
                         chrome.border_l_1().border_color(colors().border_subtle)
                     })
+                    .when(right_open, |chrome| {
+                        chrome.border_b_1().border_color(colors().border_subtle)
+                    })
+                    .child(right_chrome_content)
                     .child(self.sidebar_button(
                         "toggle-right-sidebar",
                         false,
@@ -5627,17 +5640,9 @@ impl WorkspaceView {
             })
     }
 
-    fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn utility_mode_tabs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.right_sidebar_mode;
-        let full_width = self.right_sidebar_width();
-        let width = full_width * self.right_sidebar_progress;
-        let show_handle = self.right_sidebar_progress > 0.99;
         let server_count = self.servers_view.read(cx).server_count();
-        let content = match mode {
-            RightSidebarMode::Files => self.files_sidebar_content(cx),
-            RightSidebarMode::Diff => self.diff_view.clone().into_any_element(),
-            RightSidebarMode::Servers => self.servers_view.clone().into_any_element(),
-        };
         let modes = [
             (RightSidebarMode::Files, "Files", "chrome-icons/files.svg"),
             (RightSidebarMode::Diff, "Git", "chrome-icons/git-branch.svg"),
@@ -5647,6 +5652,97 @@ impl WorkspaceView {
                 "chrome-icons/radio.svg",
             ),
         ];
+
+        div()
+            .h_full()
+            .flex_1()
+            .min_w(px(0.0))
+            .flex()
+            .items_center()
+            .pl_3()
+            .child(div().flex().items_center().children(modes.into_iter().map(
+                |(item_mode, label, icon)| {
+                    let selected = item_mode == mode;
+                    div()
+                        .id(SharedString::from(format!("utility-mode-{label}")))
+                        .h(px(26.0))
+                        .relative()
+                        .w(px(32.0))
+                        .mr_2()
+                        .rounded(px(7.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .bg(if selected {
+                            colors().selection
+                        } else {
+                            gpui::rgba(0x00000000)
+                        })
+                        .text_color(if selected {
+                            colors().foreground
+                        } else {
+                            colors().subtle
+                        })
+                        .hover(|tab| tab.bg(colors().hover).text_color(colors().foreground))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.right_sidebar_mode = item_mode;
+                            match item_mode {
+                                RightSidebarMode::Files => this.refresh_project_files(cx),
+                                RightSidebarMode::Diff => {
+                                    this.sync_diff_root(cx);
+                                    this.diff_view.update(cx, |diff_view, cx| {
+                                        diff_view.refresh_now(cx);
+                                    });
+                                }
+                                RightSidebarMode::Servers => {
+                                    this.sync_servers_panel(cx);
+                                    this.servers_view
+                                        .update(cx, |view, cx| view.refresh_now(cx));
+                                }
+                            }
+                            cx.notify();
+                        }))
+                        .child(svg().path(icon).size(px(15.0)).text_color(if selected {
+                            colors().foreground
+                        } else {
+                            colors().subtle
+                        }))
+                        .when(
+                            item_mode == RightSidebarMode::Servers && server_count > 0,
+                            |tab| {
+                                tab.child(
+                                    div()
+                                        .absolute()
+                                        .top(px(8.0))
+                                        .right(px(5.0))
+                                        .size(px(6.0))
+                                        .rounded_full()
+                                        .bg(colors().success),
+                                )
+                            },
+                        )
+                },
+            )))
+            .child(
+                div()
+                    .h_full()
+                    .flex_1()
+                    .window_control_area(WindowControlArea::Drag),
+            )
+            .into_any_element()
+    }
+
+    fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mode = self.right_sidebar_mode;
+        let full_width = self.right_sidebar_width();
+        let width = full_width * self.right_sidebar_progress;
+        let show_handle = self.right_sidebar_progress > 0.99;
+        let content = match mode {
+            RightSidebarMode::Files => self.files_sidebar_content(cx),
+            RightSidebarMode::Diff => self.diff_view.clone().into_any_element(),
+            RightSidebarMode::Servers => self.servers_view.clone().into_any_element(),
+        };
 
         // Outer clips to animated width; inner keeps full panel layout.
         div()
@@ -5664,102 +5760,6 @@ impl WorkspaceView {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(
-                        div()
-                            // Pill selection matches terminal tabs; the bottom edge separates
-                            // this mode picker from its content, without framing each control.
-                            .h(px(36.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap_0()
-                            .pl_3()
-                            .pr_2()
-                            .border_b_1()
-                            .border_color(colors().border_subtle)
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .flex_1()
-                                    .h_full()
-                                    .flex()
-                                    .items_center()
-                                    .children(modes.into_iter().map(|(item_mode, label, icon)| {
-                                        let selected = item_mode == mode;
-                                        div()
-                                            .id(SharedString::from(format!("utility-mode-{label}")))
-                                            .h(px(26.0))
-                                            .relative()
-                                            .w(px(32.0))
-                                            .mr_2()
-                                            .rounded(px(7.0))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .cursor_pointer()
-                                            .bg(if selected {
-                                                colors().selection
-                                            } else {
-                                                gpui::rgba(0x00000000)
-                                            })
-                                            .text_color(if selected {
-                                                colors().foreground
-                                            } else {
-                                                colors().subtle
-                                            })
-                                            .hover(|tab| {
-                                                tab.bg(colors().hover)
-                                                    .text_color(colors().foreground)
-                                            })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.right_sidebar_mode = item_mode;
-                                                match item_mode {
-                                                    RightSidebarMode::Files => {
-                                                        this.refresh_project_files(cx)
-                                                    }
-                                                    RightSidebarMode::Diff => {
-                                                        this.sync_diff_root(cx);
-                                                        this.diff_view.update(
-                                                            cx,
-                                                            |diff_view, cx| {
-                                                                diff_view.refresh_now(cx);
-                                                            },
-                                                        );
-                                                    }
-                                                    RightSidebarMode::Servers => {
-                                                        this.sync_servers_panel(cx);
-                                                        this.servers_view.update(cx, |view, cx| {
-                                                            view.refresh_now(cx)
-                                                        });
-                                                    }
-                                                }
-                                                cx.notify();
-                                            }))
-                                            .child(svg().path(icon).size(px(15.0)).text_color(
-                                                if selected {
-                                                    colors().foreground
-                                                } else {
-                                                    colors().subtle
-                                                },
-                                            ))
-                                            .when(
-                                                item_mode == RightSidebarMode::Servers
-                                                    && server_count > 0,
-                                                |tab| {
-                                                    tab.child(
-                                                        div()
-                                                            .absolute()
-                                                            .top(px(8.0))
-                                                            .right(px(5.0))
-                                                            .size(px(6.0))
-                                                            .rounded_full()
-                                                            .bg(colors().success),
-                                                    )
-                                                },
-                                            )
-                                    })),
-                            ),
-                    )
                     .child(content),
             )
             .when(show_handle, |sidebar| {
