@@ -3673,17 +3673,6 @@ impl WorkspaceView {
         }
     }
 
-    fn close_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        if self.snapshot.close_tab(tab_id) {
-            self.reconcile_terminal_views(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
-        }
-    }
-
     fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let left_progress = self.left_sidebar_progress;
         let right_progress = self.right_sidebar_progress;
@@ -5175,12 +5164,14 @@ impl WorkspaceView {
             _ => None,
         };
         let tab_list = div()
-            .h_full()
+            .h(px(32.0))
             .flex_1()
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(2.0))
+            .rounded_full()
+            .bg(colors().elevated)
             .overflow_x_hidden()
             .children(tabs.into_iter().enumerate().map(|(index, tab)| {
                 let tab_id = tab.id;
@@ -5231,14 +5222,15 @@ impl WorkspaceView {
                 let is_source = dragging_tab == Some(tab_id);
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
-                    .h(px(26.0))
-                    .min_w(px(104.0))
-                    .max_w(px(188.0))
+                    .h(px(30.0))
+                    .min_w(px(0.0))
+                    .flex_1()
+                    .relative()
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
-                    .px(px(9.0))
-                    .rounded(px(7.0))
+                    .justify_center()
+                    .px(px(12.0))
+                    .rounded_full()
                     .when(can_reorder, |tab| tab.cursor_move())
                     .when(!can_reorder, |tab| tab.cursor_pointer())
                     .bg(if selected {
@@ -5246,6 +5238,7 @@ impl WorkspaceView {
                     } else {
                         gpui::rgba(0x00000000)
                     })
+                    .when(selected, |tab| tab.border_1().border_color(colors().muted))
                     .text_color(if selected {
                         colors().foreground
                     } else {
@@ -5290,13 +5283,20 @@ impl WorkspaceView {
                         ))
                     })
                     .when_some(agent_color, |tab, color| {
-                        tab.child(div().size(px(6.0)).flex_none().rounded_full().bg(color))
+                        tab.child(
+                            div()
+                                .absolute()
+                                .left(px(12.0))
+                                .size(px(6.0))
+                                .rounded_full()
+                                .bg(color),
+                        )
                     })
                     .child(
                         div()
                             .min_w(px(0.0))
-                            .flex_1()
                             .truncate()
+                            .text_center()
                             .text_size(px(12.0))
                             .font_weight(if selected {
                                 gpui::FontWeight::MEDIUM
@@ -5305,56 +5305,22 @@ impl WorkspaceView {
                             })
                             .child(title),
                     )
-                    .when(pane_count > 1, |tab| {
+                    .when(index < 9, |tab| {
                         tab.child(
                             div()
-                                .flex_none()
-                                .px(px(4.0))
-                                .h(px(14.0))
-                                .rounded(px(4.0))
-                                .bg(if selected {
-                                    colors().elevated
-                                } else {
-                                    colors().selection
-                                })
-                                .text_size(px(9.0))
+                                .absolute()
+                                .right(px(12.0))
+                                .font_family("JetBrains Mono")
+                                .text_size(px(10.0))
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(colors().muted)
-                                .child(pane_count.to_string()),
+                                .text_color(if selected {
+                                    colors().muted
+                                } else {
+                                    colors().subtle
+                                })
+                                .child(format!("⌘{}", index + 1)),
                         )
                     })
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("close-tab-{tab_id}")))
-                            .size(px(16.0))
-                            .flex_none()
-                            .rounded(px(4.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .text_size(px(12.0))
-                            .text_color(if selected {
-                                colors().muted
-                            } else {
-                                colors().subtle
-                            })
-                            .hover(|close| {
-                                close.bg(colors().elevated).text_color(colors().foreground)
-                            })
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.reorder_drag = None;
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.close_tab(tab_id, window, cx);
-                            }))
-                            .child("×"),
-                    )
             }))
             .when(can_reorder, |list| {
                 list.child(
@@ -5376,8 +5342,7 @@ impl WorkspaceView {
             .flex_none()
             .flex()
             .items_center()
-            .px(px(8.0))
-            .gap(px(6.0))
+            .px(px(12.0))
             .bg(colors().terminal)
             .border_b_1()
             .border_color(colors().border_subtle)

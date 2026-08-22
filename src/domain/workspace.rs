@@ -603,27 +603,6 @@ impl WorkspaceSnapshot {
         true
     }
 
-    pub fn close_tab(&mut self, tab_id: Uuid) -> bool {
-        let Some((project_index, workspace_index)) = self.selected_workspace_indices() else {
-            return false;
-        };
-        let project = &mut self.projects[project_index];
-        let workspaces = project.workspaces.as_mut().expect("normalized");
-        let workspace = &mut workspaces[workspace_index];
-        let Some(tab_index) = workspace.tabs.iter().position(|tab| tab.id == tab_id) else {
-            return false;
-        };
-        workspace.tabs.remove(tab_index);
-        if workspace.tabs.is_empty() {
-            workspaces.remove(workspace_index);
-        }
-        if workspaces.is_empty() {
-            self.projects.remove(project_index);
-        }
-        self.normalize();
-        true
-    }
-
     pub fn close_selected_terminal(&mut self) -> bool {
         let Some((_, _, _, session_index)) = self.selected_session_indices() else {
             return false;
@@ -1866,21 +1845,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn closing_a_tab_removes_every_pane_in_it() {
-        let mut snapshot = WorkspaceSnapshot::default();
-        snapshot.create_workspace(Path::new("/tmp/vibra-close-tab"));
-        snapshot
-            .split_selected_terminal(PaneSplitDirection::Right)
-            .unwrap();
-        let tab_id = snapshot.selected_tab().unwrap().id;
-
-        assert!(snapshot.close_tab(tab_id));
-
-        assert!(snapshot.projects.is_empty());
-        assert!(snapshot.terminal_sessions().is_empty());
     }
 
     #[test]
