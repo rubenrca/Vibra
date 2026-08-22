@@ -3687,8 +3687,7 @@ impl WorkspaceView {
     fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let left_progress = self.left_sidebar_progress;
         let right_progress = self.right_sidebar_progress;
-        // Match the painted sidebar width exactly when open so the titlebar
-        // divider lines up with Files / Git.
+        // Keep titlebar controls aligned with the continuous sidebar surfaces.
         let left_chrome_width = if left_progress > 0.99 {
             self.left_sidebar_width()
         } else {
@@ -3703,37 +3702,30 @@ impl WorkspaceView {
         };
         let left_open = left_progress > 0.5;
         let right_open = right_progress > 0.5;
-        let selected_workspace = self.snapshot.selected_workspace();
-        let selected_workspace_id = selected_workspace.map(|w| w.id);
-        let title_is_manual = selected_workspace.is_some_and(|w| {
-            w.title_source == Some(crate::domain::workspace::WorkspaceTitleSource::Manual)
-        });
-        let workspace_name = selected_workspace
-            .map(|workspace| workspace.name.clone())
-            .unwrap_or_else(|| "Sin espacio".to_owned());
-        // Prefer live cwd basename so the title tracks `cd` (unless renamed manually).
-        let live_title = if title_is_manual {
-            workspace_name
-        } else {
-            selected_workspace_id
-                .and_then(|id| self.sidebar_workspace_meta.get(&id))
-                .map(|meta| directory_basename(&meta.cwd))
-                .filter(|name| !name.is_empty() && name != "—")
-                .unwrap_or(workspace_name)
-        };
-        let branch_subtitle = selected_workspace_id
-            .and_then(|id| self.sidebar_workspace_meta.get(&id))
-            .and_then(format_sidebar_branch);
-        let path_subtitle = selected_workspace_id
-            .and_then(|id| self.sidebar_workspace_meta.get(&id))
-            .map(|meta| format_sidebar_path(&meta.cwd, self.home_directory.as_deref()))
-            .filter(|path| path != "—");
-        let subtitle = match (branch_subtitle.as_deref(), path_subtitle.as_deref()) {
-            (Some(branch), Some(path)) => format!("{branch} · {path}"),
-            (Some(branch), None) => branch.to_owned(),
-            (None, Some(path)) => path.to_owned(),
-            (None, None) => "Local".to_owned(),
-        };
+        let tabs = self
+            .snapshot
+            .selected_workspace()
+            .map(|workspace| workspace.tabs.clone())
+            .unwrap_or_default();
+        let selected_tab_id = self
+            .snapshot
+            .selected_workspace()
+            .and_then(|workspace| workspace.selected_tab_id);
+        let show_terminal_tabs = self.editor.is_none();
+
+        let mut center_chrome = div()
+            .h_full()
+            .flex_1()
+            .min_w(px(0.0))
+            .flex()
+            .items_center()
+            .window_control_area(WindowControlArea::Drag);
+        if show_terminal_tabs {
+            center_chrome =
+                center_chrome
+                    .bg(colors().terminal)
+                    .child(self.tab_bar(tabs, selected_tab_id, cx));
+        }
 
         div()
             .h(px(38.0))
@@ -3780,41 +3772,7 @@ impl WorkspaceView {
                             .window_control_area(WindowControlArea::Drag),
                     ),
             )
-            .child(
-                div()
-                    .h_full()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .flex()
-                    .items_center()
-                    .px_4()
-                    .gap_2()
-                    .window_control_area(WindowControlArea::Drag)
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(12.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(colors().foreground)
-                                    .child(live_title),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .font_family("JetBrains Mono")
-                                    .text_size(px(10.0))
-                                    .text_color(colors().subtle)
-                                    .child(subtitle),
-                            ),
-                    ),
-            )
+            .child(center_chrome)
             .child(
                 div()
                     .w(px(right_chrome_width))
@@ -5176,15 +5134,6 @@ impl WorkspaceView {
 
     fn center_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = self.editor.clone();
-        let tabs = self
-            .snapshot
-            .selected_workspace()
-            .map(|workspace| workspace.tabs.clone())
-            .unwrap_or_default();
-        let selected_tab_id = self
-            .snapshot
-            .selected_workspace()
-            .and_then(|workspace| workspace.selected_tab_id);
 
         let panel = div()
             .flex_1()
@@ -5198,10 +5147,7 @@ impl WorkspaceView {
         if let Some(editor) = editor {
             panel.child(editor)
         } else {
-            // Always show the tab strip so a single session still has title + new-tab chrome.
-            panel
-                .child(self.tab_bar(tabs, selected_tab_id, cx))
-                .child(self.terminal_canvas(cx))
+            panel.child(self.terminal_canvas(cx))
         }
     }
 
