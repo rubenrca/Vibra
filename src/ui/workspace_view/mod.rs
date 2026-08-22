@@ -3781,9 +3781,6 @@ impl WorkspaceView {
                     .when(right_progress > 0.001, |chrome| {
                         chrome.border_l_1().border_color(colors().border_subtle)
                     })
-                    .when(right_open && show_tab_selector, |chrome| {
-                        chrome.border_b_1().border_color(colors().border_subtle)
-                    })
                     .child(right_chrome_content)
                     .child(self.sidebar_button(
                         "toggle-right-sidebar",
@@ -5347,8 +5344,6 @@ impl WorkspaceView {
             .items_center()
             .px(px(12.0))
             .bg(colors().terminal)
-            .border_b_1()
-            .border_color(colors().border_subtle)
             .child(tab_list)
     }
 
