@@ -5242,6 +5242,12 @@ impl WorkspaceView {
                     } else {
                         gpui::rgba(0x00000000)
                     })
+                    .border_1()
+                    .border_color(if selected {
+                        colors().muted
+                    } else {
+                        colors().border_subtle
+                    })
                     .text_color(if selected {
                         colors().foreground
                     } else {
