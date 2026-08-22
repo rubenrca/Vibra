@@ -5157,20 +5157,18 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let can_reorder = tabs.len() > 1;
+        let tab_count = tabs.len();
         let dragging_tab = match self.reorder_drag {
             Some(ReorderDrag::Tab(id)) if cx.has_active_drag() => Some(id),
             _ => None,
         };
         let tab_list = div()
-            .h(px(32.0))
+            .h_full()
             .flex_1()
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .justify_center()
-            .gap(px(2.0))
-            .rounded(px(12.0))
-            .bg(colors().elevated)
+            .gap(px(4.0))
             .overflow_x_hidden()
             .children(tabs.into_iter().enumerate().map(|(index, tab)| {
                 let tab_id = tab.id;
@@ -5198,6 +5196,11 @@ impl WorkspaceView {
                     live_cwd.as_deref(),
                     index,
                 );
+                let title = if tab_count > 1 {
+                    format!("{title} {}", index + 1)
+                } else {
+                    title
+                };
                 let agent_color = tab
                     .sessions
                     .iter()
@@ -5221,16 +5224,16 @@ impl WorkspaceView {
                 let is_source = dragging_tab == Some(tab_id);
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
-                    .h(px(30.0))
-                    .min_w(px(0.0))
-                    .max_w(px(260.0))
-                    .flex_1()
+                    .h(px(26.0))
+                    .min_w(px(104.0))
+                    .max_w(px(220.0))
+                    .flex_none()
                     .relative()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .px(px(12.0))
-                    .rounded(px(10.0))
+                    .px(px(10.0))
+                    .rounded(px(7.0))
                     .when(can_reorder, |tab| tab.cursor_move())
                     .when(!can_reorder, |tab| tab.cursor_pointer())
                     .bg(if selected {
@@ -5238,7 +5241,6 @@ impl WorkspaceView {
                     } else {
                         gpui::rgba(0x00000000)
                     })
-                    .when(selected, |tab| tab.border_1().border_color(colors().muted))
                     .text_color(if selected {
                         colors().foreground
                     } else {
@@ -5305,29 +5307,13 @@ impl WorkspaceView {
                             })
                             .child(title),
                     )
-                    .when(index < 9, |tab| {
-                        tab.child(
-                            div()
-                                .absolute()
-                                .right(px(12.0))
-                                .font_family("JetBrains Mono")
-                                .text_size(px(10.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(if selected {
-                                    colors().muted
-                                } else {
-                                    colors().subtle
-                                })
-                                .child(format!("⌘{}", index + 1)),
-                        )
-                    })
             }))
             .when(can_reorder, |list| {
                 list.child(
                     div()
                         .id("tab-drop-end")
                         .h_full()
-                        .w(px(24.0))
+                        .w(px(16.0))
                         .flex_none()
                         .can_drop(|value, _, _| value.downcast_ref::<TabDrag>().is_some())
                         .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
