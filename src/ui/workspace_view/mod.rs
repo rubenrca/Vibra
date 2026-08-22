@@ -167,13 +167,15 @@ struct TabDrag {
     tab_id: Uuid,
     title: String,
     selected: bool,
-    pane_count: usize,
+    shortcut: Option<String>,
+    tab_count: usize,
 }
 
 struct TabDragView {
     title: String,
     selected: bool,
-    pane_count: usize,
+    shortcut: Option<String>,
+    width: f32,
 }
 
 #[derive(Clone)]
@@ -350,45 +352,53 @@ impl Render for SidebarResizeDragView {
 impl Render for TabDragView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected;
-        let pane_count = self.pane_count;
         div()
             .h(px(26.0))
-            .min_w(px(104.0))
-            .max_w(px(188.0))
+            .w(px(self.width))
+            .relative()
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .px(px(9.0))
+            .justify_center()
+            .px(px(10.0))
             .rounded(px(7.0))
             .bg(if selected {
                 colors().selection
             } else {
-                colors().elevated
+                gpui::rgba(0x00000000)
+            })
+            .border_1()
+            .border_color(if selected {
+                colors().muted
+            } else {
+                colors().border_subtle
             })
             .text_color(colors().foreground)
             .shadow_sm()
-            .opacity(0.92)
+            .opacity(0.96)
             .child(
                 div()
                     .min_w(px(0.0))
-                    .flex_1()
                     .truncate()
+                    .text_center()
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(self.title.clone()),
             )
-            .when(pane_count > 1, |tab| {
+            .when_some(self.shortcut.clone(), |tab, shortcut| {
                 tab.child(
                     div()
+                        .absolute()
+                        .right(px(10.0))
                         .flex_none()
-                        .px(px(4.0))
-                        .h(px(14.0))
-                        .rounded(px(4.0))
-                        .bg(colors().elevated)
-                        .text_size(px(9.0))
+                        .font_family("JetBrains Mono")
+                        .text_size(px(9.5))
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(colors().muted)
-                        .child(pane_count.to_string()),
+                        .text_color(if selected {
+                            colors().muted
+                        } else {
+                            colors().subtle
+                        })
+                        .child(shortcut),
                 )
             })
     }
@@ -5188,7 +5198,6 @@ impl WorkspaceView {
                 let after_tab_id = tab_ids.get(index + 1).copied();
                 let tab_order = tab_ids.clone();
                 let selected = Some(tab_id) == selected_tab_id;
-                let pane_count = tab.sessions.len();
                 let session = tab
                     .sessions
                     .iter()
@@ -5216,6 +5225,7 @@ impl WorkspaceView {
                 } else {
                     title
                 };
+                let shortcut = (index < 9).then(|| format!("⌘{}", index + 1));
                 let agent_color = tab
                     .sessions
                     .iter()
@@ -5234,7 +5244,8 @@ impl WorkspaceView {
                     tab_id,
                     title: title.clone(),
                     selected,
-                    pane_count,
+                    shortcut: shortcut.clone(),
+                    tab_count,
                 };
                 let is_source = dragging_tab == Some(tab_id);
                 div()
@@ -5286,11 +5297,17 @@ impl WorkspaceView {
                         this.select_tab(tab_id, window, cx);
                     }))
                     .when(can_reorder, |tab| {
-                        tab.on_drag(drag, |drag, _, _, cx| {
+                        tab.on_drag(drag, |drag, _, window, cx| {
+                            // Tabs fill the central chrome, so derive the preview width from the
+                            // live window and tab count instead of rendering a compact chip.
+                            let window_width: f32 = window.bounds().size.width.into();
+                            let width =
+                                (window_width * (0.52 / drag.tab_count as f32)).clamp(160.0, 420.0);
                             cx.new(|_| TabDragView {
                                 title: drag.title.clone(),
                                 selected: drag.selected,
-                                pane_count: drag.pane_count,
+                                shortcut: drag.shortcut.clone(),
+                                width,
                             })
                         })
                         .can_drop(move |value, _, _| {
@@ -5335,7 +5352,7 @@ impl WorkspaceView {
                             })
                             .child(title),
                     )
-                    .when(index < 9, |tab| {
+                    .when_some(shortcut, |tab, shortcut| {
                         tab.child(
                             div()
                                 .absolute()
@@ -5348,7 +5365,7 @@ impl WorkspaceView {
                                 } else {
                                     colors().subtle
                                 })
-                                .child(format!("⌘{}", index + 1)),
+                                .child(shortcut),
                         )
                     })
             }))
