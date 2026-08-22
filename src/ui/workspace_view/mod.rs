@@ -3756,15 +3756,6 @@ impl WorkspaceView {
                             this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
                         }),
                     )
-                    .child(self.chrome_button(
-                        "+",
-                        "new-workspace-toolbar",
-                        false,
-                        cx,
-                        |this, window, cx| {
-                            this.open_workspace_in_current_directory(window, cx);
-                        },
-                    ))
                     .child(
                         div()
                             .h_full()
@@ -5368,32 +5359,6 @@ impl WorkspaceView {
             .gap(px(6.0))
             .bg(colors().terminal)
             .child(tab_list)
-            .child(
-                div()
-                    .id("new-terminal-tab")
-                    .size(px(26.0))
-                    .flex_none()
-                    .rounded(px(7.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .text_size(px(15.0))
-                    .text_color(colors().muted)
-                    .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
-                    .active(|button| button.opacity(0.8))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_terminal_tab_in_current_directory(window, cx);
-                    }))
-                    .when(can_reorder, |button| {
-                        button
-                            .can_drop(|value, _, _| value.downcast_ref::<TabDrag>().is_some())
-                            .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
-                                this.reorder_tab(drag.tab_id, None, window, cx);
-                            }))
-                    })
-                    .child("+"),
-            )
     }
 
     fn render_pane_layout(
@@ -6172,41 +6137,6 @@ impl WorkspaceView {
             .active(|close| close.opacity(0.72))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
             .child("×")
-    }
-
-    fn chrome_button(
-        &self,
-        label: &'static str,
-        id: &'static str,
-        selected: bool,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .size(px(24.0))
-            .flex_none()
-            .rounded(px(5.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .bg(if selected {
-                colors().selection
-            } else {
-                colors().terminal
-            })
-            .text_size(px(14.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(if selected {
-                colors().foreground
-            } else {
-                colors().muted
-            })
-            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
-            .active(|button| button.opacity(0.72))
-            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-            .child(label)
     }
 
     fn sidebar_icon(left: bool) -> Div {
