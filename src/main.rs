@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use directories::BaseDirs;
 use gpui::{
-    App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, SystemMenuType,
+    Action, App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, SystemMenuType,
     TitlebarOptions, WindowBounds, WindowOptions, actions, px, size,
 };
 
@@ -64,6 +64,14 @@ actions!(
         Quit
     ]
 );
+
+/// Ghostty-style tab jump. `1..=8` select that tab (or the last one if there
+/// aren't enough); `9` always selects the last tab.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = vibra, no_json)]
+pub struct GoToTab {
+    pub index: usize,
+}
 
 fn launch_directory() -> PathBuf {
     resolve_launch_directory(
@@ -132,6 +140,15 @@ fn run() -> Result<()> {
                 KeyBinding::new("cmd--", DecreaseTerminalFontSize, Some("Terminal")),
                 KeyBinding::new("cmd-0", ResetTerminalFontSize, Some("Terminal")),
                 KeyBinding::new("cmd-k", ClearTerminalScrollback, Some("Terminal")),
+                KeyBinding::new("cmd-1", GoToTab { index: 1 }, None),
+                KeyBinding::new("cmd-2", GoToTab { index: 2 }, None),
+                KeyBinding::new("cmd-3", GoToTab { index: 3 }, None),
+                KeyBinding::new("cmd-4", GoToTab { index: 4 }, None),
+                KeyBinding::new("cmd-5", GoToTab { index: 5 }, None),
+                KeyBinding::new("cmd-6", GoToTab { index: 6 }, None),
+                KeyBinding::new("cmd-7", GoToTab { index: 7 }, None),
+                KeyBinding::new("cmd-8", GoToTab { index: 8 }, None),
+                KeyBinding::new("cmd-9", GoToTab { index: 9 }, None),
                 KeyBinding::new("cmd-d", SplitPaneRight, None),
                 KeyBinding::new("shift-cmd-d", SplitPaneDown, None),
                 KeyBinding::new("ctrl-alt-cmd-left", SplitPaneLeft, None),
@@ -205,6 +222,16 @@ fn run() -> Result<()> {
                     items: vec![
                         MenuItem::action("Previous Workspace", PreviousWorkspace),
                         MenuItem::action("Next Workspace", NextWorkspace),
+                        MenuItem::separator(),
+                        MenuItem::action("Go to Tab 1", GoToTab { index: 1 }),
+                        MenuItem::action("Go to Tab 2", GoToTab { index: 2 }),
+                        MenuItem::action("Go to Tab 3", GoToTab { index: 3 }),
+                        MenuItem::action("Go to Tab 4", GoToTab { index: 4 }),
+                        MenuItem::action("Go to Tab 5", GoToTab { index: 5 }),
+                        MenuItem::action("Go to Tab 6", GoToTab { index: 6 }),
+                        MenuItem::action("Go to Tab 7", GoToTab { index: 7 }),
+                        MenuItem::action("Go to Tab 8", GoToTab { index: 8 }),
+                        MenuItem::action("Go to Last Tab", GoToTab { index: 9 }),
                     ],
                 },
             ]);

@@ -37,13 +37,13 @@ use crate::ui::agent_marks::{agent_sidebar_badge, agent_status_color};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
 use crate::ui::servers::{ServerRoot, ServersView, ServersViewEvent};
-use crate::ui::terminal::{TerminalView, TerminalViewEvent};
+use crate::ui::terminal::{TerminalDragPreview, TerminalView, TerminalViewEvent};
 use crate::ui::theme::{self, AppearanceMode, ThemeTone, colors};
 use crate::{
     CloseTerminal, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
-    NewTerminalTab, NewWorkspace, NextPane, NextWorkspace, PreviousPane, PreviousWorkspace,
-    QuickOpen, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, ShowSettings,
-    SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette,
+    GoToTab, NewTerminalTab, NewWorkspace, NextPane, NextWorkspace, PreviousPane,
+    PreviousWorkspace, QuickOpen, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp,
+    ShowSettings, SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette,
     ToggleLeftSidebar, TogglePaneZoom, ToggleRightSidebar,
 };
 
@@ -160,6 +160,61 @@ struct PaneDividerDrag {
 
 struct PaneDividerDragView {
     axis: WorkspaceSplitAxis,
+}
+
+#[derive(Clone)]
+struct TabDrag {
+    tab_id: Uuid,
+    title: String,
+    selected: bool,
+    pane_count: usize,
+}
+
+struct TabDragView {
+    title: String,
+    selected: bool,
+    pane_count: usize,
+}
+
+#[derive(Clone)]
+struct PaneDrag {
+    session_id: Uuid,
+    preview: TerminalDragPreview,
+}
+
+#[derive(Clone)]
+struct SidebarWorkspaceDrag {
+    workspace_id: Uuid,
+    title: String,
+    branch: Option<String>,
+    path: String,
+    selected: bool,
+    dirty: bool,
+    behind: usize,
+    agent_kind: Option<String>,
+    agent_state: Option<AgentRuntimeState>,
+    agent_attention: Option<AgentAttention>,
+    width: f32,
+}
+
+struct SidebarWorkspaceDragView {
+    title: String,
+    branch: Option<String>,
+    path: String,
+    selected: bool,
+    dirty: bool,
+    behind: usize,
+    agent_kind: Option<String>,
+    agent_state: Option<AgentRuntimeState>,
+    agent_attention: Option<AgentAttention>,
+    width: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReorderDrag {
+    Tab(Uuid),
+    Pane(Uuid),
+    SidebarWorkspace(Uuid),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -292,6 +347,115 @@ impl Render for SidebarResizeDragView {
     }
 }
 
+impl Render for TabDragView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.selected;
+        let pane_count = self.pane_count;
+        div()
+            .h(px(26.0))
+            .min_w(px(104.0))
+            .max_w(px(188.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(9.0))
+            .rounded(px(7.0))
+            .bg(if selected {
+                colors().selection
+            } else {
+                colors().elevated
+            })
+            .text_color(colors().foreground)
+            .shadow_sm()
+            .opacity(0.92)
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .flex_1()
+                    .truncate()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(self.title.clone()),
+            )
+            .when(pane_count > 1, |tab| {
+                tab.child(
+                    div()
+                        .flex_none()
+                        .px(px(4.0))
+                        .h(px(14.0))
+                        .rounded(px(4.0))
+                        .bg(colors().elevated)
+                        .text_size(px(9.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(colors().muted)
+                        .child(pane_count.to_string()),
+                )
+            })
+    }
+}
+
+impl Render for SidebarWorkspaceDragView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let branch_color = match (self.dirty, self.behind > 0) {
+            (true, _) => colors().warning,
+            (_, true) => colors().accent,
+            _ if self.selected => colors().muted,
+            _ => colors().subtle,
+        };
+        let path_color = if self.selected {
+            colors().muted
+        } else {
+            colors().subtle
+        };
+        let title_color = if self.selected {
+            colors().foreground
+        } else {
+            colors().muted
+        };
+
+        div()
+            .h(px(64.0))
+            .w(px(self.width))
+            .px_3()
+            .rounded(px(8.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .bg(if self.selected {
+                colors().selection
+            } else {
+                colors().sidebar
+            })
+            .child(agent_sidebar_badge(
+                self.agent_kind.as_deref(),
+                self.agent_state,
+                self.agent_attention,
+                self.selected,
+            ))
+            .child(
+                div()
+                    .w(px(self.width - LEFT_SIDEBAR_TAB_CHROME))
+                    .flex_none()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .gap(px(1.0))
+                    .child(sidebar_tab_line(
+                        &self.title,
+                        title_color,
+                        12.0,
+                        true,
+                        false,
+                    ))
+                    .when_some(self.branch.clone(), |col, branch| {
+                        col.child(sidebar_tab_line(&branch, branch_color, 10.0, true, true))
+                    })
+                    .child(sidebar_tab_line(&self.path, path_color, 9.5, false, true)),
+            )
+    }
+}
+
 pub struct WorkspaceView {
     snapshot: WorkspaceSnapshot,
     repository: WorkspaceRepository,
@@ -355,6 +519,7 @@ pub struct WorkspaceView {
     initial_terminal_focus_pending: bool,
     pane_resize_dirty: bool,
     sidebar_resize_dirty: bool,
+    reorder_drag: Option<ReorderDrag>,
     persistence_error: Option<SharedString>,
     persist_generation: u64,
     _persist_task: Option<Task<()>>,
@@ -554,6 +719,7 @@ impl WorkspaceView {
             initial_terminal_focus_pending: true,
             pane_resize_dirty: false,
             sidebar_resize_dirty: false,
+            reorder_drag: None,
             persistence_error,
             persist_generation: 0,
             _persist_task: None,
@@ -3003,6 +3169,73 @@ impl WorkspaceView {
             self.sidebar_resize_dirty = false;
             self.persist_settings(cx);
         }
+        if self.reorder_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn go_to_tab(&mut self, action: &GoToTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette_mode.is_some() || self.settings_open || self.rename_prompt.is_some() {
+            return;
+        }
+        if self.snapshot.select_tab_number(action.index) {
+            self.sync_terminal_surface_visibility(cx);
+            self.sync_diff_root(cx);
+            self.refresh_project_files(cx);
+            self.refresh_sidebar_workspace_meta(cx);
+            self.persist(cx);
+        }
+        self.focus_selected_terminal(window, cx);
+    }
+
+    fn reorder_tab(
+        &mut self,
+        tab_id: Uuid,
+        before_tab_id: Option<Uuid>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reorder_drag = None;
+        if self.snapshot.move_tab(tab_id, before_tab_id) {
+            self.sync_terminal_surface_visibility(cx);
+            self.sync_diff_root(cx);
+            self.refresh_project_files(cx);
+            self.refresh_sidebar_workspace_meta(cx);
+            self.persist(cx);
+            self.focus_selected_terminal(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn reorder_sidebar_workspace(
+        &mut self,
+        workspace_id: Uuid,
+        before_workspace_id: Option<Uuid>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reorder_drag = None;
+        if self
+            .snapshot
+            .move_workspace(workspace_id, before_workspace_id)
+        {
+            self.persist(cx);
+            self.focus_selected_terminal(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn swap_panes(&mut self, from: Uuid, onto: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        self.reorder_drag = None;
+        if self.snapshot.swap_tab_terminals(from, onto) {
+            self.sync_terminal_surface_visibility(cx);
+            self.sync_diff_root(cx);
+            self.refresh_project_files(cx);
+            self.refresh_sidebar_workspace_meta(cx);
+            self.persist(cx);
+            self.focus_terminal(from, window, cx);
+        }
+        cx.notify();
     }
 
     fn left_sidebar_width(&self) -> f32 {
@@ -3176,8 +3409,9 @@ impl WorkspaceView {
             return;
         }
         self.window_is_active = window.is_window_active();
-        self.servers_view
-            .update(cx, |view, cx| view.set_window_active(self.window_is_active, cx));
+        self.servers_view.update(cx, |view, cx| {
+            view.set_window_active(self.window_is_active, cx)
+        });
         self._activation_subscription =
             Some(cx.observe_window_activation(window, |this, window, cx| {
                 this.window_is_active = window.is_window_active();
@@ -3673,6 +3907,11 @@ impl WorkspaceView {
 
     fn sessions_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let entries = self.snapshot.workspace_entries();
+        let can_reorder = entries.len() > 1;
+        let dragging_workspace = match self.reorder_drag {
+            Some(ReorderDrag::SidebarWorkspace(id)) if cx.has_active_drag() => Some(id),
+            _ => None,
+        };
         let agent_summaries: HashMap<_, _> = entries
             .iter()
             .filter_map(|entry| {
@@ -3778,6 +4017,22 @@ impl WorkspaceView {
                         } else {
                             colors().muted
                         };
+                        let drag = SidebarWorkspaceDrag {
+                            workspace_id,
+                            title: title_label.clone(),
+                            branch: branch_label.clone(),
+                            path: path_label.clone(),
+                            selected,
+                            dirty: meta.map(|m| m.dirty).unwrap_or(false),
+                            behind: meta.map(|m| m.behind).unwrap_or_default(),
+                            agent_kind: agent.as_ref().map(|(kind, _, _)| kind.clone()),
+                            agent_state: agent.as_ref().map(|(_, state, _)| *state),
+                            agent_attention: agent
+                                .as_ref()
+                                .and_then(|(_, _, attention)| *attention),
+                            width: self.left_sidebar_width() - 16.0,
+                        };
+                        let is_source = dragging_workspace == Some(workspace_id);
                         // Explicit text width avoids flex+truncate collapsing labels to "…".
                         div()
                             .id(SharedString::from(format!("workspace-{workspace_id}")))
@@ -3790,7 +4045,8 @@ impl WorkspaceView {
                             .items_center()
                             .gap_2()
                             .rounded(px(8.0))
-                            .cursor_pointer()
+                            .when(can_reorder, |item| item.cursor_move())
+                            .when(!can_reorder, |item| item.cursor_pointer())
                             .bg(if selected {
                                 colors().selection
                             } else {
@@ -3798,9 +4054,18 @@ impl WorkspaceView {
                             })
                             .hover(|item| item.bg(colors().hover))
                             .active(|item| item.opacity(0.82))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_workspace(project_id, workspace_id, window, cx);
-                            }))
+                            .when(is_source, |item| item.opacity(0.45))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    if can_reorder {
+                                        this.reorder_drag =
+                                            Some(ReorderDrag::SidebarWorkspace(workspace_id));
+                                    }
+                                    this.close_context_menu(cx);
+                                    this.select_workspace(project_id, workspace_id, window, cx);
+                                }),
+                            )
                             .on_mouse_down(
                                 MouseButton::Right,
                                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -3818,6 +4083,43 @@ impl WorkspaceView {
                                     cx.stop_propagation();
                                 }),
                             )
+                            .when(can_reorder, |item| {
+                                item.on_drag(drag, |drag, _, _, cx| {
+                                    cx.new(|_| SidebarWorkspaceDragView {
+                                        title: drag.title.clone(),
+                                        branch: drag.branch.clone(),
+                                        path: drag.path.clone(),
+                                        selected: drag.selected,
+                                        dirty: drag.dirty,
+                                        behind: drag.behind,
+                                        agent_kind: drag.agent_kind.clone(),
+                                        agent_state: drag.agent_state,
+                                        agent_attention: drag.agent_attention,
+                                        width: drag.width,
+                                    })
+                                })
+                                .can_drop(move |value, _, _| {
+                                    value
+                                        .downcast_ref::<SidebarWorkspaceDrag>()
+                                        .is_some_and(|drag| drag.workspace_id != workspace_id)
+                                })
+                                .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
+                                    style
+                                        .border_2()
+                                        .border_color(colors().accent)
+                                        .bg(colors().selection)
+                                })
+                                .on_drop(cx.listener(
+                                    move |this, drag: &SidebarWorkspaceDrag, window, cx| {
+                                        this.reorder_sidebar_workspace(
+                                            drag.workspace_id,
+                                            Some(workspace_id),
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                            })
                             .child(agent_sidebar_badge(
                                 agent.as_ref().map(|(kind, _, _)| kind.as_str()),
                                 agent.as_ref().map(|(_, state, _)| *state),
@@ -3857,7 +4159,32 @@ impl WorkspaceView {
                                         true,
                                     )),
                             )
-                    })),
+                    }))
+                    .when(can_reorder, |list| {
+                        list.child(
+                            div()
+                                .id("workspace-drop-end")
+                                .flex_1()
+                                .min_h(px(20.0))
+                                .w_full()
+                                .can_drop(|value, _, _| {
+                                    value.downcast_ref::<SidebarWorkspaceDrag>().is_some()
+                                })
+                                .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
+                                    style.h(px(20.0)).border_t_2().border_color(colors().accent)
+                                })
+                                .on_drop(cx.listener(
+                                    |this, drag: &SidebarWorkspaceDrag, window, cx| {
+                                        this.reorder_sidebar_workspace(
+                                            drag.workspace_id,
+                                            None,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                )),
+                        )
+                    }),
             );
         }
 
@@ -4894,6 +5221,11 @@ impl WorkspaceView {
         selected_tab_id: Option<Uuid>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let can_reorder = tabs.len() > 1;
+        let dragging_tab = match self.reorder_drag {
+            Some(ReorderDrag::Tab(id)) if cx.has_active_drag() => Some(id),
+            _ => None,
+        };
         let tab_list = div()
             .h_full()
             .flex_1()
@@ -4942,6 +5274,13 @@ impl WorkspaceView {
                     })
                     .max_by_key(|(rank, _)| *rank)
                     .map(|(_, color)| color);
+                let drag = TabDrag {
+                    tab_id,
+                    title: title.clone(),
+                    selected,
+                    pane_count,
+                };
+                let is_source = dragging_tab == Some(tab_id);
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
                     .h(px(26.0))
@@ -4952,7 +5291,8 @@ impl WorkspaceView {
                     .gap(px(6.0))
                     .px(px(9.0))
                     .rounded(px(7.0))
-                    .cursor_pointer()
+                    .when(can_reorder, |tab| tab.cursor_move())
+                    .when(!can_reorder, |tab| tab.cursor_pointer())
                     .bg(if selected {
                         colors().selection
                     } else {
@@ -4971,9 +5311,36 @@ impl WorkspaceView {
                         }
                     })
                     .active(|tab| tab.opacity(0.88))
+                    .when(is_source, |tab| tab.opacity(0.45))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.reorder_drag = Some(ReorderDrag::Tab(tab_id));
+                            this.select_tab(tab_id, window, cx);
+                        }),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_tab(tab_id, window, cx);
                     }))
+                    .when(can_reorder, |tab| {
+                        tab.on_drag(drag, |drag, _, _, cx| {
+                            cx.new(|_| TabDragView {
+                                title: drag.title.clone(),
+                                selected: drag.selected,
+                                pane_count: drag.pane_count,
+                            })
+                        })
+                        .can_drop(move |value, _, _| {
+                            value
+                                .downcast_ref::<TabDrag>()
+                                .is_some_and(|drag| drag.tab_id != tab_id)
+                        })
+                        .on_drop(cx.listener(
+                            move |this, drag: &TabDrag, window, cx| {
+                                this.reorder_tab(drag.tab_id, Some(tab_id), window, cx);
+                            },
+                        ))
+                    })
                     .when_some(agent_color, |tab, color| {
                         tab.child(div().size(px(6.0)).flex_none().rounded_full().bg(color))
                     })
@@ -5017,6 +5384,7 @@ impl WorkspaceView {
                             .flex()
                             .items_center()
                             .justify_center()
+                            .cursor_pointer()
                             .text_size(px(12.0))
                             .text_color(if selected {
                                 colors().muted
@@ -5026,13 +5394,33 @@ impl WorkspaceView {
                             .hover(|close| {
                                 close.bg(colors().elevated).text_color(colors().foreground)
                             })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.reorder_drag = None;
+                                    cx.stop_propagation();
+                                }),
+                            )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.close_tab(tab_id, window, cx);
                             }))
                             .child("×"),
                     )
-            }));
+            }))
+            .when(can_reorder, |list| {
+                list.child(
+                    div()
+                        .id("tab-drop-end")
+                        .h_full()
+                        .flex_1()
+                        .min_w(px(16.0))
+                        .can_drop(|value, _, _| value.downcast_ref::<TabDrag>().is_some())
+                        .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
+                            this.reorder_tab(drag.tab_id, None, window, cx);
+                        })),
+                )
+            });
 
         div()
             .h(px(36.0))
@@ -5063,6 +5451,13 @@ impl WorkspaceView {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_terminal_tab_in_current_directory(window, cx);
                     }))
+                    .when(can_reorder, |button| {
+                        button
+                            .can_drop(|value, _, _| value.downcast_ref::<TabDrag>().is_some())
+                            .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
+                                this.reorder_tab(drag.tab_id, None, window, cx);
+                            }))
+                    })
                     .child("+"),
             )
     }
@@ -5077,6 +5472,27 @@ impl WorkspaceView {
             PaneLayoutSnapshot::Terminal { id } => {
                 let session_id = *id;
                 let terminal = self.terminals.get(&session_id).cloned();
+                let drag_preview = terminal
+                    .as_ref()
+                    .map(|terminal| terminal.read(cx).drag_preview())
+                    .unwrap_or_else(TerminalDragPreview::empty);
+                let pane_count = self
+                    .snapshot
+                    .selected_tab()
+                    .map_or(1, |tab| tab.sessions.len());
+                let can_drag = self
+                    .snapshot
+                    .selected_tab()
+                    .is_some_and(|tab| tab.zoomed_session_id.is_none() && pane_count > 1);
+                let dragging_pane = match self.reorder_drag {
+                    Some(ReorderDrag::Pane(id)) if cx.has_active_drag() => Some(id),
+                    _ => None,
+                };
+                let is_source = dragging_pane == Some(session_id);
+                let drag = PaneDrag {
+                    session_id,
+                    preview: drag_preview,
+                };
                 div()
                     .id(SharedString::from(format!("pane-{session_id}")))
                     .size_full()
@@ -5084,9 +5500,17 @@ impl WorkspaceView {
                     .min_h(px(48.0))
                     .relative()
                     .overflow_hidden()
+                    .when(is_source, |pane| pane.opacity(0.55))
+                    .when(can_drag, |pane| {
+                        pane.cursor_move()
+                            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.preview.clone()))
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
+                            if can_drag {
+                                this.reorder_drag = Some(ReorderDrag::Pane(session_id));
+                            }
                             this.close_context_menu(cx);
                             this.select_terminal(session_id, window, cx);
                         }),
@@ -5102,6 +5526,32 @@ impl WorkspaceView {
                         }),
                     )
                     .when_some(terminal, |pane, terminal| pane.child(terminal))
+                    // GPUI registers drop listeners while laying out the element. Keep this
+                    // transparent target mounted before a drag begins; mounting it only once a
+                    // drag is active means it never receives the drop that started that drag.
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("pane-drop-{session_id}")))
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .can_drop(move |value, _, _| {
+                                value
+                                    .downcast_ref::<PaneDrag>()
+                                    .is_some_and(|drag| drag.session_id != session_id)
+                            })
+                            .drag_over::<PaneDrag>(|style, _, _, _| {
+                                style
+                                    .border_2()
+                                    .border_color(colors().accent)
+                                    .bg(colors().selection)
+                            })
+                            .on_drop(cx.listener(move |this, drag: &PaneDrag, window, cx| {
+                                this.swap_panes(drag.session_id, session_id, window, cx);
+                            })),
+                    )
                     .into_any_element()
             }
             PaneLayoutSnapshot::Split {
@@ -5903,6 +6353,7 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::toggle_right_sidebar))
             .on_action(cx.listener(Self::previous_workspace))
             .on_action(cx.listener(Self::next_workspace))
+            .on_action(cx.listener(Self::go_to_tab))
             .on_action(cx.listener(Self::split_pane_left))
             .on_action(cx.listener(Self::split_pane_right))
             .on_action(cx.listener(Self::split_pane_up))

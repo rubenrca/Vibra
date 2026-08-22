@@ -21,6 +21,7 @@ fn main() {
         .file(manifest_dir.join("native/notification_bridge.m"))
         .include(manifest_dir.join("native"))
         .flag("-fobjc-arc")
+        .flag("-fobjc-exceptions")
         .compile("vibra_notification_bridge");
     cc::Build::new()
         .file(manifest_dir.join("native/process_inspect.c"))

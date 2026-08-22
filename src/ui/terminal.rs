@@ -160,6 +160,20 @@ pub struct TerminalView {
     _bell_task: Option<Task<()>>,
 }
 
+/// A non-interactive, frozen rendering of a terminal used while its pane is
+/// being dragged. Keeping it separate from `TerminalView` ensures the drag
+/// image cannot resize or send input to the live terminal.
+#[derive(Clone)]
+pub(crate) struct TerminalDragPreview {
+    snapshot: Arc<TerminalSnapshot>,
+    width: f32,
+    height: f32,
+    font_size: f32,
+    focused: bool,
+    cursor_visible: bool,
+    render_cache: Arc<Mutex<TerminalRenderCache>>,
+}
+
 impl TerminalView {
     pub fn new_with_environment(
         session_id: Uuid,
@@ -284,6 +298,29 @@ impl TerminalView {
 
     pub fn set_surface_visible(&mut self, visible: bool) {
         self.surface_visible = visible;
+    }
+
+    /// Frozen visual copy used as the drag image for a pane. Rendering this copy
+    /// never resizes or otherwise interacts with the terminal's live PTY.
+    pub(crate) fn drag_preview(&self) -> TerminalDragPreview {
+        let (width, height) = self
+            .last_terminal_bounds
+            .map(|bounds| {
+                (
+                    Into::<f32>::into(bounds.size.width),
+                    Into::<f32>::into(bounds.size.height),
+                )
+            })
+            .unwrap_or((640.0, 400.0));
+        TerminalDragPreview {
+            snapshot: self.snapshot(),
+            width,
+            height,
+            font_size: self.font_size,
+            focused: self.terminal_focused,
+            cursor_visible: self.cursor_visible,
+            render_cache: Arc::new(Mutex::new(TerminalRenderCache::default())),
+        }
     }
 
     #[cfg(test)]
@@ -1245,6 +1282,27 @@ impl TerminalView {
     }
 }
 
+impl TerminalDragPreview {
+    pub(crate) fn empty() -> Self {
+        Self {
+            snapshot: Arc::new(TerminalSnapshot {
+                columns: 0,
+                rows: 0,
+                lines: Vec::new(),
+                cursor: None,
+                display_offset: 0,
+                history_size: 0,
+            }),
+            width: 640.0,
+            height: 400.0,
+            font_size: TERMINAL_FONT_SIZE,
+            focused: false,
+            cursor_visible: false,
+            render_cache: Arc::new(Mutex::new(TerminalRenderCache::default())),
+        }
+    }
+}
+
 impl EventEmitter<TerminalViewEvent> for TerminalView {}
 
 impl Focusable for TerminalView {
@@ -1753,6 +1811,117 @@ impl Render for TerminalView {
                         .child("proceso finalizado"),
                 )
             })
+    }
+}
+
+impl Render for TerminalDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let snapshot = self.snapshot.clone();
+        let render_cache = self.render_cache.clone();
+        let focused = self.focused;
+        let cursor_visible = self.cursor_visible;
+        let font_size = self.font_size;
+        let line_height = font_size + (TERMINAL_LINE_HEIGHT - TERMINAL_FONT_SIZE);
+
+        div()
+            .w(px(self.width))
+            .h(px(self.height))
+            .relative()
+            .overflow_hidden()
+            .font_family("JetBrains Mono")
+            .font_weight(gpui::FontWeight::LIGHT)
+            .text_size(px(font_size))
+            .line_height(px(line_height))
+            .bg(colors().terminal)
+            .child(
+                canvas(
+                    move |bounds, window, _| {
+                        let style = window.text_style();
+                        let rem_size = window.rem_size();
+                        let font_size = style.font_size.to_pixels(rem_size);
+                        let base_font = style.font();
+                        let snapshot = snapshot.clone();
+                        let paint_columns = snapshot.columns.max(1) as f32;
+                        let paint_rows = snapshot.rows.max(1) as f32;
+                        let width: f32 = bounds.size.width.into();
+                        let height: f32 = bounds.size.height.into();
+                        let cell_width = px(width / paint_columns);
+                        let line_height = px(height / paint_rows);
+                        let shape_context = TerminalShapeContext {
+                            base_font: &base_font,
+                            font_size,
+                            cell_width,
+                            focused,
+                            cursor_visible,
+                            window,
+                        };
+                        let lines = shape_snapshot_cached(
+                            &mut render_cache
+                                .lock()
+                                .expect("terminal drag render cache poisoned"),
+                            snapshot.clone(),
+                            &shape_context,
+                        );
+                        let cell_backgrounds = collect_cell_backgrounds(&snapshot);
+                        let surface = snapshot_surface_color(&snapshot);
+                        let cursor_bounds = snapshot
+                            .cursor
+                            .map(|cursor| cursor_bounds(bounds, cursor, cell_width, line_height));
+                        let cursor = snapshot.cursor.and_then(|cursor| {
+                            (!cursor.blinking || cursor_visible)
+                                .then(|| {
+                                    cursor_quad(bounds, cursor, cell_width, line_height, focused)
+                                })
+                                .flatten()
+                        });
+                        TerminalPaintState {
+                            lines,
+                            cell_backgrounds,
+                            surface,
+                            cursor,
+                            cursor_bounds,
+                            composition: None,
+                            scrollbar: scrollbar_quad(bounds, &snapshot),
+                            cursor_blinking: snapshot.cursor.is_some_and(|cursor| cursor.blinking),
+                            cell_width,
+                            line_height,
+                            grid_size: (snapshot.columns, snapshot.rows),
+                        }
+                    },
+                    move |bounds, state, window, cx| {
+                        // Match the terminal canvas paint order, but keep this copy
+                        // read-only so dragging never affects the live pane.
+                        window.paint_quad(fill(bounds, state.surface));
+                        let columns = state.grid_size.0.max(1);
+                        for (index, background) in state.cell_backgrounds.iter().enumerate() {
+                            let row = index / columns;
+                            let column = index % columns;
+                            let cell_bounds = Bounds::new(
+                                point(
+                                    bounds.left() + state.cell_width * column,
+                                    bounds.top() + state.line_height * row,
+                                ),
+                                size(state.cell_width, state.line_height),
+                            );
+                            if *background != state.surface {
+                                window.paint_quad(fill(cell_bounds, *background));
+                            }
+                        }
+                        if let Some(cursor) = state.cursor {
+                            window.paint_quad(cursor);
+                        }
+                        for (row, line) in state.lines.iter().enumerate() {
+                            let origin =
+                                point(bounds.left(), bounds.top() + state.line_height * row);
+                            let _ = line.paint(origin, state.line_height, window, cx);
+                        }
+                        if let Some(scrollbar) = state.scrollbar {
+                            window.paint_quad(scrollbar);
+                        }
+                    },
+                )
+                .size_full(),
+            )
     }
 }
 

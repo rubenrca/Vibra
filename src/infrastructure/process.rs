@@ -388,10 +388,7 @@ fn scan_listen_sockets_under_macos(roots: &[&Path]) -> Vec<ListenSocket> {
             continue;
         };
         let cwd = normalize_path(&cwd);
-        if !normalized_roots
-            .iter()
-            .any(|root| cwd.starts_with(root))
-        {
+        if !normalized_roots.iter().any(|root| cwd.starts_with(root)) {
             continue;
         }
         sockets.extend(scan_pid_listen_sockets(pid));

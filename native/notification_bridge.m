@@ -3,10 +3,18 @@
 
 #include "notification_bridge.h"
 
+static BOOL vibra_is_packaged_app(void) {
+    NSString *path = [[NSBundle mainBundle] bundlePath];
+    return [[path pathExtension] caseInsensitiveCompare:@"app"] == NSOrderedSame;
+}
+
 static UNUserNotificationCenter *vibra_notification_center(void) {
-    // `currentNotificationCenter` throws if this process is not a real .app
-    // bundle (`cargo run` from target/debug). Swallow that so the app still
-    // launches; packaged Vibra.app delivers normally.
+    // `currentNotificationCenter` throws NSInternalInconsistencyException when
+    // this process is not a real .app (`cargo run` from target/debug). Skip
+    // the API entirely in that case; packaged Vibra.app delivers normally.
+    if (!vibra_is_packaged_app()) {
+        return nil;
+    }
     @try {
         return [UNUserNotificationCenter currentNotificationCenter];
     } @catch (NSException *exception) {

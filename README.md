@@ -28,6 +28,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 - múltiples proyectos, workspaces y tabs persistentes;
 - terminales divididas recursivamente en cuatro direcciones;
+- reordenar tabs, panes y sesiones de la sidebar arrastrándolos; saltar a un tab con `⌘1`–`⌘8` y al último con `⌘9`;
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
 - sidebar de sesiones con CWD y rama Git en vivo (ahead/behind/dirty);
 - menús contextuales en sesiones y panes (renombrar, cerrar, dividir, zoom);
@@ -184,6 +185,7 @@ importan una sola vez.
 | Atajo | Acción |
 | --- | --- |
 | `⌘N` / `⌘T` / `⌘W` | Nuevo workspace / nuevo tab / cerrar editor o terminal |
+| `⌘1`–`⌘8` / `⌘9` | Ir al tab 1–8 / ir al último tab |
 | `⌘D` / `⇧⌘D` | Dividir a la derecha / abajo |
 | `⌃⌥⌘` + flechas | Dividir en cualquier dirección |
 | `⌥⌘` + flechas | Enfocar pane vecino |

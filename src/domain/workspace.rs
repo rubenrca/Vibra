@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 4;
 pub const DEFAULT_PANE_SPLIT_RATIO: u16 = 5_000;
 const MIN_PANE_SPLIT_RATIO: u16 = 1_000;
 const MAX_PANE_SPLIT_RATIO: u16 = 9_000;
@@ -23,6 +23,12 @@ pub struct WorkspaceSnapshot {
     pub projects: Vec<ProjectSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_project_id: Option<Uuid>,
+    /// Stable visual order for the workspace entries in the sessions sidebar.
+    ///
+    /// Workspaces remain grouped by project for their data model, so this is kept
+    /// separately to allow a user to reorder entries across projects as well.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_order: Vec<Uuid>,
 }
 
 impl Default for WorkspaceSnapshot {
@@ -31,6 +37,7 @@ impl Default for WorkspaceSnapshot {
             schema_version: CURRENT_WORKSPACE_SCHEMA_VERSION,
             projects: Vec::new(),
             selected_project_id: None,
+            workspace_order: Vec::new(),
         }
     }
 }
@@ -190,6 +197,23 @@ impl WorkspaceSnapshot {
         {
             self.selected_project_id = Some(self.projects[0].id);
         }
+
+        let workspace_ids: Vec<_> = self
+            .projects
+            .iter()
+            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
+            .map(|workspace| workspace.id)
+            .collect();
+        let valid_ids: HashSet<_> = workspace_ids.iter().copied().collect();
+        let mut seen_ids = HashSet::new();
+        self.workspace_order
+            .retain(|id| valid_ids.contains(id) && seen_ids.insert(*id));
+        let ordered_ids: HashSet<_> = self.workspace_order.iter().copied().collect();
+        self.workspace_order.extend(
+            workspace_ids
+                .into_iter()
+                .filter(|id| !ordered_ids.contains(id)),
+        );
 
         // Normalization performs the legacy-to-canonical conversions above, so a
         // successfully normalized snapshot is safe to persist as the current schema.
@@ -513,6 +537,26 @@ impl WorkspaceSnapshot {
         changed
     }
 
+    pub fn swap_tab_terminals(&mut self, first: Uuid, second: Uuid) -> bool {
+        if first == second {
+            return false;
+        }
+        let Some((project_index, workspace_index, tab_index, _)) = self.selected_session_indices()
+        else {
+            return false;
+        };
+        let project = &mut self.projects[project_index];
+        let tab =
+            &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
+        if !tab.layout.swap_terminals(first, second) {
+            return false;
+        }
+        tab.selected_session_id = Some(first);
+        tab.zoomed_session_id = None;
+        project.normalize();
+        true
+    }
+
     pub fn set_selected_split_ratio(&mut self, path: &[PaneBranch], ratio: u16) -> bool {
         let Some((project_index, workspace_index, tab_index, _)) = self.selected_session_indices()
         else {
@@ -722,6 +766,39 @@ impl WorkspaceSnapshot {
         true
     }
 
+    /// Moves a workspace so it sits before `before_workspace_id`, or at the
+    /// end of the sidebar when `before_workspace_id` is `None`.
+    pub fn move_workspace(
+        &mut self,
+        workspace_id: Uuid,
+        before_workspace_id: Option<Uuid>,
+    ) -> bool {
+        if before_workspace_id == Some(workspace_id) {
+            return false;
+        }
+        let mut order = self.workspace_order.clone();
+        let Some(from) = order.iter().position(|id| *id == workspace_id) else {
+            return false;
+        };
+        let to = match before_workspace_id {
+            Some(target_id) => {
+                let Some(index) = order.iter().position(|id| *id == target_id) else {
+                    return false;
+                };
+                index
+            }
+            None => order.len(),
+        };
+        if from == to || from + 1 == to {
+            return false;
+        }
+        let workspace_id = order.remove(from);
+        let insert_at = if from < to { to - 1 } else { to };
+        order.insert(insert_at, workspace_id);
+        self.workspace_order = order;
+        true
+    }
+
     pub fn select_tab(&mut self, tab_id: Uuid) -> bool {
         let Some((project_index, workspace_index)) = self.selected_workspace_indices() else {
             return false;
@@ -738,6 +815,68 @@ impl WorkspaceSnapshot {
         }
     }
 
+    /// Selects a tab by Ghostty-style number: `1..=8` go to that index (or the
+    /// last tab if there aren't enough), and `9` always goes to the last tab.
+    pub fn select_tab_number(&mut self, number: usize) -> bool {
+        if number == 0 {
+            return false;
+        }
+        let Some((project_index, workspace_index)) = self.selected_workspace_indices() else {
+            return false;
+        };
+        let workspace = &self.projects[project_index]
+            .workspaces
+            .as_ref()
+            .expect("normalized")[workspace_index];
+        if workspace.tabs.is_empty() {
+            return false;
+        }
+        let index = if number >= 9 {
+            workspace.tabs.len() - 1
+        } else {
+            number.saturating_sub(1).min(workspace.tabs.len() - 1)
+        };
+        let tab_id = workspace.tabs[index].id;
+        if workspace.selected_tab_id == Some(tab_id) {
+            return false;
+        }
+        self.select_tab(tab_id)
+    }
+
+    /// Moves `tab_id` so it sits before `before_tab_id`, or at the end when
+    /// `before_tab_id` is `None`.
+    pub fn move_tab(&mut self, tab_id: Uuid, before_tab_id: Option<Uuid>) -> bool {
+        if before_tab_id == Some(tab_id) {
+            return false;
+        }
+        let Some((project_index, workspace_index)) = self.selected_workspace_indices() else {
+            return false;
+        };
+        let project = &mut self.projects[project_index];
+        let workspace = &mut project.workspaces.as_mut().expect("normalized")[workspace_index];
+        let Some(from) = workspace.tabs.iter().position(|tab| tab.id == tab_id) else {
+            return false;
+        };
+        let to = match before_tab_id {
+            Some(target_id) => {
+                let Some(index) = workspace.tabs.iter().position(|tab| tab.id == target_id) else {
+                    return false;
+                };
+                index
+            }
+            None => workspace.tabs.len(),
+        };
+        if from == to || from + 1 == to {
+            return false;
+        }
+        let tab = workspace.tabs.remove(from);
+        let insert_at = if from < to { to - 1 } else { to };
+        workspace.tabs.insert(insert_at, tab);
+        workspace.selected_tab_id = Some(tab_id);
+        project.normalize();
+        true
+    }
+
     pub fn cycle_workspace(&mut self, offset: isize) -> bool {
         let entries = self.workspace_entries();
         if entries.is_empty() || offset == 0 {
@@ -752,7 +891,8 @@ impl WorkspaceSnapshot {
     }
 
     pub fn workspace_entries(&self) -> Vec<WorkspaceEntry> {
-        self.projects
+        let mut entries: Vec<_> = self
+            .projects
             .iter()
             .flat_map(|project| {
                 project
@@ -775,7 +915,20 @@ impl WorkspaceSnapshot {
                             && project.selected_workspace_id == Some(workspace.id),
                     })
             })
-            .collect()
+            .collect();
+        let positions: HashMap<_, _> = self
+            .workspace_order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, index))
+            .collect();
+        entries.sort_by_key(|entry| {
+            positions
+                .get(&entry.workspace_id)
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+        entries
     }
 
     pub fn selected_workspace(&self) -> Option<&TerminalWorkspaceSnapshot> {
@@ -1005,7 +1158,7 @@ impl ProjectSnapshot {
             self.selected_workspace_id = workspaces.first().map(|workspace| workspace.id);
         }
 
-        // Schema 3 lives entirely on `workspaces`. Do not mirror Swift-era
+        // Schema 4 lives entirely on `workspaces`. Do not mirror Swift-era
         // sessions/tabs copies — they doubled persisted JSON and clone cost.
         self.sessions.clear();
         self.selected_session_id = None;
@@ -1206,6 +1359,32 @@ impl PaneLayoutSnapshot {
             Self::Terminal { id } => *id == terminal_id,
             Self::Split { first, second, .. } => {
                 first.contains_terminal(terminal_id) || second.contains_terminal(terminal_id)
+            }
+        }
+    }
+
+    pub fn swap_terminals(&mut self, first: Uuid, second: Uuid) -> bool {
+        if first == second || !self.contains_terminal(first) || !self.contains_terminal(second) {
+            return false;
+        }
+        self.map_terminal_ids(&mut |id| {
+            if id == first {
+                second
+            } else if id == second {
+                first
+            } else {
+                id
+            }
+        });
+        true
+    }
+
+    fn map_terminal_ids(&mut self, map: &mut impl FnMut(Uuid) -> Uuid) {
+        match self {
+            Self::Terminal { id } => *id = map(*id),
+            Self::Split { first, second, .. } => {
+                first.map_terminal_ids(map);
+                second.map_terminal_ids(map);
             }
         }
     }
@@ -1705,6 +1884,127 @@ mod tests {
     }
 
     #[test]
+    fn tabs_can_be_reordered_and_addressed_by_number() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-tab-order"));
+        let first = snapshot.selected_tab().unwrap().id;
+        let (second, _) = snapshot.create_terminal_tab_with_focus(true).unwrap();
+        let (third, _) = snapshot.create_terminal_tab_with_focus(true).unwrap();
+        assert_eq!(
+            snapshot
+                .selected_workspace()
+                .unwrap()
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![first, second, third]
+        );
+
+        assert!(snapshot.move_tab(third, Some(first)));
+        assert_eq!(
+            snapshot
+                .selected_workspace()
+                .unwrap()
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![third, first, second]
+        );
+        assert_eq!(snapshot.selected_tab().unwrap().id, third);
+        assert!(!snapshot.move_tab(third, Some(first)));
+        assert!(snapshot.move_tab(third, None));
+        assert_eq!(
+            snapshot
+                .selected_workspace()
+                .unwrap()
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![first, second, third]
+        );
+
+        assert!(snapshot.select_tab_number(1));
+        assert_eq!(snapshot.selected_tab().unwrap().id, first);
+        assert!(!snapshot.select_tab_number(1));
+        assert!(snapshot.select_tab_number(8));
+        assert_eq!(snapshot.selected_tab().unwrap().id, third);
+        assert!(snapshot.select_tab(first));
+        assert!(snapshot.select_tab_number(9));
+        assert_eq!(snapshot.selected_tab().unwrap().id, third);
+    }
+
+    #[test]
+    fn sidebar_workspaces_can_be_reordered_across_projects() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-a"));
+        let first = snapshot.selected_workspace().unwrap().id;
+        snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-b"));
+        let second = snapshot.selected_workspace().unwrap().id;
+        snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-a"));
+        let third = snapshot.selected_workspace().unwrap().id;
+
+        let entry_ids = |snapshot: &WorkspaceSnapshot| {
+            snapshot
+                .workspace_entries()
+                .into_iter()
+                .map(|entry| entry.workspace_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(entry_ids(&snapshot), vec![first, second, third]);
+
+        assert!(snapshot.move_workspace(third, Some(first)));
+        assert_eq!(entry_ids(&snapshot), vec![third, first, second]);
+        assert!(!snapshot.move_workspace(third, Some(first)));
+        assert!(snapshot.move_workspace(third, None));
+        assert_eq!(entry_ids(&snapshot), vec![first, second, third]);
+
+        let second_project = snapshot
+            .workspace_entries()
+            .into_iter()
+            .find(|entry| entry.workspace_id == second)
+            .unwrap()
+            .project_id;
+        assert!(snapshot.close_workspace(second_project, second));
+        assert_eq!(entry_ids(&snapshot), vec![first, third]);
+        assert_eq!(snapshot.workspace_order, vec![first, third]);
+    }
+
+    #[test]
+    fn swapping_panes_exchanges_terminals_and_keeps_split_geometry() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-pane-swap"));
+        let first = snapshot.selected_session().unwrap().id;
+        let second = snapshot
+            .split_selected_terminal(PaneSplitDirection::Right)
+            .unwrap();
+        assert!(snapshot.set_selected_split_ratio(&[], 7_000));
+        assert_eq!(
+            snapshot.selected_tab().unwrap().layout.terminal_ids(),
+            vec![first, second]
+        );
+
+        assert!(snapshot.swap_tab_terminals(second, first));
+        assert_eq!(snapshot.selected_session().unwrap().id, second);
+        match &snapshot.selected_tab().unwrap().layout {
+            PaneLayoutSnapshot::Split {
+                ratio,
+                first: left,
+                second: right,
+                ..
+            } => {
+                assert_eq!(*ratio, 7_000);
+                assert_eq!(left.terminal_ids(), vec![second]);
+                assert_eq!(right.terminal_ids(), vec![first]);
+            }
+            PaneLayoutSnapshot::Terminal { .. } => panic!("expected a split"),
+        }
+        assert!(!snapshot.swap_tab_terminals(second, second));
+    }
+
+    #[test]
     fn normalization_repairs_stale_selection() {
         let mut snapshot = WorkspaceSnapshot::default();
         snapshot.create_workspace(Path::new("/tmp/vibra-gpui-test"));
@@ -1737,6 +2037,7 @@ mod tests {
                 selected_workspace_id: None,
             }],
             selected_project_id: None,
+            workspace_order: Vec::new(),
         };
 
         snapshot.normalize();
