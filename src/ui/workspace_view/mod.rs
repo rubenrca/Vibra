@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
-    TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis, WorkspaceTitleSource,
+    SessionSnapshot, TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis, WorkspaceTitleSource,
 };
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentKind, AgentPlacement, AgentRuntimeState,
@@ -22,7 +22,7 @@ use crate::infrastructure::automation::{
     install_agent_hooks, uninstall_agent_hooks, validate_agent_name,
 };
 use crate::infrastructure::notifications::{
-    AgentActivitySnapshot, agent_activity_rank, agent_notification_copy, should_notify_agent,
+    AgentActivitySnapshot, agent_notification_copy, should_notify_agent,
 };
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{
@@ -33,7 +33,7 @@ use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 use crate::ports::git::{GitBranchSummary, GitPort};
 use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
-use crate::ui::agent_marks::{agent_sidebar_badge, agent_status_color};
+use crate::ui::agent_marks::{agent_compact_badge, agent_sidebar_badge, agent_status_color};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::editor::{EditorView, EditorViewEvent};
 use crate::ui::servers::{ServerRoot, ServersView, ServersViewEvent};
@@ -120,6 +120,15 @@ struct ResolvedAgentPresence {
     state_source: Option<&'static str>,
     process_id: Option<u32>,
     session_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct PaneIdentity {
+    title: String,
+    detail: Option<String>,
+    agent_kind: Option<String>,
+    agent_state: Option<AgentRuntimeState>,
+    agent_attention: Option<AgentAttention>,
 }
 
 #[derive(Clone)]
@@ -770,6 +779,65 @@ impl WorkspaceView {
         });
     }
 
+    fn pane_identity_with_cwd(
+        &self,
+        session: &SessionSnapshot,
+        index: usize,
+        working_directory: &str,
+    ) -> PaneIdentity {
+        let alias = self.agent_names.get(&session.id).map(String::as_str);
+        let presence = self.resolved_agent_presence(session.id);
+        PaneIdentity {
+            title: tab_display_title(
+                alias,
+                Some(session.title.as_str()),
+                Some(working_directory),
+                index,
+            ),
+            detail: pane_detail_title(
+                alias,
+                Some(session.title.as_str()),
+                Some(working_directory),
+                self.home_directory.as_deref(),
+            ),
+            agent_kind: presence.as_ref().map(|presence| presence.kind.clone()),
+            agent_state: presence.as_ref().and_then(|presence| presence.state),
+            agent_attention: presence.and_then(|presence| presence.attention),
+        }
+    }
+
+    fn pane_identity(
+        &self,
+        session: &SessionSnapshot,
+        index: usize,
+        cx: &Context<Self>,
+    ) -> PaneIdentity {
+        let live_cwd = self
+            .terminals
+            .get(&session.id)
+            .map(|terminal| {
+                terminal
+                    .read(cx)
+                    .current_working_directory()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|| session.working_directory.clone());
+        self.pane_identity_with_cwd(session, index, &live_cwd)
+    }
+
+    fn pane_identity_by_id(&self, session_id: Uuid, cx: &Context<Self>) -> Option<PaneIdentity> {
+        let session = self
+            .snapshot
+            .projects
+            .iter()
+            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| &tab.sessions)
+            .find(|session| session.id == session_id)?;
+        Some(self.pane_identity(session, 0, cx))
+    }
+
     fn collect_server_roots(&self, cx: &Context<Self>) -> Vec<ServerRoot> {
         let workspace_count = self.snapshot.workspace_entries().len();
         let mut roots = Vec::new();
@@ -792,8 +860,8 @@ impl WorkspaceView {
                             live
                         }
                     };
-                for (tab_index, tab) in workspace.tabs.iter().enumerate() {
-                    for session in &tab.sessions {
+                for tab in &workspace.tabs {
+                    for (pane_index, session) in tab.sessions.iter().enumerate() {
                         let Some(terminal) = self.terminals.get(&session.id) else {
                             continue;
                         };
@@ -803,15 +871,12 @@ impl WorkspaceView {
                         };
                         let live_cwd = terminal.current_working_directory();
                         let live_cwd_str = live_cwd.to_string_lossy().into_owned();
-                        let tab_label = tab_display_title(
-                            Some(session.title.as_str()),
-                            Some(live_cwd_str.as_str()),
-                            tab_index,
-                        );
+                        let identity =
+                            self.pane_identity_with_cwd(session, pane_index, &live_cwd_str);
                         let label = if workspace_count > 1 {
-                            format!("{workspace_label} · {tab_label}")
+                            format!("{workspace_label} · {}", identity.title)
                         } else {
-                            tab_label
+                            identity.title
                         };
                         roots.push(ServerRoot {
                             pane_id: session.id,
@@ -1262,6 +1327,7 @@ impl WorkspaceView {
                 self.agent_names.insert(session_id, name);
                 self.rename_prompt = None;
                 self.persistence_error = None;
+                self.sync_servers_panel(cx);
             }
         }
         cx.notify();
@@ -2044,7 +2110,7 @@ impl WorkspaceView {
                 target,
                 name,
                 clear,
-            } => self.automation_agent_rename(pane_id, target.as_deref(), name, clear),
+            } => self.automation_agent_rename(pane_id, target.as_deref(), name, clear, cx),
             AutomationCommand::AgentOpen { .. }
             | AutomationCommand::AgentStart { .. }
             | AutomationCommand::AgentPrompt { .. }
@@ -2331,6 +2397,7 @@ impl WorkspaceView {
         target: Option<&str>,
         name: Option<String>,
         clear: bool,
+        cx: &mut Context<Self>,
     ) -> Result<serde_json::Value, String> {
         let target = self.resolve_automation_target(caller, target)?;
         if self.resolved_agent_presence(target).is_none() {
@@ -2343,6 +2410,8 @@ impl WorkspaceView {
         } else {
             return Err("falta el nombre nuevo".to_owned());
         }
+        self.sync_servers_panel(cx);
+        cx.notify();
         Ok(self.automation_agent_status(target))
     }
 
@@ -2470,6 +2539,7 @@ impl WorkspaceView {
 
         if let Some(name) = name.as_ref() {
             self.register_agent_name(target_pane, name)?;
+            self.sync_servers_panel(cx);
         }
 
         let command_text = agent_launch_command(kind, &args);
@@ -3849,27 +3919,6 @@ impl WorkspaceView {
             })
     }
 
-    fn workspace_agent_summary(
-        &self,
-        workspace_id: Uuid,
-    ) -> Option<(String, AgentRuntimeState, Option<AgentAttention>)> {
-        let workspace = self
-            .snapshot
-            .projects
-            .iter()
-            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-            .find(|workspace| workspace.id == workspace_id)?;
-        workspace
-            .tabs
-            .iter()
-            .flat_map(|tab| &tab.sessions)
-            .filter_map(|session| {
-                let presence = self.resolved_agent_presence(session.id)?;
-                Some((presence.kind, presence.state?, presence.attention))
-            })
-            .max_by_key(|(_, state, attention)| agent_activity_rank(*state, *attention))
-    }
-
     fn sessions_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let entries = self.snapshot.workspace_entries();
         let can_reorder = entries.len() > 1;
@@ -3877,11 +3926,15 @@ impl WorkspaceView {
             Some(ReorderDrag::SidebarWorkspace(id)) if cx.has_active_drag() => Some(id),
             _ => None,
         };
-        let agent_summaries: HashMap<_, _> = entries
+        let pane_identities: HashMap<_, _> = self
+            .snapshot
+            .projects
             .iter()
-            .filter_map(|entry| {
-                self.workspace_agent_summary(entry.workspace_id)
-                    .map(|summary| (entry.workspace_id, summary))
+            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
+            .filter_map(|workspace| {
+                workspace
+                    .primary_session()
+                    .map(|session| (workspace.id, self.pane_identity(session, 0, cx)))
             })
             .collect();
         let meta_by_workspace = self.sidebar_workspace_meta.clone();
@@ -3943,22 +3996,21 @@ impl WorkspaceView {
                         let project_id = entry.project_id;
                         let workspace_id = entry.workspace_id;
                         let selected = entry.is_selected;
-                        let agent = agent_summaries.get(&workspace_id).cloned();
+                        let identity = pane_identities.get(&workspace_id).cloned();
                         let meta = meta_by_workspace.get(&workspace_id);
                         let cwd = meta
                             .map(|m| m.cwd.as_str())
                             .unwrap_or(entry.working_directory.as_str());
                         let path_label = format_sidebar_path(cwd, self.home_directory.as_deref());
-                        // cmux-style primary title: live directory basename unless renamed.
+                        // The automatic workspace title follows the selected pane identity.
+                        // A manually renamed workspace remains authoritative.
                         let title_label = if entry.title_is_manual {
                             entry.workspace_name.clone()
                         } else {
-                            let live = directory_basename(cwd);
-                            if live.is_empty() || live == "—" {
-                                entry.workspace_name.clone()
-                            } else {
-                                live
-                            }
+                            identity
+                                .as_ref()
+                                .map(|identity| identity.title.clone())
+                                .unwrap_or_else(|| entry.workspace_name.clone())
                         };
                         // Three clean rows: name / branch / path.
                         // Agent identity+state lives on the badge (mark + status dot).
@@ -3990,11 +4042,15 @@ impl WorkspaceView {
                             selected,
                             dirty: meta.map(|m| m.dirty).unwrap_or(false),
                             behind: meta.map(|m| m.behind).unwrap_or_default(),
-                            agent_kind: agent.as_ref().map(|(kind, _, _)| kind.clone()),
-                            agent_state: agent.as_ref().map(|(_, state, _)| *state),
-                            agent_attention: agent
+                            agent_kind: identity
                                 .as_ref()
-                                .and_then(|(_, _, attention)| *attention),
+                                .and_then(|identity| identity.agent_kind.clone()),
+                            agent_state: identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_state),
+                            agent_attention: identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_attention),
                             width: self.left_sidebar_width() - 16.0,
                         };
                         let is_source = dragging_workspace == Some(workspace_id);
@@ -4086,9 +4142,13 @@ impl WorkspaceView {
                                 ))
                             })
                             .child(agent_sidebar_badge(
-                                agent.as_ref().map(|(kind, _, _)| kind.as_str()),
-                                agent.as_ref().map(|(_, state, _)| *state),
-                                agent.as_ref().and_then(|(_, _, attention)| *attention),
+                                identity
+                                    .as_ref()
+                                    .and_then(|identity| identity.agent_kind.as_deref()),
+                                identity.as_ref().and_then(|identity| identity.agent_state),
+                                identity
+                                    .as_ref()
+                                    .and_then(|identity| identity.agent_attention),
                                 selected,
                             ))
                             .child(
@@ -5203,43 +5263,23 @@ impl WorkspaceView {
                     .iter()
                     .find(|session| Some(session.id) == tab.selected_session_id)
                     .or_else(|| tab.sessions.first());
-                let live_cwd = session.and_then(|session| {
-                    self.terminals
-                        .get(&session.id)
-                        .map(|terminal| {
-                            terminal
-                                .read(cx)
-                                .current_working_directory()
-                                .to_string_lossy()
-                                .into_owned()
-                        })
-                        .or_else(|| Some(session.working_directory.clone()))
-                });
-                let title = tab_display_title(
-                    session.map(|session| session.title.as_str()),
-                    live_cwd.as_deref(),
-                    index,
-                );
+                let identity = session.map(|session| self.pane_identity(session, index, cx));
+                let title = identity
+                    .as_ref()
+                    .map(|identity| identity.title.clone())
+                    .unwrap_or_else(|| format!("Terminal {}", index + 1));
                 let title = if tab_count > 1 {
                     format!("{title} {}", index + 1)
                 } else {
                     title
                 };
                 let shortcut = (index < 9).then(|| format!("⌘{}", index + 1));
-                let agent_color = tab
-                    .sessions
-                    .iter()
-                    .filter_map(|session| {
-                        let presence = self.resolved_agent_presence(session.id)?;
-                        let state = presence.state?;
-                        Some((
-                            agent_activity_rank(state, presence.attention),
-                            agent_status_color(presence.state, presence.attention)
-                                .unwrap_or(colors().subtle),
-                        ))
-                    })
-                    .max_by_key(|(rank, _)| *rank)
-                    .map(|(_, color)| color);
+                let pane_count = tab.sessions.len();
+                // A tab identifies its focused pane. Background agents keep their state in
+                // their own pane headers instead of changing an unrelated tab dot.
+                let agent_color = identity.as_ref().and_then(|identity| {
+                    agent_status_color(identity.agent_state, identity.agent_attention)
+                });
                 let drag = TabDrag {
                     tab_id,
                     title: title.clone(),
@@ -5342,15 +5382,37 @@ impl WorkspaceView {
                     .child(
                         div()
                             .min_w(px(0.0))
-                            .truncate()
-                            .text_center()
-                            .text_size(px(12.0))
-                            .font_weight(if selected {
-                                gpui::FontWeight::MEDIUM
-                            } else {
-                                gpui::FontWeight::NORMAL
-                            })
-                            .child(title),
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_center()
+                                    .text_size(px(12.0))
+                                    .font_weight(if selected {
+                                        gpui::FontWeight::MEDIUM
+                                    } else {
+                                        gpui::FontWeight::NORMAL
+                                    })
+                                    .child(title),
+                            )
+                            .when(pane_count > 1, |label| {
+                                label.child(
+                                    div()
+                                        .flex_none()
+                                        .px(px(5.0))
+                                        .py(px(1.0))
+                                        .rounded(px(4.0))
+                                        .bg(colors().elevated)
+                                        .font_family("JetBrains Mono")
+                                        .text_size(px(8.5))
+                                        .text_color(colors().subtle)
+                                        .child(format!("{pane_count} panes")),
+                                )
+                            }),
                     )
                     .when_some(shortcut, |tab, shortcut| {
                         tab.child(
@@ -5413,6 +5475,19 @@ impl WorkspaceView {
                     .snapshot
                     .selected_tab()
                     .map_or(1, |tab| tab.sessions.len());
+                let selected = self
+                    .snapshot
+                    .selected_tab()
+                    .is_some_and(|tab| tab.selected_session_id == Some(session_id));
+                let identity = self.snapshot.selected_tab().and_then(|tab| {
+                    let index = tab
+                        .sessions
+                        .iter()
+                        .position(|session| session.id == session_id)?;
+                    tab.sessions
+                        .get(index)
+                        .map(|session| self.pane_identity(session, index, cx))
+                });
                 let can_drag = self
                     .snapshot
                     .selected_tab()
@@ -5432,6 +5507,8 @@ impl WorkspaceView {
                     .min_w(px(80.0))
                     .min_h(px(48.0))
                     .relative()
+                    .flex()
+                    .flex_col()
                     .overflow_hidden()
                     .when(is_source, |pane| pane.opacity(0.55))
                     .when(can_drag, |pane| {
@@ -5458,7 +5535,81 @@ impl WorkspaceView {
                             cx.stop_propagation();
                         }),
                     )
-                    .when_some(terminal, |pane, terminal| pane.child(terminal))
+                    .when(pane_count > 1, |pane| {
+                        pane.when_some(identity, |pane, identity| {
+                            let has_agent = identity.agent_kind.is_some();
+                            pane.child(
+                                div()
+                                    .h(px(25.0))
+                                    .w_full()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(7.0))
+                                    .px(px(8.0))
+                                    .overflow_hidden()
+                                    .bg(if selected {
+                                        colors().elevated
+                                    } else {
+                                        colors().terminal
+                                    })
+                                    .border_b_1()
+                                    .border_color(if selected {
+                                        colors().accent
+                                    } else {
+                                        colors().border_subtle
+                                    })
+                                    .child(agent_compact_badge(
+                                        identity.agent_kind.as_deref(),
+                                        identity.agent_state,
+                                        identity.agent_attention,
+                                        selected,
+                                    ))
+                                    .child(
+                                        div()
+                                            .min_w(px(0.0))
+                                            .max_w(px(220.0))
+                                            .truncate()
+                                            .font_family("JetBrains Mono")
+                                            .text_size(px(10.5))
+                                            .font_weight(if has_agent || selected {
+                                                gpui::FontWeight::MEDIUM
+                                            } else {
+                                                gpui::FontWeight::NORMAL
+                                            })
+                                            .text_color(if selected {
+                                                colors().foreground
+                                            } else {
+                                                colors().muted
+                                            })
+                                            .child(identity.title),
+                                    )
+                                    .when_some(identity.detail, |header, detail| {
+                                        header.child(
+                                            div()
+                                                .min_w(px(0.0))
+                                                .flex_1()
+                                                .truncate()
+                                                .text_right()
+                                                .font_family("JetBrains Mono")
+                                                .text_size(px(9.0))
+                                                .text_color(colors().subtle)
+                                                .child(detail),
+                                        )
+                                    }),
+                            )
+                        })
+                    })
+                    .when_some(terminal, |pane, terminal| {
+                        pane.child(
+                            div()
+                                .flex_1()
+                                .min_h(px(0.0))
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .child(terminal),
+                        )
+                    })
                     // GPUI registers drop listeners while laying out the element. Keep this
                     // transparent target mounted before a drag begins; mounting it only once a
                     // drag is active means it never receives the drop that started that drag.
@@ -5947,7 +6098,11 @@ impl WorkspaceView {
 
     fn context_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let menu = self.context_menu.clone()?;
-        let items: Vec<(&str, ContextMenuAction, bool)> = match menu.kind {
+        let pane_identity = match &menu.kind {
+            ContextMenuKind::Pane { session_id } => self.pane_identity_by_id(*session_id, cx),
+            ContextMenuKind::Workspace { .. } => None,
+        };
+        let items: Vec<(&str, ContextMenuAction, bool)> = match &menu.kind {
             ContextMenuKind::Workspace { .. } => vec![
                 ("Renombrar", ContextMenuAction::Rename, false),
                 ("Eliminar", ContextMenuAction::Delete, true),
@@ -5994,6 +6149,53 @@ impl WorkspaceView {
                         })
                         .on_mouse_down(MouseButton::Right, |_, _, cx| {
                             cx.stop_propagation();
+                        })
+                        .when_some(pane_identity, |menu, identity| {
+                            menu.child(
+                                div()
+                                    .min_w(px(220.0))
+                                    .max_w(px(320.0))
+                                    .px_3()
+                                    .py_2()
+                                    .mb_1()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .border_b_1()
+                                    .border_color(colors().border_subtle)
+                                    .child(agent_compact_badge(
+                                        identity.agent_kind.as_deref(),
+                                        identity.agent_state,
+                                        identity.agent_attention,
+                                        true,
+                                    ))
+                                    .child(
+                                        div()
+                                            .min_w(px(0.0))
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .font_family("JetBrains Mono")
+                                                    .text_size(px(10.5))
+                                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                                    .text_color(colors().foreground)
+                                                    .child(identity.title),
+                                            )
+                                            .when_some(identity.detail, |column, detail| {
+                                                column.child(
+                                                    div()
+                                                        .truncate()
+                                                        .font_family("JetBrains Mono")
+                                                        .text_size(px(9.0))
+                                                        .text_color(colors().subtle)
+                                                        .child(detail),
+                                                )
+                                            }),
+                                    ),
+                            )
                         })
                         .children(items.into_iter().enumerate().map(
                             |(index, (label, action, danger))| {
@@ -6371,11 +6573,12 @@ mod tests {
     #[test]
     fn tab_titles_prefer_the_directory_over_generic_shell_names() {
         assert_eq!(
-            tab_display_title(Some("zsh"), Some("/Users/demo/Dev/Vibra"), 0),
+            tab_display_title(None, Some("zsh"), Some("/Users/demo/Dev/Vibra"), 0),
             "Vibra"
         );
         assert_eq!(
             tab_display_title(
+                None,
                 Some("ruben@mac: ~/Dev/Vibra/src"),
                 Some("/Users/demo/Dev/Vibra"),
                 0
@@ -6383,10 +6586,45 @@ mod tests {
             "src"
         );
         assert_eq!(
-            tab_display_title(Some("claude"), Some("/Users/demo/Dev/Vibra"), 0),
+            tab_display_title(
+                None,
+                Some("claude --dangerously-skip-permissions"),
+                Some("/Users/demo/Dev/Vibra"),
+                0,
+            ),
+            "claude --dangerously-…"
+        );
+        assert_eq!(
+            tab_display_title(
+                Some("reviewer"),
+                Some("claude --dangerously-skip-permissions"),
+                Some("/Users/demo/Dev/Vibra"),
+                0,
+            ),
+            "reviewer"
+        );
+        assert_eq!(
+            tab_display_title(None, Some("claude"), Some("/Users/demo/Dev/Vibra"), 0),
             "claude"
         );
-        assert_eq!(tab_display_title(Some("Terminal"), None, 2), "Terminal 3");
+        assert_eq!(
+            tab_display_title(None, Some("Terminal"), None, 2),
+            "Terminal 3"
+        );
+    }
+
+    #[test]
+    fn pane_details_keep_command_and_path_for_an_alias() {
+        assert_eq!(
+            pane_detail_title(
+                Some("reviewer"),
+                Some("claude --dangerously-skip-permissions"),
+                Some("/Users/demo/Dev/Vibra"),
+                Some(Path::new("/Users/demo")),
+            )
+            .as_deref(),
+            Some("claude --dangerously-skip-permissions  ·  ~/Dev/Vibra")
+        );
     }
 
     #[test]

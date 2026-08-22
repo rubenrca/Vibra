@@ -153,6 +153,40 @@ fn brand_mark(kind: Option<&str>, mark_color: Rgba) -> AnyElement {
     }
 }
 
+/// Compact mark + runtime state used by pane headers and other dense chrome.
+pub fn agent_compact_badge(
+    kind: Option<&str>,
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+    selected: bool,
+) -> AnyElement {
+    let mark_color = if selected {
+        colors().foreground
+    } else {
+        colors().muted
+    };
+    let status = agent_status_color(state, attention);
+
+    div()
+        .h(px(18.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .child(
+            div()
+                .size(px(14.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(brand_mark(kind, mark_color)),
+        )
+        .when_some(status, |badge, color| {
+            badge.child(div().size(px(5.0)).rounded_full().bg(color))
+        })
+        .into_any_element()
+}
+
 /// Sidebar badge: agent brand mark (or terminal glyph) plus optional status dot.
 pub fn agent_sidebar_badge(
     kind: Option<&str>,

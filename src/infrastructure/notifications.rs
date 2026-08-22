@@ -16,18 +16,6 @@ pub enum AgentNotificationKind {
     NeedsAttention,
 }
 
-/// Rank used to pick the most urgent agent in a workspace or tab.
-pub fn agent_activity_rank(state: AgentRuntimeState, attention: Option<AgentAttention>) -> u8 {
-    match (state, attention) {
-        (AgentRuntimeState::Idle, _) => 0,
-        (AgentRuntimeState::Working, _) => 1,
-        (AgentRuntimeState::Waiting, None) => 2,
-        (AgentRuntimeState::Waiting, Some(AgentAttention::Notification)) => 3,
-        (AgentRuntimeState::Waiting, Some(AgentAttention::Question | AgentAttention::Plan)) => 4,
-        (AgentRuntimeState::Waiting, Some(AgentAttention::Permission)) => 5,
-    }
-}
-
 /// Notify only on a real transition, and only when the user cannot see that pane.
 pub fn should_notify_agent(
     previous: Option<&AgentActivitySnapshot>,
@@ -138,18 +126,6 @@ mod tests {
             state,
             attention,
         }
-    }
-
-    #[test]
-    fn permission_outranks_generic_waiting() {
-        assert!(
-            agent_activity_rank(AgentRuntimeState::Waiting, Some(AgentAttention::Permission))
-                > agent_activity_rank(AgentRuntimeState::Waiting, None)
-        );
-        assert!(
-            agent_activity_rank(AgentRuntimeState::Waiting, None)
-                > agent_activity_rank(AgentRuntimeState::Working, None)
-        );
     }
 
     #[test]

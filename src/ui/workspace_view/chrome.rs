@@ -60,24 +60,43 @@ pub(crate) fn title_path_suffix(title: &str) -> Option<&str> {
         .filter(|rest| rest.starts_with('/') || rest.starts_with('~'))
 }
 
-/// Compact tab label: live directory when the OSC title is just a shell, otherwise the command.
+/// Trim an OSC title without throwing away the command arguments that distinguish panes.
+pub(crate) fn compact_chrome_label(label: &str, max_chars: usize) -> String {
+    let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    if label.chars().count() <= max_chars {
+        return label;
+    }
+    let visible = max_chars.saturating_sub(1);
+    format!("{}…", label.chars().take(visible).collect::<String>())
+}
+
+/// A meaningful live command from OSC, excluding shell-only and prompt-path titles.
+pub(crate) fn live_command_title(title: Option<&str>) -> Option<String> {
+    let title = title?.trim();
+    if title.is_empty() || is_generic_tab_title(title) || title_path_suffix(title).is_some() {
+        return None;
+    }
+    Some(compact_chrome_label(title, 42))
+}
+
+/// Compact tab label: alias first, then the complete live command, then the directory.
 pub(crate) fn tab_display_title(
+    alias: Option<&str>,
     title: Option<&str>,
     working_directory: Option<&str>,
     index: usize,
 ) -> String {
-    if let Some(title) = title.filter(|title| !is_generic_tab_title(title)) {
-        if let Some(path) = title_path_suffix(title) {
-            let name = directory_basename(path);
-            if name != "—" {
-                return name;
-            }
+    if let Some(alias) = alias.map(str::trim).filter(|alias| !alias.is_empty()) {
+        return compact_chrome_label(alias, 22);
+    }
+    if let Some(path) = title.and_then(title_path_suffix) {
+        let name = directory_basename(path);
+        if name != "—" {
+            return name;
         }
-        let short = title.split_whitespace().next().unwrap_or(title);
-        if short.chars().count() <= 22 {
-            return short.to_owned();
-        }
-        return format!("{}…", short.chars().take(20).collect::<String>());
+    }
+    if let Some(command) = live_command_title(title) {
+        return compact_chrome_label(&command, 22);
     }
     if let Some(path) = working_directory {
         let name = directory_basename(path);
@@ -86,6 +105,29 @@ pub(crate) fn tab_display_title(
         }
     }
     format!("Terminal {}", index + 1)
+}
+
+/// Secondary pane-header label. Commands keep the cwd visible; aliases keep both command and cwd.
+pub(crate) fn pane_detail_title(
+    alias: Option<&str>,
+    title: Option<&str>,
+    working_directory: Option<&str>,
+    home: Option<&Path>,
+) -> Option<String> {
+    let command = live_command_title(title);
+    let path = working_directory
+        .map(|path| format_sidebar_path(path, home))
+        .filter(|path| path != "—");
+    match (
+        alias.map(str::trim).filter(|alias| !alias.is_empty()),
+        command,
+        path,
+    ) {
+        (Some(_), Some(command), Some(path)) => Some(format!("{command}  ·  {path}")),
+        (Some(_), Some(command), None) => Some(command),
+        (_, _, Some(path)) => Some(path),
+        _ => None,
+    }
 }
 
 /// Directory basename for chrome labels (`/Users/me/Dev/Vibra` → `Vibra`).

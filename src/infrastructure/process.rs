@@ -615,7 +615,7 @@ time.sleep(8)
         let mut line = String::new();
         BufReader::new(stdout).read_line(&mut line).unwrap();
         let port: u16 = line.trim().parse().expect("port");
-        let found = scan_listen_sockets_under(&[root.clone()]);
+        let found = scan_listen_sockets_under(std::slice::from_ref(&root));
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&root);
