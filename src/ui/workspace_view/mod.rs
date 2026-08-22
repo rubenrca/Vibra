@@ -5169,6 +5169,9 @@ impl WorkspaceView {
             .justify_center()
             .gap(px(4.0))
             .overflow_x_hidden()
+            .when(can_reorder, |list| {
+                list.child(div().w(px(24.0)).flex_none())
+            })
             .children(tabs.into_iter().enumerate().map(|(index, tab)| {
                 let tab_id = tab.id;
                 let selected = Some(tab_id) == selected_tab_id;
