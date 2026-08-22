@@ -5169,8 +5169,9 @@ impl WorkspaceView {
             .min_w(px(0.0))
             .flex()
             .items_center()
+            .justify_center()
             .gap(px(2.0))
-            .rounded_full()
+            .rounded(px(12.0))
             .bg(colors().elevated)
             .overflow_x_hidden()
             .children(tabs.into_iter().enumerate().map(|(index, tab)| {
@@ -5224,13 +5225,14 @@ impl WorkspaceView {
                     .id(SharedString::from(format!("tab-{tab_id}")))
                     .h(px(30.0))
                     .min_w(px(0.0))
+                    .max_w(px(260.0))
                     .flex_1()
                     .relative()
                     .flex()
                     .items_center()
                     .justify_center()
                     .px(px(12.0))
-                    .rounded_full()
+                    .rounded(px(10.0))
                     .when(can_reorder, |tab| tab.cursor_move())
                     .when(!can_reorder, |tab| tab.cursor_pointer())
                     .bg(if selected {
@@ -5327,8 +5329,8 @@ impl WorkspaceView {
                     div()
                         .id("tab-drop-end")
                         .h_full()
-                        .flex_1()
-                        .min_w(px(16.0))
+                        .w(px(24.0))
+                        .flex_none()
                         .can_drop(|value, _, _| value.downcast_ref::<TabDrag>().is_some())
                         .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
                             this.reorder_tab(drag.tab_id, None, window, cx);
