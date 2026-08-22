@@ -3700,7 +3700,7 @@ impl WorkspaceView {
             .snapshot
             .selected_workspace()
             .and_then(|workspace| workspace.selected_tab_id);
-        let show_terminal_tabs = self.editor.is_none();
+        let show_tab_selector = self.editor.is_none() && tabs.len() > 1;
         let right_chrome_content = if right_open {
             self.utility_mode_tabs(cx)
         } else {
@@ -3717,12 +3717,10 @@ impl WorkspaceView {
             .min_w(px(0.0))
             .flex()
             .items_center()
+            .bg(colors().terminal)
             .window_control_area(WindowControlArea::Drag);
-        if show_terminal_tabs {
-            center_chrome =
-                center_chrome
-                    .bg(colors().terminal)
-                    .child(self.tab_bar(tabs, selected_tab_id, cx));
+        if show_tab_selector {
+            center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
         }
 
         div()
@@ -3782,7 +3780,7 @@ impl WorkspaceView {
                     .when(right_progress > 0.001, |chrome| {
                         chrome.border_l_1().border_color(colors().border_subtle)
                     })
-                    .when(right_open, |chrome| {
+                    .when(right_open && show_tab_selector, |chrome| {
                         chrome.border_b_1().border_color(colors().border_subtle)
                     })
                     .child(right_chrome_content)
