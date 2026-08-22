@@ -3717,10 +3717,11 @@ impl WorkspaceView {
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .bg(colors().terminal)
-            .window_control_area(WindowControlArea::Drag);
+            .bg(colors().terminal);
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
+        } else {
+            center_chrome = center_chrome.window_control_area(WindowControlArea::Drag);
         }
 
         div()
@@ -5225,7 +5226,7 @@ impl WorkspaceView {
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
                     .h(px(26.0))
-                    .min_w(px(104.0))
+                    .min_w(px(132.0))
                     .max_w(px(220.0))
                     .flex_none()
                     .relative()
@@ -5278,11 +5279,10 @@ impl WorkspaceView {
                                 .downcast_ref::<TabDrag>()
                                 .is_some_and(|drag| drag.tab_id != tab_id)
                         })
-                        .on_drop(cx.listener(
-                            move |this, drag: &TabDrag, window, cx| {
-                                this.reorder_tab(drag.tab_id, Some(tab_id), window, cx);
-                            },
-                        ))
+                        .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
+                            this.reorder_tab(drag.tab_id, Some(tab_id), window, cx);
+                        }))
+                        .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().hover))
                     })
                     .when_some(agent_color, |tab, color| {
                         tab.child(
@@ -5307,15 +5307,32 @@ impl WorkspaceView {
                             })
                             .child(title),
                     )
+                    .when(index < 9, |tab| {
+                        tab.child(
+                            div()
+                                .absolute()
+                                .right(px(10.0))
+                                .font_family("JetBrains Mono")
+                                .text_size(px(9.5))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(if selected {
+                                    colors().muted
+                                } else {
+                                    colors().subtle
+                                })
+                                .child(format!("⌘{}", index + 1)),
+                        )
+                    })
             }))
             .when(can_reorder, |list| {
                 list.child(
                     div()
                         .id("tab-drop-end")
                         .h_full()
-                        .w(px(16.0))
-                        .flex_none()
+                        .flex_1()
+                        .min_w(px(16.0))
                         .can_drop(|value, _, _| value.downcast_ref::<TabDrag>().is_some())
+                        .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().hover))
                         .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
                             this.reorder_tab(drag.tab_id, None, window, cx);
                         })),
