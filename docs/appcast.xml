@@ -3,19 +3,18 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.11</title>
-            <pubDate>Sun, 23 Aug 2026 23:10:11 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.11</link>
-            <sparkle:version>104</sparkle:version>
-            <sparkle:shortVersionString>0.3.11</sparkle:shortVersionString>
+            <title>0.3.12</title>
+            <pubDate>Mon, 24 Aug 2026 19:27:43 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.12</link>
+            <sparkle:version>108</sparkle:version>
+            <sparkle:shortVersionString>0.3.12</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Clarify agent capabilities and require structured activity hooks for reliable prompt waits instead of timing out after heuristic-only submissions.</li>
-  <li>Detect the current Cursor CLI through its preserved invocation name so Cursor sessions show their bundled icon even when the CLI runs on Node.js.</li>
-  <li>Keep the Servers panel stable during unchanged background scans instead of repainting its populated list.</li>
+  <li>Retain agent detection, activity states, lifecycle hooks, and notifications while removing the agent/layout orchestration CLI; Vibra no longer creates panes/tabs, launches agents, or routes prompts between sessions.</li>
+  <li>Show macOS notifications only when Vibra is in the background; when an agent finishes in a different foreground pane, play a short completion sound without a banner.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.11/Vibra-0.3.11.dmg" length="12514108" type="application/octet-stream" sparkle:edSignature="wk4XiVp0Iwq2ARa9KhG/9gOY8HNafu/OEFDINJ91grAVQ4klYK+mnlHK3ywQmIqQK/IO7G+Lz57e6s6gy9SoBA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.12/Vibra-0.3.12.dmg" length="12304661" type="application/octet-stream" sparkle:edSignature="SRM2aU6ncUACrgNDJ2D9C7Z06cTfPQ7KB0mz51zSwNAHWpTc6wFCftwfTDVA2mi7vp4/m9+E/jml66d3LrlIAw=="/>
         </item>
     </channel>
 </rss>
