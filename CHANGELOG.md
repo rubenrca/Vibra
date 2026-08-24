@@ -1,9 +1,9 @@
 # Changelog
 
-## Próximo
+## 0.3.12 — 2026-08-24
 
-- Mantener la detección, los estados, las notificaciones y los hooks de agentes.
-- Retirar la CLI de orquestación de agentes y layout: ya no crea panes/tabs, lanza agentes ni envía prompts entre sesiones.
+- Retain agent detection, activity states, lifecycle hooks, and notifications while removing the agent/layout orchestration CLI; Vibra no longer creates panes/tabs, launches agents, or routes prompts between sessions.
+- Show macOS notifications only when Vibra is in the background; when an agent finishes in a different foreground pane, play a short completion sound without a banner.
 
 ## 0.3.11 — 2026-08-23
 
