@@ -21,7 +21,7 @@ use crate::infrastructure::automation::{
     install_agent_hooks, uninstall_agent_hooks,
 };
 use crate::infrastructure::notifications::{
-    AgentActivitySnapshot, agent_notification_copy, should_notify_agent,
+    AgentActivitySnapshot, AgentNotificationDelivery, agent_notification_copy, should_notify_agent,
 };
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{
@@ -2125,14 +2125,10 @@ impl WorkspaceView {
         })
     }
 
-    fn session_is_visible(&self, pane_id: Uuid) -> bool {
-        self.snapshot.selected_workspace().is_some_and(|workspace| {
-            workspace
-                .tabs
-                .iter()
-                .find(|tab| Some(tab.id) == workspace.selected_tab_id)
-                .is_some_and(|tab| tab.sessions.iter().any(|session| session.id == pane_id))
-        })
+    fn session_is_selected(&self, pane_id: Uuid) -> bool {
+        self.snapshot
+            .selected_session()
+            .is_some_and(|session| session.id == pane_id)
     }
 
     fn publish_agent_activity(&mut self, pane_id: Uuid) {
@@ -2144,24 +2140,31 @@ impl WorkspaceView {
             })
         });
         let previous = self.agent_activity_seen.get(&pane_id);
-        if let Some(kind) = should_notify_agent(
+        if let Some(notification) = should_notify_agent(
             previous,
             current.as_ref(),
-            self.session_is_visible(pane_id),
+            self.session_is_selected(pane_id),
             self.window_is_active,
             self.settings.agent_notifications,
         ) {
-            let agent = current
-                .as_ref()
-                .or(previous)
-                .map(|snapshot| snapshot.kind.as_str())
-                .unwrap_or("Agente");
-            let (title, body) = agent_notification_copy(kind, agent);
-            crate::infrastructure::notifications::deliver(
-                &title,
-                &body,
-                &format!("vibra.agent.{pane_id}"),
-            );
+            match notification.delivery {
+                AgentNotificationDelivery::Banner => {
+                    let agent = current
+                        .as_ref()
+                        .or(previous)
+                        .map(|snapshot| snapshot.kind.as_str())
+                        .unwrap_or("Agente");
+                    let (title, body) = agent_notification_copy(notification.kind, agent);
+                    crate::infrastructure::notifications::deliver(
+                        &title,
+                        &body,
+                        &format!("vibra.agent.{pane_id}"),
+                    );
+                }
+                AgentNotificationDelivery::Sound => {
+                    crate::infrastructure::notifications::play_completion_sound();
+                }
+            }
         }
         match current {
             Some(snapshot) => {
@@ -3968,7 +3971,7 @@ impl WorkspaceView {
                     .line_height(px(13.0))
                     .text_color(colors().subtle)
                     .child(
-                        "Notifica cuando un agente termina o pide permiso, si no estás mirando esa sesión o Vibra está en segundo plano.",
+                        "Muestra notificaciones cuando un agente termina o pide atención y Vibra está en segundo plano. En primer plano, reproduce un sonido si termina un agente en otro pane.",
                     ),
             )
             .child(

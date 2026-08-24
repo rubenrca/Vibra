@@ -16,47 +16,75 @@ pub enum AgentNotificationKind {
     NeedsAttention,
 }
 
-/// Notify only on a real transition, and only when the user cannot see that pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentNotificationDelivery {
+    /// A macOS notification banner, used only while Vibra is in the background.
+    Banner,
+    /// A lightweight completion cue while the user is working in another pane.
+    Sound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentNotification {
+    pub kind: AgentNotificationKind,
+    pub delivery: AgentNotificationDelivery,
+}
+
+/// Notify only on a real transition. Background activity gets a system banner;
+/// foreground activity never does, but a finished agent in another pane gets a sound.
 pub fn should_notify_agent(
     previous: Option<&AgentActivitySnapshot>,
     current: Option<&AgentActivitySnapshot>,
-    session_visible: bool,
+    pane_selected: bool,
     window_active: bool,
     notifications_enabled: bool,
-) -> Option<AgentNotificationKind> {
+) -> Option<AgentNotification> {
     if !notifications_enabled {
         return None;
     }
-    if session_visible && window_active {
-        return None;
-    }
     let previous = previous?;
-    let Some(current) = current else {
-        // Process gone / session-end: still a finish if it was working.
-        return (previous.state == AgentRuntimeState::Working)
-            .then_some(AgentNotificationKind::Finished);
-    };
-    if previous.kind.eq_ignore_ascii_case(&current.kind)
-        && previous.state == current.state
-        && previous.attention == current.attention
-    {
-        return None;
-    }
-    match current.state {
-        AgentRuntimeState::Waiting
-            if current.attention == Some(AgentAttention::Permission)
-                && (previous.state != AgentRuntimeState::Waiting
-                    || previous.attention != current.attention) =>
+    let kind = if let Some(current) = current {
+        if previous.kind.eq_ignore_ascii_case(&current.kind)
+            && previous.state == current.state
+            && previous.attention == current.attention
         {
-            Some(AgentNotificationKind::NeedsPermission)
+            return None;
         }
-        AgentRuntimeState::Waiting if previous.state != AgentRuntimeState::Waiting => {
-            Some(AgentNotificationKind::NeedsAttention)
+        match current.state {
+            AgentRuntimeState::Waiting
+                if current.attention == Some(AgentAttention::Permission)
+                    && (previous.state != AgentRuntimeState::Waiting
+                        || previous.attention != current.attention) =>
+            {
+                Some(AgentNotificationKind::NeedsPermission)
+            }
+            AgentRuntimeState::Waiting if previous.state != AgentRuntimeState::Waiting => {
+                Some(AgentNotificationKind::NeedsAttention)
+            }
+            AgentRuntimeState::Idle if previous.state == AgentRuntimeState::Working => {
+                Some(AgentNotificationKind::Finished)
+            }
+            _ => None,
         }
-        AgentRuntimeState::Idle if previous.state == AgentRuntimeState::Working => {
-            Some(AgentNotificationKind::Finished)
-        }
-        _ => None,
+    } else {
+        // Process gone / session-end: still a finish if it was working.
+        (previous.state == AgentRuntimeState::Working).then_some(AgentNotificationKind::Finished)
+    }?;
+
+    let delivery = if !window_active {
+        AgentNotificationDelivery::Banner
+    } else if !pane_selected && kind == AgentNotificationKind::Finished {
+        AgentNotificationDelivery::Sound
+    } else {
+        return None;
+    };
+    Some(AgentNotification { kind, delivery })
+}
+
+pub fn play_completion_sound() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        vibra_notification_play_completion_sound();
     }
 }
 
@@ -105,6 +133,7 @@ pub fn deliver(title: &str, body: &str, identifier: &str) {
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn vibra_notification_request_authorization();
+    fn vibra_notification_play_completion_sound();
     fn vibra_notification_deliver(
         title: *const std::ffi::c_char,
         body: *const std::ffi::c_char,
@@ -129,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_first_sighting_and_visible_focused_session() {
+    fn skips_first_sighting_and_the_selected_foreground_pane() {
         let working = snapshot("Claude", AgentRuntimeState::Working, None);
         let idle = snapshot("Claude", AgentRuntimeState::Idle, None);
         assert_eq!(
@@ -142,11 +171,17 @@ mod tests {
         );
         assert_eq!(
             should_notify_agent(Some(&working), Some(&idle), true, false, true),
-            Some(AgentNotificationKind::Finished)
+            Some(AgentNotification {
+                kind: AgentNotificationKind::Finished,
+                delivery: AgentNotificationDelivery::Banner,
+            })
         );
         assert_eq!(
             should_notify_agent(Some(&working), None, false, true, true),
-            Some(AgentNotificationKind::Finished)
+            Some(AgentNotification {
+                kind: AgentNotificationKind::Finished,
+                delivery: AgentNotificationDelivery::Sound,
+            })
         );
         assert_eq!(
             should_notify_agent(Some(&idle), None, false, true, true),
@@ -155,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn notifies_permission_and_ignores_repeats() {
+    fn permissions_use_banners_only_in_the_background_and_ignore_repeats() {
         let working = snapshot("Codex", AgentRuntimeState::Working, None);
         let permission = snapshot(
             "Codex",
@@ -163,8 +198,15 @@ mod tests {
             Some(AgentAttention::Permission),
         );
         assert_eq!(
+            should_notify_agent(Some(&working), Some(&permission), false, false, true),
+            Some(AgentNotification {
+                kind: AgentNotificationKind::NeedsPermission,
+                delivery: AgentNotificationDelivery::Banner,
+            })
+        );
+        assert_eq!(
             should_notify_agent(Some(&working), Some(&permission), false, true, true),
-            Some(AgentNotificationKind::NeedsPermission)
+            None
         );
         assert_eq!(
             should_notify_agent(Some(&permission), Some(&permission), false, true, true),
@@ -182,7 +224,28 @@ mod tests {
         let waiting = snapshot("Grok", AgentRuntimeState::Waiting, None);
         assert_eq!(
             should_notify_agent(Some(&idle), Some(&waiting), false, false, true),
-            Some(AgentNotificationKind::NeedsAttention)
+            Some(AgentNotification {
+                kind: AgentNotificationKind::NeedsAttention,
+                delivery: AgentNotificationDelivery::Banner,
+            })
+        );
+    }
+
+    #[test]
+    fn foreground_completion_only_sounds_for_another_pane() {
+        let working = snapshot("Codex", AgentRuntimeState::Working, None);
+        let idle = snapshot("Codex", AgentRuntimeState::Idle, None);
+
+        assert_eq!(
+            should_notify_agent(Some(&working), Some(&idle), false, true, true),
+            Some(AgentNotification {
+                kind: AgentNotificationKind::Finished,
+                delivery: AgentNotificationDelivery::Sound,
+            })
+        );
+        assert_eq!(
+            should_notify_agent(Some(&working), Some(&idle), true, true, true),
+            None
         );
     }
 }

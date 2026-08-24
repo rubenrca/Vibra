@@ -1,4 +1,4 @@
-#import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #import <UserNotifications/UserNotifications.h>
 
 #include "notification_bridge.h"
@@ -35,6 +35,19 @@ void vibra_notification_request_authorization(void) {
                                   (void)error;
                               }];
     }
+}
+
+void vibra_notification_play_completion_sound(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Glass is short and distinct without sounding like an error. Fall back
+        // to the user's configured alert sound if it is unavailable.
+        NSSound *sound = [NSSound soundNamed:@"Glass"];
+        if (sound != nil) {
+            [sound play];
+        } else {
+            NSBeep();
+        }
+    });
 }
 
 void vibra_notification_deliver(const char *title, const char *body, const char *identifier) {
