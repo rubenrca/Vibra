@@ -335,90 +335,16 @@ impl TerminalView {
             .unwrap_or_else(|| self.working_directory.clone())
     }
 
-    pub fn send_automation_input(&self, text: &str, newline: bool) -> Result<(), String> {
-        let mut input = text.as_bytes().to_vec();
-        if newline {
-            input.push(b'\r');
-        }
-        self.send_automation_bytes(input)
-    }
-
-    /// Submit a prompt, honoring bracketed paste when the agent terminal enables it.
-    pub fn send_automation_prompt(&self, text: &str) -> Result<(), String> {
-        let bracketed = self
-            .handle
-            .as_ref()
-            .map(|handle| handle.input_mode().bracketed_paste)
-            .unwrap_or(false);
-        let mut input = paste_bytes(text, bracketed);
-        input.push(b'\r');
-        self.send_automation_bytes(input)
-    }
-
-    fn send_automation_bytes(&self, input: Vec<u8>) -> Result<(), String> {
-        let handle = self
-            .handle
-            .as_ref()
-            .ok_or_else(|| "el terminal no está disponible".to_owned())?;
-        handle.clear_selection();
-        handle.scroll(i32::MIN);
-        handle
-            .send_input(input)
-            .map_err(|error| format!("no se pudo escribir al terminal: {error:#}"))
-    }
-
     pub fn foreground_process_name(&self) -> Option<String> {
         self.handle
             .as_ref()
             .and_then(|handle| handle.foreground_process_name())
     }
 
-    pub fn foreground_process_id(&self) -> Option<u32> {
-        self.handle
-            .as_ref()
-            .and_then(|handle| handle.foreground_process_id())
-    }
-
     pub fn session_process_id(&self) -> Option<u32> {
         self.handle
             .as_ref()
             .and_then(|handle| handle.session_process_id())
-    }
-
-    pub fn is_interactive_shell(&self) -> bool {
-        let Some(name) = self.foreground_process_name() else {
-            // No foreground process reported yet — treat as not ready.
-            return false;
-        };
-        let base = std::path::Path::new(&name)
-            .file_name()
-            .map(|name| name.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_else(|| name.to_ascii_lowercase());
-        let base = base.strip_prefix('-').unwrap_or(&base);
-        is_interactive_shell_process_name(base)
-    }
-
-    pub fn automation_read_text(&self, lines: usize) -> String {
-        let Some(handle) = self.handle.as_ref() else {
-            return String::new();
-        };
-        if let Some(text) = handle.recent_text(lines) {
-            return text;
-        }
-        let snapshot = handle.snapshot();
-        let take = lines.max(1).min(snapshot.lines.len().max(1));
-        let start = snapshot.lines.len().saturating_sub(take);
-        let mut text = String::new();
-        for line in &snapshot.lines[start..] {
-            for cell in line.iter().filter(|cell| !cell.wide_spacer) {
-                text.push_str(cell.text());
-            }
-            while text.ends_with(' ') {
-                text.pop();
-            }
-            text.push('\n');
-        }
-        text
     }
 
     pub fn apply_font_size(&mut self, size: f32, cx: &mut Context<Self>) {

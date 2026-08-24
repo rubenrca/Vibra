@@ -16,10 +16,9 @@ use crate::domain::workspace::{
     SessionSnapshot, TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis, WorkspaceTitleSource,
 };
 use crate::infrastructure::automation::{
-    AgentAttention, AgentHookStatus, AgentKind, AgentPlacement, AgentRuntimeState,
-    AutomationCommand, AutomationDirection, AutomationIncoming, AutomationResponse,
-    AutomationServer, agent_hook_status, agent_launch_command, default_settled_states,
-    install_agent_hooks, uninstall_agent_hooks, validate_agent_name,
+    AgentAttention, AgentHookStatus, AgentKind, AgentRuntimeState, AutomationCommand,
+    AutomationIncoming, AutomationResponse, AutomationServer, agent_hook_status,
+    install_agent_hooks, uninstall_agent_hooks,
 };
 use crate::infrastructure::notifications::{
     AgentActivitySnapshot, agent_notification_copy, should_notify_agent,
@@ -60,7 +59,6 @@ const SIDEBAR_ANIM_FRAME: Duration = Duration::from_millis(16);
 /// How often to refresh per-workspace branch/path metadata in the sessions sidebar.
 const SIDEBAR_GIT_POLL_INTERVAL: Duration = Duration::from_secs(3);
 const HOOK_OBSERVATION_TTL: Duration = Duration::from_secs(15 * 60);
-const PROMPT_ACTIVITY_GRACE: Duration = Duration::from_secs(10);
 
 /// Cached git metadata for a workspace sidebar tab (cmux-style).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,29 +75,6 @@ pub(crate) struct SidebarWorkspaceMeta {
 struct TerminalAgentObservation {
     presence: TerminalAgentPresence,
     observed_at: Instant,
-}
-
-struct PendingAgentLaunch {
-    pane_id: Uuid,
-    kind: AgentKind,
-    timeout_ms: u64,
-    wait_for_agent: bool,
-    command_text: String,
-    payload: serde_json::Value,
-    created_pane: bool,
-    previous_selection: Option<Uuid>,
-    name_assigned: bool,
-}
-
-struct PendingAgentWait {
-    pane_id: Uuid,
-    timeout_ms: u64,
-    until: Vec<AgentRuntimeState>,
-    payload: serde_json::Value,
-    occupant: AgentOccupantIdentity,
-    initial_state: Option<AgentRuntimeState>,
-    initial_revision: u64,
-    require_activity: bool,
 }
 
 #[derive(Clone)]
@@ -129,36 +104,6 @@ struct PaneIdentity {
     agent_kind: Option<String>,
     agent_state: Option<AgentRuntimeState>,
     agent_attention: Option<AgentAttention>,
-}
-
-#[derive(Clone)]
-struct AgentOccupantIdentity {
-    kind: String,
-    process_id: Option<u32>,
-    session_id: Option<String>,
-}
-
-impl AgentOccupantIdentity {
-    fn from_presence(presence: &ResolvedAgentPresence) -> Self {
-        Self {
-            kind: presence.kind.clone(),
-            process_id: presence.process_id,
-            session_id: presence.session_id.clone(),
-        }
-    }
-
-    fn same_agent(&self, other: &Self) -> bool {
-        if !self.kind.eq_ignore_ascii_case(&other.kind) {
-            return false;
-        }
-        match (self.process_id, other.process_id) {
-            (Some(left), Some(right)) => left == right,
-            _ => match (&self.session_id, &other.session_id) {
-                (Some(left), Some(right)) => left == right,
-                _ => true,
-            },
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -500,8 +445,7 @@ pub struct WorkspaceView {
     _automation_task: Option<gpui::Task<()>>,
     agent_presence: HashMap<Uuid, TerminalAgentObservation>,
     hook_agent_presence: HashMap<Uuid, HookAgentPresence>,
-    agent_state_revisions: HashMap<Uuid, u64>,
-    /// Optional aliases assigned by automation (`+agent open --name …`).
+    /// Optional names assigned to panes from the pane context menu.
     agent_names: HashMap<Uuid, String>,
     agent_activity_seen: HashMap<Uuid, AgentActivitySnapshot>,
     agent_hook_status: Option<AgentHookStatus>,
@@ -700,7 +644,6 @@ impl WorkspaceView {
             _automation_task: automation_task,
             agent_presence: HashMap::new(),
             hook_agent_presence: HashMap::new(),
-            agent_state_revisions: HashMap::new(),
             agent_names: HashMap::new(),
             agent_activity_seen: HashMap::new(),
             agent_hook_status,
@@ -1300,7 +1243,7 @@ impl WorkspaceView {
                 }
             }
             RenamePromptKind::Pane { session_id } => {
-                // UI rename accepts free-form labels; automation still uses validate_agent_name.
+                // Pane labels are intentionally independent from agent hook identity.
                 let project_id = self.project_id_for_session(session_id);
                 if name.len() > 48 {
                     self.persistence_error =
@@ -1834,7 +1777,6 @@ impl WorkspaceView {
             self.automation_tokens.remove(&session_id);
             self.agent_presence.remove(&session_id);
             self.hook_agent_presence.remove(&session_id);
-            self.agent_state_revisions.remove(&session_id);
             self.agent_names.remove(&session_id);
             self.agent_activity_seen.remove(&session_id);
         }
@@ -1949,7 +1891,6 @@ impl WorkspaceView {
                 self.agent_presence.remove(session_id);
                 self.hook_agent_presence.remove(session_id);
                 self.agent_names.remove(session_id);
-                self.bump_agent_state_revision(*session_id);
                 self.publish_agent_activity(*session_id);
                 cx.notify();
             }
@@ -1994,7 +1935,6 @@ impl WorkspaceView {
                 } else {
                     self.agent_presence.remove(session_id);
                 }
-                self.bump_agent_state_revision(*session_id);
                 self.publish_agent_activity(*session_id);
                 cx.notify();
             }
@@ -2017,109 +1957,12 @@ impl WorkspaceView {
             return;
         }
 
-        // Long-running commands answer asynchronously over the same response channel.
-        match &request.envelope.command {
-            AutomationCommand::AgentOpen { .. } | AutomationCommand::AgentStart { .. } => {
-                let command = request.envelope.command.clone();
-                match self.begin_agent_launch(pane_id, command, cx) {
-                    Ok(launch) => self.spawn_agent_launch(launch, request.response, cx),
-                    Err(error) => {
-                        let _ = request.response.send(AutomationResponse::failure(error));
-                    }
-                }
-                return;
-            }
-            AutomationCommand::AgentPrompt { .. } | AutomationCommand::AgentWait { .. } => {
-                let command = request.envelope.command.clone();
-                match self.begin_agent_prompt_or_wait(pane_id, command, cx) {
-                    Ok(pending) => self.spawn_agent_state_wait(pending, request.response, cx),
-                    Err(error) => {
-                        let _ = request.response.send(AutomationResponse::failure(error));
-                    }
-                }
-                return;
-            }
-            _ => {}
-        }
-
-        let result = match request.envelope.command {
-            AutomationCommand::List => Ok(self.automation_pane_list(pane_id)),
-            AutomationCommand::Send {
-                text,
-                newline,
-                target_pane,
-            } => self.automation_send(pane_id, target_pane, text, newline, cx),
-            AutomationCommand::Split {
-                direction,
-                no_focus,
-                cwd,
-            } => self.automation_split(pane_id, direction, no_focus, cwd, cx),
-            AutomationCommand::CreateTab { no_focus, cwd } => {
-                self.automation_create_tab(pane_id, no_focus, cwd, cx)
-            }
-            AutomationCommand::Focus { direction } => {
-                if !self.snapshot.select_terminal_global(pane_id) {
-                    Err("el pane ya no existe".to_owned())
-                } else if self
-                    .snapshot
-                    .focus_terminal(automation_focus_direction(direction))
-                {
-                    let selected = self.snapshot.selected_session().map(|session| session.id);
-                    self.sync_terminal_surface_visibility(cx);
-                    self.sync_diff_root(cx);
-                    self.persist(cx);
-                    Ok(serde_json::json!({ "paneId": selected }))
-                } else {
-                    Err("no hay un pane en esa dirección".to_owned())
-                }
-            }
-            AutomationCommand::Close => {
-                if self.snapshot.select_terminal_global(pane_id)
-                    && self.snapshot.close_selected_terminal()
-                {
-                    self.reconcile_terminal_views(cx);
-                    self.sync_diff_root(cx);
-                    self.persist(cx);
-                    Ok(serde_json::json!({ "closed": pane_id }))
-                } else {
-                    Err("el pane ya no existe".to_owned())
-                }
-            }
-            AutomationCommand::Zoom => {
-                if self.snapshot.select_terminal_global(pane_id)
-                    && self.snapshot.toggle_selected_pane_zoom()
-                {
-                    self.sync_terminal_surface_visibility(cx);
-                    self.persist(cx);
-                    Ok(serde_json::json!({ "paneId": pane_id, "zoomToggled": true }))
-                } else {
-                    Err("el pane ya no existe".to_owned())
-                }
-            }
-            AutomationCommand::AgentStatus { target } => self
-                .resolve_automation_target(pane_id, target.as_deref())
-                .map(|target| self.automation_agent_status(target)),
-            AutomationCommand::AgentList => Ok(self.automation_agent_list(pane_id)),
-            AutomationCommand::AgentKinds => {
-                Ok(crate::infrastructure::automation::agent_kinds_payload())
-            }
-            AutomationCommand::AgentRead { target, lines } => {
-                self.automation_agent_read(pane_id, target.as_deref(), lines, cx)
-            }
-            AutomationCommand::AgentRename {
-                target,
-                name,
-                clear,
-            } => self.automation_agent_rename(pane_id, target.as_deref(), name, clear, cx),
-            AutomationCommand::AgentOpen { .. }
-            | AutomationCommand::AgentStart { .. }
-            | AutomationCommand::AgentPrompt { .. }
-            | AutomationCommand::AgentWait { .. } => unreachable!("handled above"),
+        let result: Result<serde_json::Value, String> = match request.envelope.command {
             AutomationCommand::SetAgentState { state } => {
                 self.set_hook_agent_presence(pane_id, None, state, None, None);
                 self.publish_agent_activity(pane_id);
                 cx.notify();
-                Ok(self.automation_agent_status(pane_id))
+                Ok(self.agent_status_value(pane_id))
             }
             AutomationCommand::SetAgentPresence {
                 kind,
@@ -2130,7 +1973,7 @@ impl WorkspaceView {
                 self.set_hook_agent_presence(pane_id, Some(kind), state, attention, session_id);
                 self.publish_agent_activity(pane_id);
                 cx.notify();
-                Ok(self.automation_agent_status(pane_id))
+                Ok(self.agent_status_value(pane_id))
             }
             AutomationCommand::ClearAgentPresence { session_id } => {
                 let clear = self
@@ -2141,12 +1984,10 @@ impl WorkspaceView {
                     });
                 if clear {
                     self.hook_agent_presence.remove(&pane_id);
-                    self.agent_names.remove(&pane_id);
-                    self.bump_agent_state_revision(pane_id);
                     self.publish_agent_activity(pane_id);
                     cx.notify();
                 }
-                Ok(self.automation_agent_status(pane_id))
+                Ok(self.agent_status_value(pane_id))
             }
         };
         let response = match result {
@@ -2154,99 +1995,6 @@ impl WorkspaceView {
             Err(error) => AutomationResponse::failure(error),
         };
         let _ = request.response.send(response);
-    }
-
-    fn automation_send(
-        &mut self,
-        caller: Uuid,
-        target_pane: Option<Uuid>,
-        text: String,
-        newline: bool,
-        cx: &mut Context<Self>,
-    ) -> Result<serde_json::Value, String> {
-        let target = target_pane.unwrap_or(caller);
-        if !self.automation_same_project(caller, target) {
-            return Err("el pane destino no está en el mismo proyecto".to_owned());
-        }
-        let Some(terminal) = self.terminals.get(&target) else {
-            return Err("el pane ya no existe".to_owned());
-        };
-        terminal.read(cx).send_automation_input(&text, newline)?;
-        Ok(serde_json::json!({ "paneId": target, "sent": text.len() }))
-    }
-
-    fn automation_split(
-        &mut self,
-        caller: Uuid,
-        direction: AutomationDirection,
-        no_focus: bool,
-        cwd: Option<std::path::PathBuf>,
-        cx: &mut Context<Self>,
-    ) -> Result<serde_json::Value, String> {
-        let previous_selection = self.snapshot.selected_session().map(|session| session.id);
-        if !self.snapshot.select_terminal_global(caller) {
-            return Err("el pane ya no existe".to_owned());
-        }
-        let direction = automation_split_direction(direction);
-        let cwd = cwd.map(|path| path.to_string_lossy().into_owned());
-        let Some(created) = self
-            .snapshot
-            .split_selected_terminal_with_options(direction, !no_focus, cwd)
-        else {
-            self.restore_automation_selection(previous_selection);
-            return Err("no se pudo dividir el pane".to_owned());
-        };
-        if no_focus {
-            self.restore_automation_selection(previous_selection);
-        }
-        self.reconcile_terminal_views(cx);
-        self.persist(cx);
-        Ok(serde_json::json!({ "paneId": created }))
-    }
-
-    fn automation_create_tab(
-        &mut self,
-        caller: Uuid,
-        no_focus: bool,
-        cwd: Option<std::path::PathBuf>,
-        cx: &mut Context<Self>,
-    ) -> Result<serde_json::Value, String> {
-        let previous_selection = self.snapshot.selected_session().map(|session| session.id);
-        if !self.snapshot.select_terminal_global(caller) {
-            return Err("el pane ya no existe".to_owned());
-        }
-        let cwd = cwd.map(|path| path.to_string_lossy().into_owned());
-        let Some((tab_id, session_id)) = self
-            .snapshot
-            .create_terminal_tab_with_options(!no_focus, cwd)
-        else {
-            self.restore_automation_selection(previous_selection);
-            return Err("no se pudo crear el tab".to_owned());
-        };
-        if no_focus {
-            self.restore_automation_selection(previous_selection);
-        }
-        self.reconcile_terminal_views(cx);
-        self.persist(cx);
-        Ok(serde_json::json!({
-            "tabId": tab_id,
-            "paneId": session_id,
-        }))
-    }
-
-    fn automation_same_project(&self, caller: Uuid, target: Uuid) -> bool {
-        if caller == target {
-            return true;
-        }
-        let caller_project = self.project_id_for_session(caller);
-        let target_project = self.project_id_for_session(target);
-        matches!((caller_project, target_project), (Some(a), Some(b)) if a == b)
-    }
-
-    fn restore_automation_selection(&mut self, previous: Option<Uuid>) {
-        if let Some(previous) = previous {
-            let _ = self.snapshot.select_terminal_global(previous);
-        }
     }
 
     fn project_id_for_session(&self, session_id: Uuid) -> Option<Uuid> {
@@ -2260,731 +2008,6 @@ impl WorkspaceView {
                 .flat_map(|tab| &tab.sessions)
                 .any(|session| session.id == session_id)
                 .then_some(project.id)
-        })
-    }
-
-    fn resolve_automation_target(
-        &self,
-        caller: Uuid,
-        target: Option<&str>,
-    ) -> Result<Uuid, String> {
-        let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) else {
-            return Ok(caller);
-        };
-        if let Ok(uuid) = Uuid::parse_str(target) {
-            if !self.automation_same_project(caller, uuid) {
-                return Err("el pane destino no está en el mismo proyecto".to_owned());
-            }
-            if !self.terminals.contains_key(&uuid) && self.project_id_for_session(uuid).is_none() {
-                return Err("el pane destino no existe".to_owned());
-            }
-            return Ok(uuid);
-        }
-        let project_id = self
-            .project_id_for_session(caller)
-            .ok_or_else(|| "el pane caller no pertenece a un proyecto".to_owned())?;
-        let matches: Vec<_> = self
-            .agent_names
-            .iter()
-            .filter(|(pane_id, name)| {
-                name == &target
-                    && self.resolved_agent_presence(**pane_id).is_some()
-                    && self
-                        .project_id_for_session(**pane_id)
-                        .is_some_and(|id| id == project_id)
-            })
-            .map(|(pane_id, _)| *pane_id)
-            .collect();
-        match matches.as_slice() {
-            [only] => Ok(*only),
-            [] => Err(format!(
-                "no hay un agente llamado '{target}' en este proyecto"
-            )),
-            _ => Err(format!("el nombre '{target}' es ambiguo en este proyecto")),
-        }
-    }
-
-    fn register_agent_name(&mut self, pane_id: Uuid, name: &str) -> Result<(), String> {
-        self.ensure_agent_name_available(pane_id, name)?;
-        self.agent_names.insert(pane_id, name.to_owned());
-        Ok(())
-    }
-
-    fn ensure_agent_name_available(&self, pane_id: Uuid, name: &str) -> Result<(), String> {
-        let project_id = self
-            .project_id_for_session(pane_id)
-            .ok_or_else(|| "el pane no pertenece a un proyecto".to_owned())?;
-        self.ensure_agent_name_available_in_project(project_id, name, Some(pane_id))
-    }
-
-    fn ensure_agent_name_available_in_project(
-        &self,
-        project_id: Uuid,
-        name: &str,
-        except: Option<Uuid>,
-    ) -> Result<(), String> {
-        validate_agent_name(name).map_err(|error| error.to_string())?;
-        if let Some((existing, _)) = self.agent_names.iter().find(|(other_id, other_name)| {
-            *other_name == name
-                && Some(**other_id) != except
-                && self
-                    .project_id_for_session(**other_id)
-                    .is_some_and(|id| id == project_id)
-        }) {
-            return Err(format!(
-                "el nombre '{name}' ya está en uso por el pane {existing}"
-            ));
-        }
-        Ok(())
-    }
-
-    fn automation_agent_list(&self, caller: Uuid) -> serde_json::Value {
-        let project_id = self.project_id_for_session(caller);
-        let mut agents = Vec::new();
-        for project in &self.snapshot.projects {
-            if project_id.is_some_and(|id| id != project.id) {
-                continue;
-            }
-            for workspace in project.workspaces.as_deref().unwrap_or_default() {
-                for tab in &workspace.tabs {
-                    for session in &tab.sessions {
-                        let presence = self.resolved_agent_presence(session.id);
-                        let name = self.agent_names.get(&session.id);
-                        if presence.is_none() {
-                            continue;
-                        }
-                        agents.push(serde_json::json!({
-                            "paneId": session.id,
-                            "tabId": tab.id,
-                            "name": name,
-                            "agent": self.agent_status_value(session.id),
-                            "workingDirectory": session.working_directory,
-                        }));
-                    }
-                }
-            }
-        }
-        serde_json::json!({ "agents": agents })
-    }
-
-    fn automation_agent_read(
-        &self,
-        caller: Uuid,
-        target: Option<&str>,
-        lines: usize,
-        cx: &Context<Self>,
-    ) -> Result<serde_json::Value, String> {
-        let target = self.resolve_automation_target(caller, target)?;
-        if self.resolved_agent_presence(target).is_none() {
-            return Err("el destino no contiene un agente activo".to_owned());
-        }
-        let Some(terminal) = self.terminals.get(&target) else {
-            return Err("el pane ya no existe".to_owned());
-        };
-        let text = terminal.read(cx).automation_read_text(lines);
-        Ok(serde_json::json!({
-            "paneId": target,
-            "name": self.agent_names.get(&target),
-            "lines": lines,
-            "text": text,
-            "agent": self.agent_status_value(target),
-        }))
-    }
-
-    fn automation_agent_rename(
-        &mut self,
-        caller: Uuid,
-        target: Option<&str>,
-        name: Option<String>,
-        clear: bool,
-        cx: &mut Context<Self>,
-    ) -> Result<serde_json::Value, String> {
-        let target = self.resolve_automation_target(caller, target)?;
-        if self.resolved_agent_presence(target).is_none() {
-            return Err("el destino no contiene un agente activo".to_owned());
-        }
-        if clear {
-            self.agent_names.remove(&target);
-        } else if let Some(name) = name.as_ref() {
-            self.register_agent_name(target, name)?;
-        } else {
-            return Err("falta el nombre nuevo".to_owned());
-        }
-        self.sync_servers_panel(cx);
-        cx.notify();
-        Ok(self.automation_agent_status(target))
-    }
-
-    fn begin_agent_launch(
-        &mut self,
-        caller: Uuid,
-        command: AutomationCommand,
-        cx: &mut Context<Self>,
-    ) -> Result<PendingAgentLaunch, String> {
-        let (
-            kind,
-            placement,
-            direction,
-            no_focus,
-            name,
-            cwd,
-            timeout_ms,
-            wait_for_agent,
-            args,
-            explicit_pane,
-        ) = match command {
-            AutomationCommand::AgentOpen {
-                kind,
-                placement,
-                direction,
-                no_focus,
-                name,
-                cwd,
-                timeout_ms,
-                wait,
-                args,
-            } => (
-                kind, placement, direction, no_focus, name, cwd, timeout_ms, wait, args, None,
-            ),
-            AutomationCommand::AgentStart {
-                kind,
-                pane,
-                name,
-                timeout_ms,
-                wait,
-                args,
-            } => (
-                kind,
-                AgentPlacement::Current,
-                AutomationDirection::Right,
-                true,
-                name,
-                None,
-                timeout_ms,
-                wait,
-                args,
-                pane,
-            ),
-            _ => return Err("comando de launch inválido".to_owned()),
-        };
-
-        let project_id = self
-            .project_id_for_session(caller)
-            .ok_or_else(|| "el pane ya no existe".to_owned())?;
-        let previous_selection = self.snapshot.selected_session().map(|session| session.id);
-        let cwd = cwd.map(|path| path.to_string_lossy().into_owned());
-        let mut tab_id = None;
-        let current_target = if placement == AgentPlacement::Current {
-            let target = explicit_pane.unwrap_or(caller);
-            if !self.automation_same_project(caller, target) {
-                return Err("el pane destino no está en el mismo proyecto".to_owned());
-            }
-            if !self.terminals.contains_key(&target) {
-                return Err("el pane destino ya no existe".to_owned());
-            }
-            if self.resolved_agent_presence(target).is_some() {
-                return Err("el pane destino ya contiene un agente activo".to_owned());
-            }
-            Some(target)
-        } else {
-            None
-        };
-        if let Some(name) = name.as_deref() {
-            self.ensure_agent_name_available_in_project(project_id, name, current_target)?;
-        }
-
-        let mut created_pane = false;
-        let target_pane = match placement {
-            AgentPlacement::Current => current_target.expect("current target resolved above"),
-            AgentPlacement::Split => {
-                if !self.snapshot.select_terminal_global(caller) {
-                    return Err("el pane ya no existe".to_owned());
-                }
-                let direction = automation_split_direction(direction);
-                let Some(created) = self.snapshot.split_selected_terminal_with_options(
-                    direction,
-                    !no_focus,
-                    cwd.clone(),
-                ) else {
-                    self.restore_automation_selection(previous_selection);
-                    return Err("no se pudo dividir el pane".to_owned());
-                };
-                created_pane = true;
-                created
-            }
-            AgentPlacement::Tab => {
-                if !self.snapshot.select_terminal_global(caller) {
-                    return Err("el pane ya no existe".to_owned());
-                }
-                let Some((created_tab, created_session)) = self
-                    .snapshot
-                    .create_terminal_tab_with_options(!no_focus, cwd.clone())
-                else {
-                    self.restore_automation_selection(previous_selection);
-                    return Err("no se pudo crear el tab".to_owned());
-                };
-                tab_id = Some(created_tab);
-                created_pane = true;
-                created_session
-            }
-        };
-
-        if no_focus && placement != AgentPlacement::Current {
-            self.restore_automation_selection(previous_selection);
-        }
-        if created_pane {
-            self.reconcile_terminal_views(cx);
-            self.persist(cx);
-        }
-
-        if let Some(name) = name.as_ref() {
-            self.register_agent_name(target_pane, name)?;
-            self.sync_servers_panel(cx);
-        }
-
-        let command_text = agent_launch_command(kind, &args);
-        let mut payload = serde_json::json!({
-            "paneId": target_pane,
-            "kind": kind.cli_name(),
-            "displayName": kind.display_name(),
-            "command": command_text,
-            "ready": false,
-            "name": name,
-            "cwd": cwd,
-            "agent": self.agent_status_value(target_pane),
-        });
-        if let Some(tab_id) = tab_id {
-            payload["tabId"] = serde_json::json!(tab_id);
-        }
-
-        Ok(PendingAgentLaunch {
-            pane_id: target_pane,
-            kind,
-            timeout_ms,
-            wait_for_agent,
-            command_text,
-            payload,
-            created_pane,
-            previous_selection,
-            name_assigned: name.is_some(),
-        })
-    }
-
-    fn begin_agent_prompt_or_wait(
-        &mut self,
-        caller: Uuid,
-        command: AutomationCommand,
-        cx: &mut Context<Self>,
-    ) -> Result<PendingAgentWait, String> {
-        match command {
-            AutomationCommand::AgentPrompt {
-                target,
-                text,
-                wait,
-                timeout_ms,
-                until,
-            } => {
-                let pane_id = self.resolve_automation_target(caller, target.as_deref())?;
-                let presence = self
-                    .resolved_agent_presence(pane_id)
-                    .ok_or_else(|| "el destino no contiene un agente activo".to_owned())?;
-                let occupant = AgentOccupantIdentity::from_presence(&presence);
-                let initial_state = presence.state;
-                let initial_revision = self
-                    .agent_state_revisions
-                    .get(&pane_id)
-                    .copied()
-                    .unwrap_or_default();
-                ensure_prompt_wait_supported(wait, presence.state_source)?;
-                let Some(terminal) = self.terminals.get(&pane_id) else {
-                    return Err("el pane destino ya no existe".to_owned());
-                };
-                if presence.process_id.is_some()
-                    && terminal.read(cx).foreground_process_id() != presence.process_id
-                {
-                    return Err(
-                        "el proceso del agente cambió antes de enviar el prompt; inténtalo de nuevo"
-                            .to_owned(),
-                    );
-                }
-                terminal.read(cx).send_automation_prompt(&text)?;
-                let until = if until.is_empty() {
-                    default_settled_states()
-                } else {
-                    until
-                };
-                let payload = serde_json::json!({
-                    "paneId": pane_id,
-                    "name": self.agent_names.get(&pane_id),
-                    "submitted": true,
-                    "prompt": text,
-                    "wait": wait,
-                    "agent": self.agent_status_value(pane_id),
-                });
-                if !wait {
-                    // Return immediately via a completed wait with empty until that matches now.
-                    return Ok(PendingAgentWait {
-                        pane_id,
-                        timeout_ms: 1,
-                        until: Vec::new(),
-                        payload,
-                        occupant,
-                        initial_state,
-                        initial_revision,
-                        require_activity: false,
-                    });
-                }
-                Ok(PendingAgentWait {
-                    pane_id,
-                    timeout_ms,
-                    until,
-                    payload,
-                    occupant,
-                    initial_state,
-                    initial_revision,
-                    require_activity: true,
-                })
-            }
-            AutomationCommand::AgentWait {
-                target,
-                timeout_ms,
-                until,
-            } => {
-                let pane_id = self.resolve_automation_target(caller, target.as_deref())?;
-                let presence = self
-                    .resolved_agent_presence(pane_id)
-                    .ok_or_else(|| "el destino no contiene un agente activo".to_owned())?;
-                let occupant = AgentOccupantIdentity::from_presence(&presence);
-                if presence.process_id.is_some()
-                    && self
-                        .terminals
-                        .get(&pane_id)
-                        .and_then(|terminal| terminal.read(cx).foreground_process_id())
-                        != presence.process_id
-                {
-                    return Err(
-                        "el proceso del agente cambió antes de iniciar la espera".to_owned()
-                    );
-                }
-                let initial_state = presence.state;
-                let initial_revision = self
-                    .agent_state_revisions
-                    .get(&pane_id)
-                    .copied()
-                    .unwrap_or_default();
-                let until = if until.is_empty() {
-                    default_settled_states()
-                } else {
-                    until
-                };
-                Ok(PendingAgentWait {
-                    pane_id,
-                    timeout_ms,
-                    until,
-                    payload: serde_json::json!({
-                        "paneId": pane_id,
-                        "name": self.agent_names.get(&pane_id),
-                        "agent": self.agent_status_value(pane_id),
-                    }),
-                    occupant,
-                    initial_state,
-                    initial_revision,
-                    require_activity: false,
-                })
-            }
-            _ => Err("comando de wait inválido".to_owned()),
-        }
-    }
-
-    fn spawn_agent_launch(
-        &mut self,
-        launch: PendingAgentLaunch,
-        response: std::sync::mpsc::Sender<AutomationResponse>,
-        cx: &mut Context<Self>,
-    ) {
-        let expected = launch.kind.display_name().to_owned();
-        let pane_id = launch.pane_id;
-        let timeout = Duration::from_millis(launch.timeout_ms.max(1));
-        let wait_for_agent = launch.wait_for_agent;
-        let command_text = launch.command_text;
-        let mut payload = launch.payload;
-        let created_pane = launch.created_pane;
-        let previous_selection = launch.previous_selection;
-        let name_assigned = launch.name_assigned;
-        cx.spawn(async move |this, cx| {
-            let deadline = Instant::now() + timeout;
-            // Wait for an interactive shell before launching the agent binary.
-            let mut command_sent = false;
-            while Instant::now() < deadline {
-                let shell_ready = this
-                    .update(cx, |this, cx| {
-                        this.terminals
-                            .get(&pane_id)
-                            .is_some_and(|terminal| terminal.read(cx).is_interactive_shell())
-                    })
-                    .ok()
-                    .unwrap_or(false);
-                if shell_ready {
-                    let sent = this
-                        .update(cx, |this, cx| {
-                            let terminal = this
-                                .terminals
-                                .get(&pane_id)
-                                .ok_or_else(|| "el pane destino ya no existe".to_owned())?;
-                            terminal.read(cx).send_automation_input(&command_text, true)
-                        })
-                        .unwrap_or_else(|_| Err("la vista de workspace ya no existe".to_owned()));
-                    match sent {
-                        Ok(()) => command_sent = true,
-                        Err(error) => {
-                            let _ = this.update(cx, |this, cx| {
-                                this.rollback_agent_launch(
-                                    pane_id,
-                                    created_pane,
-                                    previous_selection,
-                                    name_assigned,
-                                    cx,
-                                );
-                            });
-                            let _ = response.send(AutomationResponse::failure(error));
-                            return;
-                        }
-                    }
-                    break;
-                }
-                Timer::after(Duration::from_millis(150)).await;
-            }
-            if !command_sent {
-                let _ = this.update(cx, |this, cx| {
-                    this.rollback_agent_launch(
-                        pane_id,
-                        created_pane,
-                        previous_selection,
-                        name_assigned,
-                        cx,
-                    );
-                });
-                let _ = response.send(AutomationResponse::failure(
-                    "timeout esperando un shell interactivo; no se lanzó el agente",
-                ));
-                return;
-            }
-            if !wait_for_agent {
-                let status = this
-                    .update(cx, |this, _cx| this.automation_agent_status(pane_id))
-                    .ok();
-                if let Some(status) = status {
-                    payload["agent"] = status
-                        .get("agent")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
-                }
-                payload["ready"] = serde_json::json!(false);
-                payload["submitted"] = serde_json::json!(true);
-                let _ = response.send(AutomationResponse::success(payload));
-                return;
-            }
-            loop {
-                let ready = this
-                    .update(cx, |this, _cx| {
-                        this.resolved_agent_presence(pane_id)
-                            .is_some_and(|presence| presence.kind.eq_ignore_ascii_case(&expected))
-                    })
-                    .ok()
-                    .unwrap_or(false);
-                if ready {
-                    let status = this
-                        .update(cx, |this, _cx| this.automation_agent_status(pane_id))
-                        .ok();
-                    if let Some(status) = status {
-                        payload["ready"] = serde_json::json!(true);
-                        payload["agent"] = status
-                            .get("agent")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-                    }
-                    let _ = response.send(AutomationResponse::success(payload));
-                    return;
-                }
-                if Instant::now() >= deadline {
-                    let _ = this.update(cx, |this, cx| {
-                        this.rollback_agent_launch(
-                            pane_id,
-                            created_pane,
-                            previous_selection,
-                            name_assigned,
-                            cx,
-                        );
-                    });
-                    let _ = response.send(AutomationResponse::failure(format!(
-                        "timeout esperando agente {expected}; el lanzamiento no quedó listo"
-                    )));
-                    return;
-                }
-                Timer::after(Duration::from_millis(200)).await;
-            }
-        })
-        .detach();
-    }
-
-    fn rollback_agent_launch(
-        &mut self,
-        pane_id: Uuid,
-        created_pane: bool,
-        previous_selection: Option<Uuid>,
-        name_assigned: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if name_assigned {
-            self.agent_names.remove(&pane_id);
-        }
-        if !created_pane {
-            cx.notify();
-            return;
-        }
-        if self.snapshot.close_terminal(pane_id) {
-            self.restore_automation_selection(previous_selection);
-            self.reconcile_terminal_views(cx);
-            self.persist(cx);
-        }
-    }
-
-    fn spawn_agent_state_wait(
-        &mut self,
-        pending: PendingAgentWait,
-        response: std::sync::mpsc::Sender<AutomationResponse>,
-        cx: &mut Context<Self>,
-    ) {
-        let pane_id = pending.pane_id;
-        let timeout = Duration::from_millis(pending.timeout_ms.max(1));
-        let until = pending.until;
-        let mut payload = pending.payload;
-        let occupant = pending.occupant;
-        let initial_state = pending.initial_state;
-        let initial_revision = pending.initial_revision;
-        let require_activity = pending.require_activity;
-        // Immediate return path for prompt --no-wait (empty until).
-        if until.is_empty() {
-            let _ = response.send(AutomationResponse::success(payload));
-            return;
-        }
-        cx.spawn(async move |this, cx| {
-            let deadline = Instant::now() + timeout;
-            let activity_deadline = Instant::now() + PROMPT_ACTIVITY_GRACE.min(timeout);
-            loop {
-                let observation = this
-                    .update(cx, |this, cx| {
-                        let presence = this.resolved_agent_presence(pane_id);
-                        let revision = this
-                            .agent_state_revisions
-                            .get(&pane_id)
-                            .copied()
-                            .unwrap_or_default();
-                        let live_process_id = this
-                            .terminals
-                            .get(&pane_id)
-                            .and_then(|terminal| terminal.read(cx).foreground_process_id());
-                        (presence, revision, live_process_id)
-                    })
-                    .ok();
-                let Some((Some(presence), revision, live_process_id)) = observation else {
-                    let _ = response.send(AutomationResponse::failure(
-                        "el agente dejó de estar activo mientras se esperaba su estado",
-                    ));
-                    return;
-                };
-                let current_occupant = AgentOccupantIdentity::from_presence(&presence);
-                let live_process_changed = occupant
-                    .process_id
-                    .is_some_and(|expected| live_process_id != Some(expected));
-                if live_process_changed || !occupant.same_agent(&current_occupant) {
-                    let _ = response.send(AutomationResponse::failure(
-                        "el agente del pane cambió mientras se esperaba; se canceló la operación",
-                    ));
-                    return;
-                }
-                let current = presence.state;
-                let saw_activity = revision > initial_revision;
-                if agent_wait_matches(current, &until, require_activity, saw_activity) {
-                    let status = this
-                        .update(cx, |this, _cx| this.automation_agent_status(pane_id))
-                        .ok();
-                    if let Some(status) = status {
-                        payload["agent"] = status
-                            .get("agent")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-                        payload["name"] = status
-                            .get("name")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-                    }
-                    payload["matched"] = serde_json::json!(true);
-                    payload["state"] = serde_json::json!(current.map(agent_runtime_state_label));
-                    let _ = response.send(AutomationResponse::success(payload));
-                    return;
-                }
-                if require_activity && !saw_activity && Instant::now() >= activity_deadline {
-                    let initial = initial_state.map(agent_runtime_state_label).unwrap_or("unknown");
-                    let _ = response.send(AutomationResponse::failure(format!(
-                        "el agente no confirmó actividad tras recibir el prompt (estado inicial: {initial})"
-                    )));
-                    return;
-                }
-                if Instant::now() >= deadline {
-                    let requested = until
-                        .iter()
-                        .map(|state| agent_runtime_state_label(*state))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let current = current.map(agent_runtime_state_label).unwrap_or("unknown");
-                    let _ = response.send(AutomationResponse::failure(format!(
-                        "timeout esperando estado [{requested}]; estado actual: {current}"
-                    )));
-                    return;
-                }
-                Timer::after(Duration::from_millis(200)).await;
-            }
-        })
-        .detach();
-    }
-
-    fn automation_pane_list(&self, caller: Uuid) -> serde_json::Value {
-        let project = self.snapshot.projects.iter().find(|project| {
-            project
-                .workspaces
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .flat_map(|workspace| &workspace.tabs)
-                .flat_map(|tab| &tab.sessions)
-                .any(|session| session.id == caller)
-        });
-        let panes: Vec<_> = project
-            .into_iter()
-            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-            .flat_map(|workspace| &workspace.tabs)
-            .flat_map(|tab| &tab.sessions)
-            .map(|session| {
-                let agent = self.agent_status_value(session.id);
-                serde_json::json!({
-                    "paneId": session.id,
-                    "title": session.title,
-                    "workingDirectory": session.working_directory,
-                    "selected": self.snapshot.selected_session().is_some_and(|selected| selected.id == session.id),
-                    "name": self.agent_names.get(&session.id),
-                    "agent": agent,
-                })
-            })
-            .collect();
-        serde_json::json!({ "panes": panes })
-    }
-
-    fn automation_agent_status(&self, pane_id: Uuid) -> serde_json::Value {
-        serde_json::json!({
-            "paneId": pane_id,
-            "name": self.agent_names.get(&pane_id),
-            "agent": self.agent_status_value(pane_id),
         })
     }
 
@@ -3026,12 +2049,6 @@ impl WorkspaceView {
             entry.session_id = session_id;
         }
         entry.observed_at = now;
-        self.bump_agent_state_revision(pane_id);
-    }
-
-    fn bump_agent_state_revision(&mut self, pane_id: Uuid) {
-        let revision = self.agent_state_revisions.entry(pane_id).or_default();
-        *revision = revision.wrapping_add(1).max(1);
     }
 
     fn resolved_agent_presence(&self, pane_id: Uuid) -> Option<ResolvedAgentPresence> {
@@ -4840,7 +3857,7 @@ impl WorkspaceView {
                     .text_size(px(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(colors().muted)
-                    .child("COORDINACIÓN DE AGENTES"),
+                    .child("SEGUIMIENTO DE AGENTES"),
             )
             .child(
                 div()
@@ -6626,66 +5643,6 @@ mod tests {
             .as_deref(),
             Some("claude --dangerously-skip-permissions  ·  ~/Dev/Vibra")
         );
-    }
-
-    #[test]
-    fn standalone_wait_accepts_an_already_matching_state() {
-        assert!(agent_wait_matches(
-            Some(AgentRuntimeState::Idle),
-            &[AgentRuntimeState::Idle, AgentRuntimeState::Waiting],
-            false,
-            false,
-        ));
-        assert!(!agent_wait_matches(
-            Some(AgentRuntimeState::Idle),
-            &[AgentRuntimeState::Waiting],
-            false,
-            false,
-        ));
-    }
-
-    #[test]
-    fn prompt_wait_requires_post_submit_activity() {
-        assert!(!agent_wait_matches(
-            Some(AgentRuntimeState::Idle),
-            &[AgentRuntimeState::Idle],
-            true,
-            false,
-        ));
-        assert!(agent_wait_matches(
-            Some(AgentRuntimeState::Idle),
-            &[AgentRuntimeState::Idle],
-            true,
-            true,
-        ));
-    }
-
-    #[test]
-    fn prompt_wait_rejects_heuristic_tracking_before_submission() {
-        assert!(ensure_prompt_wait_supported(true, Some("heuristic")).is_err());
-        assert!(ensure_prompt_wait_supported(true, None).is_err());
-        assert!(ensure_prompt_wait_supported(true, Some("hook")).is_ok());
-        assert!(ensure_prompt_wait_supported(false, Some("heuristic")).is_ok());
-    }
-
-    #[test]
-    fn occupant_identity_rejects_a_replaced_process_or_session() {
-        let original = AgentOccupantIdentity {
-            kind: "Codex".into(),
-            process_id: Some(10),
-            session_id: Some("a".into()),
-        };
-        assert!(original.same_agent(&original.clone()));
-        assert!(!original.same_agent(&AgentOccupantIdentity {
-            kind: "Codex".into(),
-            process_id: Some(11),
-            session_id: Some("a".into()),
-        }));
-        assert!(!original.same_agent(&AgentOccupantIdentity {
-            kind: "Claude".into(),
-            process_id: Some(10),
-            session_id: Some("a".into()),
-        }));
     }
 
     struct SilentTerminalPort;

@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -12,15 +11,6 @@ pub(crate) const MAX_AUTOMATION_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) const MAX_AGENT_HOOK_BYTES: u64 = 1024 * 1024;
 pub(crate) const AUTOMATION_IO_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) static NEXT_AUTOMATION_SERVER_ID: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AutomationDirection {
-    Left,
-    Right,
-    Up,
-    Down,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,21 +79,6 @@ impl AgentKind {
         }
     }
 
-    pub const fn executable(self) -> &'static str {
-        match self {
-            Self::Aider => "aider",
-            Self::Amp => "amp",
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Cursor => "cursor-agent",
-            Self::Gemini => "gemini",
-            Self::Goose => "goose",
-            Self::Grok => "grok",
-            Self::OpenCode => "opencode",
-            Self::Pi => "pi",
-        }
-    }
-
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "aider" => Some(Self::Aider),
@@ -119,57 +94,10 @@ impl AgentKind {
             _ => None,
         }
     }
-
-    /// Vibra can install structured lifecycle hooks only for agents whose
-    /// public hook configuration it knows how to preserve and update.
-    pub const fn supports_managed_hooks(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex)
-    }
-
-    pub const fn activity_tracking(self) -> &'static str {
-        if self.supports_managed_hooks() {
-            "hooks-or-heuristic"
-        } else {
-            "heuristic"
-        }
-    }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentPlacement {
-    Current,
-    #[default]
-    Split,
-    Tab,
-}
-
-pub(crate) const DEFAULT_AGENT_START_TIMEOUT_MS: u64 = 30_000;
-pub(crate) const DEFAULT_AGENT_WAIT_TIMEOUT_MS: u64 = 120_000;
-pub(crate) const DEFAULT_AGENT_READ_LINES: usize = 80;
-pub(crate) const AUTOMATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(330);
 pub const AUTOMATION_QUEUE_CAPACITY: usize = 32;
 pub(crate) const AUTOMATION_MAX_CLIENT_THREADS: usize = 8;
-
-fn default_agent_start_timeout_ms() -> u64 {
-    DEFAULT_AGENT_START_TIMEOUT_MS
-}
-
-fn default_agent_wait_timeout_ms() -> u64 {
-    DEFAULT_AGENT_WAIT_TIMEOUT_MS
-}
-
-fn default_agent_read_lines() -> usize {
-    DEFAULT_AGENT_READ_LINES
-}
-
-fn default_wait_true() -> bool {
-    true
-}
-
-fn default_split_direction() -> AutomationDirection {
-    AutomationDirection::Right
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -204,107 +132,6 @@ impl AgentAttention {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
 pub enum AutomationCommand {
-    List,
-    Send {
-        text: String,
-        #[serde(default)]
-        newline: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target_pane: Option<Uuid>,
-    },
-    Split {
-        direction: AutomationDirection,
-        #[serde(default)]
-        no_focus: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cwd: Option<PathBuf>,
-    },
-    CreateTab {
-        #[serde(default)]
-        no_focus: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cwd: Option<PathBuf>,
-    },
-    Focus {
-        direction: AutomationDirection,
-    },
-    Close,
-    Zoom,
-    AgentStatus {
-        /// Pane UUID or agent name. Defaults to the calling pane.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target: Option<String>,
-    },
-    AgentList,
-    AgentKinds,
-    AgentStart {
-        kind: AgentKind,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane: Option<Uuid>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(default = "default_agent_start_timeout_ms")]
-        timeout_ms: u64,
-        #[serde(default = "default_wait_true")]
-        wait: bool,
-        #[serde(default)]
-        args: Vec<String>,
-    },
-    AgentOpen {
-        kind: AgentKind,
-        #[serde(default)]
-        placement: AgentPlacement,
-        #[serde(default = "default_split_direction")]
-        direction: AutomationDirection,
-        #[serde(default)]
-        no_focus: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cwd: Option<PathBuf>,
-        #[serde(default = "default_agent_start_timeout_ms")]
-        timeout_ms: u64,
-        #[serde(default = "default_wait_true")]
-        wait: bool,
-        #[serde(default)]
-        args: Vec<String>,
-    },
-    AgentPrompt {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target: Option<String>,
-        text: String,
-        #[serde(default = "default_wait_true")]
-        wait: bool,
-        #[serde(default = "default_agent_wait_timeout_ms")]
-        timeout_ms: u64,
-        /// Empty means settled: idle or waiting.
-        #[serde(default)]
-        until: Vec<AgentRuntimeState>,
-    },
-    AgentWait {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target: Option<String>,
-        #[serde(default = "default_agent_wait_timeout_ms")]
-        timeout_ms: u64,
-        /// Empty means settled: idle or waiting.
-        #[serde(default)]
-        until: Vec<AgentRuntimeState>,
-    },
-    AgentRead {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target: Option<String>,
-        #[serde(default = "default_agent_read_lines")]
-        lines: usize,
-    },
-    AgentRename {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target: Option<String>,
-        /// `None` clears the name.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(default)]
-        clear: bool,
-    },
     SetAgentState {
         state: AgentRuntimeState,
     },

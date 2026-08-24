@@ -1,5 +1,10 @@
 # Changelog
 
+## Próximo
+
+- Mantener la detección, los estados, las notificaciones y los hooks de agentes.
+- Retirar la CLI de orquestación de agentes y layout: ya no crea panes/tabs, lanza agentes ni envía prompts entre sesiones.
+
 ## 0.3.11 — 2026-08-23
 
 - Clarify agent capabilities and require structured activity hooks for reliable prompt waits instead of timing out after heuristic-only submissions.

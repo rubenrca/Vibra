@@ -1,8 +1,8 @@
 # Vibra
 
 Workspace de desarrollo nativo para macOS, escrito en Rust con GPUI. Combina
-terminales persistentes, proyectos, archivos, edición de texto, diff de Git y
-automatización local para agentes en una sola ventana enfocada.
+terminales persistentes, proyectos, archivos, edición de texto, diff de Git e
+integración local para agentes en una sola ventana enfocada.
 
 La rama GPUI reemplaza la implementación SwiftUI/AppKit y `libghostty` que llegó
 hasta Vibra 0.2.7. El historial, identidad de aplicación y canal de distribución
@@ -53,46 +53,28 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - las mutaciones Git se realizan desde la terminal integrada;
 - pestaña `Servers` con procesos en escucha TCP de los PTY (vite, next, etc.), salto al pane, abrir URL y detener.
 
-### Agentes y automatización
+### Agentes y seguimiento
 
 - detección de Codex, Claude, Gemini, Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi;
-- lanzamiento, prompts y lectura para los diez CLIs; las esperas confiables requieren hooks de actividad;
+- estados de actividad en vivo para los agentes que se ejecutan dentro de una terminal de Vibra;
 - avisos de sistema cuando un agente termina o pide permiso fuera de la sesión visible;
-- identidad resuelta por proceso foreground, sesión, título y texto reciente; los aliases siguen al proceso vivo, no al pane;
-- esperas ligadas a la identidad del agente: un reemplazo o timeout falla explícitamente y los launches nuevos hacen rollback;
+- identidad resuelta por proceso foreground, sesión, título y texto reciente;
+- nombres personalizados para panes desde su menú contextual;
+- hooks estructurados de Claude y Codex para estados de trabajo, espera, permisos y fin de sesión;
 - socket Unix local protegido por capacidades UUID;
-- comandos `+pane` y `+agent` disponibles mediante `$VIBRA_CLI`;
-- un agente (o script) dentro de un pane puede abrir otro agente en split o tab:
+
+La CLI de Vibra no orquesta agentes ni layouts desde una terminal: no crea panes o
+tabs, no lanza agentes en otras sesiones y no envía prompts a otros procesos. Los
+agentes se ejecutan manualmente en la terminal y Vibra conserva su detección,
+estado y notificaciones.
+
+Para activar el seguimiento preciso de actividad, usa **Settings → Seguimiento
+de agentes → Activar seguimiento** o la CLI de instalación:
 
 ```bash
-# One-shot: crea layout y arranca el kind indicado (default: split right, sin robar foco)
-"$VIBRA_CLI" +agent open codex --split right --no-focus --name reviewer
-"$VIBRA_CLI" +agent open claude --tab --no-focus --cwd "$PWD"
-"$VIBRA_CLI" +agent open codex --name builder -- -m o3
-
-# Prompt / wait / read por nombre o pane id
-"$VIBRA_CLI" +agent prompt reviewer "Review the current diff" --wait --timeout 120000
-"$VIBRA_CLI" +agent wait reviewer --until waiting
-"$VIBRA_CLI" +agent read reviewer --lines 120
-"$VIBRA_CLI" +agent list
-"$VIBRA_CLI" +agent status reviewer
-
-# Primitivas de layout
-"$VIBRA_CLI" +pane split right --no-focus --cwd "$PWD"
-"$VIBRA_CLI" +pane tab --no-focus
-"$VIBRA_CLI" +pane run --pane <id> "npm test"
-"$VIBRA_CLI" +agent start --kind codex --pane <id> --name reviewer
-"$VIBRA_CLI" +agent kinds
-"$VIBRA_CLI" +skill
-```
-
-Para activar el seguimiento preciso de actividad, usa **Settings → Coordinación
-de agentes → Activar seguimiento** o la CLI:
-
-```bash
-"$VIBRA_CLI" agent setup
-"$VIBRA_CLI" agent status
-"$VIBRA_CLI" agent uninstall codex
+Vibra agent setup
+Vibra agent status
+Vibra agent uninstall codex
 ```
 
 El instalador añade únicamente los handlers de Vibra a `~/.claude/settings.json`
@@ -103,9 +85,7 @@ Codex, ábrelo una vez y apruébalo en `/hooks`.
 
 Claude y Codex tienen seguimiento estructurado mediante esos hooks. En Gemini,
 Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi, Vibra sólo infiere la actividad
-desde el proceso y el texto visible: se pueden lanzar, detectar, nombrar, enviar
-prompts con `--no-wait` y leer, pero no confirmar de forma confiable cuándo
-terminaron.
+desde el proceso y el texto visible.
 
 ## Requisitos
 

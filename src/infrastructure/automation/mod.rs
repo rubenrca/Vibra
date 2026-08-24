@@ -39,51 +39,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_parser_covers_pane_and_agent_commands() {
-        assert!(matches!(
-            parse_cli_command("+pane", &["split".into(), "right".into()]).unwrap(),
-            AutomationCommand::Split {
-                direction: AutomationDirection::Right,
-                no_focus: false,
-                cwd: None,
-            }
-        ));
-        assert!(matches!(
-            parse_cli_command(
-                "+pane",
-                &["split".into(), "right".into(), "--no-focus".into()]
-            )
-            .unwrap(),
-            AutomationCommand::Split {
-                direction: AutomationDirection::Right,
-                no_focus: true,
-                cwd: None,
-            }
-        ));
-        assert!(matches!(
-            parse_cli_command("+pane", &["tab".into(), "--no-focus".into()]).unwrap(),
-            AutomationCommand::CreateTab {
-                no_focus: true,
-                cwd: None
-            }
-        ));
-        assert!(matches!(
-            parse_cli_command(
-                "+pane",
-                &[
-                    "run".into(),
-                    "--pane".into(),
-                    Uuid::nil().to_string(),
-                    "codex".into()
-                ]
-            )
-            .unwrap(),
-            AutomationCommand::Send {
-                newline: true,
-                target_pane: Some(_),
-                ..
-            }
-        ));
+    fn cli_parser_only_accepts_agent_status_reporting_commands() {
         assert!(matches!(
             parse_cli_command("+agent", &["working".into()]).unwrap(),
             AutomationCommand::SetAgentState {
@@ -111,146 +67,29 @@ mod tests {
             } if session_id == "session-1"
         ));
         assert!(matches!(
-            parse_cli_command("+agent", &["open".into(), "codex".into()]).unwrap(),
-            AutomationCommand::AgentOpen {
-                kind: AgentKind::Codex,
-                placement: AgentPlacement::Split,
-                direction: AutomationDirection::Right,
-                no_focus: true,
-                wait: true,
-                ..
-            }
-        ));
-        assert!(matches!(
             parse_cli_command(
                 "+agent",
-                &[
-                    "open".into(),
-                    "claude".into(),
-                    "--tab".into(),
-                    "--name".into(),
-                    "reviewer".into(),
-                    "--".into(),
-                    "--resume".into(),
-                ]
+                &["attention".into(), "claude".into(), "question".into()]
             )
             .unwrap(),
-            AutomationCommand::AgentOpen {
+            AutomationCommand::SetAgentPresence {
                 kind: AgentKind::Claude,
-                placement: AgentPlacement::Tab,
-                name: Some(_),
-                args,
-                ..
-            } if args == ["--resume"]
-        ));
-        assert!(matches!(
-            parse_cli_command(
-                "+agent",
-                &[
-                    "start".into(),
-                    "--kind".into(),
-                    "codex".into(),
-                    "--no-wait".into()
-                ]
-            )
-            .unwrap(),
-            AutomationCommand::AgentStart {
-                kind: AgentKind::Codex,
-                wait: false,
+                state: AgentRuntimeState::Waiting,
+                attention: Some(AgentAttention::Question),
                 ..
             }
         ));
         assert!(matches!(
-            parse_cli_command("+agent", &["kinds".into()]).unwrap(),
-            AutomationCommand::AgentKinds
+            parse_cli_command("+agent", &["clear".into()]).unwrap(),
+            AutomationCommand::ClearAgentPresence { session_id: None }
         ));
-        assert!(matches!(
-            parse_cli_command(
-                "+agent",
-                &[
-                    "prompt".into(),
-                    "reviewer".into(),
-                    "Review".into(),
-                    "the".into(),
-                    "diff".into(),
-                    "--until".into(),
-                    "idle".into(),
-                ]
-            )
-            .unwrap(),
-            AutomationCommand::AgentPrompt {
-                target: Some(ref t),
-                text,
-                wait: true,
-                until,
-                ..
-            } if t == "reviewer" && text == "Review the diff" && until == [AgentRuntimeState::Idle]
-        ));
-        assert!(matches!(
-            parse_cli_command(
-                "+agent",
-                &["wait".into(), "reviewer".into(), "--until".into(), "waiting".into()]
-            )
-            .unwrap(),
-            AutomationCommand::AgentWait {
-                target: Some(ref t),
-                until,
-                ..
-            } if t == "reviewer" && until == [AgentRuntimeState::Waiting]
-        ));
-        assert!(matches!(
-            parse_cli_command(
-                "+agent",
-                &["read".into(), "--name".into(), "reviewer".into(), "--lines".into(), "40".into()]
-            )
-            .unwrap(),
-            AutomationCommand::AgentRead {
-                target: Some(ref t),
-                lines: 40,
-            } if t == "reviewer"
-        ));
-        assert!(matches!(
-            parse_cli_command("+agent", &["list".into()]).unwrap(),
-            AutomationCommand::AgentList
-        ));
-        assert!(matches!(
-            parse_cli_command(
-                "+agent",
-                &["rename".into(), "--name".into(), "reviewer".into()]
-            )
-            .unwrap(),
-            AutomationCommand::AgentRename {
-                target: None,
-                name: Some(ref name),
-                clear: false,
-            } if name == "reviewer"
-        ));
-        assert!(matches!(
-            parse_cli_command(
-                "+agent",
-                &["rename".into(), "reviewer".into(), "critic".into()]
-            )
-            .unwrap(),
-            AutomationCommand::AgentRename {
-                target: Some(ref target),
-                name: Some(ref name),
-                clear: false,
-            } if target == "reviewer" && name == "critic"
-        ));
-        assert!(parse_cli_command("+pane", &["split".into(), "diagonal".into()]).is_err());
-        assert!(parse_cli_command("+agent", &["open".into(), "nope".into()]).is_err());
-        assert!(
-            parse_cli_command(
-                "+agent",
-                &[
-                    "open".into(),
-                    "codex".into(),
-                    "--name".into(),
-                    "BadName".into()
-                ]
-            )
-            .is_err()
-        );
+        assert!(parse_cli_command("+agent", &["open".into(), "codex".into()]).is_err());
+        assert!(parse_cli_command("+agent", &["prompt".into(), "reviewer".into()]).is_err());
+        assert!(parse_cli_command("+agent", &["list".into()]).is_err());
+        assert!(parse_cli_command("+pane", &["split".into(), "right".into()]).is_err());
+        assert!(parse_cli_command("+skill", &[]).is_err());
+        assert!(run_cli(&["+pane".into(), "split".into(), "right".into()]).is_err());
+        assert!(run_cli(&["+skill".into()]).is_err());
     }
 
     #[test]
@@ -394,39 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_launch_command_quotes_args() {
-        assert_eq!(
-            agent_launch_command(AgentKind::Codex, &["-m".into(), "o3".into()]),
-            "codex -m o3"
-        );
-        assert_eq!(
-            agent_launch_command(AgentKind::Claude, &["hello world".into()]),
-            "claude 'hello world'"
-        );
-        assert_eq!(AgentKind::Cursor.executable(), "cursor-agent");
-        assert_eq!(AgentKind::parse("goose"), Some(AgentKind::Goose));
-        assert_eq!(AgentKind::Goose.executable(), "goose");
-    }
-
-    #[test]
-    fn agent_kinds_report_the_real_tracking_capabilities() {
-        let payload = agent_kinds_payload();
-        let kinds = payload["kinds"].as_array().unwrap();
-        assert_eq!(kinds.len(), AgentKind::ALL.len());
-
-        let codex = kinds.iter().find(|kind| kind["kind"] == "codex").unwrap();
-        assert_eq!(codex["capabilities"]["managedHooks"], true);
-        assert_eq!(
-            codex["capabilities"]["activityTracking"],
-            "hooks-or-heuristic"
-        );
-
-        let goose = kinds.iter().find(|kind| kind["kind"] == "goose").unwrap();
-        assert_eq!(goose["capabilities"]["managedHooks"], false);
-        assert_eq!(goose["capabilities"]["activityTracking"], "heuristic");
-    }
-
-    #[test]
     fn hook_events_normalize_to_presence_commands() {
         let session = serde_json::json!({ "session_id": "session-1" });
         assert!(matches!(
@@ -473,7 +279,9 @@ mod tests {
                 &AutomationEnvelope {
                     pane_id,
                     token,
-                    command: AutomationCommand::List,
+                    command: AutomationCommand::SetAgentState {
+                        state: AgentRuntimeState::Idle,
+                    },
                 },
             )
             .unwrap();
@@ -508,7 +316,9 @@ mod tests {
                     &AutomationEnvelope {
                         pane_id: Uuid::new_v4(),
                         token: Uuid::new_v4(),
-                        command: AutomationCommand::List,
+                        command: AutomationCommand::SetAgentState {
+                            state: AgentRuntimeState::Idle,
+                        },
                     },
                 )
                 .unwrap();
@@ -567,7 +377,9 @@ mod tests {
                 envelope: AutomationEnvelope {
                     pane_id: Uuid::new_v4(),
                     token: Uuid::new_v4(),
-                    command: AutomationCommand::List,
+                    command: AutomationCommand::SetAgentState {
+                        state: AgentRuntimeState::Idle,
+                    },
                 },
                 response: tx,
             },
@@ -580,7 +392,9 @@ mod tests {
                 envelope: AutomationEnvelope {
                     pane_id: Uuid::new_v4(),
                     token: Uuid::new_v4(),
-                    command: AutomationCommand::List,
+                    command: AutomationCommand::SetAgentState {
+                        state: AgentRuntimeState::Idle,
+                    },
                 },
                 response: tx,
             },

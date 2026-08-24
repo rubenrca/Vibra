@@ -118,7 +118,7 @@ fn handle_connection(mut stream: UnixStream, sender: &async_channel::Sender<Auto
             ) {
                 Err(error) => AutomationResponse::failure(error),
                 Ok(()) => response_rx
-                    .recv_timeout(AUTOMATION_RESPONSE_TIMEOUT)
+                    .recv_timeout(AUTOMATION_IO_TIMEOUT)
                     .unwrap_or_else(|_| AutomationResponse::failure("la UI no respondió a tiempo")),
             }
         }

@@ -294,7 +294,7 @@ fn main() {
         Ok(true) => return,
         Ok(false) => {}
         Err(error) => {
-            eprintln!("Vibra automation: {error:#}");
+            eprintln!("Vibra agent tracking: {error:#}");
             std::process::exit(2);
         }
     }
