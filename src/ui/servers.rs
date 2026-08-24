@@ -146,7 +146,9 @@ impl ServersView {
             return;
         }
         self.refreshing = true;
-        if notify_loading {
+        // Polling commonly returns the same processes. Repainting the whole view for an
+        // invisible loading transition rebuilds every text element and can make it flicker.
+        if notify_loading && self.servers.is_empty() {
             cx.notify();
         }
         self.request_id = self.request_id.wrapping_add(1);
@@ -159,11 +161,17 @@ impl ServersView {
                 if request_id != this.request_id {
                     return;
                 }
+                let was_empty = this.servers.is_empty();
                 this.refreshing = false;
-                if this.servers != result {
+                let servers_changed = this.servers != result;
+                if servers_changed {
                     this.servers = result;
                 }
-                cx.notify();
+                // An empty view exposes the loading copy, so it must repaint when the scan
+                // settles. A populated, unchanged view has no visible state to update.
+                if servers_changed || was_empty {
+                    cx.notify();
+                }
             });
         }));
     }

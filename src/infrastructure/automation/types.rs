@@ -119,6 +119,20 @@ impl AgentKind {
             _ => None,
         }
     }
+
+    /// Vibra can install structured lifecycle hooks only for agents whose
+    /// public hook configuration it knows how to preserve and update.
+    pub const fn supports_managed_hooks(self) -> bool {
+        matches!(self, Self::Claude | Self::Codex)
+    }
+
+    pub const fn activity_tracking(self) -> &'static str {
+        if self.supports_managed_hooks() {
+            "hooks-or-heuristic"
+        } else {
+            "heuristic"
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

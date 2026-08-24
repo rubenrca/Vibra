@@ -47,3 +47,16 @@ pub(crate) fn agent_wait_matches(
 ) -> bool {
     current.is_some_and(|state| until.contains(&state)) && (!require_activity || saw_activity)
 }
+
+pub(crate) fn ensure_prompt_wait_supported(
+    wait: bool,
+    state_source: Option<&str>,
+) -> Result<(), String> {
+    if wait && state_source != Some("hook") {
+        return Err(
+            "el agente usa seguimiento heurístico; +agent prompt --wait requiere hooks de actividad. Usa --no-wait y luego +agent read"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}

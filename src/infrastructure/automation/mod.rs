@@ -409,6 +409,24 @@ mod tests {
     }
 
     #[test]
+    fn agent_kinds_report_the_real_tracking_capabilities() {
+        let payload = agent_kinds_payload();
+        let kinds = payload["kinds"].as_array().unwrap();
+        assert_eq!(kinds.len(), AgentKind::ALL.len());
+
+        let codex = kinds.iter().find(|kind| kind["kind"] == "codex").unwrap();
+        assert_eq!(codex["capabilities"]["managedHooks"], true);
+        assert_eq!(
+            codex["capabilities"]["activityTracking"],
+            "hooks-or-heuristic"
+        );
+
+        let goose = kinds.iter().find(|kind| kind["kind"] == "goose").unwrap();
+        assert_eq!(goose["capabilities"]["managedHooks"], false);
+        assert_eq!(goose["capabilities"]["activityTracking"], "heuristic");
+    }
+
+    #[test]
     fn hook_events_normalize_to_presence_commands() {
         let session = serde_json::json!({ "session_id": "session-1" });
         assert!(matches!(

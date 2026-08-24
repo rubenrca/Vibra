@@ -56,6 +56,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 ### Agentes y automatización
 
 - detección de Codex, Claude, Gemini, Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi;
+- lanzamiento, prompts y lectura para los diez CLIs; las esperas confiables requieren hooks de actividad;
 - avisos de sistema cuando un agente termina o pide permiso fuera de la sesión visible;
 - identidad resuelta por proceso foreground, sesión, título y texto reciente; los aliases siguen al proceso vivo, no al pane;
 - esperas ligadas a la identidad del agente: un reemplazo o timeout falla explícitamente y los launches nuevos hacen rollback;
@@ -99,6 +100,12 @@ y `~/.codex/hooks.json`, guarda scripts en `~/.vibra/agent-hooks/` y conserva lo
 hooks existentes. Los scripts no hacen nada fuera de un pane de Vibra y los eventos
 se procesan en orden para evitar estados atrasados. Después de instalar el hook de
 Codex, ábrelo una vez y apruébalo en `/hooks`.
+
+Claude y Codex tienen seguimiento estructurado mediante esos hooks. En Gemini,
+Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi, Vibra sólo infiere la actividad
+desde el proceso y el texto visible: se pueden lanzar, detectar, nombrar, enviar
+prompts con `--no-wait` y leer, pero no confirmar de forma confiable cuándo
+terminaron.
 
 ## Requisitos
 

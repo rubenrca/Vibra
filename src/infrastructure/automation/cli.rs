@@ -86,6 +86,14 @@ pub fn agent_kinds_payload() -> Value {
                 "kind": kind.cli_name(),
                 "executable": kind.executable(),
                 "displayName": kind.display_name(),
+                "capabilities": {
+                    "launch": true,
+                    "detect": true,
+                    "prompt": true,
+                    "activityTracking": kind.activity_tracking(),
+                    "managedHooks": kind.supports_managed_hooks(),
+                    "reliableWaitRequiresHooks": true,
+                },
             })
         })
         .collect();
@@ -654,7 +662,7 @@ Default layout is a sibling split to the right without stealing focus:
 "$VIBRA_CLI" +agent open codex --split down --name builder -- -m o3
 ```
 
-Supported kinds: aider, amp, claude, codex, cursor, gemini, grok, opencode, pi.
+Supported kinds: aider, amp, claude, codex, cursor, gemini, goose, grok, opencode, pi.
 Names must match `[a-z][a-z0-9_-]{0,31}` and be unique in the project.
 
 ```bash
@@ -676,7 +684,7 @@ Targets are a pane UUID or a live agent name:
 "$VIBRA_CLI" +agent rename <pane-id> --to reviewer
 ```
 
-`--wait` (default on prompt) waits until the agent is settled (`idle` or `waiting`). Use `--until idle` / `--until waiting` / `--until working` to narrow it. `--no-wait` returns after submitting.
+`--wait` (default on prompt) requires structured activity hooks and waits until the agent is settled (`idle` or `waiting`). Use `--until idle` / `--until waiting` / `--until working` to narrow it. For agents reported with heuristic-only activity tracking, use `--no-wait`, then `read` the pane explicitly.
 
 ## Layout primitives
 
@@ -702,9 +710,16 @@ fn parse_agent_presence(arguments: &[String]) -> Result<AutomationCommand> {
     let kind = arguments
         .first()
         .and_then(|kind| AgentKind::parse(kind))
-        .context(
-            "agent esperado: aider, amp, claude, codex, cursor, gemini, grok, opencode o pi",
-        )?;
+        .with_context(|| {
+            format!(
+                "agent esperado: {}",
+                AgentKind::ALL
+                    .iter()
+                    .map(|kind| kind.cli_name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
     let state = parse_agent_runtime_state(arguments.get(1).map(String::as_str))?;
     let attention = arguments
         .get(2)

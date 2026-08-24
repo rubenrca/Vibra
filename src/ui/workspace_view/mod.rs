@@ -2595,6 +2595,7 @@ impl WorkspaceView {
                     .get(&pane_id)
                     .copied()
                     .unwrap_or_default();
+                ensure_prompt_wait_supported(wait, presence.state_source)?;
                 let Some(terminal) = self.terminals.get(&pane_id) else {
                     return Err("el pane destino ya no existe".to_owned());
                 };
@@ -6657,6 +6658,14 @@ mod tests {
             true,
             true,
         ));
+    }
+
+    #[test]
+    fn prompt_wait_rejects_heuristic_tracking_before_submission() {
+        assert!(ensure_prompt_wait_supported(true, Some("heuristic")).is_err());
+        assert!(ensure_prompt_wait_supported(true, None).is_err());
+        assert!(ensure_prompt_wait_supported(true, Some("hook")).is_ok());
+        assert!(ensure_prompt_wait_supported(false, Some("heuristic")).is_ok());
     }
 
     #[test]

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.11 — 2026-08-23
+
+- Clarify agent capabilities and require structured activity hooks for reliable prompt waits instead of timing out after heuristic-only submissions.
+- Detect the current Cursor CLI through its preserved invocation name so Cursor sessions show their bundled icon even when the CLI runs on Node.js.
+- Keep the Servers panel stable during unchanged background scans instead of repainting its populated list.
+
 ## 0.3.10 — 2026-08-21
 
 - Drag terminal tabs and session-sidebar entries to reorder them, and drag split panes by their handle to swap places.

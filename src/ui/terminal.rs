@@ -3064,6 +3064,18 @@ mod tests {
                 .kind,
             "Goose"
         );
+        assert_eq!(
+            detect_agent_presence(
+                "Terminal",
+                &snapshot,
+                None,
+                Some("/usr/local/bin/cursor-agent"),
+                Some(47),
+            )
+            .unwrap()
+            .kind,
+            "Cursor"
+        );
 
         let process_with_state_word =
             detect_agent_presence("Terminal", &snapshot, None, Some("codex-working"), Some(44))

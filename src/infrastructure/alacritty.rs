@@ -439,8 +439,8 @@ impl TerminalHandle for AlacrittyTerminal {
 
     fn foreground_process_name(&self) -> Option<String> {
         self.foreground_process_group_id()
-            .and_then(process_executable_name)
-            .or_else(|| process_executable_name(self.process_id))
+            .and_then(process_invoked_name)
+            .or_else(|| process_invoked_name(self.process_id))
     }
 
     fn foreground_process_id(&self) -> Option<u32> {
@@ -622,6 +622,89 @@ fn process_working_directory(process_id: u32) -> Option<PathBuf> {
 
 #[cfg(not(unix))]
 fn process_working_directory(_: u32) -> Option<PathBuf> {
+    None
+}
+
+/// Name used to invoke a process. This preserves wrapper identities such as
+/// Cursor's `cursor-agent`, whose script replaces itself with a `node` binary
+/// while retaining the original argv[0].
+fn process_invoked_name(process_id: u32) -> Option<String> {
+    process_argv0(process_id)
+        .or_else(|| process_executable_name(process_id))
+        .and_then(|name| {
+            Path::new(&name)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .filter(|name| !name.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn process_argv0(process_id: u32) -> Option<String> {
+    use std::mem::size_of;
+
+    let mut mib = [
+        libc::CTL_KERN,
+        libc::KERN_PROCARGS2,
+        process_id as libc::c_int,
+    ];
+    let mut size = 0usize;
+    let size_result = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as u32,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if size_result != 0 || size <= size_of::<libc::c_int>() || size > 1024 * 1024 {
+        return None;
+    }
+
+    let mut buffer = vec![0u8; size];
+    let read_result = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as u32,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read_result != 0 {
+        return None;
+    }
+    buffer.truncate(size);
+    argv0_from_macos_procargs(&buffer)
+}
+
+#[cfg(target_os = "macos")]
+fn argv0_from_macos_procargs(buffer: &[u8]) -> Option<String> {
+    use std::mem::size_of;
+
+    let mut offset = size_of::<libc::c_int>();
+    offset += buffer.get(offset..)?.iter().position(|byte| *byte == 0)?;
+    while buffer.get(offset) == Some(&0) {
+        offset += 1;
+    }
+    let end = offset + buffer.get(offset..)?.iter().position(|byte| *byte == 0)?;
+    (!buffer[offset..end].is_empty())
+        .then(|| String::from_utf8_lossy(&buffer[offset..end]).into_owned())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn process_argv0(process_id: u32) -> Option<String> {
+    let command_line = std::fs::read(format!("/proc/{process_id}/cmdline")).ok()?;
+    let end = command_line.iter().position(|byte| *byte == 0)?;
+    (!command_line[..end].is_empty())
+        .then(|| String::from_utf8_lossy(&command_line[..end]).into_owned())
+}
+
+#[cfg(not(unix))]
+fn process_argv0(_: u32) -> Option<String> {
     None
 }
 
@@ -1117,6 +1200,36 @@ mod tests {
     use super::*;
     use alacritty_terminal::index::Line;
     use std::time::{Duration, Instant};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_procargs_preserves_a_wrapper_argv0() {
+        let mut procargs = 3i32.to_ne_bytes().to_vec();
+        procargs
+            .extend_from_slice(b"/private/cursor/node\0\0/usr/local/bin/cursor-agent\0index.js\0");
+        assert_eq!(
+            argv0_from_macos_procargs(&procargs).as_deref(),
+            Some("/usr/local/bin/cursor-agent")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn invoked_name_uses_argv0_before_the_runtime_executable() {
+        use std::os::unix::process::CommandExt;
+
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg0("/usr/local/bin/cursor-agent")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        assert_eq!(
+            process_invoked_name(child.id()).as_deref(),
+            Some("cursor-agent")
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 
     #[test]
     fn maps_the_entire_xterm_color_cube() {
