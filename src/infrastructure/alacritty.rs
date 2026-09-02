@@ -398,7 +398,6 @@ impl TerminalHandle for AlacrittyTerminal {
         let mode = *terminal.mode();
         TerminalInputMode {
             application_cursor: mode.contains(TermMode::APP_CURSOR),
-            application_keypad: mode.contains(TermMode::APP_KEYPAD),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
             alternate_screen: mode.contains(TermMode::ALT_SCREEN),
             alternate_scroll: mode.contains(TermMode::ALTERNATE_SCROLL),

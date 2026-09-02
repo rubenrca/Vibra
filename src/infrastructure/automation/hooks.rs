@@ -450,8 +450,6 @@ pub(super) fn write_text_atomically(path: &Path, text: &str, mode: u32) -> Resul
         text.as_bytes(),
         AtomicWriteOptions {
             unix_mode: Some(mode),
-            sync: false,
-            preserve_permissions_from: None,
         },
     )
 }

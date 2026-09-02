@@ -34,9 +34,6 @@ impl GitPort for GitCliPort {
         ensure_success(&output, "git status")?;
         let mut records = output.stdout.split(|byte| *byte == 0).peekable();
         let mut branch = "HEAD".to_owned();
-        let mut upstream = None;
-        let mut ahead = 0;
-        let mut behind = 0;
         let mut changes = Vec::new();
 
         while let Some(record) = records.next() {
@@ -45,7 +42,7 @@ impl GitPort for GitCliPort {
             }
             let record = String::from_utf8_lossy(record);
             if let Some(header) = record.strip_prefix("## ") {
-                (branch, upstream, ahead, behind) = parse_branch_header(header);
+                (branch, _, _) = parse_branch_header(header);
                 continue;
             }
             if record.len() < 3 {
@@ -59,11 +56,9 @@ impl GitPort for GitCliPort {
             }
             let path = record[3..].to_owned();
             let renamed_or_copied = matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C');
-            let old_path = renamed_or_copied
-                .then(|| records.next())
-                .flatten()
-                .filter(|path| !path.is_empty())
-                .map(|path| String::from_utf8_lossy(path).into_owned());
+            if renamed_or_copied {
+                let _ = records.next();
+            }
             let untracked = index == '?' && worktree == '?';
             changes.push(GitFileChange {
                 status: file_status(index, worktree),
@@ -71,7 +66,6 @@ impl GitPort for GitCliPort {
                 unstaged: !untracked && worktree != ' ',
                 untracked,
                 path,
-                old_path,
                 additions: None,
                 deletions: None,
             });
@@ -99,9 +93,6 @@ impl GitPort for GitCliPort {
         Ok(Some(GitRepositorySnapshot {
             root,
             branch,
-            upstream,
-            ahead,
-            behind,
             changes,
             additions,
             deletions,
@@ -112,7 +103,7 @@ impl GitPort for GitCliPort {
         let Some(root) = repository_root(root)? else {
             return Ok(None);
         };
-        // Porcelain without numstat/diff: enough for branch, upstream, and dirty.
+        // Porcelain without numstat/diff: enough for branch, tracking counts, and dirty.
         let output = run_git(
             &root,
             [
@@ -126,7 +117,6 @@ impl GitPort for GitCliPort {
         ensure_success(&output, "git status")?;
         let mut records = output.stdout.split(|byte| *byte == 0).peekable();
         let mut branch = "HEAD".to_owned();
-        let mut upstream = None;
         let mut ahead = 0;
         let mut behind = 0;
         let mut dirty = false;
@@ -137,7 +127,7 @@ impl GitPort for GitCliPort {
             }
             let record = String::from_utf8_lossy(record);
             if let Some(header) = record.strip_prefix("## ") {
-                (branch, upstream, ahead, behind) = parse_branch_header(header);
+                (branch, ahead, behind) = parse_branch_header(header);
                 continue;
             }
             if record.len() < 3 {
@@ -158,7 +148,6 @@ impl GitPort for GitCliPort {
 
         Ok(Some(GitBranchSummary {
             branch,
-            upstream,
             ahead,
             behind,
             dirty,
@@ -269,7 +258,6 @@ impl GitPort for GitCliPort {
 
         Ok(GitDiff {
             path: change.path.clone(),
-            old_path: change.old_path.clone(),
             rows,
             additions,
             deletions,
@@ -290,9 +278,6 @@ impl GitPort for GitCliPort {
                 snapshot: GitRepositorySnapshot {
                     root,
                     branch: summary.branch,
-                    upstream: summary.upstream,
-                    ahead: summary.ahead,
-                    behind: summary.behind,
                     changes: Vec::new(),
                     additions: 0,
                     deletions: 0,
@@ -324,7 +309,6 @@ impl GitPort for GitCliPort {
                     unstaged: false,
                     untracked: true,
                     path,
-                    old_path: None,
                     additions: None,
                     deletions: None,
                 });
@@ -342,9 +326,6 @@ impl GitPort for GitCliPort {
             snapshot: GitRepositorySnapshot {
                 root,
                 branch: summary.branch,
-                upstream: summary.upstream,
-                ahead: summary.ahead,
-                behind: summary.behind,
                 changes,
                 additions,
                 deletions,
@@ -369,7 +350,7 @@ impl GitPort for GitCliPort {
                 "log",
                 &format!("-{limit}"),
                 "--topo-order",
-                "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%at%x1f%as%x1f%P",
+                "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%as%x1f%P",
             ],
         )?;
         if !output.status.success() {
@@ -454,7 +435,6 @@ impl GitPort for GitCliPort {
         }
         Ok(GitDiff {
             path: change.path.clone(),
-            old_path: change.old_path.clone(),
             rows,
             additions,
             deletions,
@@ -558,7 +538,7 @@ fn ensure_success(output: &Output, operation: &str) -> Result<()> {
     bail!("{operation} falló: {message}")
 }
 
-fn parse_branch_header(header: &str) -> (String, Option<String>, usize, usize) {
+fn parse_branch_header(header: &str) -> (String, usize, usize) {
     let (relation, tracking) = header
         .rsplit_once(" [")
         .map(|(relation, tracking)| (relation, tracking.trim_end_matches(']')))
@@ -567,10 +547,10 @@ fn parse_branch_header(header: &str) -> (String, Option<String>, usize, usize) {
         .strip_prefix("No commits yet on ")
         .or_else(|| relation.strip_prefix("Initial commit on "))
         .unwrap_or(relation);
-    let (branch, upstream) = relation
+    let branch = relation
         .split_once("...")
-        .map(|(branch, upstream)| (branch, Some(upstream.to_owned())))
-        .unwrap_or((relation, None));
+        .map(|(branch, _)| branch)
+        .unwrap_or(relation);
     let branch = if branch == "HEAD (no branch)" {
         "detached".to_owned()
     } else {
@@ -585,7 +565,7 @@ fn parse_branch_header(header: &str) -> (String, Option<String>, usize, usize) {
             behind = value.parse().unwrap_or_default();
         }
     }
-    (branch, upstream, ahead, behind)
+    (branch, ahead, behind)
 }
 
 fn file_status(index: char, worktree: char) -> GitFileStatus {
@@ -824,12 +804,11 @@ fn parse_name_status(output: &str) -> Vec<GitFileChange> {
             'U' => GitFileStatus::Conflicted,
             _ => GitFileStatus::Modified,
         };
-        let (path, old_path) = if matches!(status, GitFileStatus::Renamed | GitFileStatus::Copied) {
-            let old = fields.next().unwrap_or_default().to_owned();
-            let new = fields.next().unwrap_or_default().to_owned();
-            (new, Some(old))
+        let path = if matches!(status, GitFileStatus::Renamed | GitFileStatus::Copied) {
+            let _old = fields.next();
+            fields.next().unwrap_or_default().to_owned()
         } else {
-            (fields.next().unwrap_or_default().to_owned(), None)
+            fields.next().unwrap_or_default().to_owned()
         };
         if path.is_empty() {
             continue;
@@ -840,7 +819,6 @@ fn parse_name_status(output: &str) -> Vec<GitFileChange> {
             unstaged: true,
             untracked: false,
             path,
-            old_path,
             additions: None,
             deletions: None,
         });
@@ -882,24 +860,14 @@ fn parse_history(output: &str) -> Vec<GitCommit> {
             continue;
         }
         let mut fields = line.split('\u{1f}');
-        let (
-            Some(sha),
-            Some(short_sha),
-            Some(subject),
-            Some(author),
-            Some(timestamp),
-            Some(date),
-            Some(parents),
-        ) = (
+        let (Some(sha), Some(short_sha), Some(subject), Some(author), Some(date), Some(parents)) = (
             fields.next(),
             fields.next(),
             fields.next(),
             fields.next(),
             fields.next(),
             fields.next(),
-            fields.next(),
-        )
-        else {
+        ) else {
             continue;
         };
         commits.push(GitCommit {
@@ -908,7 +876,6 @@ fn parse_history(output: &str) -> Vec<GitCommit> {
             subject: subject.to_owned(),
             author: author.to_owned(),
             date: date.to_owned(),
-            timestamp: timestamp.parse().unwrap_or(0),
             parents: parents.split_whitespace().map(str::to_owned).collect(),
         });
     }
@@ -1186,8 +1153,8 @@ mod tests {
     #[test]
     fn parse_history_splits_unit_separated_fields() {
         let commits = parse_history(
-            "aaa\x1faaa\x1fsubject\x1fAda\x1f1700000000\x1f2023-11-14\x1fbbb ccc\n\
-             bbb\x1fbbb\x1froot\x1fAda\x1f1690000000\x1f2023-07-22\x1f\n",
+            "aaa\x1faaa\x1fsubject\x1fAda\x1f2023-11-14\x1fbbb ccc\n\
+             bbb\x1fbbb\x1froot\x1fAda\x1f2023-07-22\x1f\n",
         );
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].parents, vec!["bbb", "ccc"]);

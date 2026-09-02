@@ -332,18 +332,6 @@ impl WorkspaceSnapshot {
         changed
     }
 
-    #[allow(dead_code)]
-    pub fn create_terminal_tab(&mut self) -> bool {
-        self.create_terminal_tab_with_focus(true).is_some()
-    }
-
-    /// Creates a terminal tab in the selected workspace.
-    /// When `focus_new` is false the previous selected tab stays selected.
-    #[allow(dead_code)]
-    pub fn create_terminal_tab_with_focus(&mut self, focus_new: bool) -> Option<(Uuid, Uuid)> {
-        self.create_terminal_tab_with_options(focus_new, None)
-    }
-
     pub fn create_terminal_tab_with_options(
         &mut self,
         focus_new: bool,
@@ -373,20 +361,11 @@ impl WorkspaceSnapshot {
     }
 
     /// Splits the selected terminal. When `focus_new` is false the original pane
-    /// remains selected so automation can spawn siblings without stealing focus.
+    /// remains selected.
     pub fn split_selected_terminal_with_focus(
         &mut self,
         direction: PaneSplitDirection,
         focus_new: bool,
-    ) -> Option<Uuid> {
-        self.split_selected_terminal_with_options(direction, focus_new, None)
-    }
-
-    pub fn split_selected_terminal_with_options(
-        &mut self,
-        direction: PaneSplitDirection,
-        focus_new: bool,
-        working_directory: Option<String>,
     ) -> Option<Uuid> {
         let (project_index, workspace_index, tab_index, session_index) =
             self.selected_session_indices()?;
@@ -394,8 +373,7 @@ impl WorkspaceSnapshot {
         let tab =
             &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
         let selected_id = tab.sessions[session_index].id;
-        let working_directory = working_directory
-            .unwrap_or_else(|| tab.sessions[session_index].working_directory.clone());
+        let working_directory = tab.sessions[session_index].working_directory.clone();
         let session = SessionSnapshot::new(working_directory);
         let session_id = session.id;
         let (axis, insert_first) = match direction {
@@ -1325,14 +1303,6 @@ impl PaneLayoutSnapshot {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn root_axis(&self) -> Option<WorkspaceSplitAxis> {
-        match self {
-            Self::Terminal { .. } => None,
-            Self::Split { axis, .. } => Some(*axis),
-        }
-    }
-
     pub fn contains_terminal(&self, terminal_id: Uuid) -> bool {
         match self {
             Self::Terminal { id } => *id == terminal_id,
@@ -1740,7 +1710,9 @@ mod tests {
             )
         );
 
-        let (_, created_id) = snapshot.create_terminal_tab_with_focus(true).unwrap();
+        let (_, created_id) = snapshot
+            .create_terminal_tab_with_options(true, None)
+            .unwrap();
         let created = snapshot
             .terminal_sessions()
             .into_iter()
@@ -1769,7 +1741,9 @@ mod tests {
         let mut snapshot = WorkspaceSnapshot::default();
         snapshot.create_workspace(Path::new("/tmp/vibra-tab"));
         let original_tab = snapshot.selected_tab().unwrap().id;
-        let (tab_id, session_id) = snapshot.create_terminal_tab_with_focus(false).unwrap();
+        let (tab_id, session_id) = snapshot
+            .create_terminal_tab_with_options(false, None)
+            .unwrap();
         assert_ne!(tab_id, original_tab);
         assert_eq!(snapshot.selected_tab().unwrap().id, original_tab);
         let created = snapshot
@@ -1852,8 +1826,12 @@ mod tests {
         let mut snapshot = WorkspaceSnapshot::default();
         snapshot.create_workspace(Path::new("/tmp/vibra-tab-order"));
         let first = snapshot.selected_tab().unwrap().id;
-        let (second, _) = snapshot.create_terminal_tab_with_focus(true).unwrap();
-        let (third, _) = snapshot.create_terminal_tab_with_focus(true).unwrap();
+        let (second, _) = snapshot
+            .create_terminal_tab_with_options(true, None)
+            .unwrap();
+        let (third, _) = snapshot
+            .create_terminal_tab_with_options(true, None)
+            .unwrap();
         assert_eq!(
             snapshot
                 .selected_workspace()
@@ -2078,7 +2056,7 @@ mod tests {
         snapshot.create_workspace(Path::new("/tmp/vibra-paint-a"));
         let first_tab = snapshot.selected_tab().unwrap().id;
         let first_session = snapshot.selected_session().unwrap().id;
-        snapshot.create_terminal_tab();
+        snapshot.create_terminal_tab_with_options(true, None);
         let second_tab = snapshot.selected_tab().unwrap().id;
         let second_session = snapshot.selected_session().unwrap().id;
         assert_ne!(first_session, second_session);
@@ -2138,7 +2116,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         let mut snapshot = WorkspaceSnapshot::default();
         snapshot.create_workspace(Path::new("/"));
-        snapshot.create_terminal_tab();
+        snapshot.create_terminal_tab_with_options(true, None);
 
         assert!(snapshot.relocate_root(Path::new("/"), &target));
 

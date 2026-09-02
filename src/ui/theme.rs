@@ -53,8 +53,6 @@ pub struct TerminalPalette {
     pub background: TerminalRgb,
     pub foreground: TerminalRgb,
     pub cursor: TerminalRgb,
-    pub selection: TerminalRgb,
-    pub selection_foreground: TerminalRgb,
     pub ansi: [TerminalRgb; 16],
 }
 
@@ -125,8 +123,6 @@ impl Theme {
             background: to_terminal_rgb(self.terminal),
             foreground: to_terminal_rgb(self.foreground),
             cursor: to_terminal_rgb(self.foreground),
-            selection: to_terminal_rgb(self.selection),
-            selection_foreground: to_terminal_rgb(self.foreground),
             ansi,
         }
     }

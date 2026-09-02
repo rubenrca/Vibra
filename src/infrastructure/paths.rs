@@ -17,10 +17,8 @@ pub fn gpui_preview_support_directory() -> Option<PathBuf> {
 
 /// Options for the shared tmp+rename write used by workspace, settings, files, and hooks.
 #[derive(Debug, Clone, Default)]
-pub struct AtomicWriteOptions<'a> {
+pub struct AtomicWriteOptions {
     pub unix_mode: Option<u32>,
-    pub sync: bool,
-    pub preserve_permissions_from: Option<&'a Path>,
 }
 
 /// Atomically replace `path` with `bytes` via a sibling temp file + rename.
@@ -28,7 +26,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     atomic_write_with(path, bytes, AtomicWriteOptions::default())
 }
 
-pub fn atomic_write_with(path: &Path, bytes: &[u8], options: AtomicWriteOptions<'_>) -> Result<()> {
+pub fn atomic_write_with(path: &Path, bytes: &[u8], options: AtomicWriteOptions) -> Result<()> {
     let parent = path
         .parent()
         .context("la ruta de escritura no tiene directorio padre")?;
@@ -55,7 +53,7 @@ pub fn atomic_write_with(path: &Path, bytes: &[u8], options: AtomicWriteOptions<
     Ok(())
 }
 
-fn write_temp(temporary: &Path, bytes: &[u8], options: &AtomicWriteOptions<'_>) -> Result<()> {
+fn write_temp(temporary: &Path, bytes: &[u8], options: &AtomicWriteOptions) -> Result<()> {
     use std::io::Write;
 
     let mut output = fs::OpenOptions::new()
@@ -64,9 +62,7 @@ fn write_temp(temporary: &Path, bytes: &[u8], options: &AtomicWriteOptions<'_>) 
         .truncate(true)
         .open(temporary)
         .with_context(|| format!("no se pudo crear {}", temporary.display()))?;
-    if let Some(source) = options.preserve_permissions_from {
-        fs::set_permissions(temporary, fs::metadata(source)?.permissions())?;
-    } else if let Some(mode) = options.unix_mode {
+    if let Some(mode) = options.unix_mode {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -76,9 +72,6 @@ fn write_temp(temporary: &Path, bytes: &[u8], options: &AtomicWriteOptions<'_>) 
         let _ = mode;
     }
     output.write_all(bytes)?;
-    if options.sync {
-        output.sync_all()?;
-    }
     Ok(())
 }
 

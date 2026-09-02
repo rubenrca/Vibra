@@ -186,7 +186,6 @@ pub struct TerminalSnapshot {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TerminalInputMode {
     pub application_cursor: bool,
-    pub application_keypad: bool,
     pub bracketed_paste: bool,
     pub alternate_screen: bool,
     pub alternate_scroll: bool,

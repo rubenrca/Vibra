@@ -75,7 +75,6 @@ struct DevTerminalDrawer {
 pub(crate) struct SidebarWorkspaceMeta {
     cwd: String,
     branch: Option<String>,
-    upstream: Option<String>,
     ahead: usize,
     behind: usize,
     dirty: bool,
@@ -1092,7 +1091,6 @@ impl WorkspaceView {
                         SidebarWorkspaceMeta {
                             cwd: cwd_str,
                             branch: None,
-                            upstream: None,
                             ahead: 0,
                             behind: 0,
                             dirty: false,
@@ -1137,14 +1135,12 @@ impl WorkspaceView {
                     let next = match summary {
                         Some(GitBranchSummary {
                             branch,
-                            upstream,
                             ahead,
                             behind,
                             dirty,
                         }) => SidebarWorkspaceMeta {
                             cwd: cwd_str,
                             branch: Some(branch),
-                            upstream,
                             ahead,
                             behind,
                             dirty,
@@ -1152,7 +1148,6 @@ impl WorkspaceView {
                         None => SidebarWorkspaceMeta {
                             cwd: cwd_str,
                             branch: None,
-                            upstream: None,
                             ahead: 0,
                             behind: 0,
                             dirty: false,
@@ -6229,7 +6224,6 @@ mod tests {
         let dirty = SidebarWorkspaceMeta {
             cwd: "/tmp/repo".into(),
             branch: Some("main".into()),
-            upstream: Some("origin/main".into()),
             ahead: 2,
             behind: 1,
             dirty: true,
@@ -6242,7 +6236,6 @@ mod tests {
         let synced = SidebarWorkspaceMeta {
             cwd: "/tmp/repo".into(),
             branch: Some("feature".into()),
-            upstream: Some("origin/feature".into()),
             ahead: 0,
             behind: 0,
             dirty: false,
@@ -6424,7 +6417,7 @@ mod tests {
         let repository = WorkspaceRepository::at(root.join("workspace.json"));
         let mut snapshot = WorkspaceSnapshot::default();
         snapshot.create_workspace(&root);
-        snapshot.create_terminal_tab();
+        snapshot.create_terminal_tab_with_options(true, None);
         let first_project = snapshot.selected_project_id.unwrap();
         let first_workspace = snapshot.selected_workspace().unwrap().id;
         snapshot.create_workspace(&root);

@@ -38,7 +38,6 @@ impl FileSystemPort for LocalFileSystemPort {
                 path: entry.path(),
                 name,
                 kind,
-                size: metadata.len(),
             });
         }
         entries.sort_by(|left, right| {

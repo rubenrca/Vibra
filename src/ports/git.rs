@@ -6,9 +6,6 @@ use anyhow::Result;
 pub struct GitRepositorySnapshot {
     pub root: PathBuf,
     pub branch: String,
-    pub upstream: Option<String>,
-    pub ahead: usize,
-    pub behind: usize,
     pub changes: Vec<GitFileChange>,
     pub additions: usize,
     pub deletions: usize,
@@ -18,7 +15,6 @@ pub struct GitRepositorySnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitBranchSummary {
     pub branch: String,
-    pub upstream: Option<String>,
     pub ahead: usize,
     pub behind: usize,
     /// True when the worktree has staged, unstaged, or untracked changes.
@@ -28,7 +24,6 @@ pub struct GitBranchSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitFileChange {
     pub path: String,
-    pub old_path: Option<String>,
     pub status: GitFileStatus,
     pub staged: bool,
     pub unstaged: bool,
@@ -67,7 +62,6 @@ impl GitFileStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitDiff {
     pub path: String,
-    pub old_path: Option<String>,
     pub rows: Vec<GitDiffRow>,
     pub additions: usize,
     pub deletions: usize,
@@ -91,7 +85,6 @@ pub struct GitCommit {
     pub subject: String,
     pub author: String,
     pub date: String,
-    pub timestamp: i64,
     pub parents: Vec<String>,
 }
 
@@ -145,7 +138,7 @@ pub enum GitDiffRowKind {
 /// Boundary for read-only repository inspection.
 pub trait GitPort: Send + Sync {
     fn snapshot(&self, root: &Path) -> Result<Option<GitRepositorySnapshot>>;
-    /// Fast branch + upstream + dirty flag for sidebar tabs (no numstat/diff work).
+    /// Fast branch + ahead/behind + dirty flag for sidebar tabs (no numstat/diff work).
     fn branch_summary(&self, root: &Path) -> Result<Option<GitBranchSummary>>;
     fn diff(&self, repository: &Path, change: &GitFileChange) -> Result<GitDiff>;
     fn branch_changes(&self, root: &Path) -> Result<Option<GitBranchChanges>>;
@@ -311,7 +304,6 @@ mod tests {
             subject: sha.to_owned(),
             author: "t".into(),
             date: "2026-01-01".into(),
-            timestamp: 0,
             parents: parents.iter().map(|parent| (*parent).to_owned()).collect(),
         }
     }

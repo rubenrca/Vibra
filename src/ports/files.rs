@@ -14,7 +14,6 @@ pub struct FileEntry {
     pub path: PathBuf,
     pub name: String,
     pub kind: FileEntryKind,
-    pub size: u64,
 }
 
 /// Boundary for project-scoped file inspection.
