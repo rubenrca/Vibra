@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use gpui::{FontStyle, FontWeight, HighlightStyle, Rgba, rgb};
 
 use crate::ports::git::{GitDiffRow, GitDiffRowKind};
-use crate::ui::theme::colors;
+use crate::ui::theme::{colors, mix};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -556,19 +556,34 @@ pub fn language_from_path(path: &str) -> Language {
 
 impl SyntaxKind {
     pub fn color(self) -> Rgba {
+        let theme = colors();
+        let dark = theme.is_dark();
         match self {
-            Self::Keyword => SYNTAX.keyword,
-            Self::String => SYNTAX.string,
-            Self::Comment => SYNTAX.comment,
-            Self::Number => SYNTAX.number,
-            Self::Type => SYNTAX.type_name,
-            Self::Function => SYNTAX.function,
-            Self::Attribute => SYNTAX.attribute,
-            Self::Operator => SYNTAX.operator,
-            Self::Constant => SYNTAX.constant,
-            Self::Punctuation => SYNTAX.punctuation,
-            Self::Macro => SYNTAX.macro_name,
-            Self::Default => colors().foreground,
+            Self::Keyword | Self::Macro => mix(
+                theme.accent,
+                rgb(if dark { 0xc4b5fd } else { 0x6d28d9 }),
+                0.62,
+            ),
+            Self::String => mix(
+                theme.success,
+                rgb(if dark { 0xc3e88d } else { 0x166534 }),
+                0.28,
+            ),
+            Self::Comment => mix(theme.muted, theme.subtle, 0.18),
+            Self::Number | Self::Constant => mix(
+                theme.warning,
+                rgb(if dark { 0xffcb6b } else { 0xb45309 }),
+                0.35,
+            ),
+            Self::Type | Self::Attribute => mix(
+                theme.warning,
+                rgb(if dark { 0xfde68a } else { 0xa16207 }),
+                0.42,
+            ),
+            Self::Function => theme.accent,
+            Self::Operator => mix(theme.muted, theme.accent, 0.22),
+            Self::Punctuation => theme.muted,
+            Self::Default => theme.foreground,
         }
     }
 
@@ -585,35 +600,6 @@ impl SyntaxKind {
         style
     }
 }
-
-/// One Dark–inspired palette that reads well on Vibra’s dark surfaces.
-struct SyntaxPalette {
-    keyword: Rgba,
-    string: Rgba,
-    comment: Rgba,
-    number: Rgba,
-    type_name: Rgba,
-    function: Rgba,
-    attribute: Rgba,
-    operator: Rgba,
-    constant: Rgba,
-    punctuation: Rgba,
-    macro_name: Rgba,
-}
-
-static SYNTAX: LazyLock<SyntaxPalette> = LazyLock::new(|| SyntaxPalette {
-    keyword: rgb(0xc792ea),
-    string: rgb(0xc3e88d),
-    comment: rgb(0x676e95),
-    number: rgb(0xf78c6c),
-    type_name: rgb(0xffcb6b),
-    function: rgb(0x82aaff),
-    attribute: rgb(0xffcb6b),
-    operator: rgb(0x89ddff),
-    constant: rgb(0xf78c6c),
-    punctuation: rgb(0x89ddff),
-    macro_name: rgb(0xc792ea),
-});
 
 fn set(words: &[&'static str]) -> HashSet<&'static str> {
     words.iter().copied().collect()
@@ -809,13 +795,31 @@ static CSS_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     ])
 });
 
+/// Expand tabs to spaces so diff columns line up like an editor (width 4).
+pub fn expand_tabs(text: &str) -> String {
+    const TAB_WIDTH: usize = 4;
+    let mut out = String::with_capacity(text.len());
+    let mut column = 0usize;
+    for character in text.chars() {
+        if character == '\t' {
+            let spaces = TAB_WIDTH - (column % TAB_WIDTH);
+            out.extend(std::iter::repeat_n(' ', spaces));
+            column += spaces;
+        } else {
+            out.push(character);
+            column = if character == '\n' { 0 } else { column + 1 };
+        }
+    }
+    out
+}
+
 /// Highlight every text row of a diff in order (preserves multi-line comment/string state).
 pub fn highlight_diff_rows(path: &str, rows: &[GitDiffRow]) -> Vec<Vec<SyntaxSpan>> {
     let mut highlighter = Highlighter::for_path(path);
     rows.iter()
         .map(|row| match row.kind {
             GitDiffRowKind::Context | GitDiffRowKind::Addition | GitDiffRowKind::Deletion => {
-                highlighter.highlight_line(&row.text)
+                highlighter.highlight_line(&expand_tabs(&row.text))
             }
             _ => Vec::new(),
         })
@@ -863,6 +867,13 @@ mod tests {
         assert_eq!(language_from_path("src/main.rs"), Language::Rust);
         assert_eq!(language_from_path("a/b/theme.ts"), Language::TypeScript);
         assert_eq!(language_from_path("README.md"), Language::Markdown);
+    }
+
+    #[test]
+    fn expand_tabs_aligns_to_four_columns() {
+        assert_eq!(expand_tabs("a\tb"), "a   b");
+        assert_eq!(expand_tabs("\tfn"), "    fn");
+        assert_eq!(expand_tabs("abcd\tx"), "abcd    x");
     }
 
     #[test]

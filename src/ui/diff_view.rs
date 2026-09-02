@@ -13,11 +13,14 @@ use crate::ports::git::{
     GitBranchChanges, GitCommit, GitDiff, GitDiffRow, GitDiffRowKind, GitFileChange, GitFileStatus,
     GitGraphRow, GitHistory, GitPort, GitRepositorySnapshot, assign_commit_lanes,
 };
-use crate::ui::syntax::{SyntaxSpan, highlight_diff_rows};
+use crate::ui::syntax::{SyntaxSpan, expand_tabs, highlight_diff_rows};
 use crate::ui::theme::colors;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
-const DIFF_ROW_HEIGHT: f32 = 18.0;
+const DIFF_ROW_HEIGHT: f32 = 22.0;
+const DIFF_FONT_SIZE: f32 = 12.0;
+const DIFF_GUTTER_WIDTH: f32 = 40.0;
+const DIFF_MARKER_WIDTH: f32 = 3.0;
 const HISTORY_ROW_HEIGHT: f32 = 36.0;
 const HISTORY_HEADER_HEIGHT: f32 = 24.0;
 const GRAPH_LANE_WIDTH: f32 = 12.0;
@@ -26,8 +29,8 @@ const HISTORY_DATE_WIDTH: f32 = 88.0;
 const HISTORY_SHA_WIDTH: f32 = 64.0;
 const HISTORY_PAGE: usize = 250;
 /// Cap each expanded file's diff viewport so several cards can stay open.
-const MAX_INLINE_DIFF_HEIGHT: f32 = 360.0;
-const MIN_INLINE_DIFF_HEIGHT: f32 = 54.0;
+const MAX_INLINE_DIFF_HEIGHT: f32 = 440.0;
+const MIN_INLINE_DIFF_HEIGHT: f32 = 66.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitPanelMode {
@@ -1032,7 +1035,7 @@ impl DiffView {
                 diff.rows
                     .iter()
                     .enumerate()
-                    .max_by_key(|(_, row)| row.text.chars().count())
+                    .max_by_key(|(_, row)| expand_tabs(&row.text).chars().count())
                     .map(|(index, _)| index)
                     .unwrap_or(0)
             })
@@ -1092,27 +1095,36 @@ impl DiffView {
     }
 
     fn diff_row(row: &GitDiffRow, spans: &[SyntaxSpan]) -> Div {
-        let (background, marker) = match row.kind {
-            GitDiffRowKind::Addition => (colors().diff_added_bg, "+"),
-            GitDiffRowKind::Deletion => (colors().diff_deleted_bg, "−"),
-            GitDiffRowKind::Hunk => (colors().diff_hunk_bg, " "),
-            GitDiffRowKind::Section => (colors().elevated, " "),
-            GitDiffRowKind::Notice => (colors().background, "!"),
-            GitDiffRowKind::Context => (colors().background, " "),
+        let background = match row.kind {
+            GitDiffRowKind::Addition => colors().diff_added_bg,
+            GitDiffRowKind::Deletion => colors().diff_deleted_bg,
+            GitDiffRowKind::Hunk => colors().diff_hunk_bg,
+            GitDiffRowKind::Section => colors().elevated,
+            GitDiffRowKind::Notice => colors().background,
+            GitDiffRowKind::Context => colors().background,
         };
-        let old_line = row
-            .old_line
-            .map(|line| line.to_string())
-            .unwrap_or_default();
-        let new_line = row
-            .new_line
-            .map(|line| line.to_string())
-            .unwrap_or_default();
-        let is_hunk = matches!(row.kind, GitDiffRowKind::Hunk | GitDiffRowKind::Section);
-        let is_hunk_header = matches!(row.kind, GitDiffRowKind::Hunk);
-        let is_addition = matches!(row.kind, GitDiffRowKind::Addition);
-        let is_deletion = matches!(row.kind, GitDiffRowKind::Deletion);
-        let is_notice = matches!(row.kind, GitDiffRowKind::Notice);
+        let gutter_bg = match row.kind {
+            GitDiffRowKind::Addition => colors().diff_added_bg,
+            GitDiffRowKind::Deletion => colors().diff_deleted_bg,
+            GitDiffRowKind::Hunk | GitDiffRowKind::Section => colors().diff_hunk_bg,
+            _ => colors().gutter,
+        };
+        let marker = match row.kind {
+            GitDiffRowKind::Addition => colors().diff_added,
+            GitDiffRowKind::Deletion => colors().diff_deleted,
+            GitDiffRowKind::Notice => colors().warning,
+            _ => gpui::rgba(0x00000000),
+        };
+        if matches!(row.kind, GitDiffRowKind::Hunk | GitDiffRowKind::Section) {
+            return Self::diff_separator(gutter_bg);
+        }
+        let line_number = match row.kind {
+            GitDiffRowKind::Deletion => row.old_line,
+            GitDiffRowKind::Notice => None,
+            _ => row.new_line.or(row.old_line),
+        }
+        .map(|line| line.to_string())
+        .unwrap_or_default();
         let code = Self::styled_code_line(&row.text, spans, row.kind);
 
         div()
@@ -1123,65 +1135,55 @@ impl DiffView {
             .items_center()
             .bg(background)
             .font_family("JetBrains Mono")
-            .text_size(px(11.0))
-            // Separate old/new gutters make additions and deletions scannable at a glance.
+            .text_size(px(DIFF_FONT_SIZE))
+            .line_height(px(DIFF_ROW_HEIGHT))
+            .child(Self::diff_gutter(&line_number, gutter_bg))
             .child(
                 div()
-                    .w(px(34.0))
+                    .w(px(DIFF_MARKER_WIDTH))
                     .h_full()
                     .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .pr_2()
-                    .text_size(px(10.0))
-                    .text_color(colors().subtle)
-                    .opacity(0.7)
-                    .child(if is_hunk { String::new() } else { old_line }),
-            )
-            .child(
-                div()
-                    .w(px(34.0))
-                    .h_full()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .pr_2()
-                    .border_r_1()
-                    .border_color(colors().border_subtle)
-                    .text_size(px(10.0))
-                    .text_color(colors().subtle)
-                    .opacity(0.7)
-                    .child(if is_hunk { String::new() } else { new_line }),
-            )
-            .child(
-                div()
-                    .w(px(14.0))
-                    .flex_none()
-                    .text_center()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(if is_addition {
-                        colors().diff_added
-                    } else if is_deletion {
-                        colors().diff_deleted
-                    } else if is_hunk_header {
-                        colors().accent
-                    } else if is_notice {
-                        colors().warning
-                    } else {
-                        colors().subtle
-                    })
-                    .child(marker),
+                    .bg(marker),
             )
             .child(
                 div()
                     .flex_none()
                     .whitespace_nowrap()
-                    .pr_3()
-                    .opacity(if is_hunk_header { 0.9 } else { 1.0 })
+                    .pl_2()
+                    .pr_4()
                     .child(code),
             )
+    }
+
+    fn diff_separator(gutter_bg: Rgba) -> Div {
+        div()
+            .h(px(DIFF_ROW_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .bg(colors().diff_hunk_bg)
+            .child(Self::diff_gutter("", gutter_bg))
+            .child(div().w(px(DIFF_MARKER_WIDTH)).h_full().flex_none())
+            .child(div().flex_1().h(px(1.0)).mr_4().bg(colors().border_subtle))
+    }
+
+    fn diff_gutter(number: &str, background: Rgba) -> Div {
+        div()
+            .w(px(DIFF_GUTTER_WIDTH))
+            .h_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_end()
+            .pr_2()
+            .bg(background)
+            .border_r_1()
+            .border_color(colors().border_subtle)
+            .font_family("JetBrains Mono")
+            .text_size(px(10.5))
+            .text_color(colors().muted)
+            .child(number.to_owned())
     }
 
     fn history_graph_width(graph: &[GitGraphRow]) -> f32 {
@@ -1509,16 +1511,19 @@ impl DiffView {
     }
 
     fn styled_code_line(text: &str, spans: &[SyntaxSpan], kind: GitDiffRowKind) -> StyledText {
+        let text = expand_tabs(text);
         let default_color = match kind {
-            GitDiffRowKind::Hunk | GitDiffRowKind::Section => colors().accent,
+            GitDiffRowKind::Hunk | GitDiffRowKind::Section => colors().muted,
             GitDiffRowKind::Notice => colors().warning,
-            GitDiffRowKind::Context => colors().muted,
-            GitDiffRowKind::Addition | GitDiffRowKind::Deletion => colors().foreground,
+            GitDiffRowKind::Context | GitDiffRowKind::Addition | GitDiffRowKind::Deletion => {
+                colors().foreground
+            }
         };
         let default_style = TextStyle {
             color: default_color.into(),
             font_family: "JetBrains Mono".into(),
-            font_size: px(11.0).into(),
+            font_size: px(DIFF_FONT_SIZE).into(),
+            line_height: px(DIFF_ROW_HEIGHT).into(),
             white_space: WhiteSpace::Nowrap,
             ..Default::default()
         };
