@@ -7,6 +7,8 @@ use std::sync::{LazyLock, OnceLock, RwLock};
 
 use gpui::{Rgba, WindowAppearance, rgb, rgba};
 
+use crate::ports::terminal::TerminalRgb;
+
 /// Product color roles used across chrome, terminal shell, diffs, and editors.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {
@@ -43,6 +45,227 @@ pub struct Theme {
     pub git_added: Rgba,
     /// Git-deleted / conflict name tint.
     pub git_deleted: Rgba,
+}
+
+/// Default PTY colors derived from a [`Theme`] so the grid matches chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalPalette {
+    pub background: TerminalRgb,
+    pub foreground: TerminalRgb,
+    pub cursor: TerminalRgb,
+    pub selection: TerminalRgb,
+    pub selection_foreground: TerminalRgb,
+    pub ansi: [TerminalRgb; 16],
+}
+
+impl Theme {
+    pub fn is_dark(self) -> bool {
+        relative_luminance(self.background) < 0.5
+    }
+
+    pub fn overlay(self) -> Rgba {
+        if self.is_dark() {
+            rgba(0x08080acc)
+        } else {
+            rgba(0x1a1a2288)
+        }
+    }
+
+    pub fn scrollbar_thumb(self) -> Rgba {
+        let mut color = self.muted;
+        color.a = if self.is_dark() { 0.45 } else { 0.40 };
+        color
+    }
+
+    pub fn terminal_palette(self) -> TerminalPalette {
+        let dark = self.is_dark();
+        let black = if dark {
+            mix(self.terminal, self.foreground, 0.10)
+        } else {
+            mix(self.foreground, self.terminal, 0.14)
+        };
+        let white = if dark {
+            mix(self.foreground, self.terminal, 0.08)
+        } else {
+            mix(self.terminal, self.foreground, 0.10)
+        };
+        let magenta = mix(
+            self.danger,
+            rgb(if dark { 0xc084fc } else { 0x7c3aed }),
+            0.48,
+        );
+        let cyan = mix(
+            self.accent,
+            rgb(if dark { 0x22d3ee } else { 0x0e7490 }),
+            0.42,
+        );
+        let normal = [
+            black,
+            self.danger,
+            self.success,
+            self.warning,
+            self.accent,
+            magenta,
+            cyan,
+            white,
+        ];
+        let lift = |color: Rgba| {
+            if dark {
+                mix(color, rgb(0xffffff), 0.16)
+            } else {
+                mix(color, rgb(0x000000), 0.12)
+            }
+        };
+        let mut ansi = [TerminalRgb::new(0, 0, 0); 16];
+        for (index, color) in normal.into_iter().enumerate() {
+            ansi[index] = to_terminal_rgb(color);
+            ansi[index + 8] = to_terminal_rgb(lift(color));
+        }
+        TerminalPalette {
+            background: to_terminal_rgb(self.terminal),
+            foreground: to_terminal_rgb(self.foreground),
+            cursor: to_terminal_rgb(self.foreground),
+            selection: to_terminal_rgb(self.selection),
+            selection_foreground: to_terminal_rgb(self.foreground),
+            ansi,
+        }
+    }
+}
+
+pub(crate) fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let t = t.clamp(0.0, 1.0);
+    Rgba {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
+fn relative_luminance(color: Rgba) -> f32 {
+    0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b
+}
+
+fn with_alpha(mut color: Rgba, alpha: f32) -> Rgba {
+    color.a = alpha.clamp(0.0, 1.0);
+    color
+}
+
+/// Compact terminal/UI seed. Chrome surfaces are derived so a new palette
+/// stays consistent without listing every role by hand.
+#[derive(Debug, Clone, Copy)]
+struct ThemeSeed {
+    background: u32,
+    foreground: u32,
+    accent: u32,
+    danger: u32,
+    success: u32,
+    warning: u32,
+}
+
+const fn seed(
+    background: u32,
+    foreground: u32,
+    accent: u32,
+    danger: u32,
+    success: u32,
+    warning: u32,
+) -> ThemeSeed {
+    ThemeSeed {
+        background,
+        foreground,
+        accent,
+        danger,
+        success,
+        warning,
+    }
+}
+
+fn theme_from_seed(spec: ThemeSeed) -> Theme {
+    let bg = rgb(spec.background);
+    let fg = rgb(spec.foreground);
+    let accent = rgb(spec.accent);
+    let danger = rgb(spec.danger);
+    let success = rgb(spec.success);
+    let warning = rgb(spec.warning);
+    let dark = relative_luminance(bg) < 0.5;
+    let surface = |amount: f32| mix(bg, fg, amount);
+    let sidebar = surface(if dark { 0.035 } else { 0.07 });
+    let panel = if dark {
+        surface(0.075)
+    } else {
+        mix(bg, rgb(0xffffff), 0.55)
+    };
+    let elevated = if dark {
+        surface(0.11)
+    } else {
+        mix(bg, rgb(0xffffff), 0.8)
+    };
+    let hover = surface(if dark { 0.14 } else { 0.10 });
+    let selection = mix(bg, accent, if dark { 0.22 } else { 0.14 });
+    let border = surface(if dark { 0.16 } else { 0.18 });
+    let muted = mix(fg, bg, 0.32);
+    let subtle = mix(fg, bg, 0.52);
+    let terminal = if dark {
+        bg
+    } else {
+        mix(bg, rgb(0xffffff), 0.32)
+    };
+    let gutter = surface(0.02);
+    let folder = mix(accent, muted, 0.4);
+    let diff_added_bg = mix(bg, success, if dark { 0.22 } else { 0.16 });
+    let diff_deleted_bg = mix(bg, danger, if dark { 0.22 } else { 0.16 });
+    let diff_hunk_bg = mix(bg, accent, if dark { 0.14 } else { 0.10 });
+    Theme {
+        background: bg,
+        terminal,
+        titlebar: bg,
+        sidebar,
+        panel,
+        elevated,
+        hover,
+        selection,
+        border_subtle: border,
+        foreground: fg,
+        muted,
+        subtle,
+        success,
+        danger,
+        warning,
+        accent,
+        diff_added: success,
+        diff_added_bg,
+        diff_deleted: danger,
+        diff_deleted_bg,
+        diff_hunk_bg,
+        gutter,
+        indent_guide: with_alpha(mix(fg, bg, 0.55), 0.33),
+        folder,
+        git_modified: warning,
+        git_added: success,
+        git_deleted: danger,
+    }
+}
+
+fn family(id: &'static str, label: &'static str, light: ThemeSeed, dark: ThemeSeed) -> ThemeFamily {
+    ThemeFamily {
+        id,
+        label,
+        light: theme_from_seed(light),
+        dark: theme_from_seed(dark),
+    }
+}
+
+pub fn to_terminal_rgb(color: Rgba) -> TerminalRgb {
+    TerminalRgb::new(
+        (color.r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (color.g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (color.b * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
+pub fn terminal_palette() -> TerminalPalette {
+    colors().terminal_palette()
 }
 
 /// How the app chooses light vs dark for dual-mode palettes.
@@ -505,8 +728,8 @@ fn bloom_light() -> Theme {
     }
 }
 
-fn build_catalog() -> [ThemeFamily; 6] {
-    [
+fn build_catalog() -> Vec<ThemeFamily> {
+    let mut catalog = vec![
         ThemeFamily {
             id: DEFAULT_THEME_ID,
             label: "Midnight",
@@ -543,14 +766,107 @@ fn build_catalog() -> [ThemeFamily; 6] {
             light: bloom_light(),
             dark: bloom_dark(),
         },
-    ]
+    ];
+    // Popular palettes, color-mapped from the Warp themes repo (Apache-2.0)
+    // and their upstream schemes so the picker feels like a real terminal.
+    catalog.extend([
+        family(
+            "nord",
+            "Nord",
+            seed(0xeceff4, 0x2e3440, 0x5e81ac, 0xbf616a, 0xa3be8c, 0xd08770),
+            seed(0x2e3440, 0xd8dee9, 0x81a1c1, 0xbf616a, 0xa3be8c, 0xebcb8b),
+        ),
+        family(
+            "gruvbox",
+            "Gruvbox",
+            seed(0xfbf1c7, 0x3c3836, 0xaf3a03, 0x9d0006, 0x79740e, 0xb57614),
+            seed(0x282828, 0xebdbb2, 0xfe8019, 0xfb4934, 0xb8bb26, 0xfabd2f),
+        ),
+        family(
+            "solarized",
+            "Solarized",
+            seed(0xfdf6e3, 0x586e75, 0x268bd2, 0xdc322f, 0x859900, 0xb58900),
+            seed(0x002b36, 0x839496, 0x268bd2, 0xdc322f, 0x859900, 0xb58900),
+        ),
+        family(
+            "dracula",
+            "Dracula",
+            seed(0xf8f8f2, 0x282a36, 0x6272a4, 0xc41e3a, 0x2e7d32, 0x9a7b0a),
+            seed(0x282a36, 0xf8f8f2, 0xff79c6, 0xff5555, 0x50fa7b, 0xf1fa8c),
+        ),
+        family(
+            "catppuccin",
+            "Catppuccin",
+            seed(0xeff1f5, 0x4c4f69, 0x1e66f5, 0xd20f39, 0x40a02b, 0xdf8e1d),
+            seed(0x1e1e2e, 0xcdd6f4, 0x89b4fa, 0xf38ba8, 0xa6e3a1, 0xf9e2af),
+        ),
+        family(
+            "tokyo",
+            "Tokyo Night",
+            seed(0xe1e2e7, 0x3760bf, 0x2e7de9, 0xf52a65, 0x587539, 0x8c6c3e),
+            seed(0x1a1b26, 0xc0caf5, 0x7aa2f7, 0xf7768e, 0x9ece6a, 0xe0af68),
+        ),
+        family(
+            "one",
+            "One Dark",
+            seed(0xfafafa, 0x383a42, 0x4078f2, 0xe45649, 0x50a14f, 0xc18401),
+            seed(0x282c34, 0xabb2bf, 0x61afef, 0xe06c75, 0x98c379, 0xe5c07b),
+        ),
+        family(
+            "github",
+            "GitHub",
+            seed(0xffffff, 0x1f2328, 0x0969da, 0xcf222e, 0x1a7f37, 0x9a6700),
+            seed(0x0d1117, 0xe6edf3, 0x58a6ff, 0xff7b72, 0x3fb950, 0xd29922),
+        ),
+        family(
+            "ayu",
+            "Ayu",
+            seed(0xf8f9fa, 0x5c6166, 0xffaa33, 0xf07171, 0x86b300, 0xf2ae49),
+            seed(0x0a0e14, 0xb3b1ad, 0x53bdfa, 0xf07178, 0xc2d94c, 0xffb454),
+        ),
+        family(
+            "everforest",
+            "Everforest",
+            seed(0xfffbef, 0x5c6a72, 0x3a94c5, 0xf85552, 0x8da101, 0xdfa000),
+            seed(0x2b3339, 0xd3c6aa, 0x7fbbb3, 0xe67e80, 0xa7c080, 0xdbbc7f),
+        ),
+        family(
+            "kanagawa",
+            "Kanagawa",
+            seed(0xf2ecbc, 0x545464, 0x4d699b, 0xc84053, 0x6f894e, 0x77713f),
+            seed(0x1f1f28, 0xdcd7ba, 0x7e9cd8, 0xc34043, 0x76946a, 0xe6c384),
+        ),
+        family(
+            "rosepine",
+            "Rosé Pine",
+            seed(0xfaf4ed, 0x575279, 0x907aa9, 0xb4637a, 0x286983, 0xea9d34),
+            seed(0x191724, 0xe0def4, 0xc4a7e7, 0xeb6f92, 0x31748f, 0xf6c177),
+        ),
+        family(
+            "monokai",
+            "Monokai",
+            seed(0xfaf4ed, 0x2d2a2e, 0xab9df2, 0xe14775, 0x4d7c0f, 0xb45309),
+            seed(0x2d2a2e, 0xfcfcfa, 0xab9df2, 0xff6188, 0xa9dc76, 0xffd866),
+        ),
+        family(
+            "warp",
+            "Warp",
+            seed(0xffffff, 0x111111, 0x008ec4, 0xc30771, 0x10a778, 0xa89c14),
+            seed(0x0b0d10, 0xf1f1f1, 0x00c2ff, 0xff8272, 0xb4fa72, 0xfefdc2),
+        ),
+    ]);
+    catalog
 }
 
-static CATALOG: LazyLock<[ThemeFamily; 6]> = LazyLock::new(build_catalog);
+static CATALOG: LazyLock<Vec<ThemeFamily>> = LazyLock::new(build_catalog);
 
 /// Built-in dual-mode palettes shown in Settings.
 pub fn built_in_themes() -> &'static [ThemeFamily] {
     CATALOG.as_slice()
+}
+
+pub fn is_known_theme_id(id: &str) -> bool {
+    built_in_themes().iter().any(|family| family.id == id)
 }
 
 fn family_by_id(id: &str) -> ThemeFamily {
@@ -619,6 +935,10 @@ fn theme_generation() -> &'static std::sync::atomic::AtomicU64 {
     &GENERATION
 }
 
+pub fn generation() -> u64 {
+    theme_generation().load(std::sync::atomic::Ordering::Acquire)
+}
+
 pub fn set_active(theme: Theme) {
     *active_slot()
         .write()
@@ -657,6 +977,16 @@ mod tests {
             resolve("moss", AppearanceMode::System, true).accent,
             moss_dark().accent
         );
+        assert!(built_in_themes().len() >= 20);
+        assert!(is_known_theme_id("nord"));
+        assert!(is_known_theme_id("gruvbox"));
+        assert!(is_known_theme_id("catppuccin"));
+        assert!(is_known_theme_id("tokyo"));
+        assert!(is_known_theme_id("warp"));
+        assert!(resolve("nord", AppearanceMode::Dark, true).is_dark());
+        assert!(!resolve("nord", AppearanceMode::Light, false).is_dark());
+        assert!(resolve("gruvbox", AppearanceMode::Dark, true).is_dark());
+        assert!(!resolve("solarized", AppearanceMode::Light, false).is_dark());
     }
 
     #[test]
@@ -664,6 +994,29 @@ mod tests {
         let before = colors();
         set_active(moss_dark());
         assert_eq!(colors().accent, moss_dark().accent);
+        set_active(before);
+    }
+
+    #[test]
+    fn terminal_palette_follows_the_active_theme() {
+        let before = colors();
+        set_active(moss_dark());
+        let moss = terminal_palette();
+        assert_eq!(moss.background, to_terminal_rgb(moss_dark().terminal));
+        assert_eq!(moss.foreground, to_terminal_rgb(moss_dark().foreground));
+        assert_ne!(moss.background, to_terminal_rgb(midnight_dark().terminal));
+
+        set_active(midnight_light());
+        let light = terminal_palette();
+        assert_eq!(light.background, to_terminal_rgb(midnight_light().terminal));
+        assert_eq!(
+            light.foreground,
+            to_terminal_rgb(midnight_light().foreground)
+        );
+        assert_ne!(light.background, moss.background);
+        assert!(midnight_light().overlay().a > 0.0);
+        assert!(midnight_dark().is_dark());
+        assert!(!midnight_light().is_dark());
         set_active(before);
     }
 }

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Expand the theme picker with dual light/dark palettes for Nord, Gruvbox, Solarized, Dracula, Catppuccin, Tokyo Night, One, GitHub, Ayu, Everforest, Kanagawa, Rosé Pine, Monokai, and Warp, keeping the original Vibra families.
+- Paint the terminal grid from the active theme (background, text, cursor, ANSI, and selection) instead of leaving the pane black while only chrome borders change.
+- Tint syntax highlighting, modal overlays, and the terminal scrollbar from the same palette so light and dark styles stay consistent.
 - Enrich the sessions sidebar with the highest-priority agent across every tab and split in a workspace, its live state, and its model when the CLI reports it explicitly.
 - Keep the right utility tabs icon-only and let the file tree focus changed files in Git without replacing the terminal.
 - Toggle a persistent bottom terminal with ⌘J for dev servers; hiding it keeps the process running without changing the selected pane. Each sidebar session has its own consoles, and `+` opens additional ones.

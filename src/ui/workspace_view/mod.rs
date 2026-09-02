@@ -2661,6 +2661,14 @@ impl WorkspaceView {
 
     fn apply_theme_preference(&mut self, system_dark: bool, cx: &mut Context<Self>) {
         theme::apply_preference(&self.settings.theme_id, self.appearance_mode(), system_dark);
+        for terminal in self.terminals.values() {
+            terminal.update(cx, |_, cx| cx.notify());
+        }
+        for drawer in self.dev_terminals.values() {
+            for terminal in &drawer.terminals {
+                terminal.update(cx, |_, cx| cx.notify());
+            }
+        }
         cx.notify();
     }
 
@@ -4087,7 +4095,7 @@ impl WorkspaceView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(gpui::rgba(0x08080acc))
+                .bg(colors().overlay())
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
@@ -4239,7 +4247,16 @@ impl WorkspaceView {
                             .text_color(colors().foreground)
                             .child("Tema"),
                     )
-                    .child(self.settings_theme_grid(&theme_id, preview_tone, cx)),
+                    .child(
+                        div()
+                            .id("settings-theme-list")
+                            .max_h(px(248.0))
+                            .overflow_y_scroll()
+                            // Nested scroller: without this the parent settings
+                            // pane also moves when the wheel is over the themes.
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                            .child(self.settings_theme_grid(&theme_id, preview_tone, cx)),
+                    ),
             )
             .child(
                 div()
@@ -4621,8 +4638,9 @@ impl WorkspaceView {
                 .id(SharedString::from(format!("settings-theme-{theme_id}")))
                 .flex_1()
                 .min_w(px(0.0))
-                .p_2()
-                .rounded(px(7.0))
+                .px_2()
+                .py_1()
+                .rounded(px(6.0))
                 .cursor_pointer()
                 .border_1()
                 .border_color(if selected {
@@ -4643,18 +4661,23 @@ impl WorkspaceView {
                     div()
                         .flex()
                         .items_center()
-                        .gap_1()
-                        .mb_1()
-                        .child(div().size(px(12.0)).rounded_full().bg(sidebar))
-                        .child(div().size(px(12.0)).rounded_full().bg(panel))
-                        .child(div().size(px(12.0)).rounded_full().bg(accent)),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(colors().foreground)
-                        .child(family.label),
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(div().size(px(9.0)).rounded_full().bg(sidebar))
+                                .child(div().size(px(9.0)).rounded_full().bg(panel))
+                                .child(div().size(px(9.0)).rounded_full().bg(accent)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(colors().foreground)
+                                .child(family.label),
+                        ),
                 );
             row = row.child(card);
             if index % 2 == 1 {
@@ -5621,7 +5644,7 @@ impl WorkspaceView {
                 .items_start()
                 .justify_center()
                 .pt(px(86.0))
-                .bg(gpui::rgba(0x08080acc))
+                .bg(colors().overlay())
                 .child(
                     div()
                         .w(px(560.0))
@@ -5912,7 +5935,7 @@ impl WorkspaceView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(gpui::rgba(0x08080acc))
+                .bg(colors().overlay())
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {

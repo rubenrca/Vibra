@@ -20,7 +20,7 @@ use crate::ports::terminal::{
     TerminalInputMode, TerminalPoint, TerminalPort, TerminalRgb, TerminalSearchDirection,
     TerminalSelectionType, TerminalSize, TerminalSnapshot, TerminalUnderline,
 };
-use crate::ui::theme::colors;
+use crate::ui::theme::{self, colors};
 use crate::{
     ClearTerminalScrollback, CopyTerminal, DecreaseTerminalFontSize, IncreaseTerminalFontSize,
     PasteTerminal, ResetTerminalFontSize, SearchTerminal, SearchTerminalNext,
@@ -31,9 +31,7 @@ const TERMINAL_FONT_SIZE: f32 = 12.0;
 const TERMINAL_LINE_HEIGHT: f32 = 16.0;
 const MIN_TERMINAL_FONT_SIZE: f32 = 8.0;
 const MAX_TERMINAL_FONT_SIZE: f32 = 32.0;
-const CURSOR_COLOR: TerminalRgb = TerminalRgb::new(0xe8, 0xe8, 0xe8);
-const SELECTION_FOREGROUND: TerminalRgb = TerminalRgb::new(0xf4, 0xf4, 0xf5);
-const SELECTION_BACKGROUND: TerminalRgb = TerminalRgb::new(0x3b, 0x3b, 0x43);
+
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 /// Poll shell/foreground cwd often enough that `cd` feels live in the chrome.
 const WORKING_DIRECTORY_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -1363,6 +1361,7 @@ struct TerminalRenderCache {
     cell_width: f32,
     focused: bool,
     cursor_visible: bool,
+    theme_generation: u64,
 }
 
 struct TerminalShapeContext<'a> {
@@ -1522,13 +1521,11 @@ impl Render for TerminalView {
                                         &[TextRun {
                                             len: canvas_marked_text.len(),
                                             font: base_font,
-                                            color: to_hsla(CURSOR_COLOR),
-                                            background_color: Some(to_hsla(TerminalRgb::new(
-                                                0x1d, 0x1d, 0x1f,
-                                            ))),
+                                            color: colors().foreground.into(),
+                                            background_color: Some(colors().elevated.into()),
                                             underline: Some(UnderlineStyle {
                                                 thickness: px(1.0),
-                                                color: Some(to_hsla(CURSOR_COLOR)),
+                                                color: Some(colors().foreground.into()),
                                                 wavy: false,
                                             }),
                                             strikethrough: None,
@@ -1678,7 +1675,7 @@ impl Render for TerminalView {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(rgba(0x08080acc))
+                        .bg(colors().overlay())
                         .child(
                             div()
                                 .w(px(480.0))
@@ -1862,9 +1859,11 @@ fn shape_snapshot_cached(
 ) -> Vec<ShapedLine> {
     let font_size_f32: f32 = context.font_size.into();
     let cell_width_f32: f32 = context.cell_width.into();
+    let theme_generation = theme::generation();
     let full_rebuild = cache.lines.len() != snapshot.rows
         || cache.font_size != font_size_f32
-        || cache.cell_width != cell_width_f32;
+        || cache.cell_width != cell_width_f32
+        || cache.theme_generation != theme_generation;
     if full_rebuild {
         cache.lines.clear();
         cache.lines.reserve(snapshot.rows);
@@ -1901,6 +1900,7 @@ fn shape_snapshot_cached(
     cache.cell_width = cell_width_f32;
     cache.focused = context.focused;
     cache.cursor_visible = context.cursor_visible;
+    cache.theme_generation = theme_generation;
     cache.lines.clone()
 }
 
@@ -1932,7 +1932,7 @@ fn shape_snapshot_line(
         let foreground = if cursor_block {
             cell.background
         } else if cell.selected {
-            SELECTION_FOREGROUND
+            theme::to_terminal_rgb(colors().foreground)
         } else {
             cell.foreground
         };
@@ -1984,11 +1984,11 @@ fn collect_cell_backgrounds(snapshot: &TerminalSnapshot) -> Vec<Hsla> {
     for line in &snapshot.lines {
         for cell in line.iter() {
             let background = if cell.selected {
-                SELECTION_BACKGROUND
+                colors().selection.into()
             } else {
-                cell.background
+                to_hsla(cell.background)
             };
-            backgrounds.push(to_hsla(background));
+            backgrounds.push(background);
         }
     }
     backgrounds
@@ -2010,7 +2010,7 @@ fn snapshot_surface_color(snapshot: &TerminalSnapshot) -> Hsla {
 
 fn scrollbar_quad(bounds: Bounds<Pixels>, snapshot: &TerminalSnapshot) -> Option<PaintQuad> {
     let (_, thumb) = scrollbar_metrics(bounds, snapshot)?;
-    Some(fill(thumb, rgba(0x77777f88)))
+    Some(fill(thumb, colors().scrollbar_thumb()))
 }
 
 fn scrollbar_metrics(
@@ -2073,10 +2073,10 @@ fn cursor_quad(
         return None;
     }
     let bounds = cursor_bounds(bounds, cursor, cell_width, line_height);
-    let color = if focused {
-        to_hsla(CURSOR_COLOR)
+    let color: Hsla = if focused {
+        colors().foreground.into()
     } else {
-        to_hsla(TerminalRgb::new(0x6f, 0x6f, 0x75))
+        colors().subtle.into()
     };
     if !focused && cursor.shape == TerminalCursorShape::Block {
         return Some(outline(bounds, color, Default::default()));

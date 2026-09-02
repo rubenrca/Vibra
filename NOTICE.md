@@ -14,6 +14,13 @@ under the SIL Open Font License 1.1. The complete font license is included as
 Dependency copyright and license notices remain with their respective projects
 and versions recorded in `Cargo.lock`.
 
+Several bundled palettes (Nord, Gruvbox, Solarized, Dracula, Catppuccin,
+Tokyo Night, One, GitHub, Ayu, Everforest, Kanagawa, Rosé Pine, Monokai, and
+Warp) use color values published in
+[warpdotdev/themes](https://github.com/warpdotdev/themes) (Apache-2.0) and
+their upstream schemes. Palette names remain trademarks of their respective
+authors.
+
 ## Agent marks
 
 The compatibility marks in `Resources/AgentMarks` identify the coding agents

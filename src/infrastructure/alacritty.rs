@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
@@ -31,10 +31,7 @@ use crate::ports::terminal::{
     TerminalSearchDirection, TerminalSelectionType, TerminalSize, TerminalSnapshot,
     TerminalUnderline,
 };
-
-const FOREGROUND: TerminalRgb = TerminalRgb::new(0xe5, 0xe5, 0xe6);
-const BACKGROUND: TerminalRgb = TerminalRgb::new(0x10, 0x10, 0x11);
-const CURSOR: TerminalRgb = TerminalRgb::new(0xe8, 0xe8, 0xe8);
+use crate::ui::theme::{self, TerminalPalette};
 
 /// Host tools (CI, agent shells, cargo wrappers) often export these to force
 /// monochrome output. Interactive agent CLIs inside Vibra panes should not
@@ -49,25 +46,6 @@ const COLOR_SUPPRESSING_ENV: &[&str] = &[
     "PIP_NO_COLOR",
     "PY_COLORS",
     "NOCOLOR",
-];
-
-const ANSI: [TerminalRgb; 16] = [
-    TerminalRgb::new(0x23, 0x23, 0x26),
-    TerminalRgb::new(0xd9, 0x6c, 0x75),
-    TerminalRgb::new(0x78, 0xb8, 0x8b),
-    TerminalRgb::new(0xcf, 0xac, 0x68),
-    TerminalRgb::new(0x72, 0x9c, 0xbe),
-    TerminalRgb::new(0xa8, 0x82, 0xb3),
-    TerminalRgb::new(0x72, 0xab, 0xa7),
-    TerminalRgb::new(0xb7, 0xb7, 0xbb),
-    TerminalRgb::new(0x64, 0x64, 0x69),
-    TerminalRgb::new(0xe4, 0x7d, 0x85),
-    TerminalRgb::new(0x89, 0xc6, 0x9b),
-    TerminalRgb::new(0xdb, 0xba, 0x78),
-    TerminalRgb::new(0x83, 0xaa, 0xc8),
-    TerminalRgb::new(0xb8, 0x91, 0xc1),
-    TerminalRgb::new(0x84, 0xba, 0xb5),
-    TerminalRgb::new(0xe5, 0xe5, 0xe6),
 ];
 
 #[derive(Default)]
@@ -184,6 +162,7 @@ struct AlacrittyTerminal {
     snapshot_dirty: Arc<AtomicBool>,
     snapshot_fully_dirty: AtomicBool,
     snapshot_cache: Mutex<Option<Arc<TerminalSnapshot>>>,
+    snapshot_theme_generation: AtomicU64,
     closed: AtomicBool,
 }
 
@@ -274,6 +253,7 @@ impl AlacrittyTerminal {
             snapshot_dirty,
             snapshot_fully_dirty: AtomicBool::new(true),
             snapshot_cache: Mutex::new(None),
+            snapshot_theme_generation: AtomicU64::new(0),
             closed: AtomicBool::new(false),
         }))
     }
@@ -357,7 +337,15 @@ impl TerminalHandle for AlacrittyTerminal {
     }
 
     fn snapshot(&self) -> Arc<TerminalSnapshot> {
-        if !self.snapshot_dirty.swap(false, Ordering::AcqRel)
+        let theme_generation = theme::generation();
+        let theme_changed =
+            self.snapshot_theme_generation.load(Ordering::Acquire) != theme_generation;
+        if theme_changed {
+            self.snapshot_fully_dirty.store(true, Ordering::Release);
+        }
+        let snapshot_dirty = self.snapshot_dirty.swap(false, Ordering::AcqRel);
+        if !theme_changed
+            && !snapshot_dirty
             && let Some(snapshot) = self
                 .snapshot_cache
                 .lock()
@@ -400,6 +388,8 @@ impl TerminalHandle for AlacrittyTerminal {
             .snapshot_cache
             .lock()
             .expect("terminal snapshot cache poisoned") = Some(snapshot.clone());
+        self.snapshot_theme_generation
+            .store(theme_generation, Ordering::Release);
         snapshot
     }
 
@@ -753,6 +743,7 @@ impl Drop for AlacrittyTerminal {
 }
 
 fn terminal_snapshot<T: EventListener>(terminal: &Term<T>) -> TerminalSnapshot {
+    let palette = theme::terminal_palette();
     let columns = terminal.grid().columns();
     let rows = terminal.grid().screen_lines();
     let history_size = terminal.grid().history_size();
@@ -763,7 +754,7 @@ fn terminal_snapshot<T: EventListener>(terminal: &Term<T>) -> TerminalSnapshot {
     let selection = renderable.selection;
     let cursor_point = renderable.cursor.point;
     let cursor_shape = renderable.cursor.shape;
-    let mut lines = blank_lines(rows, columns);
+    let mut lines = blank_lines(rows, columns, &palette);
 
     for indexed in renderable.display_iter {
         let selected = selection
@@ -781,17 +772,17 @@ fn terminal_snapshot<T: EventListener>(terminal: &Term<T>) -> TerminalSnapshot {
         if let Some(zerowidth) = cell.zerowidth() {
             text.extend(zerowidth);
         }
-        let foreground = resolve_color(foreground, cell.flags, colors, true);
+        let foreground = resolve_color(foreground, cell.flags, colors, true, &palette);
         let underline_color = cell
             .underline_color()
-            .map(|color| resolve_color(color, cell.flags, colors, true))
+            .map(|color| resolve_color(color, cell.flags, colors, true, &palette))
             .unwrap_or(foreground);
         let mut painted = TerminalCell::with_text(
             point.line,
             point.column.0,
             &text,
             foreground,
-            resolve_color(background, cell.flags, colors, false),
+            resolve_color(background, cell.flags, colors, false, &palette),
         );
         painted.underline_color = underline_color;
         painted.bold = cell.flags.contains(Flags::BOLD);
@@ -835,6 +826,7 @@ fn terminal_snapshot_with_damage<T: EventListener>(
     previous: &TerminalSnapshot,
     damage: &[LineDamageBounds],
 ) -> TerminalSnapshot {
+    let palette = theme::terminal_palette();
     let columns = terminal.grid().columns();
     let rows = terminal.grid().screen_lines();
     let history_size = terminal.grid().history_size();
@@ -853,7 +845,7 @@ fn terminal_snapshot_with_damage<T: EventListener>(
             dirty_rows[line.line] = true;
             lines[line.line] = Arc::from(
                 (0..columns)
-                    .map(|column| blank_cell(line.line, column))
+                    .map(|column| blank_cell(line.line, column, &palette))
                     .collect::<Vec<_>>(),
             );
         }
@@ -878,17 +870,17 @@ fn terminal_snapshot_with_damage<T: EventListener>(
         if let Some(zerowidth) = cell.zerowidth() {
             text.extend(zerowidth);
         }
-        let foreground = resolve_color(foreground, cell.flags, colors, true);
+        let foreground = resolve_color(foreground, cell.flags, colors, true, &palette);
         let underline_color = cell
             .underline_color()
-            .map(|color| resolve_color(color, cell.flags, colors, true))
+            .map(|color| resolve_color(color, cell.flags, colors, true, &palette))
             .unwrap_or(foreground);
         let mut painted = TerminalCell::with_text(
             point.line,
             point.column.0,
             &text,
             foreground,
-            resolve_color(background, cell.flags, colors, false),
+            resolve_color(background, cell.flags, colors, false, &palette),
         );
         painted.underline_color = underline_color;
         painted.bold = cell.flags.contains(Flags::BOLD);
@@ -927,9 +919,13 @@ fn terminal_snapshot_with_damage<T: EventListener>(
     }
 }
 
-fn blank_lines(rows: usize, columns: usize) -> Vec<Vec<TerminalCell>> {
+fn blank_lines(rows: usize, columns: usize, palette: &TerminalPalette) -> Vec<Vec<TerminalCell>> {
     (0..rows)
-        .map(|row| (0..columns).map(|column| blank_cell(row, column)).collect())
+        .map(|row| {
+            (0..columns)
+                .map(|column| blank_cell(row, column, palette))
+                .collect()
+        })
         .collect()
 }
 
@@ -942,7 +938,13 @@ fn window_size(size: TerminalSize) -> WindowSize {
     }
 }
 
-fn resolve_color(color: Color, flags: Flags, colors: &Colors, foreground: bool) -> TerminalRgb {
+fn resolve_color(
+    color: Color,
+    flags: Flags,
+    colors: &Colors,
+    foreground: bool,
+    palette: &TerminalPalette,
+) -> TerminalRgb {
     let color = match color {
         Color::Named(named) if foreground && flags.contains(Flags::BOLD) => {
             Color::Named(named.to_bright())
@@ -954,10 +956,10 @@ fn resolve_color(color: Color, flags: Flags, colors: &Colors, foreground: bool) 
         Color::Spec(rgb) => from_alacritty_rgb(rgb),
         Color::Indexed(index) => colors[usize::from(index)]
             .map(from_alacritty_rgb)
-            .unwrap_or_else(|| indexed_color(usize::from(index))),
+            .unwrap_or_else(|| indexed_color_with(usize::from(index), palette)),
         Color::Named(named) => colors[named]
             .map(from_alacritty_rgb)
-            .unwrap_or_else(|| named_color(named)),
+            .unwrap_or_else(|| named_color(named, palette)),
     };
     if foreground && flags.contains(Flags::DIM) && !matches!(color, Color::Named(_)) {
         dim(resolved)
@@ -966,29 +968,33 @@ fn resolve_color(color: Color, flags: Flags, colors: &Colors, foreground: bool) 
     }
 }
 
-fn named_color(color: NamedColor) -> TerminalRgb {
+fn named_color(color: NamedColor, palette: &TerminalPalette) -> TerminalRgb {
     let index = color as usize;
     match color {
-        NamedColor::Foreground | NamedColor::BrightForeground => FOREGROUND,
-        NamedColor::Background => BACKGROUND,
-        NamedColor::Cursor => CURSOR,
-        _ if index < ANSI.len() => ANSI[index],
-        NamedColor::DimBlack => dim(ANSI[0]),
-        NamedColor::DimRed => dim(ANSI[1]),
-        NamedColor::DimGreen => dim(ANSI[2]),
-        NamedColor::DimYellow => dim(ANSI[3]),
-        NamedColor::DimBlue => dim(ANSI[4]),
-        NamedColor::DimMagenta => dim(ANSI[5]),
-        NamedColor::DimCyan => dim(ANSI[6]),
-        NamedColor::DimWhite => dim(ANSI[7]),
-        NamedColor::DimForeground => dim(FOREGROUND),
-        _ => FOREGROUND,
+        NamedColor::Foreground | NamedColor::BrightForeground => palette.foreground,
+        NamedColor::Background => palette.background,
+        NamedColor::Cursor => palette.cursor,
+        _ if index < palette.ansi.len() => palette.ansi[index],
+        NamedColor::DimBlack => dim(palette.ansi[0]),
+        NamedColor::DimRed => dim(palette.ansi[1]),
+        NamedColor::DimGreen => dim(palette.ansi[2]),
+        NamedColor::DimYellow => dim(palette.ansi[3]),
+        NamedColor::DimBlue => dim(palette.ansi[4]),
+        NamedColor::DimMagenta => dim(palette.ansi[5]),
+        NamedColor::DimCyan => dim(palette.ansi[6]),
+        NamedColor::DimWhite => dim(palette.ansi[7]),
+        NamedColor::DimForeground => dim(palette.foreground),
+        _ => palette.foreground,
     }
 }
 
 fn indexed_color(index: usize) -> TerminalRgb {
+    indexed_color_with(index, &theme::terminal_palette())
+}
+
+fn indexed_color_with(index: usize, palette: &TerminalPalette) -> TerminalRgb {
     match index {
-        0..=15 => ANSI[index],
+        0..=15 => palette.ansi[index],
         16..=231 => {
             let value = index - 16;
             let component = |part: usize| [0, 95, 135, 175, 215, 255][part];
@@ -1002,10 +1008,10 @@ fn indexed_color(index: usize) -> TerminalRgb {
             let gray = 8 + ((index - 232) * 10) as u8;
             TerminalRgb::new(gray, gray, gray)
         }
-        256 => FOREGROUND,
-        257 => BACKGROUND,
-        258 => CURSOR,
-        _ => FOREGROUND,
+        256 => palette.foreground,
+        257 => palette.background,
+        258 => palette.cursor,
+        _ => palette.foreground,
     }
 }
 
@@ -1021,11 +1027,11 @@ fn dim(color: TerminalRgb) -> TerminalRgb {
     )
 }
 
-fn blank_cell(row: usize, column: usize) -> TerminalCell {
+fn blank_cell(row: usize, column: usize, palette: &TerminalPalette) -> TerminalCell {
     let mut cell = TerminalCell::blank(row, column);
-    cell.foreground = FOREGROUND;
-    cell.background = BACKGROUND;
-    cell.underline_color = FOREGROUND;
+    cell.foreground = palette.foreground;
+    cell.background = palette.background;
+    cell.underline_color = palette.foreground;
     cell
 }
 
@@ -1337,6 +1343,36 @@ mod tests {
             dim(TerminalRgb::new(100, 200, 255)),
             TerminalRgb::new(66, 132, 168)
         );
+    }
+
+    #[test]
+    fn named_colors_follow_the_active_theme() {
+        let before = theme::colors();
+        theme::set_active(theme::resolve("moss", theme::AppearanceMode::Dark, true));
+        let palette = theme::terminal_palette();
+        assert_eq!(
+            named_color(NamedColor::Background, &palette),
+            palette.background
+        );
+        assert_eq!(
+            named_color(NamedColor::Foreground, &palette),
+            palette.foreground
+        );
+        assert_ne!(palette.background, TerminalRgb::new(0x10, 0x10, 0x11));
+        assert_eq!(blank_cell(0, 0, &palette).background, palette.background);
+
+        theme::set_active(theme::resolve(
+            "midnight",
+            theme::AppearanceMode::Light,
+            false,
+        ));
+        let light = theme::terminal_palette();
+        assert_eq!(
+            named_color(NamedColor::Background, &light),
+            light.background
+        );
+        assert_ne!(light.background, palette.background);
+        theme::set_active(before);
     }
 
     #[test]

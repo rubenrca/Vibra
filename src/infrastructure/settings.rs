@@ -10,7 +10,6 @@ use crate::infrastructure::paths::{
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
-const KNOWN_THEME_IDS: &[&str] = &["midnight", "moss", "harbor", "cinder", "violet", "bloom"];
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
 
@@ -108,7 +107,7 @@ impl AppSettings {
         self.right_sidebar_width = self
             .right_sidebar_width
             .clamp(MIN_RIGHT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH);
-        if !KNOWN_THEME_IDS.contains(&self.theme_id.as_str()) {
+        if !crate::ui::theme::is_known_theme_id(&self.theme_id) {
             self.theme_id = default_theme_id();
         }
         self.appearance_mode = match self.appearance_mode.as_str() {
