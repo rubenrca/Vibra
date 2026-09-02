@@ -17,14 +17,7 @@ pub struct FileEntry {
     pub size: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextFileSnapshot {
-    pub path: PathBuf,
-    pub contents: String,
-    pub fingerprint: String,
-}
-
-/// Boundary for project-scoped file inspection and editing.
+/// Boundary for project-scoped file inspection.
 pub trait FileSystemPort: Send + Sync {
     fn list_directory(
         &self,
@@ -32,15 +25,4 @@ pub trait FileSystemPort: Send + Sync {
         directory: &Path,
         show_hidden: bool,
     ) -> Result<Vec<FileEntry>>;
-
-    fn read_text_file(&self, project_root: &Path, path: &Path) -> Result<TextFileSnapshot>;
-
-    /// Atomically saves only if the file still matches the fingerprint that was read.
-    fn save_text_file(
-        &self,
-        project_root: &Path,
-        path: &Path,
-        contents: &str,
-        expected_fingerprint: &str,
-    ) -> Result<String>;
 }
