@@ -1,9 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.13 — 2026-09-02
 
 - Render Git diffs more like an editor: JetBrains Mono at 12px, a dedicated gutter, a color bar for added/removed lines, full-brightness syntax, and tab expansion.
-
 - Expand the theme picker with dual light/dark palettes for Nord, Gruvbox, Solarized, Dracula, Catppuccin, Tokyo Night, One, GitHub, Ayu, Everforest, Kanagawa, Rosé Pine, Monokai, and Warp, keeping the original Vibra families.
 - Paint the terminal grid from the active theme (background, text, cursor, ANSI, and selection) instead of leaving the pane black while only chrome borders change.
 - Tint syntax highlighting, modal overlays, and the terminal scrollbar from the same palette so light and dark styles stay consistent.
