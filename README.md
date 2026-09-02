@@ -30,7 +30,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - terminales divididas recursivamente en cuatro direcciones;
 - reordenar tabs, panes y sesiones de la sidebar arrastrándolos; saltar a un tab con `⌘1`–`⌘8` y al último con `⌘9`;
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
-- sidebar de sesiones con CWD y rama Git en vivo (ahead/behind/dirty);
+- sidebar de sesiones con CWD, rama Git en vivo (ahead/behind/dirty), agente activo, estado y modelo cuando el CLI lo reporta;
 - menús contextuales en sesiones y panes (renombrar, cerrar, dividir, zoom);
 - command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`).
 
@@ -41,13 +41,14 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - teclado xterm y Kitty, mouse SGR, bracketed paste y alternate screen;
 - pegado estilo Warp (`⌘V`): texto con bracketed paste; con imagen en el clipboard y un agente CLI en foco, se envía Ctrl+V para adjuntar capturas;
 - selección, búsqueda, enlaces OSC 8 y clipboard OSC 52 protegido;
-- JetBrains Mono Variable incluida en la aplicación.
+- JetBrains Mono Variable incluida en la aplicación;
+- consola inferior persistente (`⌘J`) para servidores de desarrollo: al ocultarla el proceso sigue vivo y no cambia el pane seleccionado; cada sesión de la sidebar tiene las suyas y `+` abre terminales extra.
 
 ### Files, Git y Servers
 
 - panel derecho unificado con las vistas `Files`, `Git` y `Servers`;
 - árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos y guías de indentación;
-- editor UTF-8 con búsqueda, undo/redo, guardado atómico y `⌘S`;
+- árbol de archivos que conserva el terminal como superficie central y enfoca los archivos modificados directamente en Git;
 - panel Git con tres vistas: working tree, cambios de la rama frente a la base por defecto, e historial de commits con grafo de lanes;
 - diffs de solo lectura estilo Warp: tarjetas expandibles, gutter de línea y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - las mutaciones Git se realizan desde la terminal integrada;
@@ -171,7 +172,7 @@ importan una sola vez.
 
 | Atajo | Acción |
 | --- | --- |
-| `⌘N` / `⌘T` / `⌘W` | Nuevo workspace / nuevo tab / cerrar editor o terminal |
+| `⌘N` / `⌘T` / `⌘W` | Nuevo workspace / nuevo tab / cerrar terminal |
 | `⌘1`–`⌘8` / `⌘9` | Ir al tab 1–8 / ir al último tab |
 | `⌘D` / `⇧⌘D` | Dividir a la derecha / abajo |
 | `⌃⌥⌘` + flechas | Dividir en cualquier dirección |
@@ -183,6 +184,7 @@ importan una sola vez.
 | `⌘,` | Abrir Settings (modal centrado) |
 | `⌘B` | Mostrar u ocultar sidebar de sesiones |
 | `⌥⌘B` | Mostrar u ocultar panel Files, Git y Servers |
+| `⌘J` | Mostrar u ocultar la terminal inferior de la sesión actual |
 | `⌘U` | Buscar actualizaciones (Sparkle) |
 | `⌘V` | Pegar (bracketed paste; Ctrl+V con imagen en agentes CLI) |
 | `⌘F`, `⌘G`, `⇧⌘G` | Buscar / siguiente / anterior en terminal |

@@ -34,7 +34,6 @@ use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
 use crate::ui::agent_marks::{agent_compact_badge, agent_sidebar_badge, agent_status_color};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
-use crate::ui::editor::{EditorView, EditorViewEvent};
 use crate::ui::servers::{ServerRoot, ServersView, ServersViewEvent};
 use crate::ui::terminal::{TerminalDragPreview, TerminalView, TerminalViewEvent};
 use crate::ui::theme::{self, AppearanceMode, ThemeTone, colors};
@@ -43,7 +42,7 @@ use crate::{
     GoToTab, NewTerminalTab, NewWorkspace, NextPane, NextWorkspace, PreviousPane,
     PreviousWorkspace, QuickOpen, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp,
     ShowSettings, SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette,
-    ToggleLeftSidebar, TogglePaneZoom, ToggleRightSidebar,
+    ToggleDevTerminal, ToggleLeftSidebar, TogglePaneZoom, ToggleRightSidebar,
 };
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
@@ -59,6 +58,17 @@ const SIDEBAR_ANIM_FRAME: Duration = Duration::from_millis(16);
 /// How often to refresh per-workspace branch/path metadata in the sessions sidebar.
 const SIDEBAR_GIT_POLL_INTERVAL: Duration = Duration::from_secs(3);
 const HOOK_OBSERVATION_TTL: Duration = Duration::from_secs(15 * 60);
+/// IDE-style utility console height. It is intentionally compact so the main
+/// terminal remains the primary surface.
+const DEV_TERMINAL_HEIGHT: f32 = 260.0;
+
+/// Bottom-console PTYs for one sidebar session. They stay alive while that
+/// session exists, but they are never shared across sessions.
+struct DevTerminalDrawer {
+    terminals: Vec<Entity<TerminalView>>,
+    selected_id: Uuid,
+    visible: bool,
+}
 
 /// Cached git metadata for a workspace sidebar tab (cmux-style).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +92,7 @@ struct HookAgentPresence {
     kind: Option<AgentKind>,
     state: AgentRuntimeState,
     attention: Option<AgentAttention>,
+    model: Option<String>,
     session_id: Option<String>,
     observed_at: Instant,
 }
@@ -91,6 +102,7 @@ struct ResolvedAgentPresence {
     kind: String,
     state: Option<AgentRuntimeState>,
     attention: Option<AgentAttention>,
+    model: Option<String>,
     kind_source: &'static str,
     state_source: Option<&'static str>,
     process_id: Option<u32>,
@@ -104,6 +116,53 @@ struct PaneIdentity {
     agent_kind: Option<String>,
     agent_state: Option<AgentRuntimeState>,
     agent_attention: Option<AgentAttention>,
+    agent_model: Option<String>,
+}
+
+/// A workspace can have several split panes and tabs. Surface the agent that
+/// needs the user most, rather than whichever pane happened to be selected
+/// when the workspace was last saved.
+fn sidebar_agent_priority(identity: &PaneIdentity) -> u8 {
+    match (identity.agent_state, identity.agent_attention) {
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Permission)) => 50,
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Question)) => 45,
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Plan)) => 40,
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Notification)) => 35,
+        (Some(AgentRuntimeState::Working), _) => 30,
+        (Some(AgentRuntimeState::Waiting), _) => 20,
+        (Some(AgentRuntimeState::Idle), _) => 10,
+        (None, _) => 0,
+    }
+}
+
+fn sidebar_agent_line(
+    kind: Option<&str>,
+    model: Option<&str>,
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+) -> String {
+    let kind = kind.unwrap_or("Terminal");
+    let activity = match (state, attention) {
+        (_, Some(AgentAttention::Permission)) => "needs permission",
+        (_, Some(AgentAttention::Question)) => "has a question",
+        (_, Some(AgentAttention::Plan)) => "has a plan",
+        (_, Some(AgentAttention::Notification)) => "needs attention",
+        (Some(AgentRuntimeState::Working), _) => "working",
+        (Some(AgentRuntimeState::Waiting), _) => "waiting",
+        (Some(AgentRuntimeState::Idle), _) => "ready",
+        (None, _) => "shell",
+    };
+    match model.map(str::trim).filter(|model| !model.is_empty()) {
+        Some(model) => format!("{kind} · {} · {activity}", compact_chrome_label(model, 20)),
+        None => format!("{kind} · {activity}"),
+    }
+}
+
+fn sidebar_location_line(branch: Option<&str>, path: &str) -> String {
+    match branch {
+        Some(branch) => format!("{branch}  ·  {path}"),
+        None => path.to_owned(),
+    }
 }
 
 #[derive(Clone)]
@@ -150,6 +209,7 @@ struct SidebarWorkspaceDrag {
     agent_kind: Option<String>,
     agent_state: Option<AgentRuntimeState>,
     agent_attention: Option<AgentAttention>,
+    agent_model: Option<String>,
     width: f32,
 }
 
@@ -163,6 +223,7 @@ struct SidebarWorkspaceDragView {
     agent_kind: Option<String>,
     agent_state: Option<AgentRuntimeState>,
     agent_attention: Option<AgentAttention>,
+    agent_model: Option<String>,
     width: f32,
 }
 
@@ -210,6 +271,7 @@ enum PaletteMode {
 #[derive(Debug, Clone)]
 enum PaletteAction {
     NewTerminalTab,
+    ToggleDevTerminal,
     NewWorkspace,
     Split(PaneSplitDirection),
     EqualizePanes,
@@ -376,9 +438,28 @@ impl Render for SidebarWorkspaceDragView {
         } else {
             colors().muted
         };
+        let agent_line = sidebar_agent_line(
+            self.agent_kind.as_deref(),
+            self.agent_model.as_deref(),
+            self.agent_state,
+            self.agent_attention,
+        );
+        let agent_color = agent_status_color(self.agent_state, self.agent_attention).unwrap_or(
+            if self.selected {
+                colors().muted
+            } else {
+                colors().subtle
+            },
+        );
+        let location_line = sidebar_location_line(self.branch.as_deref(), &self.path);
+        let location_color = if self.branch.is_some() {
+            branch_color
+        } else {
+            path_color
+        };
 
         div()
-            .h(px(64.0))
+            .h(px(74.0))
             .w(px(self.width))
             .px_3()
             .rounded(px(8.0))
@@ -404,7 +485,7 @@ impl Render for SidebarWorkspaceDragView {
                     .flex()
                     .flex_col()
                     .justify_center()
-                    .gap(px(1.0))
+                    .gap(px(2.0))
                     .child(sidebar_tab_line(
                         &self.title,
                         title_color,
@@ -412,10 +493,20 @@ impl Render for SidebarWorkspaceDragView {
                         true,
                         false,
                     ))
-                    .when_some(self.branch.clone(), |col, branch| {
-                        col.child(sidebar_tab_line(&branch, branch_color, 10.0, true, true))
-                    })
-                    .child(sidebar_tab_line(&self.path, path_color, 9.5, false, true)),
+                    .child(sidebar_tab_line(
+                        &agent_line,
+                        agent_color,
+                        10.0,
+                        true,
+                        false,
+                    ))
+                    .child(sidebar_tab_line(
+                        &location_line,
+                        location_color,
+                        9.0,
+                        false,
+                        true,
+                    )),
             )
     }
 }
@@ -435,9 +526,13 @@ pub struct WorkspaceView {
     _servers_subscription: Subscription,
     _servers_observe: Subscription,
     pending_focus_session: Option<Uuid>,
-    editor: Option<Entity<EditorView>>,
-    editor_subscription: Option<Subscription>,
     terminals: HashMap<Uuid, Entity<TerminalView>>,
+    /// Per-sidebar-session utility consoles. Showing one never changes the
+    /// selected terminal/tab, and switching sessions never reuses another
+    /// session's PTYs.
+    dev_terminals: HashMap<Uuid, DevTerminalDrawer>,
+    dev_terminal_subscriptions: HashMap<Uuid, Subscription>,
+    pending_focus_dev_terminal: bool,
     terminal_subscriptions: HashMap<Uuid, Subscription>,
     automation_tokens: HashMap<Uuid, Uuid>,
     automation_socket: Option<PathBuf>,
@@ -589,7 +684,11 @@ impl WorkspaceView {
             &servers_view,
             |this, _, event: &ServersViewEvent, cx| match event {
                 ServersViewEvent::FocusPane(session_id) => {
-                    this.focus_session_from_sidebar(*session_id, cx);
+                    if this.is_dev_terminal(*session_id, cx) {
+                        this.reveal_dev_terminal_session(*session_id, cx);
+                    } else {
+                        this.focus_session_from_sidebar(*session_id, cx);
+                    }
                 }
             },
         );
@@ -634,9 +733,10 @@ impl WorkspaceView {
             _servers_subscription: servers_subscription,
             _servers_observe: servers_observe,
             pending_focus_session: None,
-            editor: None,
-            editor_subscription: None,
             terminals: HashMap::new(),
+            dev_terminals: HashMap::new(),
+            dev_terminal_subscriptions: HashMap::new(),
+            pending_focus_dev_terminal: false,
             terminal_subscriptions: HashMap::new(),
             automation_tokens: HashMap::new(),
             automation_socket,
@@ -745,7 +845,8 @@ impl WorkspaceView {
             ),
             agent_kind: presence.as_ref().map(|presence| presence.kind.clone()),
             agent_state: presence.as_ref().and_then(|presence| presence.state),
-            agent_attention: presence.and_then(|presence| presence.attention),
+            agent_attention: presence.as_ref().and_then(|presence| presence.attention),
+            agent_model: presence.and_then(|presence| presence.model),
         }
     }
 
@@ -832,6 +933,58 @@ impl WorkspaceView {
                 }
             }
         }
+        let drawer_terminals: Vec<(Uuid, Entity<TerminalView>)> = self
+            .dev_terminals
+            .iter()
+            .flat_map(|(workspace_id, drawer)| {
+                drawer
+                    .terminals
+                    .iter()
+                    .map(|terminal| (*workspace_id, terminal.clone()))
+            })
+            .collect();
+        for (workspace_id, terminal) in drawer_terminals {
+            let (pid, session_id, cwd) = {
+                let terminal = terminal.read(cx);
+                (
+                    terminal.session_process_id(),
+                    terminal.session_id(),
+                    terminal.current_working_directory(),
+                )
+            };
+            let Some(pid) = pid else {
+                continue;
+            };
+            let (workspace_label, project_root) = self
+                .snapshot
+                .projects
+                .iter()
+                .find_map(|project| {
+                    project
+                        .workspaces
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .find(|workspace| workspace.id == workspace_id)
+                        .map(|workspace| {
+                            (workspace.name.clone(), PathBuf::from(&project.root_path))
+                        })
+                })
+                .unwrap_or_else(|| ("Dev terminal".into(), self.selected_live_cwd(cx)));
+            let title = directory_basename(&cwd.to_string_lossy());
+            let label = if workspace_count > 1 {
+                format!("{workspace_label} · {title}")
+            } else {
+                format!("Dev terminal · {title}")
+            };
+            roots.push(ServerRoot {
+                pane_id: session_id,
+                label,
+                pid,
+                cwd,
+                project_root,
+            });
+        }
         roots
     }
 
@@ -867,7 +1020,7 @@ impl WorkspaceView {
             .unwrap_or_else(|| self.launch_directory.clone())
     }
 
-    /// Files / editor root follows the selected terminal cwd (not the frozen project root).
+    /// Files root follows the selected terminal cwd (not the frozen project root).
     fn project_root(&self) -> PathBuf {
         if let Some(session) = self.snapshot.selected_session() {
             return PathBuf::from(&session.working_directory);
@@ -1075,44 +1228,6 @@ impl WorkspaceView {
 
     fn select_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.selected_file_path = Some(path);
-        cx.notify();
-    }
-
-    fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.project_root();
-        let document = match self.file_port.read_text_file(&root, &path) {
-            Ok(document) => document,
-            Err(error) => {
-                self.file_error = Some(error.to_string().into());
-                self.right_sidebar_mode = RightSidebarMode::Files;
-                self.set_right_sidebar_visible(true, false, cx);
-                return;
-            }
-        };
-        let file_port = self.file_port.clone();
-        let editor = cx.new(|cx| EditorView::new(root, document, file_port, cx));
-        let subscription =
-            cx.subscribe(
-                &editor,
-                |this, _editor, event: &EditorViewEvent, cx| match event {
-                    EditorViewEvent::Close => {
-                        this.editor = None;
-                        this.editor_subscription = None;
-                        cx.notify();
-                    }
-                    EditorViewEvent::Saved => {
-                        this.refresh_project_files(cx);
-                        this.diff_view
-                            .update(cx, |diff_view, cx| diff_view.refresh_now(cx));
-                        cx.notify();
-                    }
-                },
-            );
-        self.selected_file_path = Some(path);
-        self.file_error = None;
-        self.editor = Some(editor.clone());
-        self.editor_subscription = Some(subscription);
-        editor.read(cx).focus_handle(cx).focus(window);
         cx.notify();
     }
 
@@ -1385,6 +1500,11 @@ impl WorkspaceView {
                     action: PaletteAction::NewTerminalTab,
                 },
                 PaletteItem {
+                    label: "Terminal: Toggle Dev Terminal".into(),
+                    detail: "⌘J".into(),
+                    action: PaletteAction::ToggleDevTerminal,
+                },
+                PaletteItem {
                     label: "Workspace: New".into(),
                     detail: "⌘N".into(),
                     action: PaletteAction::NewWorkspace,
@@ -1521,6 +1641,9 @@ impl WorkspaceView {
             PaletteAction::NewTerminalTab => {
                 self.open_terminal_tab_in_current_directory(window, cx);
             }
+            PaletteAction::ToggleDevTerminal => {
+                self.toggle_dev_terminal(&ToggleDevTerminal, window, cx);
+            }
             PaletteAction::NewWorkspace => {
                 self.open_workspace_in_current_directory(window, cx);
             }
@@ -1569,7 +1692,11 @@ impl WorkspaceView {
                 project_id,
                 workspace_id,
             } => self.select_workspace(project_id, workspace_id, window, cx),
-            PaletteAction::OpenFile(path) => self.open_file(path, window, cx),
+            PaletteAction::OpenFile(path) => {
+                self.select_file_path(path, cx);
+                self.right_sidebar_mode = RightSidebarMode::Files;
+                self.set_right_sidebar_visible(true, true, cx);
+            }
         }
     }
 
@@ -1781,6 +1908,8 @@ impl WorkspaceView {
             self.agent_activity_seen.remove(&session_id);
         }
 
+        self.prune_dev_terminals(cx);
+
         for session in sessions {
             if self.terminals.contains_key(&session.id) {
                 continue;
@@ -1844,6 +1973,15 @@ impl WorkspaceView {
             let shown = visible.contains(session_id);
             terminal.update(cx, |terminal, _| terminal.set_surface_visible(shown));
         }
+        let current_workspace = self.current_workspace_id();
+        for (workspace_id, drawer) in &self.dev_terminals {
+            let drawer_shown = drawer.visible && current_workspace == Some(*workspace_id);
+            for terminal in &drawer.terminals {
+                let session_id = terminal.read(cx).session_id();
+                let shown = drawer_shown && session_id == drawer.selected_id;
+                terminal.update(cx, |terminal, _| terminal.set_surface_visible(shown));
+            }
+        }
     }
 
     fn handle_terminal_view_event(&mut self, event: &TerminalViewEvent, cx: &mut Context<Self>) {
@@ -1852,6 +1990,9 @@ impl WorkspaceView {
                 if self.snapshot.update_session_title(*session_id, title) {
                     self.sync_servers_panel(cx);
                     self.persist(cx);
+                } else if self.is_dev_terminal(*session_id, cx) {
+                    self.sync_servers_panel(cx);
+                    cx.notify();
                 }
             }
             TerminalViewEvent::WorkingDirectoryChanged { session_id, path } => {
@@ -1867,7 +2008,7 @@ impl WorkspaceView {
                     self.diff_view.update(cx, |diff_view, cx| {
                         diff_view.set_root(path.clone(), cx);
                     });
-                    // Keep Files/editor rooted on the live console directory.
+                    // Keep Files rooted on the live console directory.
                     let new_root = self.project_root();
                     if previous_files_root.as_ref() != Some(&new_root) {
                         self.expanded_directories.retain(|entry| {
@@ -1959,7 +2100,7 @@ impl WorkspaceView {
 
         let result: Result<serde_json::Value, String> = match request.envelope.command {
             AutomationCommand::SetAgentState { state } => {
-                self.set_hook_agent_presence(pane_id, None, state, None, None);
+                self.set_hook_agent_presence(pane_id, None, state, None, None, None);
                 self.publish_agent_activity(pane_id);
                 cx.notify();
                 Ok(self.agent_status_value(pane_id))
@@ -1968,9 +2109,17 @@ impl WorkspaceView {
                 kind,
                 state,
                 attention,
+                model,
                 session_id,
             } => {
-                self.set_hook_agent_presence(pane_id, Some(kind), state, attention, session_id);
+                self.set_hook_agent_presence(
+                    pane_id,
+                    Some(kind),
+                    state,
+                    attention,
+                    model,
+                    session_id,
+                );
                 self.publish_agent_activity(pane_id);
                 cx.notify();
                 Ok(self.agent_status_value(pane_id))
@@ -1997,6 +2146,18 @@ impl WorkspaceView {
         let _ = request.response.send(response);
     }
 
+    fn project_id_for_workspace(&self, workspace_id: Uuid) -> Option<Uuid> {
+        self.snapshot.projects.iter().find_map(|project| {
+            project
+                .workspaces
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|workspace| workspace.id == workspace_id)
+                .then_some(project.id)
+        })
+    }
+
     fn project_id_for_session(&self, session_id: Uuid) -> Option<Uuid> {
         self.snapshot.projects.iter().find_map(|project| {
             project
@@ -2017,6 +2178,7 @@ impl WorkspaceView {
         kind: Option<AgentKind>,
         state: AgentRuntimeState,
         attention: Option<AgentAttention>,
+        model: Option<String>,
         session_id: Option<String>,
     ) {
         let now = Instant::now();
@@ -2037,6 +2199,7 @@ impl WorkspaceView {
                 kind: None,
                 state,
                 attention: None,
+                model: None,
                 session_id: None,
                 observed_at: now,
             });
@@ -2045,6 +2208,9 @@ impl WorkspaceView {
         }
         entry.state = state;
         entry.attention = attention;
+        if model.is_some() || session_changed {
+            entry.model = model;
+        }
         if session_id.is_some() {
             entry.session_id = session_id;
         }
@@ -2104,6 +2270,7 @@ impl WorkspaceView {
             kind,
             state,
             attention,
+            model: hook.and_then(|presence| presence.model.clone()),
             kind_source,
             state_source,
             process_id: detected.and_then(|presence| presence.presence.process_id),
@@ -2117,6 +2284,7 @@ impl WorkspaceView {
             "kind": presence.as_ref().map(|presence| presence.kind.as_str()),
             "state": presence.as_ref().and_then(|presence| presence.state).map(agent_runtime_state_label),
             "attention": presence.as_ref().and_then(|presence| presence.attention).map(AgentAttention::label),
+            "model": presence.as_ref().and_then(|presence| presence.model.as_deref()),
             "kindSource": presence.as_ref().map(|presence| presence.kind_source),
             "stateSource": presence.as_ref().and_then(|presence| presence.state_source),
             "source": presence.as_ref().and_then(|presence| presence.state_source),
@@ -2479,6 +2647,11 @@ impl WorkspaceView {
         for terminal in self.terminals.values() {
             terminal.update(cx, |terminal, cx| terminal.apply_font_size(size, cx));
         }
+        for drawer in self.dev_terminals.values() {
+            for terminal in &drawer.terminals {
+                terminal.update(cx, |terminal, cx| terminal.apply_font_size(size, cx));
+            }
+        }
         self.persist_settings(cx);
     }
 
@@ -2561,6 +2734,306 @@ impl WorkspaceView {
         self.open_terminal_tab_in_current_directory(window, cx);
     }
 
+    fn current_workspace_id(&self) -> Option<Uuid> {
+        self.snapshot
+            .selected_workspace()
+            .map(|workspace| workspace.id)
+    }
+
+    fn is_dev_terminal_visible(&self) -> bool {
+        self.current_workspace_id()
+            .and_then(|workspace_id| self.dev_terminals.get(&workspace_id))
+            .is_some_and(|drawer| drawer.visible)
+    }
+
+    fn is_dev_terminal(&self, session_id: Uuid, cx: &Context<Self>) -> bool {
+        self.dev_workspace_for_session(session_id, cx).is_some()
+    }
+
+    fn dev_workspace_for_session(&self, session_id: Uuid, cx: &Context<Self>) -> Option<Uuid> {
+        self.dev_terminals
+            .iter()
+            .find_map(|(workspace_id, drawer)| {
+                drawer
+                    .terminals
+                    .iter()
+                    .any(|terminal| terminal.read(cx).session_id() == session_id)
+                    .then_some(*workspace_id)
+            })
+    }
+
+    fn selected_dev_terminal(
+        &self,
+        workspace_id: Uuid,
+        cx: &Context<Self>,
+    ) -> Option<Entity<TerminalView>> {
+        let drawer = self.dev_terminals.get(&workspace_id)?;
+        drawer
+            .terminals
+            .iter()
+            .find(|terminal| terminal.read(cx).session_id() == drawer.selected_id)
+            .cloned()
+            .or_else(|| drawer.terminals.first().cloned())
+    }
+
+    fn spawn_dev_terminal(
+        &mut self,
+        workspace_id: Uuid,
+        cx: &mut Context<Self>,
+    ) -> Entity<TerminalView> {
+        let working_directory = self.selected_live_cwd(cx);
+        let terminal_port = self.terminal_port.clone();
+        let font_size = self.settings.terminal_font_size;
+        let visible = self
+            .dev_terminals
+            .get(&workspace_id)
+            .is_some_and(|drawer| drawer.visible);
+        let mut environment = HashMap::new();
+        if let Ok(executable) = std::env::current_exe() {
+            environment.insert(
+                "VIBRA_CLI".into(),
+                executable.to_string_lossy().into_owned(),
+            );
+        }
+        let session_id = Uuid::new_v4();
+        let terminal = cx.new(|cx| {
+            TerminalView::new_with_environment(
+                session_id,
+                "Dev terminal".to_owned(),
+                &working_directory,
+                terminal_port,
+                environment,
+                cx,
+            )
+        });
+        terminal.update(cx, |terminal, cx| {
+            terminal.apply_font_size(font_size, cx);
+            terminal.set_surface_visible(visible);
+        });
+        let subscription = cx.subscribe(
+            &terminal,
+            |this, _terminal, event: &TerminalViewEvent, cx| {
+                this.handle_terminal_view_event(event, cx);
+            },
+        );
+        self.dev_terminal_subscriptions
+            .insert(session_id, subscription);
+        let drawer = self
+            .dev_terminals
+            .entry(workspace_id)
+            .or_insert_with(|| DevTerminalDrawer {
+                terminals: Vec::new(),
+                selected_id: session_id,
+                visible: false,
+            });
+        drawer.terminals.push(terminal.clone());
+        drawer.selected_id = session_id;
+        self.sync_servers_panel(cx);
+        terminal
+    }
+
+    fn ensure_dev_terminal(&mut self, cx: &mut Context<Self>) -> Option<Entity<TerminalView>> {
+        let workspace_id = self.current_workspace_id()?;
+        if let Some(terminal) = self.selected_dev_terminal(workspace_id, cx) {
+            return Some(terminal);
+        }
+        Some(self.spawn_dev_terminal(workspace_id, cx))
+    }
+
+    fn prune_dev_terminals(&mut self, cx: &mut Context<Self>) {
+        let live: HashSet<Uuid> = self
+            .snapshot
+            .workspace_entries()
+            .into_iter()
+            .map(|entry| entry.workspace_id)
+            .collect();
+        let stale: Vec<Uuid> = self
+            .dev_terminals
+            .keys()
+            .copied()
+            .filter(|workspace_id| !live.contains(workspace_id))
+            .collect();
+        for workspace_id in stale {
+            self.shutdown_dev_drawer(workspace_id, cx);
+        }
+    }
+
+    fn shutdown_dev_drawer(&mut self, workspace_id: Uuid, cx: &mut Context<Self>) {
+        let Some(drawer) = self.dev_terminals.remove(&workspace_id) else {
+            return;
+        };
+        for terminal in drawer.terminals {
+            let session_id = terminal.read(cx).session_id();
+            terminal.read(cx).shutdown();
+            self.dev_terminal_subscriptions.remove(&session_id);
+        }
+    }
+
+    fn reveal_dev_terminal_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.dev_workspace_for_session(session_id, cx) else {
+            return;
+        };
+        if self.current_workspace_id() != Some(workspace_id)
+            && let Some(project_id) = self.project_id_for_workspace(workspace_id)
+            && self.snapshot.select_workspace(project_id, workspace_id)
+        {
+            self.sync_diff_root(cx);
+            self.refresh_project_files(cx);
+            self.refresh_sidebar_workspace_meta(cx);
+            self.persist(cx);
+        }
+        if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) {
+            drawer.selected_id = session_id;
+            drawer.visible = true;
+        }
+        self.pending_focus_dev_terminal = true;
+        self.sync_terminal_surface_visibility(cx);
+        self.sync_servers_panel(cx);
+        cx.notify();
+    }
+
+    fn set_dev_terminal_visible(
+        &mut self,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace_id) = self.current_workspace_id() else {
+            return;
+        };
+        if visible {
+            let Some(terminal) = self.ensure_dev_terminal(cx) else {
+                return;
+            };
+            if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) {
+                drawer.visible = true;
+            }
+            self.sync_terminal_surface_visibility(cx);
+            self.sync_servers_panel(cx);
+            cx.notify();
+            cx.defer_in(window, move |_, window, cx| {
+                terminal.read(cx).focus_handle(cx).focus(window);
+            });
+            return;
+        }
+        let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) else {
+            return;
+        };
+        if !drawer.visible {
+            return;
+        }
+        drawer.visible = false;
+        self.pending_focus_dev_terminal = false;
+        self.sync_terminal_surface_visibility(cx);
+        self.focus_selected_terminal(window, cx);
+        cx.notify();
+    }
+
+    fn toggle_dev_terminal(
+        &mut self,
+        _: &ToggleDevTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_dev_terminal_visible(!self.is_dev_terminal_visible(), window, cx);
+    }
+
+    fn add_dev_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace_id) = self.current_workspace_id() else {
+            return;
+        };
+        if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) {
+            drawer.visible = true;
+        }
+        let terminal = self.spawn_dev_terminal(workspace_id, cx);
+        if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) {
+            drawer.visible = true;
+        }
+        self.sync_terminal_surface_visibility(cx);
+        self.sync_servers_panel(cx);
+        cx.notify();
+        cx.defer_in(window, move |_, window, cx| {
+            terminal.read(cx).focus_handle(cx).focus(window);
+        });
+    }
+
+    fn select_dev_terminal_tab(
+        &mut self,
+        session_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace_id) = self.dev_workspace_for_session(session_id, cx) else {
+            return;
+        };
+        if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) {
+            drawer.selected_id = session_id;
+            drawer.visible = true;
+        }
+        self.sync_terminal_surface_visibility(cx);
+        cx.notify();
+        if let Some(terminal) = self.selected_dev_terminal(workspace_id, cx) {
+            cx.defer_in(window, move |_, window, cx| {
+                terminal.read(cx).focus_handle(cx).focus(window);
+            });
+        }
+    }
+
+    fn close_dev_terminal(
+        &mut self,
+        session_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace_id) = self.dev_workspace_for_session(session_id, cx) else {
+            return;
+        };
+        let Some(index) = self.dev_terminals.get(&workspace_id).and_then(|drawer| {
+            drawer
+                .terminals
+                .iter()
+                .position(|terminal| terminal.read(cx).session_id() == session_id)
+        }) else {
+            return;
+        };
+        let terminal = self
+            .dev_terminals
+            .get_mut(&workspace_id)
+            .map(|drawer| drawer.terminals.remove(index));
+        if let Some(terminal) = terminal {
+            terminal.read(cx).shutdown();
+        }
+        self.dev_terminal_subscriptions.remove(&session_id);
+        let empty = self
+            .dev_terminals
+            .get(&workspace_id)
+            .is_some_and(|drawer| drawer.terminals.is_empty());
+        if empty {
+            self.dev_terminals.remove(&workspace_id);
+            self.pending_focus_dev_terminal = false;
+            self.sync_terminal_surface_visibility(cx);
+            self.sync_servers_panel(cx);
+            self.focus_selected_terminal(window, cx);
+            cx.notify();
+            return;
+        }
+        if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id)
+            && drawer.selected_id == session_id
+        {
+            let next = index.min(drawer.terminals.len() - 1);
+            drawer.selected_id = drawer.terminals[next].read(cx).session_id();
+        }
+        let selected = self.selected_dev_terminal(workspace_id, cx);
+        self.sync_terminal_surface_visibility(cx);
+        self.sync_servers_panel(cx);
+        cx.notify();
+        if let Some(terminal) = selected {
+            cx.defer_in(window, move |_, window, cx| {
+                terminal.read(cx).focus_handle(cx).focus(window);
+            });
+        }
+    }
+
     fn open_workspace_in_current_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.selected_live_cwd(cx);
         self.snapshot.create_workspace(&cwd);
@@ -2593,10 +3066,6 @@ impl WorkspaceView {
     }
 
     fn close_terminal(&mut self, _: &CloseTerminal, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = &self.editor {
-            editor.update(cx, |editor, cx| editor.request_close(cx));
-            return;
-        }
         if self.snapshot.close_selected_terminal() {
             self.reconcile_terminal_views(cx);
             self.sync_diff_root(cx);
@@ -2801,7 +3270,7 @@ impl WorkspaceView {
             .snapshot
             .selected_workspace()
             .and_then(|workspace| workspace.selected_tab_id);
-        let show_tab_selector = self.editor.is_none() && tabs.len() > 1;
+        let show_tab_selector = tabs.len() > 1;
         let right_chrome_content = if right_open {
             self.utility_mode_tabs(cx)
         } else {
@@ -2947,15 +3416,29 @@ impl WorkspaceView {
             Some(ReorderDrag::SidebarWorkspace(id)) if cx.has_active_drag() => Some(id),
             _ => None,
         };
-        let pane_identities: HashMap<_, _> = self
+        let sidebar_identities: HashMap<Uuid, (Option<PaneIdentity>, Option<PaneIdentity>)> = self
             .snapshot
             .projects
             .iter()
             .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-            .filter_map(|workspace| {
-                workspace
+            .map(|workspace| {
+                let primary = workspace
                     .primary_session()
-                    .map(|session| (workspace.id, self.pane_identity(session, 0, cx)))
+                    .map(|session| self.pane_identity(session, 0, cx));
+                let active_agent = workspace
+                    .tabs
+                    .iter()
+                    .flat_map(|tab| tab.sessions.iter().enumerate())
+                    .filter_map(|(index, session)| {
+                        let identity = self.pane_identity(session, index, cx);
+                        identity
+                            .agent_kind
+                            .is_some()
+                            .then(|| (sidebar_agent_priority(&identity), identity))
+                    })
+                    .max_by_key(|(priority, _)| *priority)
+                    .map(|(_, identity)| identity);
+                (workspace.id, (primary, active_agent))
             })
             .collect();
         let meta_by_workspace = self.sidebar_workspace_meta.clone();
@@ -3017,7 +3500,12 @@ impl WorkspaceView {
                         let project_id = entry.project_id;
                         let workspace_id = entry.workspace_id;
                         let selected = entry.is_selected;
-                        let identity = pane_identities.get(&workspace_id).cloned();
+                        let (primary_identity, active_agent_identity) = sidebar_identities
+                            .get(&workspace_id)
+                            .cloned()
+                            .unwrap_or((None, None));
+                        let agent_identity =
+                            active_agent_identity.or_else(|| primary_identity.clone());
                         let meta = meta_by_workspace.get(&workspace_id);
                         let cwd = meta
                             .map(|m| m.cwd.as_str())
@@ -3028,13 +3516,13 @@ impl WorkspaceView {
                         let title_label = if entry.title_is_manual {
                             entry.workspace_name.clone()
                         } else {
-                            identity
+                            primary_identity
                                 .as_ref()
                                 .map(|identity| identity.title.clone())
                                 .unwrap_or_else(|| entry.workspace_name.clone())
                         };
-                        // Three clean rows: name / branch / path.
-                        // Agent identity+state lives on the badge (mark + status dot).
+                        // Keep the workspace name first; the following rows summarize the
+                        // active agent and repository location without hiding branch state.
                         let branch_label = meta.and_then(format_sidebar_branch);
                         let branch_color = match (
                             meta.map(|m| m.dirty).unwrap_or(false),
@@ -3055,6 +3543,40 @@ impl WorkspaceView {
                         } else {
                             colors().muted
                         };
+                        let agent_color = agent_status_color(
+                            agent_identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_state),
+                            agent_identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_attention),
+                        )
+                        .unwrap_or(if selected {
+                            colors().muted
+                        } else {
+                            colors().subtle
+                        });
+                        let agent_label = sidebar_agent_line(
+                            agent_identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_kind.as_deref()),
+                            agent_identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_model.as_deref()),
+                            agent_identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_state),
+                            agent_identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_attention),
+                        );
+                        let location_label =
+                            sidebar_location_line(branch_label.as_deref(), &path_label);
+                        let location_color = if branch_label.is_some() {
+                            branch_color
+                        } else {
+                            path_color
+                        };
                         let drag = SidebarWorkspaceDrag {
                             workspace_id,
                             title: title_label.clone(),
@@ -3063,22 +3585,25 @@ impl WorkspaceView {
                             selected,
                             dirty: meta.map(|m| m.dirty).unwrap_or(false),
                             behind: meta.map(|m| m.behind).unwrap_or_default(),
-                            agent_kind: identity
+                            agent_kind: agent_identity
                                 .as_ref()
                                 .and_then(|identity| identity.agent_kind.clone()),
-                            agent_state: identity
+                            agent_state: agent_identity
                                 .as_ref()
                                 .and_then(|identity| identity.agent_state),
-                            agent_attention: identity
+                            agent_attention: agent_identity
                                 .as_ref()
                                 .and_then(|identity| identity.agent_attention),
+                            agent_model: agent_identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_model.clone()),
                             width: self.left_sidebar_width() - 16.0,
                         };
                         let is_source = dragging_workspace == Some(workspace_id);
                         // Explicit text width avoids flex+truncate collapsing labels to "…".
                         div()
                             .id(SharedString::from(format!("workspace-{workspace_id}")))
-                            .h(px(64.0))
+                            .h(px(74.0))
                             .w(px(self.left_sidebar_width() - 16.0))
                             .mb(px(2.0))
                             .px_3()
@@ -3137,6 +3662,7 @@ impl WorkspaceView {
                                         agent_kind: drag.agent_kind.clone(),
                                         agent_state: drag.agent_state,
                                         agent_attention: drag.agent_attention,
+                                        agent_model: drag.agent_model.clone(),
                                         width: drag.width,
                                     })
                                 })
@@ -3163,11 +3689,13 @@ impl WorkspaceView {
                                 ))
                             })
                             .child(agent_sidebar_badge(
-                                identity
+                                agent_identity
                                     .as_ref()
                                     .and_then(|identity| identity.agent_kind.as_deref()),
-                                identity.as_ref().and_then(|identity| identity.agent_state),
-                                identity
+                                agent_identity
+                                    .as_ref()
+                                    .and_then(|identity| identity.agent_state),
+                                agent_identity
                                     .as_ref()
                                     .and_then(|identity| identity.agent_attention),
                                 selected,
@@ -3180,7 +3708,7 @@ impl WorkspaceView {
                                     .flex()
                                     .flex_col()
                                     .justify_center()
-                                    .gap(px(1.0))
+                                    .gap(px(2.0))
                                     .child(sidebar_tab_line(
                                         &title_label,
                                         title_color,
@@ -3188,19 +3716,17 @@ impl WorkspaceView {
                                         true,
                                         false,
                                     ))
-                                    .when_some(branch_label, |col, branch| {
-                                        col.child(sidebar_tab_line(
-                                            &branch,
-                                            branch_color,
-                                            10.0,
-                                            true,
-                                            true,
-                                        ))
-                                    })
                                     .child(sidebar_tab_line(
-                                        &path_label,
-                                        path_color,
-                                        9.5,
+                                        &agent_label,
+                                        agent_color,
+                                        10.0,
+                                        true,
+                                        false,
+                                    ))
+                                    .child(sidebar_tab_line(
+                                        &location_label,
+                                        location_color,
+                                        9.0,
                                         false,
                                         true,
                                     )),
@@ -3242,13 +3768,8 @@ impl WorkspaceView {
         let selected_path = self.selected_file_path.clone();
         let file_error = self.file_error.clone();
         let project_root = self.project_root();
-        let project_name = directory_basename(&project_root.to_string_lossy());
         let (git_root, git_statuses) = self.diff_view.read(cx).status_index();
         let status_root = git_root.unwrap_or_else(|| project_root.clone());
-        let root_status = aggregate_dir_status("", &git_statuses);
-        let root_name_color = root_status
-            .map(git_status_color)
-            .unwrap_or(colors().foreground);
 
         div()
             .id("project-files-content")
@@ -3258,44 +3779,6 @@ impl WorkspaceView {
             .flex_col()
             .overflow_hidden()
             .bg(colors().panel)
-            // Project root row
-            .child(
-                div()
-                    .h(px(28.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
-                    .px_2()
-                    .child(
-                        div()
-                            .size(px(16.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_color(colors().folder)
-                            .child(
-                                svg()
-                                    .path("file-icons/folder.svg")
-                                    .size(px(14.0))
-                                    .text_color(colors().folder),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .flex_1()
-                            .truncate()
-                            .text_size(px(12.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(root_name_color)
-                            .child(project_name),
-                    )
-                    .when_some(root_status.map(git_status_trailing), |row, trailing| {
-                        row.child(trailing)
-                    }),
-            )
             // File tree
             .child(
                 div()
@@ -3303,6 +3786,7 @@ impl WorkspaceView {
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
+                    .pt_1()
                     .pb_2()
                     .children(rows.into_iter().map(|row| {
                         let path = row.entry.path.clone();
@@ -3333,7 +3817,7 @@ impl WorkspaceView {
                                 "file-row-{}",
                                 path.to_string_lossy()
                             )))
-                            .h(px(24.0))
+                            .h(px(26.0))
                             .w_full()
                             .flex()
                             .items_center()
@@ -3347,7 +3831,7 @@ impl WorkspaceView {
                             .hover(|item| item.bg(colors().hover))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                     if is_directory {
                                         if event.click_count == 1 {
                                             this.toggle_directory(&path, cx);
@@ -3355,11 +3839,9 @@ impl WorkspaceView {
                                         return;
                                     }
                                     this.select_file_path(path.clone(), cx);
-                                    // Double-click opens for reading; no edit chrome in the tree.
-                                    if event.click_count >= 2 {
-                                        this.open_file(path.clone(), window, cx);
-                                    } else if let Some(rel) = rel_for_click.as_ref() {
-                                        // Single click on a dirty file peeks it in Diff.
+                                    if let Some(rel) = rel_for_click.as_ref() {
+                                        // Selecting any changed file peeks it in Git; documents
+                                        // never replace the terminal surface.
                                         let selected = this.diff_view.update(cx, |diff, cx| {
                                             diff.select_path_if_changed(rel, cx)
                                         });
@@ -4231,9 +4713,9 @@ impl WorkspaceView {
     }
 
     fn center_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let editor = self.editor.clone();
-
-        let panel = div()
+        let canvas = self.terminal_canvas(cx).into_any_element();
+        let drawer = self.dev_terminal_drawer(cx);
+        div()
             .flex_1()
             .min_w(px(360.0))
             .h_full()
@@ -4241,12 +4723,177 @@ impl WorkspaceView {
             .flex_col()
             .min_h(px(0.0))
             .overflow_hidden()
-            .bg(colors().terminal);
-        if let Some(editor) = editor {
-            panel.child(editor)
-        } else {
-            panel.child(self.terminal_canvas(cx))
+            .bg(colors().terminal)
+            .child(canvas)
+            .children(drawer)
+    }
+
+    fn dev_terminal_drawer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.is_dev_terminal_visible() {
+            return None;
         }
+        let workspace_id = self.current_workspace_id()?;
+        let drawer = self.dev_terminals.get(&workspace_id)?;
+        let selected_id = drawer.selected_id;
+        let tabs: Vec<(Uuid, String, Entity<TerminalView>)> = drawer
+            .terminals
+            .iter()
+            .enumerate()
+            .map(|(index, terminal)| {
+                let session_id = terminal.read(cx).session_id();
+                let cwd = terminal.read(cx).current_working_directory();
+                let name = directory_basename(&cwd.to_string_lossy());
+                let title = if name == "—" {
+                    format!("Terminal {}", index + 1)
+                } else {
+                    name
+                };
+                (session_id, title, terminal.clone())
+            })
+            .collect();
+        let selected_terminal = tabs
+            .iter()
+            .find(|(session_id, _, _)| *session_id == selected_id)
+            .or(tabs.first())
+            .map(|(_, _, terminal)| terminal.clone())?;
+        Some(
+            div()
+                .id("dev-terminal-drawer")
+                .h(px(DEV_TERMINAL_HEIGHT))
+                .min_h(px(120.0))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .border_t_1()
+                .border_color(colors().border_subtle)
+                .bg(colors().terminal)
+                .child(
+                    div()
+                        .h(px(28.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .px(px(8.0))
+                        .bg(colors().panel)
+                        .border_b_1()
+                        .border_color(colors().border_subtle)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .overflow_x_hidden()
+                                .children(tabs.into_iter().map(|(session_id, title, _)| {
+                                    let selected = session_id == selected_id;
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "dev-terminal-tab-{session_id}"
+                                        )))
+                                        .h(px(22.0))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .px(px(8.0))
+                                        .rounded(px(5.0))
+                                        .cursor_pointer()
+                                        .bg(if selected {
+                                            colors().selection
+                                        } else {
+                                            gpui::rgba(0x00000000)
+                                        })
+                                        .text_color(if selected {
+                                            colors().foreground
+                                        } else {
+                                            colors().muted
+                                        })
+                                        .hover(|tab| {
+                                            tab.bg(colors().hover).text_color(colors().foreground)
+                                        })
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.select_dev_terminal_tab(session_id, window, cx);
+                                        }))
+                                        .child(
+                                            div()
+                                                .max_w(px(140.0))
+                                                .truncate()
+                                                .text_size(px(10.5))
+                                                .font_weight(if selected {
+                                                    gpui::FontWeight::MEDIUM
+                                                } else {
+                                                    gpui::FontWeight::NORMAL
+                                                })
+                                                .child(title),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "dev-terminal-close-{session_id}"
+                                                )))
+                                                .size(px(14.0))
+                                                .rounded(px(3.0))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(11.0))
+                                                .text_color(colors().subtle)
+                                                .hover(|button| {
+                                                    button
+                                                        .bg(colors().hover)
+                                                        .text_color(colors().foreground)
+                                                })
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |_, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                    }),
+                                                )
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        this.close_dev_terminal(
+                                                            session_id, window, cx,
+                                                        );
+                                                    },
+                                                ))
+                                                .child("×"),
+                                        )
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("dev-terminal-add")
+                                .size(px(22.0))
+                                .flex_none()
+                                .rounded(px(5.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .text_size(px(14.0))
+                                .text_color(colors().muted)
+                                .hover(|button| {
+                                    button.bg(colors().hover).text_color(colors().foreground)
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.add_dev_terminal(window, cx);
+                                }))
+                                .child("+"),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .overflow_hidden()
+                        .child(selected_terminal),
+                )
+                .into_any_element(),
+        )
     }
 
     fn tab_bar(
@@ -5452,12 +6099,23 @@ impl Render for WorkspaceView {
                 this.focus_terminal(session_id, window, cx);
             });
         }
+        if self.pending_focus_dev_terminal {
+            self.pending_focus_dev_terminal = false;
+            if let Some(workspace_id) = self.current_workspace_id()
+                && let Some(terminal) = self.selected_dev_terminal(workspace_id, cx)
+            {
+                cx.defer_in(window, move |_, window, cx| {
+                    terminal.read(cx).focus_handle(cx).focus(window);
+                });
+            }
+        }
         let mut body = div()
             .id("vibra-root")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::new_workspace))
             .on_action(cx.listener(Self::new_terminal_tab))
             .on_action(cx.listener(Self::close_terminal))
+            .on_action(cx.listener(Self::toggle_dev_terminal))
             .on_action(cx.listener(Self::toggle_left_sidebar))
             .on_action(cx.listener(Self::toggle_right_sidebar))
             .on_action(cx.listener(Self::previous_workspace))
@@ -5831,6 +6489,232 @@ mod tests {
                     view.terminals[&second_session]
                         .read(cx)
                         .is_surface_visible()
+                );
+            })
+            .unwrap();
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sidebar_agent_line_includes_model_only_when_reported() {
+        assert_eq!(
+            sidebar_agent_line(Some("Codex"), None, Some(AgentRuntimeState::Working), None),
+            "Codex · working"
+        );
+        assert_eq!(
+            sidebar_agent_line(
+                Some("Codex"),
+                Some("gpt-5"),
+                Some(AgentRuntimeState::Working),
+                None
+            ),
+            "Codex · gpt-5 · working"
+        );
+        assert_eq!(
+            sidebar_location_line(Some("main"), "~/Dev/Vibra"),
+            "main  ·  ~/Dev/Vibra"
+        );
+    }
+
+    #[gpui::test]
+    fn toggling_dev_terminal_keeps_a_hidden_pty_without_changing_panes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::infrastructure::files::LocalFileSystemPort;
+        use crate::infrastructure::git::GitCliPort;
+        use crate::infrastructure::persistence::WorkspaceRepository;
+        use crate::infrastructure::settings::SettingsRepository;
+        use std::sync::Arc;
+
+        let root = std::env::temp_dir().join(format!("vibra-dev-terminal-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let repository = WorkspaceRepository::at(root.join("workspace.json"));
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(&root);
+        repository.save(&snapshot).unwrap();
+        let settings_repository = SettingsRepository::at(root.join("settings.json"));
+        let settings = crate::infrastructure::settings::AppSettings {
+            agent_notifications: false,
+            ..crate::infrastructure::settings::AppSettings::default()
+        };
+        settings_repository.save(&settings).unwrap();
+
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    let focus_handle = cx.focus_handle();
+                    focus_handle.focus(window);
+                    cx.new(|cx| {
+                        WorkspaceView::new(
+                            WorkspaceDependencies {
+                                repository,
+                                settings_repository,
+                                terminal_port: Arc::new(SilentTerminalPort),
+                                file_port: Arc::new(LocalFileSystemPort),
+                                git_port: Arc::new(GitCliPort),
+                            },
+                            root.clone(),
+                            focus_handle,
+                            cx,
+                        )
+                    })
+                })
+            })
+            .unwrap();
+
+        window
+            .update(cx, |view, window, cx| {
+                let selected = view.snapshot.selected_session().unwrap().id;
+                let workspace_id = view.snapshot.selected_workspace().unwrap().id;
+                assert!(view.dev_terminals.is_empty());
+                assert!(!view.is_dev_terminal_visible());
+
+                view.toggle_dev_terminal(&crate::ToggleDevTerminal, window, cx);
+                let drawer = view
+                    .selected_dev_terminal(workspace_id, cx)
+                    .expect("dev terminal PTY");
+                let drawer_id = drawer.read(cx).session_id();
+                assert!(view.is_dev_terminal_visible());
+                assert!(drawer.read(cx).is_surface_visible());
+                assert_eq!(view.snapshot.selected_session().unwrap().id, selected);
+                assert!(
+                    !view.terminals.contains_key(&drawer_id),
+                    "the utility console must stay outside workspace panes"
+                );
+
+                view.toggle_dev_terminal(&crate::ToggleDevTerminal, window, cx);
+                assert!(!view.is_dev_terminal_visible());
+                assert!(
+                    view.dev_terminals.contains_key(&workspace_id),
+                    "hiding must keep the PTY"
+                );
+                assert!(!drawer.read(cx).is_surface_visible());
+                assert_eq!(view.snapshot.selected_session().unwrap().id, selected);
+                assert_eq!(
+                    view.selected_dev_terminal(workspace_id, cx)
+                        .unwrap()
+                        .read(cx)
+                        .session_id(),
+                    drawer_id
+                );
+
+                view.toggle_dev_terminal(&crate::ToggleDevTerminal, window, cx);
+                assert!(view.is_dev_terminal_visible());
+                assert!(drawer.read(cx).is_surface_visible());
+                assert_eq!(
+                    view.selected_dev_terminal(workspace_id, cx)
+                        .unwrap()
+                        .read(cx)
+                        .session_id(),
+                    drawer_id
+                );
+
+                view.add_dev_terminal(window, cx);
+                assert_eq!(view.dev_terminals[&workspace_id].terminals.len(), 2);
+                let second_id = view
+                    .selected_dev_terminal(workspace_id, cx)
+                    .unwrap()
+                    .read(cx)
+                    .session_id();
+                assert_ne!(second_id, drawer_id);
+            })
+            .unwrap();
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn dev_terminals_stay_scoped_to_the_sidebar_session(cx: &mut gpui::TestAppContext) {
+        use crate::infrastructure::files::LocalFileSystemPort;
+        use crate::infrastructure::git::GitCliPort;
+        use crate::infrastructure::persistence::WorkspaceRepository;
+        use crate::infrastructure::settings::SettingsRepository;
+        use std::sync::Arc;
+
+        let root = std::env::temp_dir().join(format!("vibra-dev-scope-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let repository = WorkspaceRepository::at(root.join("workspace.json"));
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(&root);
+        let first_project = snapshot.selected_project_id.unwrap();
+        let first_workspace = snapshot.selected_workspace().unwrap().id;
+        snapshot.create_workspace(&root);
+        let second_workspace = snapshot.selected_workspace().unwrap().id;
+        repository.save(&snapshot).unwrap();
+        let settings_repository = SettingsRepository::at(root.join("settings.json"));
+        let settings = crate::infrastructure::settings::AppSettings {
+            agent_notifications: false,
+            ..crate::infrastructure::settings::AppSettings::default()
+        };
+        settings_repository.save(&settings).unwrap();
+
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    let focus_handle = cx.focus_handle();
+                    focus_handle.focus(window);
+                    cx.new(|cx| {
+                        WorkspaceView::new(
+                            WorkspaceDependencies {
+                                repository,
+                                settings_repository,
+                                terminal_port: Arc::new(SilentTerminalPort),
+                                file_port: Arc::new(LocalFileSystemPort),
+                                git_port: Arc::new(GitCliPort),
+                            },
+                            root.clone(),
+                            focus_handle,
+                            cx,
+                        )
+                    })
+                })
+            })
+            .unwrap();
+
+        window
+            .update(cx, |view, window, cx| {
+                assert_eq!(
+                    view.snapshot.selected_workspace().unwrap().id,
+                    second_workspace
+                );
+                view.toggle_dev_terminal(&crate::ToggleDevTerminal, window, cx);
+                let second_drawer = view
+                    .selected_dev_terminal(second_workspace, cx)
+                    .expect("second session drawer")
+                    .read(cx)
+                    .session_id();
+                assert!(view.is_dev_terminal_visible());
+
+                view.select_workspace(first_project, first_workspace, window, cx);
+                assert!(
+                    !view.is_dev_terminal_visible(),
+                    "a different sidebar session must not inherit the drawer"
+                );
+                assert!(
+                    !view
+                        .selected_dev_terminal(second_workspace, cx)
+                        .unwrap()
+                        .read(cx)
+                        .is_surface_visible()
+                );
+
+                view.toggle_dev_terminal(&crate::ToggleDevTerminal, window, cx);
+                let first_drawer = view
+                    .selected_dev_terminal(first_workspace, cx)
+                    .expect("first session drawer")
+                    .read(cx)
+                    .session_id();
+                assert_ne!(first_drawer, second_drawer);
+
+                view.select_workspace(first_project, second_workspace, window, cx);
+                assert!(view.is_dev_terminal_visible());
+                assert_eq!(
+                    view.selected_dev_terminal(second_workspace, cx)
+                        .unwrap()
+                        .read(cx)
+                        .session_id(),
+                    second_drawer
                 );
             })
             .unwrap();

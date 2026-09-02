@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Enrich the sessions sidebar with the highest-priority agent across every tab and split in a workspace, its live state, and its model when the CLI reports it explicitly.
+- Keep the right utility tabs icon-only and let the file tree focus changed files in Git without replacing the terminal.
+- Toggle a persistent bottom terminal with ⌘J for dev servers; hiding it keeps the process running without changing the selected pane. Each sidebar session has its own consoles, and `+` opens additional ones.
+
 ## 0.3.12 — 2026-08-24
 
 - Retain agent detection, activity states, lifecycle hooks, and notifications while removing the agent/layout orchestration CLI; Vibra no longer creates panes/tabs, launches agents, or routes prompts between sessions.

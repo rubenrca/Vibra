@@ -54,6 +54,8 @@ mod tests {
                     "codex".into(),
                     "waiting".into(),
                     "permission".into(),
+                    "--model".into(),
+                    "gpt-5.4".into(),
                     "--session".into(),
                     "session-1".into(),
                 ],
@@ -63,8 +65,9 @@ mod tests {
                 kind: AgentKind::Codex,
                 state: AgentRuntimeState::Waiting,
                 attention: Some(AgentAttention::Permission),
+                model: Some(model),
                 session_id: Some(session_id),
-            } if session_id == "session-1"
+            } if session_id == "session-1" && model == "gpt-5.4"
         ));
         assert!(matches!(
             parse_cli_command(
@@ -241,8 +244,21 @@ mod tests {
                 kind: AgentKind::Codex,
                 state: AgentRuntimeState::Working,
                 attention: None,
+                model: None,
                 session_id: Some(session_id),
             } if session_id == "session-1"
+        ));
+        assert!(matches!(
+            agent_hook_command(
+                AgentKind::Codex,
+                "prompt",
+                &serde_json::json!({ "session_id": "session-2", "model": { "id": "gpt-5.4" } }),
+            )
+            .unwrap(),
+            AutomationCommand::SetAgentPresence {
+                model: Some(model),
+                ..
+            } if model == "gpt-5.4"
         ));
         assert!(matches!(
             agent_hook_command(

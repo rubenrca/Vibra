@@ -296,6 +296,10 @@ impl TerminalView {
         }
     }
 
+    pub fn session_id(&self) -> Uuid {
+        self.session_id
+    }
+
     pub fn set_surface_visible(&mut self, visible: bool) {
         self.surface_visible = visible;
     }

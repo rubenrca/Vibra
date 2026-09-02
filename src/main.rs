@@ -28,6 +28,7 @@ actions!(
         NewWorkspace,
         NewTerminalTab,
         CloseTerminal,
+        ToggleDevTerminal,
         ToggleLeftSidebar,
         ToggleRightSidebar,
         PreviousWorkspace,
@@ -127,6 +128,7 @@ fn run() -> Result<()> {
                 KeyBinding::new("cmd-n", NewWorkspace, None),
                 KeyBinding::new("cmd-t", NewTerminalTab, None),
                 KeyBinding::new("cmd-w", CloseTerminal, None),
+                KeyBinding::new("cmd-j", ToggleDevTerminal, None),
                 KeyBinding::new("cmd-b", ToggleLeftSidebar, None),
                 KeyBinding::new("alt-cmd-b", ToggleRightSidebar, None),
                 KeyBinding::new("ctrl-cmd-[", PreviousWorkspace, None),
@@ -212,6 +214,7 @@ fn run() -> Result<()> {
                     items: vec![
                         MenuItem::action("Toggle Sessions Sidebar", ToggleLeftSidebar),
                         MenuItem::action("Toggle Files / Git", ToggleRightSidebar),
+                        MenuItem::action("Toggle Dev Terminal", ToggleDevTerminal),
                         MenuItem::separator(),
                         MenuItem::action("Command Palette", ToggleCommandPalette),
                         MenuItem::action("Quick Open", QuickOpen),

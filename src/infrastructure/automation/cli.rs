@@ -141,6 +141,7 @@ fn parse_agent_presence(arguments: &[String]) -> Result<AutomationCommand> {
         kind,
         state,
         attention,
+        model: parse_agent_flag(arguments, "--model")?,
         session_id: parse_agent_flag(arguments, "--session")?,
     })
 }
@@ -158,6 +159,7 @@ fn parse_agent_attention(arguments: &[String]) -> Result<AutomationCommand> {
         kind,
         state: AgentRuntimeState::Waiting,
         attention: Some(attention),
+        model: parse_agent_flag(arguments, "--model")?,
         session_id: parse_agent_flag(arguments, "--session")?,
     })
 }
@@ -196,10 +198,12 @@ pub(super) fn agent_hook_command(
         .get("session_id")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let model = agent_hook_model(payload);
     let presence = |state, attention| AutomationCommand::SetAgentPresence {
         kind,
         state,
         attention,
+        model: model.clone(),
         session_id: session_id.clone(),
     };
     match (kind, event) {
@@ -229,6 +233,24 @@ pub(super) fn agent_hook_command(
         (AgentKind::Claude | AgentKind::Codex, _) => bail!("evento de hook no soportado: {event}"),
         _ => bail!("Vibra todavía no incluye hooks para {}", kind.cli_name()),
     }
+}
+
+/// Hook payloads are provider-owned and have changed names over time. Accept
+/// the common scalar forms while leaving the model absent when it is not
+/// explicitly provided; presenting an invented default would be misleading.
+fn agent_hook_model(payload: &Value) -> Option<String> {
+    let value = payload
+        .get("model")
+        .and_then(|model| {
+            model
+                .as_str()
+                .or_else(|| model.get("id").and_then(Value::as_str))
+                .or_else(|| model.get("name").and_then(Value::as_str))
+        })
+        .or_else(|| payload.get("model_name").and_then(Value::as_str))
+        .or_else(|| payload.get("model_id").and_then(Value::as_str))?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 fn parse_agent_runtime_state(value: Option<&str>) -> Result<AgentRuntimeState> {

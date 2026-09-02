@@ -140,6 +140,10 @@ pub enum AutomationCommand {
         state: AgentRuntimeState,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attention: Option<AgentAttention>,
+        /// Model selected by the CLI when it exposes one. This remains optional:
+        /// Vibra must not guess a provider's default model from screen text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
