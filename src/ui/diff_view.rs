@@ -832,11 +832,11 @@ impl DiffView {
             .min_h(px(0.0))
             .w_full()
             .overflow_y_scroll()
-            .px_2()
-            .py_2()
+            .px_0()
+            .py_0()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_0()
             .children((0..change_count).filter_map(|index| {
                 let change = self.active_snapshot()?.changes.get(index)?.clone();
                 Some(self.file_card(change, cx))
@@ -866,25 +866,28 @@ impl DiffView {
             .flex_none()
             .flex()
             .flex_col()
-            .rounded(px(8.0))
-            .border_1()
+            .border_b_1()
             .border_color(colors().border_subtle)
-            .bg(colors().elevated)
+            .bg(if expanded {
+                colors().elevated
+            } else {
+                colors().panel
+            })
             .overflow_hidden()
-            // File header — click toggles accordion
+            // File header — click toggles its inline diff.
             .child(
                 div()
                     .id(SharedString::from(format!(
                         "git-card-header-{}",
                         change.path
                     )))
-                    .h(px(34.0))
+                    .h(px(42.0))
                     .w_full()
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .px_2()
+                    .gap(px(6.0))
+                    .px_3()
                     .cursor_pointer()
                     .hover(|row| row.bg(colors().hover))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -892,7 +895,7 @@ impl DiffView {
                     }))
                     .child(
                         div()
-                            .w(px(16.0))
+                            .w(px(12.0))
                             .flex_none()
                             .text_center()
                             .text_size(px(10.0))
@@ -920,10 +923,10 @@ impl DiffView {
                             .min_w(px(0.0))
                             .flex_1()
                             .flex()
-                            .items_baseline()
-                            .gap_1()
+                            .flex_col()
+                            .justify_center()
+                            .gap(px(1.0))
                             .overflow_hidden()
-                            .pl_1()
                             .child(
                                 div()
                                     .truncate()
@@ -936,9 +939,8 @@ impl DiffView {
                                 row.child(
                                     div()
                                         .min_w(px(0.0))
-                                        .flex_1()
                                         .truncate()
-                                        .text_size(px(10.0))
+                                        .text_size(px(9.0))
                                         .text_color(colors().subtle)
                                         .child(parent),
                                 )
@@ -1098,10 +1100,12 @@ impl DiffView {
             GitDiffRowKind::Notice => (colors().background, "!"),
             GitDiffRowKind::Context => (colors().background, " "),
         };
-        // Warp shows a single line-number gutter (prefer new, fall back to old).
-        let line_number = row
+        let old_line = row
+            .old_line
+            .map(|line| line.to_string())
+            .unwrap_or_default();
+        let new_line = row
             .new_line
-            .or(row.old_line)
             .map(|line| line.to_string())
             .unwrap_or_default();
         let is_hunk = matches!(row.kind, GitDiffRowKind::Hunk | GitDiffRowKind::Section);
@@ -1120,10 +1124,10 @@ impl DiffView {
             .bg(background)
             .font_family("JetBrains Mono")
             .text_size(px(11.0))
-            // Single line-number gutter (Warp-like)
+            // Separate old/new gutters make additions and deletions scannable at a glance.
             .child(
                 div()
-                    .w(px(40.0))
+                    .w(px(34.0))
                     .h_full()
                     .flex_none()
                     .flex()
@@ -1133,7 +1137,23 @@ impl DiffView {
                     .text_size(px(10.0))
                     .text_color(colors().subtle)
                     .opacity(0.7)
-                    .child(if is_hunk { String::new() } else { line_number }),
+                    .child(if is_hunk { String::new() } else { old_line }),
+            )
+            .child(
+                div()
+                    .w(px(34.0))
+                    .h_full()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .pr_2()
+                    .border_r_1()
+                    .border_color(colors().border_subtle)
+                    .text_size(px(10.0))
+                    .text_color(colors().subtle)
+                    .opacity(0.7)
+                    .child(if is_hunk { String::new() } else { new_line }),
             )
             .child(
                 div()
@@ -1537,7 +1557,6 @@ impl Render for DiffView {
         let show_history = empty_message.is_none() && self.mode == GitPanelMode::History;
         let show_files = empty_message.is_none()
             && matches!(self.mode, GitPanelMode::Worktree | GitPanelMode::Branch);
-
         div()
             .size_full()
             .relative()
