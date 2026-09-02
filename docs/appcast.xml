@@ -3,18 +3,23 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.12</title>
-            <pubDate>Mon, 24 Aug 2026 19:27:43 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.12</link>
-            <sparkle:version>108</sparkle:version>
-            <sparkle:shortVersionString>0.3.12</sparkle:shortVersionString>
+            <title>0.3.13</title>
+            <pubDate>Wed, 02 Sep 2026 17:53:37 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.13</link>
+            <sparkle:version>116</sparkle:version>
+            <sparkle:shortVersionString>0.3.13</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Retain agent detection, activity states, lifecycle hooks, and notifications while removing the agent/layout orchestration CLI; Vibra no longer creates panes/tabs, launches agents, or routes prompts between sessions.</li>
-  <li>Show macOS notifications only when Vibra is in the background; when an agent finishes in a different foreground pane, play a short completion sound without a banner.</li>
+  <li>Render Git diffs more like an editor: JetBrains Mono at 12px, a dedicated gutter, a color bar for added/removed lines, full-brightness syntax, and tab expansion.</li>
+  <li>Expand the theme picker with dual light/dark palettes for Nord, Gruvbox, Solarized, Dracula, Catppuccin, Tokyo Night, One, GitHub, Ayu, Everforest, Kanagawa, Rosé Pine, Monokai, and Warp, keeping the original Vibra families.</li>
+  <li>Paint the terminal grid from the active theme (background, text, cursor, ANSI, and selection) instead of leaving the pane black while only chrome borders change.</li>
+  <li>Tint syntax highlighting, modal overlays, and the terminal scrollbar from the same palette so light and dark styles stay consistent.</li>
+  <li>Enrich the sessions sidebar with the highest-priority agent across every tab and split in a workspace, its live state, and its model when the CLI reports it explicitly.</li>
+  <li>Keep the right utility tabs icon-only and let the file tree focus changed files in Git without replacing the terminal.</li>
+  <li>Toggle a persistent bottom terminal with ⌘J for dev servers; hiding it keeps the process running without changing the selected pane. Each sidebar session has its own consoles, and `+` opens additional ones.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.12/Vibra-0.3.12.dmg" length="12304661" type="application/octet-stream" sparkle:edSignature="SRM2aU6ncUACrgNDJ2D9C7Z06cTfPQ7KB0mz51zSwNAHWpTc6wFCftwfTDVA2mi7vp4/m9+E/jml66d3LrlIAw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.13/Vibra-0.3.13.dmg" length="12308606" type="application/octet-stream" sparkle:edSignature="usyJzo+KxcWFTzzt+TV0wYqftpEu3pxsSmkk09kfD/E6Skc5v9jzDwnSVW+gQhf39YiuMS3HXJh+TQ6TVHiGDQ=="/>
         </item>
     </channel>
 </rss>
