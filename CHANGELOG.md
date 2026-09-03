@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.14 — 2026-09-03
+
+- Organize sessions into persistent, collapsible sidebar spaces that can be created from the empty sidebar, renamed, removed without deleting their sessions, and reordered with precise drag-and-drop insertion.
+- Open the active workspace folder in an installed external IDE directly from Vibra.
+- Persist window dimensions and let background refresh intervals be configured from Settings.
+- Cache prepared Git diff documents so unchanged diffs avoid repeated parsing, highlighting, and layout work.
+
 ## 0.3.13 — 2026-09-02
 
 - Render Git diffs more like an editor: JetBrains Mono at 12px, a dedicated gutter, a color bar for added/removed lines, full-brightness syntax, and tab expansion.
