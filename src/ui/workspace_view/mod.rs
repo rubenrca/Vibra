@@ -13,7 +13,8 @@ use uuid::Uuid;
 
 use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
-    SessionSnapshot, TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis, WorkspaceTitleSource,
+    SessionSnapshot, SidebarEntry, TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis,
+    WorkspaceTitleSource,
 };
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentKind, AgentRuntimeState, AutomationCommand,
@@ -200,6 +201,7 @@ struct PaneDrag {
 #[derive(Clone)]
 struct SidebarWorkspaceDrag {
     workspace_id: Uuid,
+    source_space_id: Option<Uuid>,
     title: String,
     branch: Option<String>,
     path: String,
@@ -306,6 +308,10 @@ enum ContextMenuKind {
     Pane {
         session_id: Uuid,
     },
+    SidebarSpace {
+        space_id: Uuid,
+    },
+    SidebarBackground,
 }
 
 #[derive(Debug, Clone)]
@@ -324,6 +330,13 @@ enum RenamePromptKind {
     Pane {
         session_id: Uuid,
     },
+    CreateSpace {
+        workspace_id: Uuid,
+    },
+    CreateEmptySpace,
+    SidebarSpace {
+        space_id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -336,6 +349,8 @@ struct RenamePrompt {
 enum ContextMenuAction {
     Rename,
     Delete,
+    CreateSpace,
+    DeleteSpace,
     ClosePane,
     SplitRight,
     SplitDown,
@@ -1340,6 +1355,20 @@ impl WorkspaceView {
                         .map(|session| session.title)
                 })
                 .unwrap_or_default(),
+            RenamePromptKind::CreateSpace { .. } => String::new(),
+            RenamePromptKind::CreateEmptySpace => String::new(),
+            RenamePromptKind::SidebarSpace { space_id } => {
+                self.snapshot
+                    .sidebar_items
+                    .iter()
+                    .find_map(|item| match item {
+                        crate::domain::workspace::SidebarItemSnapshot::Space {
+                            id, name, ..
+                        } if *id == space_id => Some(name.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            }
         };
         self.context_menu = None;
         self.rename_prompt = Some(RenamePrompt { kind, value });
@@ -1404,6 +1433,30 @@ impl WorkspaceView {
                 self.persistence_error = None;
                 self.sync_servers_panel(cx);
             }
+            RenamePromptKind::CreateSpace { workspace_id } => {
+                if self
+                    .snapshot
+                    .create_sidebar_space(workspace_id, &name)
+                    .is_some()
+                {
+                    self.rename_prompt = None;
+                    self.persistence_error = None;
+                    self.persist(cx);
+                }
+            }
+            RenamePromptKind::CreateEmptySpace => {
+                self.snapshot.create_empty_sidebar_space(&name);
+                self.rename_prompt = None;
+                self.persistence_error = None;
+                self.persist(cx);
+            }
+            RenamePromptKind::SidebarSpace { space_id } => {
+                if self.snapshot.rename_sidebar_space(space_id, &name) {
+                    self.rename_prompt = None;
+                    self.persistence_error = None;
+                    self.persist(cx);
+                }
+            }
         }
         cx.notify();
     }
@@ -1447,6 +1500,20 @@ impl WorkspaceView {
                     self.refresh_project_files(cx);
                     self.persist(cx);
                     self.focus_selected_terminal(window, cx);
+                }
+            }
+            (ContextMenuKind::Workspace { workspace_id, .. }, ContextMenuAction::CreateSpace) => {
+                self.begin_rename_prompt(RenamePromptKind::CreateSpace { workspace_id }, cx);
+            }
+            (ContextMenuKind::SidebarBackground, ContextMenuAction::CreateSpace) => {
+                self.begin_rename_prompt(RenamePromptKind::CreateEmptySpace, cx);
+            }
+            (ContextMenuKind::SidebarSpace { space_id }, ContextMenuAction::Rename) => {
+                self.begin_rename_prompt(RenamePromptKind::SidebarSpace { space_id }, cx);
+            }
+            (ContextMenuKind::SidebarSpace { space_id }, ContextMenuAction::DeleteSpace) => {
+                if self.snapshot.remove_sidebar_space(space_id) {
+                    self.persist(cx);
                 }
             }
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::Rename) => {
@@ -2571,6 +2638,25 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    fn reorder_sidebar_workspace_relative(
+        &mut self,
+        workspace_id: Uuid,
+        target_id: Uuid,
+        place_after: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reorder_drag = None;
+        if self
+            .snapshot
+            .move_workspace_relative(workspace_id, target_id, place_after)
+        {
+            self.persist(cx);
+            self.focus_selected_terminal(window, cx);
+        }
+        cx.notify();
+    }
+
     fn swap_panes(&mut self, from: Uuid, onto: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         self.reorder_drag = None;
         if self.snapshot.swap_tab_terminals(from, onto) {
@@ -3521,8 +3607,9 @@ impl WorkspaceView {
     }
 
     fn sessions_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let entries = self.snapshot.workspace_entries();
-        let can_reorder = entries.len() > 1;
+        let sidebar_entries = self.snapshot.sidebar_entries();
+        let workspace_count = self.snapshot.workspace_entries().len();
+        let can_reorder = workspace_count > 1;
         let dragging_workspace = match self.reorder_drag {
             Some(ReorderDrag::SidebarWorkspace(id)) if cx.has_active_drag() => Some(id),
             _ => None,
@@ -3559,9 +3646,18 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(colors().sidebar);
+            .bg(colors().sidebar)
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    let x: f32 = event.position.x.into();
+                    let y: f32 = event.position.y.into();
+                    this.open_context_menu(ContextMenuKind::SidebarBackground, x, y, cx);
+                    cx.stop_propagation();
+                }),
+            );
 
-        if entries.is_empty() {
+        if workspace_count == 0 {
             panel = panel.child(
                 div()
                     .flex_1()
@@ -3607,7 +3703,110 @@ impl WorkspaceView {
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .p_2()
-                    .children(entries.into_iter().map(|entry| {
+                    .children(sidebar_entries.into_iter().map(|sidebar_entry| {
+                        let (entry, space_id) = match sidebar_entry {
+                            SidebarEntry::Workspace { entry, space_id } => (entry, space_id),
+                            SidebarEntry::Space {
+                                id,
+                                name,
+                                collapsed,
+                                workspace_count,
+                            } => {
+                                let count_label = if workspace_count == 1 {
+                                    "1 sesión".to_owned()
+                                } else {
+                                    format!("{workspace_count} sesiones")
+                                };
+                                return div()
+                                    .id(SharedString::from(format!("sidebar-space-{id}")))
+                                    .h(px(52.0))
+                                    .w_full()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .mt_2()
+                                    .rounded(px(7.0))
+                                    .cursor_pointer()
+                                    .hover(|item| item.bg(colors().hover))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            if this.snapshot.toggle_sidebar_space(id) {
+                                                this.persist(cx);
+                                            }
+                                        }),
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                            let x: f32 = event.position.x.into();
+                                            let y: f32 = event.position.y.into();
+                                            this.open_context_menu(
+                                                ContextMenuKind::SidebarSpace { space_id: id },
+                                                x,
+                                                y,
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                        }),
+                                    )
+                                    .can_drop(move |value, _, _| {
+                                        value
+                                            .downcast_ref::<SidebarWorkspaceDrag>()
+                                            .is_some_and(|drag| drag.source_space_id != Some(id))
+                                    })
+                                    .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
+                                        style
+                                            .border_1()
+                                            .border_color(colors().accent)
+                                            .bg(colors().selection)
+                                    })
+                                    .on_drop(cx.listener(
+                                        move |this, drag: &SidebarWorkspaceDrag, _, cx| {
+                                            this.reorder_drag = None;
+                                            if this
+                                                .snapshot
+                                                .move_workspace_to_space(drag.workspace_id, id)
+                                            {
+                                                this.persist(cx);
+                                            }
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .w(px(18.0))
+                                            .text_size(px(16.0))
+                                            .text_color(colors().muted)
+                                            .child(if collapsed { "›" } else { "⌄" }),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w(px(0.0))
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(1.0))
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_size(px(12.0))
+                                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                                    .text_color(colors().foreground)
+                                                    .child(name),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(9.5))
+                                                    .text_color(colors().subtle)
+                                                    .child(count_label),
+                                            ),
+                                    )
+                                    .into_any_element();
+                            }
+                        };
+                        let item_width = self.left_sidebar_width() - 16.0;
                         let project_id = entry.project_id;
                         let workspace_id = entry.workspace_id;
                         let selected = entry.is_selected;
@@ -3690,6 +3889,7 @@ impl WorkspaceView {
                         };
                         let drag = SidebarWorkspaceDrag {
                             workspace_id,
+                            source_space_id: space_id,
                             title: title_label.clone(),
                             branch: branch_label.clone(),
                             path: path_label.clone(),
@@ -3708,14 +3908,15 @@ impl WorkspaceView {
                             agent_model: agent_identity
                                 .as_ref()
                                 .and_then(|identity| identity.agent_model.clone()),
-                            width: self.left_sidebar_width() - 16.0,
+                            width: item_width,
                         };
                         let is_source = dragging_workspace == Some(workspace_id);
                         // Explicit text width avoids flex+truncate collapsing labels to "…".
                         div()
                             .id(SharedString::from(format!("workspace-{workspace_id}")))
                             .h(px(74.0))
-                            .w(px(self.left_sidebar_width() - 16.0))
+                            .w(px(item_width))
+                            .relative()
                             .mb(px(2.0))
                             .px_3()
                             .flex()
@@ -3732,7 +3933,7 @@ impl WorkspaceView {
                             })
                             .hover(|item| item.bg(colors().hover))
                             .active(|item| item.opacity(0.82))
-                            .when(is_source, |item| item.opacity(0.45))
+                            .when(is_source, |item| item.opacity(0.65))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, window, cx| {
@@ -3777,27 +3978,6 @@ impl WorkspaceView {
                                         width: drag.width,
                                     })
                                 })
-                                .can_drop(move |value, _, _| {
-                                    value
-                                        .downcast_ref::<SidebarWorkspaceDrag>()
-                                        .is_some_and(|drag| drag.workspace_id != workspace_id)
-                                })
-                                .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
-                                    style
-                                        .border_2()
-                                        .border_color(colors().accent)
-                                        .bg(colors().selection)
-                                })
-                                .on_drop(cx.listener(
-                                    move |this, drag: &SidebarWorkspaceDrag, window, cx| {
-                                        this.reorder_sidebar_workspace(
-                                            drag.workspace_id,
-                                            Some(workspace_id),
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                ))
                             })
                             .child(agent_sidebar_badge(
                                 agent_identity
@@ -3842,19 +4022,86 @@ impl WorkspaceView {
                                         true,
                                     )),
                             )
+                            .when(can_reorder, |item| {
+                                item.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "workspace-drop-before-{workspace_id}"
+                                        )))
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .right_0()
+                                        .h(px(37.0))
+                                        .can_drop(move |value, _, _| {
+                                            value
+                                                .downcast_ref::<SidebarWorkspaceDrag>()
+                                                .is_some_and(|drag| {
+                                                    drag.workspace_id != workspace_id
+                                                })
+                                        })
+                                        .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
+                                            style.border_t_2().border_color(colors().accent)
+                                        })
+                                        .on_drop(cx.listener(
+                                            move |this, drag: &SidebarWorkspaceDrag, window, cx| {
+                                                this.reorder_sidebar_workspace_relative(
+                                                    drag.workspace_id,
+                                                    workspace_id,
+                                                    false,
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "workspace-drop-after-{workspace_id}"
+                                        )))
+                                        .absolute()
+                                        .bottom_0()
+                                        .left_0()
+                                        .right_0()
+                                        .h(px(37.0))
+                                        .can_drop(move |value, _, _| {
+                                            value
+                                                .downcast_ref::<SidebarWorkspaceDrag>()
+                                                .is_some_and(|drag| {
+                                                    drag.workspace_id != workspace_id
+                                                })
+                                        })
+                                        .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
+                                            style.border_b_2().border_color(colors().accent)
+                                        })
+                                        .on_drop(cx.listener(
+                                            move |this, drag: &SidebarWorkspaceDrag, window, cx| {
+                                                this.reorder_sidebar_workspace_relative(
+                                                    drag.workspace_id,
+                                                    workspace_id,
+                                                    true,
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                )
+                            })
+                            .into_any_element()
                     }))
                     .when(can_reorder, |list| {
                         list.child(
                             div()
                                 .id("workspace-drop-end")
                                 .flex_1()
-                                .min_h(px(20.0))
+                                .min_h(px(36.0))
                                 .w_full()
                                 .can_drop(|value, _, _| {
                                     value.downcast_ref::<SidebarWorkspaceDrag>().is_some()
                                 })
                                 .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
-                                    style.h(px(20.0)).border_t_2().border_color(colors().accent)
+                                    style.border_t_2().border_color(colors().accent)
                                 })
                                 .on_drop(cx.listener(
                                     |this, drag: &SidebarWorkspaceDrag, window, cx| {
@@ -6099,13 +6346,23 @@ impl WorkspaceView {
         let menu = self.context_menu.clone()?;
         let pane_identity = match &menu.kind {
             ContextMenuKind::Pane { session_id } => self.pane_identity_by_id(*session_id, cx),
-            ContextMenuKind::Workspace { .. } => None,
+            ContextMenuKind::Workspace { .. }
+            | ContextMenuKind::SidebarSpace { .. }
+            | ContextMenuKind::SidebarBackground => None,
         };
         let items: Vec<(&str, ContextMenuAction, bool)> = match &menu.kind {
             ContextMenuKind::Workspace { .. } => vec![
                 ("Renombrar", ContextMenuAction::Rename, false),
+                ("Crear espacio", ContextMenuAction::CreateSpace, false),
                 ("Eliminar", ContextMenuAction::Delete, true),
             ],
+            ContextMenuKind::SidebarSpace { .. } => vec![
+                ("Renombrar", ContextMenuAction::Rename, false),
+                ("Eliminar espacio", ContextMenuAction::DeleteSpace, true),
+            ],
+            ContextMenuKind::SidebarBackground => {
+                vec![("Crear espacio", ContextMenuAction::CreateSpace, false)]
+            }
             ContextMenuKind::Pane { .. } => vec![
                 ("Renombrar", ContextMenuAction::Rename, false),
                 ("Cerrar pane", ContextMenuAction::ClosePane, true),
@@ -6230,6 +6487,9 @@ impl WorkspaceView {
         let title = match prompt.kind {
             RenamePromptKind::Workspace { .. } => "Renombrar sesión",
             RenamePromptKind::Pane { .. } => "Renombrar pane",
+            RenamePromptKind::CreateSpace { .. } => "Crear espacio",
+            RenamePromptKind::CreateEmptySpace => "Crear espacio",
+            RenamePromptKind::SidebarSpace { .. } => "Renombrar espacio",
         };
         let value = if prompt.value.is_empty() {
             "Escribe un nombre…".to_owned()
@@ -6281,7 +6541,7 @@ impl WorkspaceView {
                                 .px_3()
                                 .rounded(px(5.0))
                                 .border_1()
-                                .border_color(colors().success)
+                                .border_color(colors().border_subtle)
                                 .bg(colors().terminal)
                                 .flex()
                                 .items_center()
@@ -6311,10 +6571,13 @@ impl WorkspaceView {
                                         .px_3()
                                         .py_1()
                                         .rounded(px(5.0))
+                                        .border_1()
+                                        .border_color(colors().border_subtle)
                                         .cursor_pointer()
-                                        .bg(colors().success)
+                                        .bg(colors().selection)
                                         .text_xs()
-                                        .text_color(colors().terminal)
+                                        .text_color(colors().foreground)
+                                        .hover(|button| button.bg(colors().hover))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.confirm_rename_prompt(cx);
                                         }))
