@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use gpui::{
     Context, Div, EventEmitter, HighlightStyle, IntoElement, ListHorizontalSizingBehavior,
@@ -10,10 +11,11 @@ use gpui::{
 };
 
 use crate::ports::git::{
-    GitBranchChanges, GitCommit, GitDiff, GitDiffRow, GitDiffRowKind, GitFileChange, GitFileStatus,
+    GitBranchChanges, GitCommit, GitDiffRow, GitDiffRowKind, GitFileChange, GitFileStatus,
     GitGraphRow, GitHistory, GitPort, GitRepositorySnapshot, assign_commit_lanes,
 };
-use crate::ui::syntax::{SyntaxSpan, expand_tabs, highlight_diff_rows};
+use crate::ui::diff_document::DiffDocument;
+use crate::ui::syntax::{SyntaxSpan, expand_tabs};
 use crate::ui::theme::colors;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
@@ -59,10 +61,8 @@ pub struct DiffView {
     history_graph: Arc<Vec<GitGraphRow>>,
     /// Paths currently expanded (accordion — multiple allowed, Warp-style).
     expanded: HashSet<String>,
-    /// Cached diffs for expanded (and recently expanded) paths.
-    diffs: HashMap<String, Arc<GitDiff>>,
-    /// Per-row syntax spans aligned with `diffs[path].rows`.
-    highlights: HashMap<String, Arc<Vec<Vec<SyntaxSpan>>>>,
+    /// Prepared diffs for expanded (and recently expanded) paths.
+    documents: HashMap<String, CachedDiffDocument>,
     status_root: Option<PathBuf>,
     status_index: Arc<HashMap<String, GitFileStatus>>,
     panel_visible: bool,
@@ -77,14 +77,59 @@ pub struct DiffView {
     history_request_id: u64,
     /// Monotonic id so stale per-path loads are ignored.
     diff_request_id: u64,
-    /// path → request id that owns the in-flight load.
-    pending_loads: HashMap<String, u64>,
+    /// Path → request and source identity that own the in-flight load.
+    pending_loads: HashMap<String, PendingDiffLoad>,
     git_port: Arc<dyn GitPort>,
     _snapshot_task: Option<Task<()>>,
     _branch_task: Option<Task<()>>,
     _history_task: Option<Task<()>>,
     _diff_tasks: Vec<Task<()>>,
     _poll_task: Task<()>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiffSource {
+    repository: PathBuf,
+    change: GitFileChange,
+    against: Option<String>,
+    worktree_version: Option<WorktreeFileVersion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorktreeFileVersion {
+    length: u64,
+    modified: Option<SystemTime>,
+}
+
+impl DiffSource {
+    fn new(
+        snapshot: &GitRepositorySnapshot,
+        change: &GitFileChange,
+        against: Option<&str>,
+    ) -> Self {
+        let worktree_version = std::fs::metadata(snapshot.root.join(&change.path))
+            .ok()
+            .map(|metadata| WorktreeFileVersion {
+                length: metadata.len(),
+                modified: metadata.modified().ok(),
+            });
+        Self {
+            repository: snapshot.root.clone(),
+            change: change.clone(),
+            against: against.map(str::to_owned),
+            worktree_version,
+        }
+    }
+}
+
+struct CachedDiffDocument {
+    source: DiffSource,
+    document: Arc<DiffDocument>,
+}
+
+struct PendingDiffLoad {
+    request_id: u64,
+    source: DiffSource,
 }
 
 pub struct DiffViewEvent;
@@ -119,8 +164,7 @@ impl DiffView {
             history: None,
             history_graph: Arc::new(Vec::new()),
             expanded: HashSet::new(),
-            diffs: HashMap::new(),
-            highlights: HashMap::new(),
+            documents: HashMap::new(),
             status_root: None,
             status_index: Arc::new(HashMap::new()),
             panel_visible: false,
@@ -204,8 +248,7 @@ impl DiffView {
         self.branch_refreshing = false;
         self.history_refreshing = false;
         self.expanded.clear();
-        self.diffs.clear();
-        self.highlights.clear();
+        self.documents.clear();
         self.loading.clear();
         self.pending_loads.clear();
         self.branch_changes = None;
@@ -238,8 +281,7 @@ impl DiffView {
         }
         self.mode = mode;
         self.expanded.clear();
-        self.diffs.clear();
-        self.highlights.clear();
+        self.documents.clear();
         self.loading.clear();
         self.pending_loads.clear();
         match mode {
@@ -285,8 +327,7 @@ impl DiffView {
                         this.status_index = Arc::new(HashMap::new());
                         if this.mode == GitPanelMode::Worktree {
                             this.expanded.clear();
-                            this.diffs.clear();
-                            this.highlights.clear();
+                            this.documents.clear();
                             this.loading.clear();
                             this.pending_loads.clear();
                         }
@@ -326,9 +367,14 @@ impl DiffView {
                 match result {
                     Ok(Some(changes)) => {
                         if this.mode == GitPanelMode::Branch {
-                            this.sync_expanded_with_changes(&changes.snapshot, cx);
+                            let against = (!changes.merge_base.is_empty())
+                                .then(|| changes.merge_base.clone());
+                            this.reconcile_documents(&changes.snapshot, against.as_deref());
                         }
                         this.branch_changes = Some(changes);
+                        if this.mode == GitPanelMode::Branch {
+                            this.load_missing_expanded(cx);
+                        }
                     }
                     Ok(None) => this.branch_changes = None,
                     Err(error) => this.error = Some(format!("Git: {error:#}").into()),
@@ -374,56 +420,79 @@ impl DiffView {
         }));
     }
 
-    fn sync_expanded_with_changes(
-        &mut self,
-        snapshot: &GitRepositorySnapshot,
-        cx: &mut Context<Self>,
-    ) {
-        let live_paths: HashSet<String> = snapshot
+    /// Discard documents and in-flight work whose Git source no longer matches
+    /// the latest snapshot. A path remaining present is not enough: staging or
+    /// changing it must invalidate the prepared rows as well.
+    fn reconcile_documents(&mut self, snapshot: &GitRepositorySnapshot, against: Option<&str>) {
+        let sources: HashMap<String, DiffSource> = snapshot
             .changes
             .iter()
-            .map(|change| change.path.clone())
+            .map(|change| {
+                (
+                    change.path.clone(),
+                    DiffSource::new(snapshot, change, against),
+                )
+            })
             .collect();
-        self.expanded.retain(|path| live_paths.contains(path));
-        self.diffs.retain(|path, _| live_paths.contains(path));
-        self.highlights.retain(|path, _| live_paths.contains(path));
-        self.loading.retain(|path| live_paths.contains(path));
-        self.pending_loads
-            .retain(|path, _| live_paths.contains(path));
+
+        self.expanded.retain(|path| sources.contains_key(path));
+        self.documents.retain(|path, cached| {
+            sources
+                .get(path)
+                .is_some_and(|source| source == &cached.source)
+        });
+        self.pending_loads.retain(|path, pending| {
+            sources
+                .get(path)
+                .is_some_and(|source| source == &pending.source)
+        });
+        self.loading
+            .retain(|path| self.pending_loads.contains_key(path));
+        self.evict_diff_caches();
+    }
+
+    fn load_missing_expanded(&mut self, cx: &mut Context<Self>) {
         let to_reload: Vec<String> = self
             .expanded
             .iter()
-            .filter(|path| !self.diffs.contains_key(*path))
+            .filter(|path| {
+                !self.documents.contains_key(*path) && !self.pending_loads.contains_key(*path)
+            })
             .cloned()
             .collect();
         for path in to_reload {
             self.load_diff(path, cx);
         }
-        self.evict_diff_caches();
     }
 
     fn apply_snapshot(&mut self, snapshot: GitRepositorySnapshot, cx: &mut Context<Self>) {
         self.error = None;
-        if self.snapshot.as_ref() == Some(&snapshot) {
-            return;
-        }
+        let snapshot_unchanged = self.snapshot.as_ref() == Some(&snapshot);
         if self.mode == GitPanelMode::Worktree {
-            self.sync_expanded_with_changes(&snapshot, cx);
+            self.reconcile_documents(&snapshot, None);
+        }
+        if snapshot_unchanged {
+            if self.mode == GitPanelMode::Worktree {
+                self.load_missing_expanded(cx);
+            }
+            return;
         }
         let (root, index) = Self::rebuild_status_index(Some(&snapshot));
         self.status_root = root;
         self.status_index = index;
         self.snapshot = Some(snapshot);
+        if self.mode == GitPanelMode::Worktree {
+            self.load_missing_expanded(cx);
+        }
         cx.emit(DiffViewEvent);
     }
 
     fn evict_diff_caches(&mut self) {
         const MAX_CACHED_DIFFS: usize = 16;
-        if self.diffs.len() <= MAX_CACHED_DIFFS {
+        if self.documents.len() <= MAX_CACHED_DIFFS {
             return;
         }
-        self.diffs.retain(|path, _| self.expanded.contains(path));
-        self.highlights
+        self.documents
             .retain(|path, _| self.expanded.contains(path));
     }
 
@@ -432,7 +501,7 @@ impl DiffView {
             self.load_diff(path, cx);
             cx.emit(DiffViewEvent);
             cx.notify();
-        } else if !self.diffs.contains_key(&path) && !self.loading.contains(&path) {
+        } else if !self.documents.contains_key(&path) && !self.loading.contains(&path) {
             self.load_diff(path, cx);
             cx.notify();
         }
@@ -463,7 +532,7 @@ impl DiffView {
     }
 
     fn load_diff(&mut self, path: String, cx: &mut Context<Self>) {
-        let Some((repository, change, against)) = self.active_snapshot().and_then(|snapshot| {
+        let Some(source) = self.active_snapshot().and_then(|snapshot| {
             let change = snapshot
                 .changes
                 .iter()
@@ -477,42 +546,69 @@ impl DiffView {
                     .filter(|base| !base.is_empty()),
                 GitPanelMode::Worktree | GitPanelMode::History => None,
             };
-            Some((snapshot.root.clone(), change, against))
+            Some(DiffSource::new(snapshot, &change, against.as_deref()))
         }) else {
             self.loading.remove(&path);
             return;
         };
 
+        if self
+            .documents
+            .get(&path)
+            .is_some_and(|cached| cached.source == source)
+            || self
+                .pending_loads
+                .get(&path)
+                .is_some_and(|pending| pending.source == source)
+        {
+            return;
+        }
+
         self.loading.insert(path.clone());
         self.diff_request_id = self.diff_request_id.wrapping_add(1);
         let request_id = self.diff_request_id;
-        self.pending_loads.insert(path.clone(), request_id);
+        self.pending_loads.insert(
+            path.clone(),
+            PendingDiffLoad {
+                request_id,
+                source: source.clone(),
+            },
+        );
         let port = self.git_port.clone();
+        let source_for_task = source.clone();
         let task = cx.background_spawn(async move {
-            if let Some(revision) = against {
-                port.diff_against(&repository, &revision, &change)
+            let diff = if let Some(revision) = &source_for_task.against {
+                port.diff_against(
+                    &source_for_task.repository,
+                    revision,
+                    &source_for_task.change,
+                )
             } else {
-                port.diff(&repository, &change)
-            }
+                port.diff(&source_for_task.repository, &source_for_task.change)
+            }?;
+            Ok::<_, anyhow::Error>(DiffDocument::prepare(diff))
         });
         let path_for_task = path.clone();
         self._diff_tasks.push(cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
-                let Some(pending_id) = this.pending_loads.get(&path_for_task).copied() else {
+                let Some(pending) = this.pending_loads.get(&path_for_task) else {
                     return;
                 };
-                if pending_id != request_id {
+                if pending.request_id != request_id || pending.source != source {
                     return;
                 }
                 this.pending_loads.remove(&path_for_task);
                 this.loading.remove(&path_for_task);
                 match result {
-                    Ok(diff) => {
-                        let highlights = highlight_diff_rows(&path_for_task, &diff.rows);
-                        this.highlights
-                            .insert(path_for_task.clone(), Arc::new(highlights));
-                        this.diffs.insert(path_for_task, Arc::new(diff));
+                    Ok(document) => {
+                        this.documents.insert(
+                            path_for_task,
+                            CachedDiffDocument {
+                                source,
+                                document: Arc::new(document),
+                            },
+                        );
                         this.evict_diff_caches();
                         this.error = None;
                     }
@@ -850,16 +946,19 @@ impl DiffView {
         let path = change.path.clone();
         let expanded = self.expanded.contains(&path);
         let loading = self.loading.contains(&path);
-        let diff = self.diffs.get(&path).cloned();
+        let document = self
+            .documents
+            .get(&path)
+            .map(|cached| cached.document.clone());
         let color = Self::status_color(change.status);
         let (name, parent) = Self::path_parts(&change.path);
         let additions = change
             .additions
-            .or_else(|| diff.as_ref().map(|d| d.additions))
+            .or_else(|| document.as_ref().map(|d| d.diff.additions))
             .unwrap_or(0);
         let deletions = change
             .deletions
-            .or_else(|| diff.as_ref().map(|d| d.deletions))
+            .or_else(|| document.as_ref().map(|d| d.diff.deletions))
             .unwrap_or(0);
         let path_for_click = path.clone();
 
@@ -989,27 +1088,27 @@ impl DiffView {
                     }),
             )
             .when(expanded, |card| {
-                card.child(self.inline_diff_body(&path, diff, loading, cx))
+                card.child(self.inline_diff_body(&path, document, loading, cx))
             })
     }
 
     fn inline_diff_body(
         &self,
         path: &str,
-        diff: Option<Arc<GitDiff>>,
+        document: Option<Arc<DiffDocument>>,
         loading: bool,
         cx: &mut Context<Self>,
     ) -> Div {
-        let truncated = diff.as_ref().is_some_and(|d| d.truncated);
-        let binary = diff.as_ref().is_some_and(|d| d.binary);
-        let row_count = diff.as_ref().map_or(0, |d| d.rows.len());
+        let truncated = document.as_ref().is_some_and(|d| d.diff.truncated);
+        let binary = document.as_ref().is_some_and(|d| d.diff.binary);
+        let row_count = document.as_ref().map_or(0, |d| d.diff.rows.len());
 
         if row_count == 0 {
             let message = if loading {
                 "Cargando diff…"
             } else if binary {
                 "Archivo binario — sin diff de texto."
-            } else if diff.is_some() {
+            } else if document.is_some() {
                 "Sin cambios de texto."
             } else {
                 "Cargando diff…"
@@ -1029,20 +1128,12 @@ impl DiffView {
 
         let height = ((row_count as f32) * DIFF_ROW_HEIGHT)
             .clamp(MIN_INLINE_DIFF_HEIGHT, MAX_INLINE_DIFF_HEIGHT);
-        let widest_row_index = diff
+        let widest_row_index = document
             .as_ref()
-            .map(|diff| {
-                diff.rows
-                    .iter()
-                    .enumerate()
-                    .max_by_key(|(_, row)| expand_tabs(&row.text).chars().count())
-                    .map(|(index, _)| index)
-                    .unwrap_or(0)
-            })
+            .map(|document| document.widest_row_index)
             .unwrap_or(0);
         let list_id: SharedString = format!("inline-diff-{}", path).into();
-        let diff_for_list = diff.clone();
-        let highlights_for_list = self.highlights.get(path).cloned().unwrap_or_default();
+        let document_for_list = document.clone();
 
         div()
             .w_full()
@@ -1074,15 +1165,15 @@ impl DiffView {
                     list_id,
                     row_count,
                     cx.processor(move |_this, range: std::ops::Range<usize>, _window, _cx| {
-                        let Some(diff) = diff_for_list.as_ref() else {
+                        let Some(document) = document_for_list.as_ref() else {
                             return Vec::new();
                         };
                         range
                             .filter_map(|index| {
-                                let row = diff.rows.get(index)?;
-                                let spans =
-                                    highlights_for_list.get(index).cloned().unwrap_or_default();
-                                Some(Self::diff_row(row, &spans))
+                                let row = document.diff.rows.get(index)?;
+                                let spans: &[SyntaxSpan] =
+                                    document.highlights.get(index).map_or(&[], Vec::as_slice);
+                                Some(Self::diff_row(row, spans))
                             })
                             .collect()
                     }),
@@ -1683,4 +1774,47 @@ fn lane_color(lane: usize) -> Rgba {
         || colors().danger,
     ];
     LANES[lane % LANES.len()]()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_source_tracks_worktree_file_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "vibra-diff-source-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir(&root).expect("create test repository directory");
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").expect("write first contents");
+
+        let change = GitFileChange {
+            path: "main.rs".into(),
+            status: GitFileStatus::Modified,
+            staged: false,
+            unstaged: true,
+            untracked: false,
+            additions: Some(1),
+            deletions: Some(1),
+        };
+        let snapshot = GitRepositorySnapshot {
+            root: root.clone(),
+            branch: "main".into(),
+            changes: vec![change.clone()],
+            additions: 1,
+            deletions: 1,
+        };
+        let before = DiffSource::new(&snapshot, &change, None);
+
+        std::fs::write(
+            root.join("main.rs"),
+            "fn main() { println!(\"changed\"); }\n",
+        )
+        .expect("write changed contents");
+        let after = DiffSource::new(&snapshot, &change, None);
+
+        assert_ne!(before, after);
+        std::fs::remove_dir_all(root).expect("remove test repository directory");
+    }
 }
