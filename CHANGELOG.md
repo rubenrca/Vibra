@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.15 — 2026-09-03
+
+- Let a single terminal use the empty titlebar area while preserving macOS window controls and keeping the tab strip available when multiple tabs are open.
+- Refine sidebar spaces with compact headers, consistent chevrons, clearer nested-session connectors, and drag-and-drop support even when only one session exists.
+- Keep newly created sessions inside the selected session's sidebar space.
+
 ## 0.3.14 — 2026-09-03
 
 - Organize sessions into persistent, collapsible sidebar spaces that can be created from the empty sidebar, renamed, removed without deleting their sessions, and reordered with precise drag-and-drop insertion.
