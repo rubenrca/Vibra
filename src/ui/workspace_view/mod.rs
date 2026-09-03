@@ -110,6 +110,14 @@ struct ResolvedAgentPresence {
     session_id: Option<String>,
 }
 
+struct SettingsToggleRow {
+    label: &'static str,
+    description: &'static str,
+    enabled: bool,
+    divider: bool,
+    id: &'static str,
+}
+
 #[derive(Clone)]
 struct PaneIdentity {
     title: String,
@@ -4774,11 +4782,13 @@ impl WorkspaceView {
                     .border_color(colors().border_subtle)
                     .bg(colors().elevated)
                     .child(self.settings_toggle_row(
-                        "Archivos ocultos",
-                        "Incluye archivos y carpetas que comienzan con punto.",
-                        hidden,
-                        true,
-                        "settings-hidden",
+                        SettingsToggleRow {
+                            label: "Archivos ocultos",
+                            description: "Incluye archivos y carpetas que comienzan con punto.",
+                            enabled: hidden,
+                            divider: true,
+                            id: "settings-hidden",
+                        },
                         cx,
                         |this, cx| {
                             this.show_hidden_files = !this.show_hidden_files;
@@ -4788,22 +4798,26 @@ impl WorkspaceView {
                         },
                     ))
                     .child(self.settings_toggle_row(
-                        "Sidebar al iniciar",
-                        "Muestra la lista de sesiones al abrir la aplicación.",
-                        left_sidebar,
-                        true,
-                        "settings-sidebar-visible",
+                        SettingsToggleRow {
+                            label: "Sidebar al iniciar",
+                            description: "Muestra la lista de sesiones al abrir la aplicación.",
+                            enabled: left_sidebar,
+                            divider: true,
+                            id: "settings-sidebar-visible",
+                        },
                         cx,
                         |this, cx| {
                             this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
                         },
                     ))
                     .child(self.settings_toggle_row(
-                        "Files / Git al iniciar",
-                        "Abre el panel derecho del proyecto al iniciar.",
-                        git_panel,
-                        false,
-                        "settings-git-visible",
+                        SettingsToggleRow {
+                            label: "Files / Git al iniciar",
+                            description: "Abre el panel derecho del proyecto al iniciar.",
+                            enabled: git_panel,
+                            divider: false,
+                            id: "settings-git-visible",
+                        },
                         cx,
                         |this, cx| {
                             let open = !this.right_sidebar_visible;
@@ -4936,11 +4950,13 @@ impl WorkspaceView {
                     .border_color(colors().border_subtle)
                     .bg(colors().elevated)
                     .child(self.settings_toggle_row(
-                        "Notificaciones de actividad",
-                        "Avisa si un agente termina o necesita atención fuera del pane actual.",
-                        self.settings.agent_notifications,
-                        false,
-                        "settings-agent-notifications",
+                        SettingsToggleRow {
+                            label: "Notificaciones de actividad",
+                            description: "Avisa si un agente termina o necesita atención fuera del pane actual.",
+                            enabled: self.settings.agent_notifications,
+                            divider: false,
+                            id: "settings-agent-notifications",
+                        },
                         cx,
                         |this, cx| {
                             this.settings.agent_notifications = !this.settings.agent_notifications;
@@ -5230,23 +5246,19 @@ impl WorkspaceView {
 
     fn settings_toggle_row(
         &self,
-        label: &'static str,
-        description: &'static str,
-        enabled: bool,
-        divider: bool,
-        id: &'static str,
+        row: SettingsToggleRow,
         cx: &mut Context<Self>,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         div()
-            .id(id)
+            .id(row.id)
             .min_h(px(52.0))
             .px_3()
             .py_2()
             .flex()
             .items_center()
             .cursor_pointer()
-            .when(divider, |row| {
+            .when(row.divider, |row| {
                 row.border_b_1().border_color(colors().border_subtle)
             })
             .hover(|row| row.bg(colors().hover))
@@ -5262,13 +5274,13 @@ impl WorkspaceView {
                             .text_size(px(10.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(colors().foreground)
-                            .child(label),
+                            .child(row.label),
                     )
                     .child(
                         div()
                             .text_size(px(8.5))
                             .text_color(colors().subtle)
-                            .child(description),
+                            .child(row.description),
                     ),
             )
             .child(
@@ -5279,12 +5291,12 @@ impl WorkspaceView {
                     .rounded_full()
                     .flex()
                     .justify_end()
-                    .bg(if enabled {
+                    .bg(if row.enabled {
                         colors().success
                     } else {
                         colors().selection
                     })
-                    .when(!enabled, |toggle| toggle.justify_start())
+                    .when(!row.enabled, |toggle| toggle.justify_start())
                     .child(div().size(px(12.0)).rounded_full().bg(colors().foreground)),
             )
     }
