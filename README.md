@@ -4,6 +4,8 @@ Workspace de desarrollo nativo para macOS, escrito en Rust con GPUI. Combina
 terminales persistentes, proyectos, archivos, edición de texto, diff de Git e
 integración local para agentes en una sola ventana enfocada.
 
+![Vibra con espacios de sesiones, terminales divididas y el panel Git](docs/vibra-workspace.png)
+
 La rama GPUI reemplaza la implementación SwiftUI/AppKit y `libghostty` que llegó
 hasta Vibra 0.2.7. El historial, identidad de aplicación y canal de distribución
 continúan en este mismo repositorio.
