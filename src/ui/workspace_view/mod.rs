@@ -593,6 +593,10 @@ pub struct WorkspaceView {
     /// Subscribed once so system light/dark flips re-resolve the palette.
     _appearance_subscription: Option<Subscription>,
     _activation_subscription: Option<Subscription>,
+    _window_bounds_subscription: Option<Subscription>,
+    _release_subscription: Subscription,
+    window_size_persist_generation: u64,
+    _window_size_persist_task: Option<Task<()>>,
 }
 
 pub struct WorkspaceDependencies {
@@ -722,6 +726,11 @@ impl WorkspaceView {
                 }
             }
         });
+        let release_subscription = cx.on_release(|this, _| {
+            if this.window_size_persist_generation > 0 {
+                let _ = this.settings_repository.save(&this.settings);
+            }
+        });
         let mut view = Self {
             snapshot,
             repository,
@@ -799,6 +808,10 @@ impl WorkspaceView {
             home_directory: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
             _appearance_subscription: None,
             _activation_subscription: None,
+            _window_bounds_subscription: None,
+            _release_subscription: release_subscription,
+            window_size_persist_generation: 0,
+            _window_size_persist_task: None,
         };
         if settings.agent_notifications {
             crate::infrastructure::notifications::request_authorization();
@@ -2767,6 +2780,32 @@ impl WorkspaceView {
             }));
     }
 
+    fn ensure_window_bounds_subscription(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self._window_bounds_subscription.is_some() {
+            return;
+        }
+        self._window_bounds_subscription =
+            Some(cx.observe_window_bounds(window, |this, window, cx| {
+                let size = window.window_bounds().get_bounds().size;
+                let width: f32 = size.width.into();
+                let height: f32 = size.height.into();
+                if !this.settings.set_window_size(width, height) {
+                    return;
+                }
+                this.window_size_persist_generation =
+                    this.window_size_persist_generation.wrapping_add(1);
+                let generation = this.window_size_persist_generation;
+                this._window_size_persist_task = Some(cx.spawn(async move |this, cx| {
+                    Timer::after(Duration::from_millis(400)).await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.window_size_persist_generation == generation {
+                            this.persist_settings(cx);
+                        }
+                    });
+                }));
+            }));
+    }
+
     fn set_theme_id(&mut self, theme_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let theme_id = theme::canonicalize_theme_id(theme_id);
         if self.settings.theme_id == theme_id {
@@ -4169,14 +4208,14 @@ impl WorkspaceView {
                 .child(
                     div()
                         .id("settings-modal")
-                        .w(px(480.0))
+                        .w(px(560.0))
                         .max_w_full()
-                        .max_h(px(620.0))
+                        .max_h(px(700.0))
                         .mx_4()
-                        .rounded_lg()
+                        .rounded(px(12.0))
                         .border_1()
                         .border_color(colors().border_subtle)
-                        .bg(colors().elevated)
+                        .bg(colors().panel)
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -4186,23 +4225,47 @@ impl WorkspaceView {
                         })
                         .child(
                             div()
-                                .h(px(44.0))
+                                .h(px(56.0))
                                 .flex_none()
                                 .flex()
                                 .items_center()
-                                .gap_2()
-                                .px_4()
+                                .gap_3()
+                                .px_5()
                                 .border_b_1()
                                 .border_color(colors().border_subtle)
                                 .child(
                                     div()
                                         .flex_1()
-                                        .text_size(px(12.0))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(colors().foreground)
-                                        .child("Ajustes"),
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                .text_color(colors().foreground)
+                                                .child("Ajustes"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(9.0))
+                                                .text_color(colors().subtle)
+                                                .child(
+                                                    "Personaliza Vibra y sus integraciones locales",
+                                                ),
+                                        ),
                                 )
-                                .child(div().text_xs().text_color(colors().subtle).child("esc"))
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(px(4.0))
+                                        .border_1()
+                                        .border_color(colors().border_subtle)
+                                        .text_size(px(8.0))
+                                        .text_color(colors().subtle)
+                                        .child("ESC"),
+                                )
                                 .child(self.sidebar_close_button(
                                     "close-settings-modal",
                                     cx,
@@ -4234,87 +4297,134 @@ impl WorkspaceView {
         let agent_hook_error = self.agent_hook_error.clone();
         let all_agent_hooks_installed = agent_hooks.all_installed();
         let any_agent_hooks_installed = agent_hooks.any_installed();
-        let agent_tracking_status = if all_agent_hooks_installed {
-            "Activo"
+        let agent_hooks_status = if all_agent_hooks_installed {
+            "Configurados"
         } else if any_agent_hooks_installed {
-            "Incompleto"
+            "Parciales"
         } else {
-            "Inactivo"
+            "Opcionales"
         };
         div()
             .id("settings-modal-content")
             .flex_1()
             .min_h(px(0.0))
             .overflow_y_scroll()
-            .p_4()
+            .p_5()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_4()
+            .child(self.settings_section_heading(
+                "Apariencia",
+                "Elige cómo se ve Vibra y ajusta la lectura de la terminal.",
+            ))
             .child(
                 div()
-                    .text_size(px(10.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().muted)
-                    .child("APARIENCIA"),
-            )
-            .child(
-                div()
-                    .p_3()
-                    .rounded(px(7.0))
-                    .bg(colors().panel)
+                    .p_4()
+                    .rounded(px(9.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .bg(colors().elevated)
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(10.5))
-                            .text_color(colors().foreground)
-                            .child("Modo"),
-                    )
+                    .gap_3()
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .child(self.settings_mode_button(
-                                "Sistema",
-                                "settings-appearance-system",
-                                appearance == AppearanceMode::System,
-                                cx,
-                                |this, window, cx| {
-                                    this.set_appearance_mode(AppearanceMode::System, window, cx);
-                                },
-                            ))
-                            .child(self.settings_mode_button(
-                                "Claro",
-                                "settings-appearance-light",
-                                appearance == AppearanceMode::Light,
-                                cx,
-                                |this, window, cx| {
-                                    this.set_appearance_mode(AppearanceMode::Light, window, cx);
-                                },
-                            ))
-                            .child(self.settings_mode_button(
-                                "Oscuro",
-                                "settings-appearance-dark",
-                                appearance == AppearanceMode::Dark,
-                                cx,
-                                |this, window, cx| {
-                                    this.set_appearance_mode(AppearanceMode::Dark, window, cx);
-                                },
-                            )),
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(colors().foreground)
+                                            .child("Modo de apariencia"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.0))
+                                            .text_color(colors().subtle)
+                                            .child("Sigue macOS o fija un modo para la aplicación."),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(self.settings_mode_button(
+                                        "Sistema",
+                                        "settings-appearance-system",
+                                        appearance == AppearanceMode::System,
+                                        cx,
+                                        |this, window, cx| {
+                                            this.set_appearance_mode(
+                                                AppearanceMode::System,
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    ))
+                                    .child(self.settings_mode_button(
+                                        "Claro",
+                                        "settings-appearance-light",
+                                        appearance == AppearanceMode::Light,
+                                        cx,
+                                        |this, window, cx| {
+                                            this.set_appearance_mode(
+                                                AppearanceMode::Light,
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    ))
+                                    .child(self.settings_mode_button(
+                                        "Oscuro",
+                                        "settings-appearance-dark",
+                                        appearance == AppearanceMode::Dark,
+                                        cx,
+                                        |this, window, cx| {
+                                            this.set_appearance_mode(
+                                                AppearanceMode::Dark,
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div().h(px(1.0)).bg(colors().border_subtle),
                     )
                     .child(
                         div()
-                            .mt_1()
-                            .text_size(px(10.5))
-                            .text_color(colors().foreground)
-                            .child("Tema"),
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(colors().foreground)
+                                    .child("Tema"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(9.0))
+                                    .text_color(colors().subtle)
+                                    .child("La paleta también se aplica al terminal y al resaltado de código."),
+                            ),
                     )
                     .child(
                         div()
                             .id("settings-theme-list")
-                            .max_h(px(248.0))
+                            .max_h(px(220.0))
+                            .pr_1()
                             .overflow_y_scroll()
                             // Nested scroller: without this the parent settings
                             // pane also moves when the wheel is over the themes.
@@ -4324,68 +4434,103 @@ impl WorkspaceView {
             )
             .child(
                 div()
-                    .p_3()
-                    .rounded(px(7.0))
-                    .bg(colors().panel)
+                    .p_4()
+                    .rounded(px(9.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .bg(colors().elevated)
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap_3()
                     .child(
                         div()
                             .flex()
                             .items_center()
+                            .gap_3()
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(10.5))
-                                    .text_color(colors().foreground)
-                                    .child("Fuente de terminal"),
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(colors().foreground)
+                                            .child("Tamaño del texto"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.0))
+                                            .text_color(colors().subtle)
+                                            .child("Fuente JetBrains Mono en todas las terminales."),
+                                    ),
                             )
                             .child(
                                 div()
+                                    .w(px(52.0))
+                                    .h(px(26.0))
+                                    .rounded(px(5.0))
+                                    .bg(colors().panel)
+                                    .border_1()
+                                    .border_color(colors().border_subtle)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .font_family("JetBrains Mono")
                                     .text_size(px(9.0))
-                                    .text_color(colors().muted)
+                                    .text_color(colors().foreground)
                                     .child(format!("{font_size:.0} px")),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(self.settings_button("−", "settings-font-down", cx, |this, cx| {
-                                this.set_terminal_font_size(
-                                    this.settings.terminal_font_size - 1.0,
-                                    cx,
-                                );
-                            }))
-                            .child(self.settings_button("Reset", "settings-font-reset", cx, |this, cx| {
-                                this.set_terminal_font_size(12.0, cx);
-                            }))
-                            .child(self.settings_button("+", "settings-font-up", cx, |this, cx| {
-                                this.set_terminal_font_size(
-                                    this.settings.terminal_font_size + 1.0,
-                                    cx,
-                                );
-                            })),
+                            )
+                            .child(self.settings_button(
+                                "−",
+                                "settings-font-down",
+                                cx,
+                                |this, cx| {
+                                    this.set_terminal_font_size(
+                                        this.settings.terminal_font_size - 1.0,
+                                        cx,
+                                    );
+                                },
+                            ))
+                            .child(self.settings_button(
+                                "Restablecer",
+                                "settings-font-reset",
+                                cx,
+                                |this, cx| {
+                                    this.set_terminal_font_size(12.0, cx);
+                                },
+                            ))
+                            .child(self.settings_button(
+                                "+",
+                                "settings-font-up",
+                                cx,
+                                |this, cx| {
+                                    this.set_terminal_font_size(
+                                        this.settings.terminal_font_size + 1.0,
+                                        cx,
+                                    );
+                                },
+                            )),
                     ),
             )
+            .child(self.settings_section_heading(
+                "Workspace",
+                "Configura qué elementos estarán disponibles al abrir Vibra.",
+            ))
             .child(
                 div()
-                    .text_size(px(10.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().muted)
-                    .child("WORKSPACE"),
-            )
-            .child(
-                div()
-                    .rounded(px(7.0))
+                    .rounded(px(9.0))
                     .overflow_hidden()
+                    .border_1()
+                    .border_color(colors().border_subtle)
                     .bg(colors().elevated)
                     .child(self.settings_toggle_row(
                         "Archivos ocultos",
+                        "Incluye archivos y carpetas que comienzan con punto.",
                         hidden,
+                        true,
                         "settings-hidden",
                         cx,
                         |this, cx| {
@@ -4397,7 +4542,9 @@ impl WorkspaceView {
                     ))
                     .child(self.settings_toggle_row(
                         "Sidebar al iniciar",
+                        "Muestra la lista de sesiones al abrir la aplicación.",
                         left_sidebar,
+                        true,
                         "settings-sidebar-visible",
                         cx,
                         |this, cx| {
@@ -4406,7 +4553,9 @@ impl WorkspaceView {
                     ))
                     .child(self.settings_toggle_row(
                         "Files / Git al iniciar",
+                        "Abre el panel derecho del proyecto al iniciar.",
                         git_panel,
+                        false,
                         "settings-git-visible",
                         cx,
                         |this, cx| {
@@ -4418,21 +4567,20 @@ impl WorkspaceView {
                         },
                     )),
             )
+            .child(self.settings_section_heading(
+                "Actividad de agentes CLI",
+                "Sigue el estado de los asistentes que ejecutas dentro de Vibra.",
+            ))
             .child(
                 div()
-                    .text_size(px(10.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().muted)
-                    .child("SEGUIMIENTO DE AGENTES"),
-            )
-            .child(
-                div()
-                    .p_3()
-                    .rounded(px(7.0))
+                    .p_4()
+                    .rounded(px(9.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
                     .bg(colors().elevated)
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap_3()
                     .child(
                         div()
                             .flex()
@@ -4442,10 +4590,35 @@ impl WorkspaceView {
                                     .flex_1()
                                     .text_size(px(10.5))
                                     .text_color(colors().foreground)
-                                    .child("Seguimiento de actividad"),
+                                    .child("Detección automática"),
+                            )
+                            .child(self.settings_status_chip("Siempre activa", true)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .line_height(px(13.0))
+                            .text_color(colors().subtle)
+                            .child(
+                                "Vibra reconoce los agentes que ejecutas en sus terminales y muestra su actividad en panes, tabs y sesiones.",
+                            ),
+                    )
+                    .child(
+                        div().h(px(1.0)).bg(colors().border_subtle),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(10.5))
+                                    .text_color(colors().foreground)
+                                    .child("Hooks para estados precisos"),
                             )
                             .child(self.settings_status_chip(
-                                agent_tracking_status,
+                                agent_hooks_status,
                                 all_agent_hooks_installed,
                             )),
                     )
@@ -4455,7 +4628,7 @@ impl WorkspaceView {
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
                             .child(
-                                "Los hooks de Claude y Codex dicen si el agente trabaja, terminó o pide permiso. El resto se detecta por el proceso y la pantalla.",
+                                "Opcional: instala hooks para que Claude y Codex informen cuándo trabajan, terminan o piden permiso. Los demás agentes se detectan por el proceso y la pantalla.",
                             ),
                     )
                     .child(self.settings_hook_status_row(
@@ -4486,13 +4659,13 @@ impl WorkspaceView {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(self.settings_button(
+                            .child(self.settings_primary_button(
                                 if all_agent_hooks_installed {
-                                    "Actualizar"
+                                    "Actualizar hooks"
                                 } else if any_agent_hooks_installed {
-                                    "Completar configuración"
+                                    "Instalar hooks faltantes"
                                 } else {
-                                    "Activar seguimiento"
+                                    "Instalar hooks"
                                 },
                                 "settings-agent-hooks-install",
                                 cx,
@@ -4510,12 +4683,16 @@ impl WorkspaceView {
             )
             .child(
                 div()
-                    .rounded(px(7.0))
+                    .rounded(px(9.0))
                     .overflow_hidden()
+                    .border_1()
+                    .border_color(colors().border_subtle)
                     .bg(colors().elevated)
                     .child(self.settings_toggle_row(
-                        "Avisos de agentes",
+                        "Notificaciones de actividad",
+                        "Avisa si un agente termina o necesita atención fuera del pane actual.",
                         self.settings.agent_notifications,
+                        false,
                         "settings-agent-notifications",
                         cx,
                         |this, cx| {
@@ -4527,27 +4704,16 @@ impl WorkspaceView {
                         },
                     )),
             )
+            .child(self.settings_section_heading(
+                "Seguridad",
+                "Protecciones aplicadas a las integraciones locales de la terminal.",
+            ))
             .child(
                 div()
-                    .px_1()
-                    .text_size(px(9.0))
-                    .line_height(px(13.0))
-                    .text_color(colors().subtle)
-                    .child(
-                        "Muestra notificaciones cuando un agente termina o pide atención y Vibra está en segundo plano. En primer plano, reproduce un sonido si termina un agente en otro pane.",
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(10.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().muted)
-                    .child("SEGURIDAD"),
-            )
-            .child(
-                div()
-                    .p_3()
-                    .rounded(px(7.0))
+                    .p_4()
+                    .rounded(px(9.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
                     .bg(colors().elevated)
                     .flex()
                     .flex_col()
@@ -4559,9 +4725,10 @@ impl WorkspaceView {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(10.0))
+                                    .text_size(px(10.5))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(colors().foreground)
-                                    .child("OSC 52 clipboard read"),
+                                    .child("Lectura del portapapeles (OSC 52)"),
                             )
                             .child(
                                 div()
@@ -4579,8 +4746,35 @@ impl WorkspaceView {
                             .text_size(px(9.0))
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
-                            .child("La automatización usa un socket 0600 y un token distinto por pane."),
+                            .child("Cada lectura requiere confirmación. La comunicación local usa un socket privado y un token distinto por pane."),
                     ),
+            )
+            .child(div().h(px(1.0)))
+            .into_any_element()
+    }
+
+    fn settings_section_heading(
+        &self,
+        title: &'static str,
+        description: &'static str,
+    ) -> AnyElement {
+        div()
+            .px_1()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(colors().foreground)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(px(9.0))
+                    .text_color(colors().subtle)
+                    .child(description),
             )
             .into_any_element()
     }
@@ -4616,9 +4810,14 @@ impl WorkspaceView {
                     .text_color(colors().muted)
                     .child(label),
             )
-            .child(
-                self.settings_status_chip(if installed { "Activo" } else { "Inactivo" }, installed),
-            )
+            .child(self.settings_status_chip(
+                if installed {
+                    "Instalado"
+                } else {
+                    "No instalado"
+                },
+                installed,
+            ))
             .into_any_element()
     }
 
@@ -4639,9 +4838,36 @@ impl WorkspaceView {
             .items_center()
             .justify_center()
             .bg(colors().selection)
+            .border_1()
+            .border_color(colors().border_subtle)
             .text_size(px(9.0))
             .text_color(colors().muted)
             .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+            .child(label)
+    }
+
+    fn settings_primary_button(
+        &self,
+        label: &'static str,
+        id: &'static str,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .h(px(26.0))
+            .px_3()
+            .rounded(px(5.0))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(colors().accent)
+            .text_size(px(9.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(colors().background)
+            .hover(|button| button.opacity(0.88))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
             .child(label)
     }
@@ -4758,28 +4984,45 @@ impl WorkspaceView {
     fn settings_toggle_row(
         &self,
         label: &'static str,
+        description: &'static str,
         enabled: bool,
+        divider: bool,
         id: &'static str,
         cx: &mut Context<Self>,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         div()
             .id(id)
-            .h(px(38.0))
+            .min_h(px(52.0))
             .px_3()
+            .py_2()
             .flex()
             .items_center()
             .cursor_pointer()
-            .border_b_1()
-            .border_color(colors().border_subtle)
+            .when(divider, |row| {
+                row.border_b_1().border_color(colors().border_subtle)
+            })
             .hover(|row| row.bg(colors().hover))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(10.0))
-                    .text_color(colors().muted)
-                    .child(label),
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(colors().foreground)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(8.5))
+                            .text_color(colors().subtle)
+                            .child(description),
+                    ),
             )
             .child(
                 div()
@@ -6271,6 +6514,7 @@ impl Render for WorkspaceView {
         self.sync_terminal_surface_visibility(cx);
         self.ensure_appearance_subscription(window, cx);
         self.ensure_activation_subscription(window, cx);
+        self.ensure_window_bounds_subscription(window, cx);
         if self.initial_terminal_focus_pending {
             self.initial_terminal_focus_pending = false;
             cx.defer_in(window, |this, window, cx| {

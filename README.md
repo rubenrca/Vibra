@@ -69,8 +69,9 @@ tabs, no lanza agentes en otras sesiones y no envía prompts a otros procesos. L
 agentes se ejecutan manualmente en la terminal y Vibra conserva su detección,
 estado y notificaciones.
 
-Para activar el seguimiento preciso de actividad, usa **Settings → Seguimiento
-de agentes → Activar seguimiento** o la CLI de instalación:
+La detección automática está siempre activa. Para obtener estados más precisos
+en Claude y Codex, instala sus hooks opcionales desde **Settings → Actividad de
+agentes CLI → Instalar hooks** o mediante la CLI:
 
 ```bash
 Vibra agent setup

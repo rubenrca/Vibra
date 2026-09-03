@@ -39,6 +39,10 @@ pub struct AppSettings {
     /// Notify when an agent finishes or needs attention off-screen.
     #[serde(default = "default_true")]
     pub agent_notifications: bool,
+    #[serde(default = "default_window_width")]
+    pub window_width: f32,
+    #[serde(default = "default_window_height")]
+    pub window_height: f32,
 }
 
 const fn default_terminal_font_size() -> f32 {
@@ -51,10 +55,15 @@ const fn default_true() -> bool {
 
 pub const DEFAULT_LEFT_SIDEBAR_WIDTH: f32 = 240.0;
 pub const DEFAULT_RIGHT_SIDEBAR_WIDTH: f32 = 420.0;
+pub const DEFAULT_WINDOW_WIDTH: f32 = 1240.0;
+pub const DEFAULT_WINDOW_HEIGHT: f32 = 780.0;
 pub const MIN_LEFT_SIDEBAR_WIDTH: f32 = 188.0;
 pub const MAX_LEFT_SIDEBAR_WIDTH: f32 = 420.0;
 pub const MIN_RIGHT_SIDEBAR_WIDTH: f32 = 280.0;
 pub const MAX_RIGHT_SIDEBAR_WIDTH: f32 = 720.0;
+pub const MIN_WINDOW_WIDTH: f32 = 900.0;
+pub const MIN_WINDOW_HEIGHT: f32 = 580.0;
+const MAX_WINDOW_DIMENSION: f32 = 10_000.0;
 
 const fn default_left_sidebar_width() -> f32 {
     DEFAULT_LEFT_SIDEBAR_WIDTH
@@ -62,6 +71,14 @@ const fn default_left_sidebar_width() -> f32 {
 
 const fn default_right_sidebar_width() -> f32 {
     DEFAULT_RIGHT_SIDEBAR_WIDTH
+}
+
+const fn default_window_width() -> f32 {
+    DEFAULT_WINDOW_WIDTH
+}
+
+const fn default_window_height() -> f32 {
+    DEFAULT_WINDOW_HEIGHT
 }
 
 fn default_theme_id() -> String {
@@ -85,6 +102,8 @@ impl Default for AppSettings {
             theme_id: default_theme_id(),
             appearance_mode: default_appearance_mode(),
             agent_notifications: true,
+            window_width: DEFAULT_WINDOW_WIDTH,
+            window_height: DEFAULT_WINDOW_HEIGHT,
         }
     }
 }
@@ -107,6 +126,18 @@ impl AppSettings {
         self.right_sidebar_width = self
             .right_sidebar_width
             .clamp(MIN_RIGHT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH);
+        if !self.window_width.is_finite() {
+            self.window_width = DEFAULT_WINDOW_WIDTH;
+        }
+        self.window_width = self
+            .window_width
+            .clamp(MIN_WINDOW_WIDTH, MAX_WINDOW_DIMENSION);
+        if !self.window_height.is_finite() {
+            self.window_height = DEFAULT_WINDOW_HEIGHT;
+        }
+        self.window_height = self
+            .window_height
+            .clamp(MIN_WINDOW_HEIGHT, MAX_WINDOW_DIMENSION);
         if !crate::ui::theme::is_known_theme_id(&self.theme_id) {
             self.theme_id = default_theme_id();
         }
@@ -116,6 +147,20 @@ impl AppSettings {
             _ => "system".to_string(),
         };
         self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
+    }
+
+    pub fn set_window_size(&mut self, width: f32, height: f32) -> bool {
+        if !width.is_finite() || !height.is_finite() {
+            return false;
+        }
+        let width = width.clamp(MIN_WINDOW_WIDTH, MAX_WINDOW_DIMENSION);
+        let height = height.clamp(MIN_WINDOW_HEIGHT, MAX_WINDOW_DIMENSION);
+        if (self.window_width - width).abs() < 0.5 && (self.window_height - height).abs() < 0.5 {
+            return false;
+        }
+        self.window_width = width;
+        self.window_height = height;
+        true
     }
 }
 
@@ -221,9 +266,12 @@ mod tests {
             br#"{"terminalFontSize":100,"showHiddenFiles":true}"#,
         )
         .unwrap();
-        let settings = repository.load().unwrap();
+        let mut settings = repository.load().unwrap();
         assert_eq!(settings.schema_version, CURRENT_SETTINGS_SCHEMA_VERSION);
         assert_eq!(settings.terminal_font_size, 32.0);
+        assert_eq!(settings.window_width, DEFAULT_WINDOW_WIDTH);
+        assert_eq!(settings.window_height, DEFAULT_WINDOW_HEIGHT);
+        assert!(settings.set_window_size(1512.0, 864.0));
         repository.save(&settings).unwrap();
         assert_eq!(repository.load().unwrap(), settings);
         fs::remove_dir_all(root).unwrap();
@@ -250,7 +298,21 @@ mod tests {
         assert!(settings.git_panel_visible);
         assert!((settings.left_sidebar_width - DEFAULT_LEFT_SIDEBAR_WIDTH).abs() < f32::EPSILON);
         assert!((settings.right_sidebar_width - DEFAULT_RIGHT_SIDEBAR_WIDTH).abs() < f32::EPSILON);
+        assert_eq!(settings.window_width, DEFAULT_WINDOW_WIDTH);
+        assert_eq!(settings.window_height, DEFAULT_WINDOW_HEIGHT);
         assert!(canonical.exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn window_size_is_clamped_and_rejects_invalid_values() {
+        let mut settings = AppSettings::default();
+        assert!(settings.set_window_size(1600.0, 920.0));
+        assert_eq!(settings.window_width, 1600.0);
+        assert_eq!(settings.window_height, 920.0);
+        assert!(!settings.set_window_size(f32::NAN, 700.0));
+        assert!(settings.set_window_size(100.0, 100.0));
+        assert_eq!(settings.window_width, MIN_WINDOW_WIDTH);
+        assert_eq!(settings.window_height, MIN_WINDOW_HEIGHT);
     }
 }

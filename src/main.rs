@@ -18,7 +18,7 @@ use crate::infrastructure::alacritty::AlacrittyTerminalPort;
 use crate::infrastructure::files::LocalFileSystemPort;
 use crate::infrastructure::git::GitCliPort;
 use crate::infrastructure::persistence::WorkspaceRepository;
-use crate::infrastructure::settings::SettingsRepository;
+use crate::infrastructure::settings::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, SettingsRepository};
 use crate::ui::agent_marks::VibraAssets;
 use crate::ui::workspace_view::{WorkspaceDependencies, WorkspaceView};
 
@@ -111,6 +111,7 @@ fn run() -> Result<()> {
         .context("no se pudo resolver el directorio de datos de Vibra")?;
     let settings_repository = SettingsRepository::for_current_user()
         .context("no se pudo resolver settings.json de Vibra")?;
+    let initial_settings = settings_repository.load().unwrap_or_default();
     let launch_directory = launch_directory();
 
     Application::new()
@@ -246,11 +247,22 @@ fn run() -> Result<()> {
             // Packaged builds carry SUFeedURL; development runs are a no-op.
             infrastructure::sparkle::start();
 
-            let bounds = Bounds::centered(None, size(px(1240.0), px(780.0)), cx);
+            let (mut window_width, mut window_height) = (
+                initial_settings.window_width,
+                initial_settings.window_height,
+            );
+            if let Some(display) = cx.primary_display() {
+                let display_bounds = display.bounds();
+                let display_width: f32 = display_bounds.size.width.into();
+                let display_height: f32 = display_bounds.size.height.into();
+                window_width = window_width.min((display_width - 40.0).max(MIN_WINDOW_WIDTH));
+                window_height = window_height.min((display_height - 40.0).max(MIN_WINDOW_HEIGHT));
+            }
+            let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(900.0), px(580.0))),
+                    window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Vibra".into()),
                         appears_transparent: true,
