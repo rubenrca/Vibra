@@ -357,6 +357,15 @@ impl WorkspaceSnapshot {
     }
 
     pub fn create_workspace(&mut self, root: &Path) {
+        let selected_workspace_id = self.selected_workspace().map(|workspace| workspace.id);
+        let inherited_space_id = selected_workspace_id.and_then(|selected_workspace_id| {
+            self.sidebar_items.iter().find_map(|item| match item {
+                SidebarItemSnapshot::Space {
+                    id, workspace_ids, ..
+                } if workspace_ids.contains(&selected_workspace_id) => Some(*id),
+                _ => None,
+            })
+        });
         let root_path = root.to_string_lossy().into_owned();
         let directory_name = root
             .file_name()
@@ -374,6 +383,7 @@ impl WorkspaceSnapshot {
             selected_tab_id: Some(tab.id),
             tabs: vec![tab],
         };
+        let new_workspace_id = workspace.id;
 
         if let Some(project) = self
             .projects
@@ -404,6 +414,9 @@ impl WorkspaceSnapshot {
         }
 
         self.normalize();
+        if let Some(space_id) = inherited_space_id {
+            self.move_workspace_to_space(new_workspace_id, space_id);
+        }
     }
 
     /// Relocates workspaces created from an unsafe launcher fallback (typically `/`).
@@ -2206,6 +2219,27 @@ mod tests {
             snapshot.selected_session().unwrap().working_directory,
             "/tmp/vibra-ws-root/nested"
         );
+    }
+
+    #[test]
+    fn create_workspace_inherits_the_selected_workspaces_sidebar_space() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-grouped-workspace"));
+        let first = snapshot.selected_workspace().unwrap().id;
+        let space_id = snapshot.create_sidebar_space(first, "Grupo").unwrap();
+
+        snapshot.create_workspace(Path::new("/tmp/vibra-grouped-workspace/nested"));
+        let created = snapshot.selected_workspace().unwrap().id;
+
+        assert!(snapshot.sidebar_items.iter().any(|item| matches!(
+            item,
+            SidebarItemSnapshot::Space {
+                id,
+                collapsed: false,
+                workspace_ids,
+                ..
+            } if *id == space_id && workspace_ids == &vec![first, created]
+        )));
     }
 
     #[test]

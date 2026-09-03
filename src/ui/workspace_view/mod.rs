@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use gpui::{
     AnyElement, Context, Div, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render, SharedString,
-    Stateful, Styled, Subscription, Task, Timer, Window, WindowControlArea, div, prelude::*, px,
-    relative, svg,
+    Stateful, Styled, Subscription, Task, Timer, Transformation, Window, WindowControlArea, div,
+    prelude::*, px, radians, relative, svg,
 };
 use uuid::Uuid;
 
@@ -51,6 +51,7 @@ use crate::{
 const TITLEBAR_CHROME_COLLAPSED: f32 = 148.0;
 /// Titlebar chrome width when the right sidebar is fully collapsed (toggle only).
 const TITLEBAR_RIGHT_CHROME_COLLAPSED: f32 = 40.0;
+const TITLEBAR_HEIGHT: f32 = 38.0;
 /// Padding + badge + gap reserved beside the sessions tab text column.
 const LEFT_SIDEBAR_TAB_CHROME: f32 = 16.0 + 24.0 + 32.0 + 8.0;
 /// Open/close duration — short enough to feel snappy, long enough to read as motion.
@@ -3448,7 +3449,7 @@ impl WorkspaceView {
         }
     }
 
-    fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn titlebar(&mut self, overlays_workspace: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let left_progress = self.left_sidebar_progress;
         let right_progress = self.right_sidebar_progress;
         // Keep titlebar controls aligned with the continuous sidebar surfaces.
@@ -3495,10 +3496,14 @@ impl WorkspaceView {
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .bg(colors().terminal);
+            .bg(if overlays_workspace {
+                gpui::rgba(0x00000000)
+            } else {
+                colors().terminal
+            });
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
-        } else {
+        } else if !overlays_workspace {
             center_chrome = center_chrome
                 .window_control_area(WindowControlArea::Drag)
                 .on_mouse_down(MouseButton::Left, |_, _, _| {
@@ -3507,12 +3512,19 @@ impl WorkspaceView {
         }
 
         div()
-            .h(px(38.0))
+            .h(px(TITLEBAR_HEIGHT))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
-            .bg(colors().titlebar)
+            .bg(if overlays_workspace {
+                gpui::rgba(0x00000000)
+            } else {
+                colors().titlebar
+            })
+            .when(overlays_workspace, |titlebar| {
+                titlebar.absolute().top_0().left_0().right_0()
+            })
             .child(
                 div()
                     .w(px(left_chrome_width))
@@ -3578,7 +3590,7 @@ impl WorkspaceView {
             )
     }
 
-    fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn sidebar(&mut self, top_inset: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.left_sidebar_mode {
             LeftSidebarMode::Sessions => self.sessions_sidebar_content(cx),
             LeftSidebarMode::Info => self.info_sidebar_content(cx),
@@ -3587,7 +3599,7 @@ impl WorkspaceView {
         let width = full_width * self.left_sidebar_progress;
         let show_handle = self.left_sidebar_progress > 0.99;
         // Outer clips to animated width; inner keeps full layout so content doesn't reflow.
-        // No title chrome — sessions fill the column; collapse via titlebar / ⌘B.
+        // The inset keeps sidebar content below the overlaid window controls in compact mode.
         div()
             .w(px(width))
             .h_full()
@@ -3601,6 +3613,7 @@ impl WorkspaceView {
                 div()
                     .w(px(full_width))
                     .h_full()
+                    .pt(px(top_inset))
                     .flex()
                     .flex_col()
                     .child(content),
@@ -3617,7 +3630,33 @@ impl WorkspaceView {
     fn sessions_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let sidebar_entries = self.snapshot.sidebar_entries();
         let workspace_count = self.snapshot.workspace_entries().len();
-        let can_reorder = workspace_count > 1;
+        let has_spaces = sidebar_entries
+            .iter()
+            .any(|entry| matches!(entry, SidebarEntry::Space { .. }));
+        let last_grouped_workspaces = sidebar_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sidebar_entry)| {
+                let SidebarEntry::Workspace {
+                    entry,
+                    space_id: Some(space_id),
+                } = sidebar_entry
+                else {
+                    return None;
+                };
+                let next_is_in_same_space = matches!(
+                    sidebar_entries.get(index + 1),
+                    Some(SidebarEntry::Workspace {
+                        space_id: Some(next_space_id),
+                        ..
+                    }) if next_space_id == space_id
+                );
+                (!next_is_in_same_space).then_some(entry.workspace_id)
+            })
+            .collect::<HashSet<_>>();
+        // A lone workspace still needs to be draggable when it can be moved into
+        // (or out of) a sidebar space.
+        let can_reorder = workspace_count > 1 || has_spaces;
         let dragging_workspace = match self.reorder_drag {
             Some(ReorderDrag::SidebarWorkspace(id)) if cx.has_active_drag() => Some(id),
             _ => None,
@@ -3720,16 +3759,12 @@ impl WorkspaceView {
                                 collapsed,
                                 workspace_count,
                             } => {
-                                let count_label = if workspace_count == 1 {
-                                    "1 sesión".to_owned()
-                                } else {
-                                    format!("{workspace_count} sesiones")
-                                };
                                 return div()
                                     .id(SharedString::from(format!("sidebar-space-{id}")))
-                                    .h(px(52.0))
+                                    .h(px(40.0))
                                     .w_full()
                                     .flex_none()
+                                    .relative()
                                     .flex()
                                     .items_center()
                                     .gap_2()
@@ -3782,41 +3817,57 @@ impl WorkspaceView {
                                             }
                                         },
                                     ))
-                                    .child(
-                                        div()
-                                            .w(px(18.0))
-                                            .text_size(px(16.0))
-                                            .text_color(colors().muted)
-                                            .child(if collapsed { "›" } else { "⌄" }),
-                                    )
+                                    .when(!collapsed && workspace_count > 0, |header| {
+                                        header.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(17.0))
+                                                .top(px(40.0))
+                                                .bottom(px(-2.0))
+                                                .w(px(1.0))
+                                                .bg(colors().border_subtle),
+                                        )
+                                    })
                                     .child(
                                         div()
                                             .min_w(px(0.0))
                                             .flex_1()
+                                            .truncate()
+                                            .text_size(px(12.0))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(colors().foreground)
+                                            .child(name),
+                                    )
+                                    .child(
+                                        div()
+                                            .size(px(18.0))
+                                            .flex_none()
                                             .flex()
-                                            .flex_col()
-                                            .gap(px(1.0))
+                                            .items_center()
+                                            .justify_center()
                                             .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_size(px(12.0))
-                                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                                    .text_color(colors().foreground)
-                                                    .child(name),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(9.5))
-                                                    .text_color(colors().subtle)
-                                                    .child(count_label),
+                                                svg()
+                                                    .path("chrome-icons/chevron-right.svg")
+                                                    .size(px(12.0))
+                                                    .text_color(colors().muted)
+                                                    .when(!collapsed, |icon| {
+                                                        icon.with_transformation(
+                                                            Transformation::rotate(radians(
+                                                                std::f32::consts::FRAC_PI_2,
+                                                            )),
+                                                        )
+                                                    }),
                                             ),
                                     )
                                     .into_any_element();
                             }
                         };
-                        let item_width = self.left_sidebar_width() - 16.0;
+                        let grouped = space_id.is_some();
+                        let group_inset = if grouped { 24.0 } else { 0.0 };
+                        let item_width = self.left_sidebar_width() - 16.0 - group_inset;
                         let project_id = entry.project_id;
                         let workspace_id = entry.workspace_id;
+                        let is_last_in_space = last_grouped_workspaces.contains(&workspace_id);
                         let selected = entry.is_selected;
                         let (primary_identity, active_agent_identity) = sidebar_identities
                             .get(&workspace_id)
@@ -3924,6 +3975,7 @@ impl WorkspaceView {
                             .id(SharedString::from(format!("workspace-{workspace_id}")))
                             .h(px(74.0))
                             .w(px(item_width))
+                            .ml(px(group_inset))
                             .relative()
                             .mb(px(2.0))
                             .px_3()
@@ -3942,6 +3994,28 @@ impl WorkspaceView {
                             .hover(|item| item.bg(colors().hover))
                             .active(|item| item.opacity(0.82))
                             .when(is_source, |item| item.opacity(0.65))
+                            .when(grouped, |item| {
+                                item.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(-7.0))
+                                        .top(px(-2.0))
+                                        .w(px(1.0))
+                                        .bg(colors().border_subtle)
+                                        .when(is_last_in_space, |line| line.h(px(39.0)))
+                                        .when(!is_last_in_space, |line| line.bottom(px(-2.0))),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(px(-7.0))
+                                        .top(px(36.0))
+                                        .w(px(5.0))
+                                        .h(px(1.0))
+                                        .rounded_full()
+                                        .bg(colors().border_subtle),
+                                )
+                            })
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, window, cx| {
@@ -4001,7 +4075,8 @@ impl WorkspaceView {
                             ))
                             .child(
                                 div()
-                                    .w(px(self.left_sidebar_tab_text_width()))
+                                    .w(px((self.left_sidebar_tab_text_width() - group_inset)
+                                        .max(80.0)))
                                     .flex_none()
                                     .overflow_hidden()
                                     .flex()
@@ -6156,7 +6231,7 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn right_sidebar(&mut self, top_inset: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.right_sidebar_mode;
         let full_width = self.right_sidebar_width();
         let width = full_width * self.right_sidebar_progress;
@@ -6167,7 +6242,8 @@ impl WorkspaceView {
             RightSidebarMode::Servers => self.servers_view.clone().into_any_element(),
         };
 
-        // Outer clips to animated width; inner keeps full panel layout.
+        // Outer clips to animated width; inner keeps full panel layout. The optional inset
+        // keeps panel content below the overlaid titlebar controls.
         div()
             .w(px(width))
             .h_full()
@@ -6181,6 +6257,7 @@ impl WorkspaceView {
                 div()
                     .w(px(full_width))
                     .h_full()
+                    .pt(px(top_inset))
                     .flex()
                     .flex_col()
                     .child(content),
@@ -6811,6 +6888,10 @@ impl Render for WorkspaceView {
                 });
             }
         }
+        let titlebar_overlays_workspace = self
+            .snapshot
+            .selected_workspace()
+            .is_none_or(|workspace| workspace.tabs.len() <= 1);
         let mut body = div()
             .id("vibra-root")
             .track_focus(&self.focus_handle)
@@ -6846,13 +6927,17 @@ impl Render for WorkspaceView {
             .capture_key_down(cx.listener(Self::on_workspace_key_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_pane_resize))
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .font_family(".SystemUIFont")
             .text_size(px(12.0))
             .text_color(colors().foreground)
-            .bg(colors().background)
-            .child(self.titlebar(cx));
+            .bg(colors().background);
+
+        if !titlebar_overlays_workspace {
+            body = body.child(self.titlebar(false, cx));
+        }
 
         if let Some(banner) = self.error_banner() {
             body = body.child(banner);
@@ -6864,16 +6949,27 @@ impl Render for WorkspaceView {
             .min_h(px(0.0))
             .flex()
             .on_drag_move(cx.listener(Self::on_sidebar_resize_move));
+        let sidebar_top_inset = if titlebar_overlays_workspace {
+            TITLEBAR_HEIGHT
+        } else {
+            0.0
+        };
         // Keep sidebars mounted while progress > 0 so close animations can finish.
         if self.left_sidebar_progress > 0.001 {
-            layout = layout.child(self.sidebar(cx));
+            layout = layout.child(self.sidebar(sidebar_top_inset, cx));
         }
         layout = layout.child(self.center_panel(cx));
         if self.right_sidebar_progress > 0.001 {
-            layout = layout.child(self.right_sidebar(cx));
+            layout = layout.child(self.right_sidebar(sidebar_top_inset, cx));
         }
 
         body = body.child(layout);
+        if titlebar_overlays_workspace {
+            // With zero or one terminal tab there is no tab strip to show. Keep only the
+            // window/sidebar controls overlaid at the edges so the terminal can use the
+            // otherwise empty titlebar height in the center.
+            body = body.child(self.titlebar(true, cx));
+        }
         if let Some(modal) = self.palette_modal(cx) {
             body = body.child(modal);
         } else if let Some(modal) = self.rename_modal(cx) {
