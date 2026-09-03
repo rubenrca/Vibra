@@ -3,23 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.13</title>
-            <pubDate>Wed, 02 Sep 2026 17:53:37 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.13</link>
-            <sparkle:version>116</sparkle:version>
-            <sparkle:shortVersionString>0.3.13</sparkle:shortVersionString>
+            <title>0.3.14</title>
+            <pubDate>Thu, 03 Sep 2026 13:01:16 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.14</link>
+            <sparkle:version>123</sparkle:version>
+            <sparkle:shortVersionString>0.3.14</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Render Git diffs more like an editor: JetBrains Mono at 12px, a dedicated gutter, a color bar for added/removed lines, full-brightness syntax, and tab expansion.</li>
-  <li>Expand the theme picker with dual light/dark palettes for Nord, Gruvbox, Solarized, Dracula, Catppuccin, Tokyo Night, One, GitHub, Ayu, Everforest, Kanagawa, Rosé Pine, Monokai, and Warp, keeping the original Vibra families.</li>
-  <li>Paint the terminal grid from the active theme (background, text, cursor, ANSI, and selection) instead of leaving the pane black while only chrome borders change.</li>
-  <li>Tint syntax highlighting, modal overlays, and the terminal scrollbar from the same palette so light and dark styles stay consistent.</li>
-  <li>Enrich the sessions sidebar with the highest-priority agent across every tab and split in a workspace, its live state, and its model when the CLI reports it explicitly.</li>
-  <li>Keep the right utility tabs icon-only and let the file tree focus changed files in Git without replacing the terminal.</li>
-  <li>Toggle a persistent bottom terminal with ⌘J for dev servers; hiding it keeps the process running without changing the selected pane. Each sidebar session has its own consoles, and `+` opens additional ones.</li>
+  <li>Organize sessions into persistent, collapsible sidebar spaces that can be created from the empty sidebar, renamed, removed without deleting their sessions, and reordered with precise drag-and-drop insertion.</li>
+  <li>Open the active workspace folder in an installed external IDE directly from Vibra.</li>
+  <li>Persist window dimensions and let background refresh intervals be configured from Settings.</li>
+  <li>Cache prepared Git diff documents so unchanged diffs avoid repeated parsing, highlighting, and layout work.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.13/Vibra-0.3.13.dmg" length="12308606" type="application/octet-stream" sparkle:edSignature="usyJzo+KxcWFTzzt+TV0wYqftpEu3pxsSmkk09kfD/E6Skc5v9jzDwnSVW+gQhf39YiuMS3HXJh+TQ6TVHiGDQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.14/Vibra-0.3.14.dmg" length="12465475" type="application/octet-stream" sparkle:edSignature="o/x0UEUCszBvtZx7Q0nyxq+OlBtmkca0fDsiZNn2qr7mb1i4wLNFEqYDUWulKndzBAp0tGOqn4dB/mP1oCZ9BA=="/>
         </item>
     </channel>
 </rss>
