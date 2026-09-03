@@ -3,20 +3,19 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.14</title>
-            <pubDate>Thu, 03 Sep 2026 13:01:16 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.14</link>
-            <sparkle:version>123</sparkle:version>
-            <sparkle:shortVersionString>0.3.14</sparkle:shortVersionString>
+            <title>0.3.15</title>
+            <pubDate>Thu, 03 Sep 2026 14:11:12 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.15</link>
+            <sparkle:version>126</sparkle:version>
+            <sparkle:shortVersionString>0.3.15</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Organize sessions into persistent, collapsible sidebar spaces that can be created from the empty sidebar, renamed, removed without deleting their sessions, and reordered with precise drag-and-drop insertion.</li>
-  <li>Open the active workspace folder in an installed external IDE directly from Vibra.</li>
-  <li>Persist window dimensions and let background refresh intervals be configured from Settings.</li>
-  <li>Cache prepared Git diff documents so unchanged diffs avoid repeated parsing, highlighting, and layout work.</li>
+  <li>Let a single terminal use the empty titlebar area while preserving macOS window controls and keeping the tab strip available when multiple tabs are open.</li>
+  <li>Refine sidebar spaces with compact headers, consistent chevrons, clearer nested-session connectors, and drag-and-drop support even when only one session exists.</li>
+  <li>Keep newly created sessions inside the selected session's sidebar space.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.14/Vibra-0.3.14.dmg" length="12465475" type="application/octet-stream" sparkle:edSignature="o/x0UEUCszBvtZx7Q0nyxq+OlBtmkca0fDsiZNn2qr7mb1i4wLNFEqYDUWulKndzBAp0tGOqn4dB/mP1oCZ9BA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.15/Vibra-0.3.15.dmg" length="12470572" type="application/octet-stream" sparkle:edSignature="i7Rgei7v3gW8qNRNFirmxOhciLm+mMUlYqcJXE2Pxnpsxe7t3IjUY7XVS6Z7wEGZQioH+xaGHr4AtCd8ch9uAA=="/>
         </item>
     </channel>
 </rss>
