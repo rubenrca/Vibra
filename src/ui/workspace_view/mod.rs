@@ -20,6 +20,7 @@ use crate::infrastructure::automation::{
     AutomationIncoming, AutomationResponse, AutomationServer, agent_hook_status,
     install_agent_hooks, uninstall_agent_hooks,
 };
+use crate::infrastructure::editor::InstalledEditor;
 use crate::infrastructure::notifications::{
     AgentActivitySnapshot, AgentNotificationDelivery, agent_notification_copy, should_notify_agent,
 };
@@ -39,7 +40,7 @@ use crate::ui::terminal::{TerminalDragPreview, TerminalView, TerminalViewEvent};
 use crate::ui::theme::{self, AppearanceMode, ThemeTone, colors};
 use crate::{
     CloseTerminal, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
-    GoToTab, NewTerminalTab, NewWorkspace, NextPane, NextWorkspace, PreviousPane,
+    GoToTab, NewTerminalTab, NewWorkspace, NextPane, NextWorkspace, OpenIde, PreviousPane,
     PreviousWorkspace, QuickOpen, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp,
     ShowSettings, SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette,
     ToggleDevTerminal, ToggleLeftSidebar, TogglePaneZoom, ToggleRightSidebar,
@@ -270,6 +271,7 @@ enum PaletteMode {
 #[derive(Debug, Clone)]
 enum PaletteAction {
     NewTerminalTab,
+    OpenIde,
     ToggleDevTerminal,
     NewWorkspace,
     Split(PaneSplitDirection),
@@ -566,6 +568,8 @@ pub struct WorkspaceView {
     palette_files: Vec<PathBuf>,
     settings_open: bool,
     context_menu: Option<ContextMenuState>,
+    ide_menu_open: bool,
+    installed_editors: Vec<InstalledEditor>,
     rename_prompt: Option<RenamePrompt>,
     right_sidebar_visible: bool,
     /// Visual open amount for the right sidebar (`0.0` closed … `1.0` open).
@@ -584,6 +588,7 @@ pub struct WorkspaceView {
     _files_task: Option<Task<()>>,
     palette_request_id: u64,
     _palette_task: Option<Task<()>>,
+    _open_ide_task: Option<Task<()>>,
     home_directory: Option<PathBuf>,
     /// Subscribed once so system light/dark flips re-resolve the palette.
     _appearance_subscription: Option<Subscription>,
@@ -771,6 +776,8 @@ impl WorkspaceView {
             palette_files: Vec::new(),
             settings_open: false,
             context_menu: None,
+            ide_menu_open: false,
+            installed_editors: Vec::new(),
             rename_prompt: None,
             right_sidebar_visible: settings.git_panel_visible,
             right_sidebar_progress: if settings.git_panel_visible { 1.0 } else { 0.0 },
@@ -788,6 +795,7 @@ impl WorkspaceView {
             _files_task: None,
             palette_request_id: 0,
             _palette_task: None,
+            _open_ide_task: None,
             home_directory: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
             _appearance_subscription: None,
             _activation_subscription: None,
@@ -1263,6 +1271,7 @@ impl WorkspaceView {
         self.palette_mode = None;
         self.palette_files.clear();
         self.context_menu = None;
+        self.ide_menu_open = false;
         self.rename_prompt = None;
         cx.notify();
     }
@@ -1483,6 +1492,52 @@ impl WorkspaceView {
         self.open_palette(PaletteMode::Files, cx);
     }
 
+    fn open_ide(&mut self, _: &OpenIde, _: &mut Window, cx: &mut Context<Self>) {
+        if self.ide_menu_open {
+            self.ide_menu_open = false;
+            cx.notify();
+            return;
+        }
+        self.installed_editors = crate::infrastructure::editor::installed_editors();
+        if self.installed_editors.is_empty() {
+            self.persistence_error = Some(
+                "No se encontró un IDE compatible. Instala Cursor, VS Code, Windsurf, Zed, Xcode, Sublime Text o VSCodium"
+                    .into(),
+            );
+        } else {
+            self.ide_menu_open = true;
+            self.context_menu = None;
+        }
+        cx.notify();
+    }
+
+    fn open_with_editor(&mut self, editor: InstalledEditor, cx: &mut Context<Self>) {
+        self.ide_menu_open = false;
+        let path = self.selected_live_cwd(cx);
+        let launch = cx.background_spawn(async move {
+            crate::infrastructure::editor::open_in_editor(&path, &editor)
+        });
+        self._open_ide_task = Some(cx.spawn(async move |this, cx| {
+            let result = launch.await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        if this.persistence_error.as_ref().is_some_and(|error| {
+                            error.to_string().starts_with("No se pudo abrir el IDE:")
+                        }) {
+                            this.persistence_error = None;
+                        }
+                    }
+                    Err(error) => {
+                        this.persistence_error =
+                            Some(format!("No se pudo abrir el IDE: {error}").into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     fn palette_items(&self) -> Vec<PaletteItem> {
         let Some(mode) = self.palette_mode else {
             return Vec::new();
@@ -1498,6 +1553,11 @@ impl WorkspaceView {
                     label: "Terminal: Toggle Dev Terminal".into(),
                     detail: "⌘J".into(),
                     action: PaletteAction::ToggleDevTerminal,
+                },
+                PaletteItem {
+                    label: "Workspace: Open current folder in IDE".into(),
+                    detail: "⇧⌘E".into(),
+                    action: PaletteAction::OpenIde,
                 },
                 PaletteItem {
                     label: "Workspace: New".into(),
@@ -1639,6 +1699,7 @@ impl WorkspaceView {
             PaletteAction::ToggleDevTerminal => {
                 self.toggle_dev_terminal(&ToggleDevTerminal, window, cx);
             }
+            PaletteAction::OpenIde => self.open_ide(&OpenIde, window, cx),
             PaletteAction::NewWorkspace => {
                 self.open_workspace_in_current_directory(window, cx);
             }
@@ -1705,6 +1766,14 @@ impl WorkspaceView {
         if self.settings_open {
             if matches!(key.as_str(), "escape" | "esc") {
                 self.close_settings(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if self.ide_menu_open {
+            if matches!(key.as_str(), "escape" | "esc") {
+                self.ide_menu_open = false;
+                cx.notify();
             }
             cx.stop_propagation();
             return;
@@ -5572,6 +5641,7 @@ impl WorkspaceView {
                         )
                 },
             )))
+            .child(self.ide_button(cx))
             .child(
                 div()
                     .h_full()
@@ -6099,6 +6169,101 @@ impl WorkspaceView {
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
             .child(Self::sidebar_icon(left))
     }
+
+    fn ide_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id("open-ide")
+            .h(px(26.0))
+            .relative()
+            .w(px(32.0))
+            .mr_2()
+            .rounded(px(7.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .bg(gpui::rgba(0x00000000))
+            .text_color(colors().subtle)
+            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.open_ide(&OpenIde, window, cx);
+            }))
+            .child(
+                svg()
+                    .path("chrome-icons/open-external.svg")
+                    .size(px(15.0))
+                    .text_color(colors().subtle),
+            )
+    }
+
+    fn ide_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.ide_menu_open.then(|| {
+            let right = (self.right_sidebar_width() - 164.0).max(8.0);
+            div()
+                .absolute()
+                .inset_0()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.ide_menu_open = false;
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .id("ide-menu")
+                        .absolute()
+                        .top(px(34.0))
+                        .right(px(right))
+                        .min_w(px(190.0))
+                        .py_1()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(colors().border_subtle)
+                        .bg(colors().elevated)
+                        .shadow_lg()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .text_size(px(9.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(colors().subtle)
+                                .child("ABRIR CARPETA EN"),
+                        )
+                        .children(self.installed_editors.clone().into_iter().enumerate().map(
+                            |(index, editor)| {
+                                let label = editor.name;
+                                div()
+                                    .id(SharedString::from(format!("ide-menu-item-{index}")))
+                                    .h(px(32.0))
+                                    .mx_1()
+                                    .px_3()
+                                    .rounded(px(5.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .cursor_pointer()
+                                    .text_size(px(11.0))
+                                    .text_color(colors().foreground)
+                                    .hover(|item| item.bg(colors().hover))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.open_with_editor(editor.clone(), cx);
+                                    }))
+                                    .child(
+                                        svg()
+                                            .path("chrome-icons/open-external.svg")
+                                            .size(px(13.0))
+                                            .text_color(colors().subtle),
+                                    )
+                                    .child(label)
+                            },
+                        )),
+                )
+                .into_any_element()
+        })
+    }
 }
 
 impl Render for WorkspaceView {
@@ -6157,6 +6322,7 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::toggle_pane_zoom))
             .on_action(cx.listener(Self::toggle_command_palette))
             .on_action(cx.listener(Self::quick_open))
+            .on_action(cx.listener(Self::open_ide))
             .on_action(cx.listener(Self::show_settings))
             .capture_key_down(cx.listener(Self::on_workspace_key_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_pane_resize))
@@ -6197,6 +6363,9 @@ impl Render for WorkspaceView {
             body = body.child(modal);
         }
         if let Some(menu) = self.context_menu_overlay(cx) {
+            body = body.child(menu);
+        }
+        if let Some(menu) = self.ide_menu_overlay(cx) {
             body = body.child(menu);
         }
         body

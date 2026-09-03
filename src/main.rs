@@ -60,6 +60,7 @@ actions!(
         TogglePaneZoom,
         ToggleCommandPalette,
         QuickOpen,
+        OpenIde,
         ShowSettings,
         CheckForUpdates,
         Quit
@@ -171,6 +172,7 @@ fn run() -> Result<()> {
                 KeyBinding::new("shift-cmd-enter", TogglePaneZoom, None),
                 KeyBinding::new("shift-cmd-p", ToggleCommandPalette, None),
                 KeyBinding::new("cmd-p", QuickOpen, None),
+                KeyBinding::new("shift-cmd-e", OpenIde, None),
                 KeyBinding::new("cmd-,", ShowSettings, None),
                 KeyBinding::new("cmd-u", CheckForUpdates, None),
                 KeyBinding::new("cmd-q", Quit, None),
@@ -198,6 +200,8 @@ fn run() -> Result<()> {
                     items: vec![
                         MenuItem::action("New Workspace", NewWorkspace),
                         MenuItem::action("New Terminal Tab", NewTerminalTab),
+                        MenuItem::separator(),
+                        MenuItem::action("Open Current Folder in…", OpenIde),
                         MenuItem::separator(),
                         MenuItem::action("Close Terminal", CloseTerminal),
                     ],

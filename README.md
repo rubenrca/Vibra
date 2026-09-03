@@ -181,6 +181,7 @@ importan una sola vez.
 | `⌃⌥` + flechas | Cambiar proporción del pane |
 | `⌃⌥E` / `⇧⌘↵` | Igualar panes / alternar zoom |
 | `⇧⌘P` / `⌘P` | Paleta de comandos / quick open |
+| `⇧⌘E` | Abrir la carpeta activa en un IDE externo |
 | `⌘,` | Abrir Settings (modal centrado) |
 | `⌘B` | Mostrar u ocultar sidebar de sesiones |
 | `⌥⌘B` | Mostrar u ocultar panel Files, Git y Servers |
