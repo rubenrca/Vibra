@@ -180,34 +180,38 @@ impl ServersView {
         let count = self.servers.len();
         let meta = if self.refreshing && count == 0 {
             "…".to_owned()
-        } else if count == 1 {
-            "1 servidor".to_owned()
         } else {
-            format!("{count} servidores")
+            count.to_string()
         };
         div()
             .w_full()
             .flex_none()
-            .h(px(44.0))
+            .h(px(40.0))
             .flex()
             .items_center()
             .gap_2()
             .px_3()
             .bg(colors().panel)
+            .border_b_1()
+            .border_color(colors().border_subtle)
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .flex_1()
+                    .text_size(px(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().foreground)
-                    .child("Servers"),
+                    .text_color(colors().muted)
+                    .child("SERVERS"),
             )
             .child(
                 div()
-                    .min_w(px(0.0))
-                    .flex_1()
-                    .truncate()
-                    .text_size(px(12.0))
-                    .text_color(colors().muted)
+                    .flex_none()
+                    .px(px(5.0))
+                    .py(px(1.0))
+                    .rounded_full()
+                    .bg(colors().elevated)
+                    .font_family("JetBrains Mono")
+                    .text_size(px(8.5))
+                    .text_color(colors().subtle)
                     .child(meta),
             )
     }
@@ -248,7 +252,7 @@ impl ServersView {
             .py_2()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap(px(6.0))
             .children(servers.into_iter().map(|server| self.card(server, cx)))
     }
 
@@ -269,10 +273,10 @@ impl ServersView {
             .flex_none()
             .flex()
             .flex_col()
-            .gap_1()
+            .gap(px(3.0))
             .px_2()
-            .py_2()
-            .rounded(px(8.0))
+            .py(px(7.0))
+            .rounded(px(7.0))
             .border_1()
             .border_color(colors().border_subtle)
             .bg(colors().elevated)

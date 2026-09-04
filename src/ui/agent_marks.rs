@@ -213,20 +213,20 @@ pub fn agent_sidebar_badge(
         attention == Some(AgentAttention::Permission) && state == Some(AgentRuntimeState::Waiting);
 
     div()
-        .size(px(32.0))
+        .size(px(28.0))
         .flex_none()
         .relative()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(8.0))
+        .rounded(px(7.0))
         .bg(colors().elevated)
         .when(needs_permission, |badge| {
             badge.border_1().border_color(colors().danger)
         })
         .child(
             div()
-                .size(px(18.0))
+                .size(px(16.0))
                 .flex()
                 .items_center()
                 .justify_center()

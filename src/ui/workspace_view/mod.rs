@@ -52,8 +52,17 @@ const TITLEBAR_CHROME_COLLAPSED: f32 = 148.0;
 /// Titlebar chrome width when the right sidebar is fully collapsed (toggle only).
 const TITLEBAR_RIGHT_CHROME_COLLAPSED: f32 = 40.0;
 const TITLEBAR_HEIGHT: f32 = 38.0;
-/// Padding + badge + gap reserved beside the sessions tab text column.
-const LEFT_SIDEBAR_TAB_CHROME: f32 = 16.0 + 24.0 + 32.0 + 8.0;
+/// Quiet separation between the app shell and its primary work surfaces.
+const PANEL_GAP: f32 = 4.0;
+/// Shared radius keeps sidebars and the terminal reading as one panel system.
+const PANEL_RADIUS: f32 = 10.0;
+/// Card padding + badge + gap beside the session text column.
+const SIDEBAR_WORKSPACE_CARD_CHROME: f32 = 20.0 + 28.0 + 8.0;
+/// The list inset plus the chrome inside a session card.
+const LEFT_SIDEBAR_TAB_CHROME: f32 = 16.0 + SIDEBAR_WORKSPACE_CARD_CHROME;
+const SIDEBAR_SPACE_HEIGHT: f32 = 32.0;
+const SIDEBAR_WORKSPACE_HEIGHT: f32 = 60.0;
+const SIDEBAR_GROUP_INSET: f32 = 10.0;
 /// Open/close duration — short enough to feel snappy, long enough to read as motion.
 const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(160);
 /// ~60 fps ticks; only runs while a sidebar is mid-animation.
@@ -484,17 +493,23 @@ impl Render for SidebarWorkspaceDragView {
         };
 
         div()
-            .h(px(74.0))
+            .h(px(SIDEBAR_WORKSPACE_HEIGHT))
             .w(px(self.width))
-            .px_3()
-            .rounded(px(8.0))
+            .px(px(10.0))
+            .rounded(px(7.0))
             .flex()
             .items_center()
             .gap_2()
             .bg(if self.selected {
-                colors().selection
+                colors().elevated
             } else {
                 colors().sidebar
+            })
+            .border_1()
+            .border_color(if self.selected {
+                colors().border_subtle
+            } else {
+                gpui::rgba(0x00000000)
             })
             .child(agent_sidebar_badge(
                 self.agent_kind.as_deref(),
@@ -504,31 +519,25 @@ impl Render for SidebarWorkspaceDragView {
             ))
             .child(
                 div()
-                    .w(px(self.width - LEFT_SIDEBAR_TAB_CHROME))
+                    .w(px(self.width - SIDEBAR_WORKSPACE_CARD_CHROME))
                     .flex_none()
                     .overflow_hidden()
                     .flex()
                     .flex_col()
                     .justify_center()
-                    .gap(px(2.0))
+                    .gap(px(1.0))
                     .child(sidebar_tab_line(
                         &self.title,
                         title_color,
-                        12.0,
+                        11.5,
                         true,
                         false,
                     ))
-                    .child(sidebar_tab_line(
-                        &agent_line,
-                        agent_color,
-                        10.0,
-                        true,
-                        false,
-                    ))
+                    .child(sidebar_tab_line(&agent_line, agent_color, 9.5, true, false))
                     .child(sidebar_tab_line(
                         &location_line,
                         location_color,
-                        9.0,
+                        8.5,
                         false,
                         true,
                     )),
@@ -3449,10 +3458,10 @@ impl WorkspaceView {
         }
     }
 
-    fn titlebar(&mut self, overlays_workspace: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let left_progress = self.left_sidebar_progress;
         let right_progress = self.right_sidebar_progress;
-        // Keep titlebar controls aligned with the continuous sidebar surfaces.
+        // Keep titlebar controls aligned with the framed panels below.
         let left_chrome_width = if left_progress > 0.99 {
             self.left_sidebar_width()
         } else {
@@ -3465,7 +3474,6 @@ impl WorkspaceView {
             TITLEBAR_RIGHT_CHROME_COLLAPSED
                 + (self.right_sidebar_width() - TITLEBAR_RIGHT_CHROME_COLLAPSED) * right_progress
         };
-        let left_open = left_progress > 0.5;
         let right_open = right_progress > 0.5;
         let tabs = self
             .snapshot
@@ -3496,14 +3504,10 @@ impl WorkspaceView {
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .bg(if overlays_workspace {
-                gpui::rgba(0x00000000)
-            } else {
-                colors().terminal
-            });
+            .bg(colors().titlebar);
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
-        } else if !overlays_workspace {
+        } else {
             center_chrome = center_chrome
                 .window_control_area(WindowControlArea::Drag)
                 .on_mouse_down(MouseButton::Left, |_, _, _| {
@@ -3517,14 +3521,7 @@ impl WorkspaceView {
             .flex_none()
             .flex()
             .items_center()
-            .bg(if overlays_workspace {
-                gpui::rgba(0x00000000)
-            } else {
-                colors().titlebar
-            })
-            .when(overlays_workspace, |titlebar| {
-                titlebar.absolute().top_0().left_0().right_0()
-            })
+            .bg(colors().titlebar)
             .child(
                 div()
                     .w(px(left_chrome_width))
@@ -3534,14 +3531,7 @@ impl WorkspaceView {
                     .items_center()
                     .pl(px(86.0))
                     .gap_1()
-                    .bg(if left_open {
-                        colors().sidebar
-                    } else {
-                        colors().titlebar
-                    })
-                    .when(left_progress > 0.001, |chrome| {
-                        chrome.border_r_1().border_color(colors().border_subtle)
-                    })
+                    .bg(colors().titlebar)
                     .child(
                         self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
                             if !this.left_sidebar_visible {
@@ -3570,14 +3560,7 @@ impl WorkspaceView {
                     .items_center()
                     .pr_2()
                     .overflow_hidden()
-                    .bg(if right_open {
-                        colors().panel
-                    } else {
-                        colors().titlebar
-                    })
-                    .when(right_progress > 0.001, |chrome| {
-                        chrome.border_l_1().border_color(colors().border_subtle)
-                    })
+                    .bg(colors().titlebar)
                     .child(right_chrome_content)
                     .child(self.sidebar_button(
                         "toggle-right-sidebar",
@@ -3590,7 +3573,7 @@ impl WorkspaceView {
             )
     }
 
-    fn sidebar(&mut self, top_inset: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.left_sidebar_mode {
             LeftSidebarMode::Sessions => self.sessions_sidebar_content(cx),
             LeftSidebarMode::Info => self.info_sidebar_content(cx),
@@ -3599,21 +3582,20 @@ impl WorkspaceView {
         let width = full_width * self.left_sidebar_progress;
         let show_handle = self.left_sidebar_progress > 0.99;
         // Outer clips to animated width; inner keeps full layout so content doesn't reflow.
-        // The inset keeps sidebar content below the overlaid window controls in compact mode.
         div()
             .w(px(width))
             .h_full()
             .flex_none()
             .relative()
             .overflow_hidden()
+            .rounded(px(PANEL_RADIUS))
             .bg(colors().sidebar)
-            .border_r_1()
+            .border_1()
             .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(full_width))
                     .h_full()
-                    .pt(px(top_inset))
                     .flex()
                     .flex_col()
                     .child(content),
@@ -3633,27 +3615,6 @@ impl WorkspaceView {
         let has_spaces = sidebar_entries
             .iter()
             .any(|entry| matches!(entry, SidebarEntry::Space { .. }));
-        let last_grouped_workspaces = sidebar_entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, sidebar_entry)| {
-                let SidebarEntry::Workspace {
-                    entry,
-                    space_id: Some(space_id),
-                } = sidebar_entry
-                else {
-                    return None;
-                };
-                let next_is_in_same_space = matches!(
-                    sidebar_entries.get(index + 1),
-                    Some(SidebarEntry::Workspace {
-                        space_id: Some(next_space_id),
-                        ..
-                    }) if next_space_id == space_id
-                );
-                (!next_is_in_same_space).then_some(entry.workspace_id)
-            })
-            .collect::<HashSet<_>>();
         // A lone workspace still needs to be draggable when it can be moved into
         // (or out of) a sidebar space.
         let can_reorder = workspace_count > 1 || has_spaces;
@@ -3739,7 +3700,7 @@ impl WorkspaceView {
                             .text_center()
                             .text_size(px(10.5))
                             .text_color(colors().subtle)
-                            .child("Usa + para crear una"),
+                            .child("Usa ⌘N para crear una"),
                     ),
             );
         } else {
@@ -3759,20 +3720,19 @@ impl WorkspaceView {
                                 collapsed,
                                 workspace_count,
                             } => {
+                                let section_name = name.to_uppercase();
                                 return div()
                                     .id(SharedString::from(format!("sidebar-space-{id}")))
-                                    .h(px(40.0))
+                                    .h(px(SIDEBAR_SPACE_HEIGHT))
                                     .w_full()
                                     .flex_none()
                                     .relative()
                                     .flex()
                                     .items_center()
-                                    .gap_2()
-                                    .px_2()
-                                    .mt_2()
-                                    .rounded(px(7.0))
+                                    .gap(px(6.0))
+                                    .px(px(6.0))
+                                    .mt(px(8.0))
                                     .cursor_pointer()
-                                    .hover(|item| item.bg(colors().hover))
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(move |this, _, _, cx| {
@@ -3817,30 +3777,9 @@ impl WorkspaceView {
                                             }
                                         },
                                     ))
-                                    .when(!collapsed && workspace_count > 0, |header| {
-                                        header.child(
-                                            div()
-                                                .absolute()
-                                                .left(px(17.0))
-                                                .top(px(40.0))
-                                                .bottom(px(-2.0))
-                                                .w(px(1.0))
-                                                .bg(colors().border_subtle),
-                                        )
-                                    })
                                     .child(
                                         div()
-                                            .min_w(px(0.0))
-                                            .flex_1()
-                                            .truncate()
-                                            .text_size(px(12.0))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(colors().foreground)
-                                            .child(name),
-                                    )
-                                    .child(
-                                        div()
-                                            .size(px(18.0))
+                                            .size(px(16.0))
                                             .flex_none()
                                             .flex()
                                             .items_center()
@@ -3848,8 +3787,8 @@ impl WorkspaceView {
                                             .child(
                                                 svg()
                                                     .path("chrome-icons/chevron-right.svg")
-                                                    .size(px(12.0))
-                                                    .text_color(colors().muted)
+                                                    .size(px(9.0))
+                                                    .text_color(colors().subtle)
                                                     .when(!collapsed, |icon| {
                                                         icon.with_transformation(
                                                             Transformation::rotate(radians(
@@ -3859,15 +3798,33 @@ impl WorkspaceView {
                                                     }),
                                             ),
                                     )
+                                    .child(
+                                        div()
+                                            .min_w(px(0.0))
+                                            .max_w(px(130.0))
+                                            .truncate()
+                                            .text_size(px(9.5))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(colors().muted)
+                                            .child(section_name),
+                                    )
+                                    .child(div().h(px(1.0)).flex_1().bg(colors().border_subtle))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .font_family("JetBrains Mono")
+                                            .text_size(px(8.5))
+                                            .text_color(colors().subtle)
+                                            .child(workspace_count.to_string()),
+                                    )
                                     .into_any_element();
                             }
                         };
                         let grouped = space_id.is_some();
-                        let group_inset = if grouped { 24.0 } else { 0.0 };
+                        let group_inset = if grouped { SIDEBAR_GROUP_INSET } else { 0.0 };
                         let item_width = self.left_sidebar_width() - 16.0 - group_inset;
                         let project_id = entry.project_id;
                         let workspace_id = entry.workspace_id;
-                        let is_last_in_space = last_grouped_workspaces.contains(&workspace_id);
                         let selected = entry.is_selected;
                         let (primary_identity, active_agent_identity) = sidebar_identities
                             .get(&workspace_id)
@@ -3973,49 +3930,33 @@ impl WorkspaceView {
                         // Explicit text width avoids flex+truncate collapsing labels to "…".
                         div()
                             .id(SharedString::from(format!("workspace-{workspace_id}")))
-                            .h(px(74.0))
+                            .h(px(SIDEBAR_WORKSPACE_HEIGHT))
                             .w(px(item_width))
                             .ml(px(group_inset))
                             .relative()
                             .mb(px(2.0))
-                            .px_3()
+                            .px(px(10.0))
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap_2()
-                            .rounded(px(8.0))
+                            .rounded(px(7.0))
                             .when(can_reorder, |item| item.cursor_move())
                             .when(!can_reorder, |item| item.cursor_pointer())
                             .bg(if selected {
-                                colors().selection
+                                colors().elevated
                             } else {
                                 colors().sidebar
+                            })
+                            .border_1()
+                            .border_color(if selected {
+                                colors().border_subtle
+                            } else {
+                                gpui::rgba(0x00000000)
                             })
                             .hover(|item| item.bg(colors().hover))
                             .active(|item| item.opacity(0.82))
                             .when(is_source, |item| item.opacity(0.65))
-                            .when(grouped, |item| {
-                                item.child(
-                                    div()
-                                        .absolute()
-                                        .left(px(-7.0))
-                                        .top(px(-2.0))
-                                        .w(px(1.0))
-                                        .bg(colors().border_subtle)
-                                        .when(is_last_in_space, |line| line.h(px(39.0)))
-                                        .when(!is_last_in_space, |line| line.bottom(px(-2.0))),
-                                )
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .left(px(-7.0))
-                                        .top(px(36.0))
-                                        .w(px(5.0))
-                                        .h(px(1.0))
-                                        .rounded_full()
-                                        .bg(colors().border_subtle),
-                                )
-                            })
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, window, cx| {
@@ -4082,25 +4023,25 @@ impl WorkspaceView {
                                     .flex()
                                     .flex_col()
                                     .justify_center()
-                                    .gap(px(2.0))
+                                    .gap(px(1.0))
                                     .child(sidebar_tab_line(
                                         &title_label,
                                         title_color,
-                                        12.0,
+                                        11.5,
                                         true,
                                         false,
                                     ))
                                     .child(sidebar_tab_line(
                                         &agent_label,
                                         agent_color,
-                                        10.0,
+                                        9.5,
                                         true,
                                         false,
                                     ))
                                     .child(sidebar_tab_line(
                                         &location_label,
                                         location_color,
-                                        9.0,
+                                        8.5,
                                         false,
                                         true,
                                     )),
@@ -4115,7 +4056,7 @@ impl WorkspaceView {
                                         .top_0()
                                         .left_0()
                                         .right_0()
-                                        .h(px(37.0))
+                                        .h(px(SIDEBAR_WORKSPACE_HEIGHT / 2.0))
                                         .can_drop(move |value, _, _| {
                                             value
                                                 .downcast_ref::<SidebarWorkspaceDrag>()
@@ -4147,7 +4088,7 @@ impl WorkspaceView {
                                         .bottom_0()
                                         .left_0()
                                         .right_0()
-                                        .h(px(37.0))
+                                        .h(px(SIDEBAR_WORKSPACE_HEIGHT / 2.0))
                                         .can_drop(move |value, _, _| {
                                             value
                                                 .downcast_ref::<SidebarWorkspaceDrag>()
@@ -4211,6 +4152,13 @@ impl WorkspaceView {
         let project_root = self.project_root();
         let (git_root, git_statuses) = self.diff_view.read(cx).status_index();
         let status_root = git_root.unwrap_or_else(|| project_root.clone());
+        let project_name = project_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("FILES")
+            .to_uppercase();
+        let changed_count = git_statuses.len();
 
         div()
             .id("project-files-content")
@@ -4220,6 +4168,42 @@ impl WorkspaceView {
             .flex_col()
             .overflow_hidden()
             .bg(colors().panel)
+            .child(
+                div()
+                    .h(px(34.0))
+                    .w_full()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .px(px(10.0))
+                    .child(
+                        svg()
+                            .path("file-icons/folder.svg")
+                            .size(px(14.0))
+                            .text_color(colors().folder),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(140.0))
+                            .truncate()
+                            .text_size(px(9.5))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(colors().muted)
+                            .child(project_name),
+                    )
+                    .child(div().h(px(1.0)).flex_1().bg(colors().border_subtle))
+                    .when(changed_count > 0, |header| {
+                        header.child(
+                            div()
+                                .flex_none()
+                                .font_family("JetBrains Mono")
+                                .text_size(px(8.5))
+                                .text_color(colors().warning)
+                                .child(changed_count.to_string()),
+                        )
+                    }),
+            )
             // File tree
             .child(
                 div()
@@ -4227,7 +4211,8 @@ impl WorkspaceView {
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
-                    .pt_1()
+                    .px_1()
+                    .pt_0()
                     .pb_2()
                     .children(rows.into_iter().map(|row| {
                         let path = row.entry.path.clone();
@@ -4263,9 +4248,11 @@ impl WorkspaceView {
                             .flex()
                             .items_center()
                             .pr_2()
+                            .mb(px(1.0))
+                            .rounded(px(4.0))
                             .cursor_pointer()
                             .bg(if selected {
-                                colors().selection
+                                colors().elevated
                             } else {
                                 gpui::rgba(0x00000000)
                             })
@@ -5387,6 +5374,9 @@ impl WorkspaceView {
             .flex_col()
             .min_h(px(0.0))
             .overflow_hidden()
+            .rounded(px(PANEL_RADIUS))
+            .border_1()
+            .border_color(colors().border_subtle)
             .bg(colors().terminal)
             .child(canvas)
             .children(drawer)
@@ -5807,6 +5797,10 @@ impl WorkspaceView {
                     .snapshot
                     .selected_tab()
                     .map_or(1, |tab| tab.sessions.len());
+                let framed = self
+                    .snapshot
+                    .selected_tab()
+                    .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none());
                 let selected = self
                     .snapshot
                     .selected_tab()
@@ -5842,6 +5836,12 @@ impl WorkspaceView {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
+                    .bg(colors().terminal)
+                    .when(framed, |pane| {
+                        pane.rounded(px(PANEL_RADIUS - 2.0))
+                            .border_1()
+                            .border_color(colors().border_subtle)
+                    })
                     .when(is_source, |pane| pane.opacity(0.55))
                     .when(can_drag, |pane| {
                         pane.cursor_move()
@@ -6000,13 +6000,13 @@ impl WorkspaceView {
                 let divider = div()
                     .id(SharedString::from(divider_id))
                     .flex_none()
-                    .bg(colors().border_subtle)
+                    .bg(colors().background)
                     .hover(|divider| divider.bg(colors().muted))
                     .when(axis == WorkspaceSplitAxis::Horizontal, |divider| {
-                        divider.w(px(1.0)).h_full().cursor_ew_resize()
+                        divider.w(px(PANEL_GAP)).h_full().cursor_ew_resize()
                     })
                     .when(axis == WorkspaceSplitAxis::Vertical, |divider| {
-                        divider.h(px(1.0)).w_full().cursor_ns_resize()
+                        divider.h(px(PANEL_GAP)).w_full().cursor_ns_resize()
                     })
                     .on_drag(drag, move |drag, _, _, cx| {
                         cx.new(|_| PaneDividerDragView { axis: drag.axis })
@@ -6080,6 +6080,9 @@ impl WorkspaceView {
         });
         let is_empty = panes.is_none();
         let zoomed = tab.as_ref().and_then(|tab| tab.zoomed_session_id).is_some();
+        let framed_panes = tab
+            .as_ref()
+            .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none());
 
         // Full-bleed: no padding. Agent TUIs paint pure black; any inset against
         // chrome makes the background look “cut off”.
@@ -6089,6 +6092,9 @@ impl WorkspaceView {
             .relative()
             .overflow_hidden()
             .bg(colors().terminal)
+            .when(framed_panes, |canvas| {
+                canvas.p(px(PANEL_GAP)).bg(colors().background)
+            })
             .when_some(panes, |canvas, panes| canvas.child(panes))
             .when(zoomed, |canvas| {
                 canvas.child(
@@ -6231,7 +6237,7 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    fn right_sidebar(&mut self, top_inset: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.right_sidebar_mode;
         let full_width = self.right_sidebar_width();
         let width = full_width * self.right_sidebar_progress;
@@ -6242,22 +6248,21 @@ impl WorkspaceView {
             RightSidebarMode::Servers => self.servers_view.clone().into_any_element(),
         };
 
-        // Outer clips to animated width; inner keeps full panel layout. The optional inset
-        // keeps panel content below the overlaid titlebar controls.
+        // Outer clips to animated width; inner keeps the full panel layout.
         div()
             .w(px(width))
             .h_full()
             .flex_none()
             .relative()
             .overflow_hidden()
+            .rounded(px(PANEL_RADIUS))
             .bg(colors().panel)
-            .border_l_1()
+            .border_1()
             .border_color(colors().border_subtle)
             .child(
                 div()
                     .w(px(full_width))
                     .h_full()
-                    .pt(px(top_inset))
                     .flex()
                     .flex_col()
                     .child(content),
@@ -6888,10 +6893,6 @@ impl Render for WorkspaceView {
                 });
             }
         }
-        let titlebar_overlays_workspace = self
-            .snapshot
-            .selected_workspace()
-            .is_none_or(|workspace| workspace.tabs.len() <= 1);
         let mut body = div()
             .id("vibra-root")
             .track_focus(&self.focus_handle)
@@ -6935,9 +6936,7 @@ impl Render for WorkspaceView {
             .text_color(colors().foreground)
             .bg(colors().background);
 
-        if !titlebar_overlays_workspace {
-            body = body.child(self.titlebar(false, cx));
-        }
+        body = body.child(self.titlebar(cx));
 
         if let Some(banner) = self.error_banner() {
             body = body.child(banner);
@@ -6948,28 +6947,20 @@ impl Render for WorkspaceView {
             .flex_1()
             .min_h(px(0.0))
             .flex()
+            .gap(px(PANEL_GAP))
+            .px(px(PANEL_GAP))
+            .pb(px(PANEL_GAP))
             .on_drag_move(cx.listener(Self::on_sidebar_resize_move));
-        let sidebar_top_inset = if titlebar_overlays_workspace {
-            TITLEBAR_HEIGHT
-        } else {
-            0.0
-        };
         // Keep sidebars mounted while progress > 0 so close animations can finish.
         if self.left_sidebar_progress > 0.001 {
-            layout = layout.child(self.sidebar(sidebar_top_inset, cx));
+            layout = layout.child(self.sidebar(cx));
         }
         layout = layout.child(self.center_panel(cx));
         if self.right_sidebar_progress > 0.001 {
-            layout = layout.child(self.right_sidebar(sidebar_top_inset, cx));
+            layout = layout.child(self.right_sidebar(cx));
         }
 
         body = body.child(layout);
-        if titlebar_overlays_workspace {
-            // With zero or one terminal tab there is no tab strip to show. Keep only the
-            // window/sidebar controls overlaid at the edges so the terminal can use the
-            // otherwise empty titlebar height in the center.
-            body = body.child(self.titlebar(true, cx));
-        }
         if let Some(modal) = self.palette_modal(cx) {
             body = body.child(modal);
         } else if let Some(modal) = self.rename_modal(cx) {

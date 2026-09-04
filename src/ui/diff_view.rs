@@ -665,6 +665,8 @@ impl DiffView {
             .gap_2()
             .px_3()
             .bg(colors().panel)
+            .border_b_1()
+            .border_color(colors().border_subtle)
             .child(self.mode_trigger(cx))
             .child(
                 div()
@@ -920,12 +922,14 @@ impl DiffView {
     }
 
     fn file_cards(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let change_count = self
+        let changes = self
             .active_snapshot()
-            .map(|snapshot| snapshot.changes.len())
-            .unwrap_or(0);
+            .map(|snapshot| snapshot.changes.clone())
+            .unwrap_or_default();
+        let (staged, unstaged): (Vec<_>, Vec<_>) =
+            changes.into_iter().partition(|change| change.staged);
 
-        div()
+        let mut list = div()
             .id("git-file-cards")
             .flex_1()
             .min_h(px(0.0))
@@ -935,11 +939,48 @@ impl DiffView {
             .py_0()
             .flex()
             .flex_col()
-            .gap_0()
-            .children((0..change_count).filter_map(|index| {
-                let change = self.active_snapshot()?.changes.get(index)?.clone();
-                Some(self.file_card(change, cx))
-            }))
+            .gap_0();
+
+        if !unstaged.is_empty() {
+            list = list.children(
+                unstaged
+                    .into_iter()
+                    .map(|change| self.file_card(change, cx)),
+            );
+        }
+        if !staged.is_empty() {
+            list = list
+                .child(Self::file_section_header("STAGED", staged.len()))
+                .children(staged.into_iter().map(|change| self.file_card(change, cx)));
+        }
+        list
+    }
+
+    fn file_section_header(label: &'static str, count: usize) -> Div {
+        div()
+            .h(px(30.0))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(7.0))
+            .px_3()
+            .bg(colors().panel)
+            .child(
+                div()
+                    .text_size(px(9.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(colors().muted)
+                    .child(label),
+            )
+            .child(div().h(px(1.0)).flex_1().bg(colors().border_subtle))
+            .child(
+                div()
+                    .font_family("JetBrains Mono")
+                    .text_size(px(8.5))
+                    .text_color(colors().subtle)
+                    .child(count.to_string()),
+            )
     }
 
     fn file_card(&self, change: GitFileChange, cx: &mut Context<Self>) -> Stateful<Div> {

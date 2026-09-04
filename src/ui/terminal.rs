@@ -29,6 +29,8 @@ use crate::{
 
 const TERMINAL_FONT_SIZE: f32 = 12.0;
 const TERMINAL_LINE_HEIGHT: f32 = 16.0;
+/// Keeps the terminal grid from visually touching the rounded panel edges.
+const TERMINAL_VERTICAL_PADDING: f32 = 4.0;
 const MIN_TERMINAL_FONT_SIZE: f32 = 8.0;
 const MAX_TERMINAL_FONT_SIZE: f32 = 32.0;
 
@@ -1397,6 +1399,7 @@ impl Render for TerminalView {
             .id(SharedString::from(format!("terminal-{}", self.session_id)))
             .size_full()
             .min_h(px(0.0))
+            .py(px(TERMINAL_VERTICAL_PADDING))
             .relative()
             .overflow_hidden()
             .track_focus(&self.focus_handle)
