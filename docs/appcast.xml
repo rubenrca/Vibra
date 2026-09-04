@@ -3,19 +3,19 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.15</title>
-            <pubDate>Thu, 03 Sep 2026 14:11:12 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.15</link>
-            <sparkle:version>126</sparkle:version>
-            <sparkle:shortVersionString>0.3.15</sparkle:shortVersionString>
+            <title>0.3.16</title>
+            <pubDate>Fri, 04 Sep 2026 14:41:22 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.16</link>
+            <sparkle:version>131</sparkle:version>
+            <sparkle:shortVersionString>0.3.16</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Let a single terminal use the empty titlebar area while preserving macOS window controls and keeping the tab strip available when multiple tabs are open.</li>
-  <li>Refine sidebar spaces with compact headers, consistent chevrons, clearer nested-session connectors, and drag-and-drop support even when only one session exists.</li>
-  <li>Keep newly created sessions inside the selected session's sidebar space.</li>
+  <li>Frame the workspace as subtle, closely spaced panels and give split terminals the same visual separation while preserving draggable resizing and pane zoom.</li>
+  <li>Refine the sessions sidebar with compact workspace cards, smaller agent marks, and lightweight space separators that keep groups distinct from sessions.</li>
+  <li>Polish Files, Git, and Servers with a project-root summary, clearer staged changes, denser rows and cards, and more consistent panel metadata.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.15/Vibra-0.3.15.dmg" length="12470572" type="application/octet-stream" sparkle:edSignature="i7Rgei7v3gW8qNRNFirmxOhciLm+mMUlYqcJXE2Pxnpsxe7t3IjUY7XVS6Z7wEGZQioH+xaGHr4AtCd8ch9uAA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.16/Vibra-0.3.16.dmg" length="12501457" type="application/octet-stream" sparkle:edSignature="mxQdPcXLIzLGw2PoTBq9yuZc/SW76sGL4a8PvHoXhLlN9e1t1yqd1F49y7+ROTMSIZShkomgm1tRDp1U5Rn6DA=="/>
         </item>
     </channel>
 </rss>
