@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.16 — 2026-09-04
+
+- Frame the workspace as subtle, closely spaced panels and give split terminals the same visual separation while preserving draggable resizing and pane zoom.
+- Refine the sessions sidebar with compact workspace cards, smaller agent marks, and lightweight space separators that keep groups distinct from sessions.
+- Polish Files, Git, and Servers with a project-root summary, clearer staged changes, denser rows and cards, and more consistent panel metadata.
+
 ## 0.3.15 — 2026-09-03
 
 - Let a single terminal use the empty titlebar area while preserving macOS window controls and keeping the tab strip available when multiple tabs are open.
