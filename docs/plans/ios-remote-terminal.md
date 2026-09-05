@@ -1,8 +1,17 @@
 # Vibra iOS: control remoto sencillo de terminales
 
-Fecha: 2026-09-04. Estado: plan acordado, pendiente de implementación.
+Fecha: 2026-09-04. Estado: implementación iniciada en `feat/ios-remote-terminal`.
 
 Actualización: la [migración a Ghostty](../ghostty.md) está implementada en macOS. El transporte y el cliente iOS descritos aquí siguen pendientes.
+
+## Avance
+
+- Completado: contrato JSON v1 en `services/protocol`, límites de mensajes/entrada/tamaño e historial, y recuperación de revisiones de pantalla.
+- Completado: paquete Swift nativo para el sobre versionado y prueba que decodifica y vuelve a codificar una pantalla generada por Rust, preservando Unicode y ANSI.
+- Siguiente: relay local y prueba de interoperabilidad Noise Rust–Swift. La prueba JSON no valida cifrado.
+- Pendiente: conexión con panes Ghostty, permisos y controles del Mac, aplicación iOS y prueba por internet.
+
+Estos módulos están aislados de la aplicación: todavía no habilitan red ni control remoto. Verificación: `./Scripts/verify_remote.sh`.
 
 ## 1. Objetivo y alcance
 

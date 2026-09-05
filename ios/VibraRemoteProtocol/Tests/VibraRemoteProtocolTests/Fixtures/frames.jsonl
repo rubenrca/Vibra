@@ -1,0 +1,4 @@
+{"version":1,"request_id":0,"message":{"kind":"list_panes"}}
+{"version":1,"request_id":1,"message":{"kind":"open","pane_id":"00000000-0000-0000-0000-000000000000","size":{"columns":80,"rows":24}}}
+{"version":1,"request_id":2,"message":{"kind":"screen","pane_id":"00000000-0000-0000-0000-000000000000","revision":10,"size":{"columns":80,"rows":24},"ansi":"\u001b[31mEspañol 日本語 🦀\u001b[0m"}}
+{"version":1,"request_id":3,"message":{"kind":"input","pane_id":"00000000-0000-0000-0000-000000000000","input":{"kind":"key","key":{"character":"c"},"modifiers":["control"]}}}

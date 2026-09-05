@@ -2,7 +2,7 @@ name: Rust
 
 on:
   push:
-    branches: [main, rewrite/gpui, feat/ghostty-terminal]
+    branches: [main, rewrite/gpui, feat/ghostty-terminal, feat/ios-remote-terminal]
   pull_request:
 
 permissions:
@@ -36,6 +36,9 @@ jobs:
 
       - name: Verify
         run: ./Scripts/verify.sh
+
+      - name: Verify remote protocol Rust and Swift
+        run: ./Scripts/verify_remote.sh
 
       - name: Package development bundle
         run: ./Scripts/package_app.sh debug --universal --sign -
