@@ -2,7 +2,7 @@ name: Rust
 
 on:
   push:
-    branches: [main, rewrite/gpui]
+    branches: [main, rewrite/gpui, feat/ghostty-terminal]
   pull_request:
 
 permissions:
@@ -29,8 +29,16 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
+      - name: Prepare pinned Ghostty and Zig
+        run: |
+          ./Scripts/fetch_ghostty.sh aarch64
+          ./Scripts/fetch_ghostty.sh x86_64
+
+      - name: Test Ghostty backend
+        run: cargo test --locked --features ghostty
+
       - name: Verify
         run: ./Scripts/verify.sh
 
       - name: Package development bundle
-        run: ./Scripts/package_app.sh debug --universal --sign -
+        run: ./Scripts/package_app.sh debug --universal --ghostty --sign -

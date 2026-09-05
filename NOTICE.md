@@ -7,6 +7,12 @@ Terminal parsing and state are provided by
 [alacritty_terminal](https://github.com/alacritty/alacritty), distributed under
 the Apache-2.0 license.
 
+Builds with the experimental `ghostty` feature use
+[libghostty-vt](https://github.com/ghostty-org/ghostty), pinned to
+`492300cad104195411d12217dd22f1cd05f31376`, under the MIT license.
+Its copyright and license are included in `Resources/Licenses/Ghostty-MIT.txt`.
+Alacritty remains available as a fallback in these builds.
+
 The embedded JetBrains Mono Variable fonts in `Resources/Fonts` are distributed
 under the SIL Open Font License 1.1. The complete font license is included as
 `Resources/Fonts/OFL.txt`.

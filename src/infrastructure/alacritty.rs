@@ -36,7 +36,7 @@ use crate::ui::theme::{self, TerminalPalette};
 /// Host tools (CI, agent shells, cargo wrappers) often export these to force
 /// monochrome output. Interactive agent CLIs inside Vibra panes should not
 /// inherit that — dock-launched and agent-launched builds must look the same.
-const COLOR_SUPPRESSING_ENV: &[&str] = &[
+pub(super) const COLOR_SUPPRESSING_ENV: &[&str] = &[
     "NO_COLOR",
     "CLICOLOR",
     "CLICOLOR_FORCE",
@@ -580,7 +580,7 @@ impl TerminalHandle for AlacrittyTerminal {
 }
 
 #[cfg(target_os = "macos")]
-fn process_working_directory(process_id: u32) -> Option<PathBuf> {
+pub(super) fn process_working_directory(process_id: u32) -> Option<PathBuf> {
     use std::ffi::CStr;
     use std::mem::{MaybeUninit, size_of};
 
@@ -605,19 +605,19 @@ fn process_working_directory(process_id: u32) -> Option<PathBuf> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn process_working_directory(process_id: u32) -> Option<PathBuf> {
+pub(super) fn process_working_directory(process_id: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{process_id}/cwd")).ok()
 }
 
 #[cfg(not(unix))]
-fn process_working_directory(_: u32) -> Option<PathBuf> {
+pub(super) fn process_working_directory(_: u32) -> Option<PathBuf> {
     None
 }
 
 /// Name used to invoke a process. This preserves wrapper identities such as
 /// Cursor's `cursor-agent`, whose script replaces itself with a `node` binary
 /// while retaining the original argv[0].
-fn process_invoked_name(process_id: u32) -> Option<String> {
+pub(super) fn process_invoked_name(process_id: u32) -> Option<String> {
     process_argv0(process_id)
         .or_else(|| process_executable_name(process_id))
         .and_then(|name| {
@@ -991,7 +991,7 @@ fn indexed_color(index: usize) -> TerminalRgb {
     indexed_color_with(index, &theme::terminal_palette())
 }
 
-fn indexed_color_with(index: usize, palette: &TerminalPalette) -> TerminalRgb {
+pub(super) fn indexed_color_with(index: usize, palette: &TerminalPalette) -> TerminalRgb {
     match index {
         0..=15 => palette.ansi[index],
         16..=231 => {
@@ -1147,7 +1147,7 @@ fn is_color_suppressing_env(key: &str) -> bool {
         .any(|candidate| candidate.eq_ignore_ascii_case(key))
 }
 
-fn terminal_child_environment(
+pub(super) fn terminal_child_environment(
     session_id: Uuid,
     extra_environment: &HashMap<String, String>,
 ) -> HashMap<String, String> {

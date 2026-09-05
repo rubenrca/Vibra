@@ -2,6 +2,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    build_ghostty();
     println!("cargo:rerun-if-changed=native/sparkle_bridge.m");
     println!("cargo:rerun-if-changed=native/sparkle_bridge_stub.c");
     println!("cargo:rerun-if-changed=native/sparkle_bridge.h");
@@ -71,6 +72,48 @@ fn main() {
             .include(manifest_dir.join("native"))
             .compile("vibra_sparkle_bridge");
     }
+}
+
+fn build_ghostty() {
+    if env::var_os("CARGO_FEATURE_GHOSTTY").is_none() {
+        return;
+    }
+    assert_eq!(
+        env::var("CARGO_CFG_TARGET_OS").unwrap(),
+        "macos",
+        "Ghostty backend currently supports macOS only"
+    );
+    println!("cargo:rerun-if-env-changed=GHOSTTY_SOURCE");
+    println!("cargo:rerun-if-env-changed=GHOSTTY_LIB_DIR");
+    println!("cargo:rerun-if-changed=native/ghostty_bridge.c");
+    println!("cargo:rerun-if-changed=native/ghostty_bridge.h");
+    let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let source = env::var_os("GHOSTTY_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".build/ghostty/source"));
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let lib = env::var_os("GHOSTTY_LIB_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(format!(".build/ghostty/{arch}/lib")));
+    let archive = lib.join("libghostty-vt.a");
+    assert!(
+        archive.is_file(),
+        "Run Scripts/fetch_ghostty.sh first (see docs/ghostty.md); missing {}",
+        archive.display()
+    );
+    println!("cargo:rerun-if-changed={}", archive.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        source.join("include/ghostty").display()
+    );
+    cc::Build::new()
+        .file("native/ghostty_bridge.c")
+        .include(source.join("include"))
+        .include("native")
+        .flag("-std=c11")
+        .warnings_into_errors(true)
+        .compile("vibra_ghostty_bridge");
+    println!("cargo:rustc-link-arg={}", archive.display());
 }
 
 fn find_sparkle_framework(manifest_dir: &Path) -> Option<PathBuf> {

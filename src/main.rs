@@ -282,7 +282,7 @@ fn run() -> Result<()> {
                             WorkspaceDependencies {
                                 repository,
                                 settings_repository,
-                                terminal_port: Arc::new(AlacrittyTerminalPort),
+                                terminal_port: terminal_backend(),
                                 file_port: Arc::new(LocalFileSystemPort),
                                 git_port: Arc::new(GitCliPort),
                             },
@@ -321,6 +321,14 @@ fn main() {
         eprintln!("Vibra no pudo iniciar: {error:#}");
         std::process::exit(1);
     }
+}
+
+fn terminal_backend() -> Arc<dyn crate::ports::terminal::TerminalPort> {
+    #[cfg(feature = "ghostty")]
+    if std::env::var("VIBRA_TERMINAL_BACKEND").as_deref() != Ok("alacritty") {
+        return Arc::new(crate::infrastructure::ghostty::GhosttyTerminalPort);
+    }
+    Arc::new(AlacrittyTerminalPort)
 }
 
 #[cfg(test)]

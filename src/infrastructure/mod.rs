@@ -2,6 +2,8 @@ pub mod alacritty;
 pub mod automation;
 pub mod editor;
 pub mod files;
+#[cfg(feature = "ghostty")]
+pub mod ghostty;
 pub mod git;
 pub mod notifications;
 pub mod paths;
