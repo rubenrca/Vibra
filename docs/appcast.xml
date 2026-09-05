@@ -3,19 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.16</title>
-            <pubDate>Fri, 04 Sep 2026 14:41:22 -0400</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.16</link>
-            <sparkle:version>131</sparkle:version>
-            <sparkle:shortVersionString>0.3.16</sparkle:shortVersionString>
+            <title>0.3.17</title>
+            <pubDate>Sat, 05 Sep 2026 14:37:58 -0400</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.17</link>
+            <sparkle:version>140</sparkle:version>
+            <sparkle:shortVersionString>0.3.17</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Frame the workspace as subtle, closely spaced panels and give split terminals the same visual separation while preserving draggable resizing and pane zoom.</li>
-  <li>Refine the sessions sidebar with compact workspace cards, smaller agent marks, and lightweight space separators that keep groups distinct from sessions.</li>
-  <li>Polish Files, Git, and Servers with a project-root summary, clearer staged changes, denser rows and cards, and more consistent panel metadata.</li>
+  <li>Add encrypted iPhone terminal control on the same local network, with QR pairing, Mac approval, and explicit sharing per terminal. No hosted relay or additional account is required.</li>
+  <li>Preserve device pairing across Mac restarts and improve reconnects, interrupted pairing, and pending input cleanup.</li>
+  <li>Complete the Ghostty terminal migration and organize app settings.</li>
+  <li>Remove the Servers panel, background port scanning, and obsolete relay code.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.16/Vibra-0.3.16.dmg" length="12501457" type="application/octet-stream" sparkle:edSignature="mxQdPcXLIzLGw2PoTBq9yuZc/SW76sGL4a8PvHoXhLlN9e1t1yqd1F49y7+ROTMSIZShkomgm1tRDp1U5Rn6DA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.17/Vibra-0.3.17.dmg" length="13748035" type="application/octet-stream" sparkle:edSignature="BKKWFC6uv9wVDGw39vQDodl1b8y0ykXNQBjiDHzpfckhkm/31G7mTnkK4jJAYNg8uKFGcuBvGSParDCvGUYRDw=="/>
         </item>
     </channel>
 </rss>
