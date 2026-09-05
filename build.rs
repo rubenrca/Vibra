@@ -75,9 +75,6 @@ fn main() {
 }
 
 fn build_ghostty() {
-    if env::var_os("CARGO_FEATURE_GHOSTTY").is_none() {
-        return;
-    }
     assert_eq!(
         env::var("CARGO_CFG_TARGET_OS").unwrap(),
         "macos",

@@ -6,7 +6,7 @@ typedef struct {
     uint16_t columns, rows, cursor_x, cursor_y;
     uint8_t cursor_visible, cursor_blinking, cursor_style, kitty;
     uint64_t history, offset;
-    uint32_t modes;
+    uint32_t modes, painted_cells;
 } VgInfo;
 typedef struct {
     uint8_t foreground[3], background[3], underline_color[3];
@@ -18,9 +18,8 @@ void vg_free(void *);
 void vg_feed(void *, const uint8_t *, size_t);
 int vg_resize(void *, uint16_t, uint16_t, uint32_t, uint32_t);
 int vg_palette(void *, const uint8_t *);
-int vg_snapshot(void *, VgInfo *, VgPaint, void *);
+int vg_snapshot(void *, VgInfo *, VgPaint, void *, int);
 void vg_scroll(void *, int64_t);
-void vg_bottom(void *);
 int vg_clear_history(void *);
 int vg_select(void *, int, int, uint16_t, uint16_t, int);
 int vg_search(void *, const uint8_t *, size_t, int);

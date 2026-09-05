@@ -574,7 +574,13 @@ impl TerminalView {
     }
 
     fn cancel_pending_action(&mut self, cx: &mut Context<Self>) {
-        self.pending_confirmations.pop_front();
+        if let Some(TerminalConfirmation::ClipboardRead { formatter, .. }) =
+            self.pending_confirmations.pop_front()
+        {
+            // Complete the protocol with an empty clipboard; never leave the
+            // requesting program waiting and never disclose the captured value.
+            self.send_protocol(formatter("").into_bytes());
+        }
         cx.notify();
     }
 
@@ -2862,7 +2868,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn denying_an_osc52_clipboard_read_sends_nothing(cx: &mut TestAppContext) {
+    fn denying_an_osc52_clipboard_read_sends_empty_response(cx: &mut TestAppContext) {
         cx.write_to_clipboard(ClipboardItem::new_string("no-compartir".into()));
         let port = Arc::new(MockTerminalPort::new());
         let mock_handle = port.handle.clone();
@@ -2886,14 +2892,17 @@ mod tests {
         window
             .update(cx, |terminal, _, cx| {
                 terminal.handle_terminal_event(
-                    TerminalEvent::ClipboardLoad(Arc::new(|text| text.to_owned())),
+                    TerminalEvent::ClipboardLoad(Arc::new(|text| format!("\x1b]52;c;{text}\x07"))),
                     cx,
                 );
                 terminal.cancel_pending_action(cx);
             })
             .unwrap();
 
-        assert!(mock_handle.inputs.lock().unwrap().is_empty());
+        assert_eq!(
+            mock_handle.inputs.lock().unwrap().as_slice(),
+            [b"\x1b]52;c;\x07".to_vec()]
+        );
     }
 
     #[test]

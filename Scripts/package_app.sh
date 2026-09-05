@@ -6,17 +6,15 @@ script_name=${0:A}
 repo_root=${script_name:h:h}
 configuration=debug
 universal=0
-ghostty=0
 make_dmg=0
 notarize=0
 signing_identity=${VIBRA_SIGNING_IDENTITY:-}
 force_ad_hoc=0
 
 usage() {
-  print -u2 -- "usage: $script_name [debug|release] [--universal] [--ghostty] [--dmg] [--notarize] [--sign <identity>]"
+  print -u2 -- "usage: $script_name [debug|release] [--universal] [--dmg] [--notarize] [--sign <identity>]"
   print -u2 --
   print -u2 -- "  --universal  build aarch64 and x86_64 slices and merge them"
-  print -u2 -- "  --ghostty    use the experimental Ghostty backend (run fetch_ghostty.sh first)"
   print -u2 -- "  --dmg        also produce dist/Vibra.dmg"
   print -u2 -- "  --notarize   notarize the distributable artifact with Apple and staple its ticket"
   print -u2 -- "  --sign <id>  signing identity. Defaults to \$VIBRA_SIGNING_IDENTITY, then the"
@@ -32,7 +30,6 @@ while (( $# )); do
   case "$1" in
     debug|release) configuration=$1 ;;
     --universal) universal=1 ;;
-    --ghostty) ghostty=1 ;;
     --dmg) make_dmg=1 ;;
     --notarize) notarize=1 ;;
     --sign)
@@ -144,10 +141,11 @@ for target in $targets; do
     exit 69
   fi
 
-  cargo_args=(build --locked --target "$target")
-  if (( ghostty )); then
-    cargo_args+=(--features ghostty)
+  target_arch=${target%%-*}
+  if [[ ! -f "$repo_root/.build/ghostty/$target_arch/lib/libghostty-vt.a" && -z ${GHOSTTY_LIB_DIR:-} ]]; then
+    "$repo_root/Scripts/fetch_ghostty.sh" "$target_arch"
   fi
+  cargo_args=(build --locked --target "$target")
   profile_dir=debug
   if [[ $configuration == release ]]; then
     cargo_args+=(--release)
@@ -167,10 +165,8 @@ done
 
 rm -rf "$app_dir"
 mkdir -p "$macos_dir" "$resources_dir" "$frameworks_dir"
-if (( ghostty )); then
-  mkdir -p "$resources_dir/Licenses"
-  cp "$repo_root/Resources/Licenses/Ghostty-MIT.txt" "$resources_dir/Licenses/Ghostty-MIT.txt"
-fi
+mkdir -p "$resources_dir/Licenses"
+cp "$repo_root/Resources/Licenses/Ghostty-MIT.txt" "$resources_dir/Licenses/Ghostty-MIT.txt"
 
 if (( ${#binaries} > 1 )); then
   lipo -create "${binaries[@]}" -output "$macos_dir/Vibra"

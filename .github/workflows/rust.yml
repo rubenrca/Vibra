@@ -34,11 +34,8 @@ jobs:
           ./Scripts/fetch_ghostty.sh aarch64
           ./Scripts/fetch_ghostty.sh x86_64
 
-      - name: Test Ghostty backend
-        run: cargo test --locked --features ghostty
-
       - name: Verify
         run: ./Scripts/verify.sh
 
       - name: Package development bundle
-        run: ./Scripts/package_app.sh debug --universal --ghostty --sign -
+        run: ./Scripts/package_app.sh debug --universal --sign -

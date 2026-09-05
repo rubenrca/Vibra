@@ -14,9 +14,19 @@ typedef struct {
     VgEvent event;
     void *userdata;
     bool rectangle;
+    bool capture_reply;
+    uint8_t reply[256];
+    size_t reply_len;
 } VgTerminal;
 static void write_pty(GhosttyTerminal t, void *u, const uint8_t *p, size_t n) {
-    (void)t; VgTerminal *v = u; v->event(v->userdata, 0, p, n);
+    (void)t; VgTerminal *v = u;
+    if (v->capture_reply) {
+        if (n <= sizeof(v->reply) - v->reply_len) {
+            memcpy(v->reply + v->reply_len, p, n); v->reply_len += n;
+        }
+        return;
+    }
+    v->event(v->userdata, 0, p, n);
 }
 static void bell(GhosttyTerminal t, void *u) {
     (void)t; VgTerminal *v = u; v->event(v->userdata, 1, NULL, 0);
@@ -42,6 +52,21 @@ static void clipboard_write(GhosttyTerminal t, void *u, const GhosttyClipboardWr
     }
     write->reply(write,&reply);
 }
+// Render a denial while the borrowed request is valid, but retain its bytes.
+// OSC 52's empty response gives us the exact destination and terminator. Rust
+// owns that template and fills it only after the existing UI grants consent.
+// No borrowed request survives this callback and the VT parser never blocks.
+static void clipboard_read(GhosttyTerminal t, void *u, const GhosttyClipboardRead *read) {
+    (void)t; VgTerminal *v = u;
+    GhosttyClipboardReadReply reply = GHOSTTY_INIT_SIZED(GhosttyClipboardReadReply);
+    reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_DENIED;
+    v->reply_len = 0; v->capture_reply = true;
+    read->reply(read, &reply);
+    v->capture_reply = false;
+    bool osc52 = v->reply_len >= 7 && memcmp(v->reply, "\x1b]52;", 5) == 0;
+    // Other clipboard protocols retain their explicit denial; no data is read.
+    v->event(v->userdata, osc52 ? 4 : 0, v->reply, v->reply_len);
+}
 void vg_free(void *p) {
     VgTerminal *v = p; if (!v) return;
     if (v->search) ghostty_search_free(v->search);
@@ -62,6 +87,7 @@ void *vg_new(uint16_t cols, uint16_t rows, VgEvent event, void *userdata) {
         ghostty_terminal_set(v->term, GHOSTTY_TERMINAL_OPT_BELL, bell) != GHOSTTY_SUCCESS ||
         ghostty_terminal_set(v->term, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, title) != GHOSTTY_SUCCESS) goto fail;
     if (ghostty_terminal_set(v->term,GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,clipboard_write)!=GHOSTTY_SUCCESS) goto fail;
+    if (ghostty_terminal_set(v->term,GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,clipboard_read)!=GHOSTTY_SUCCESS) goto fail;
     GhosttyString name = {(const uint8_t *)"xterm-256color", 14};
     if (ghostty_terminal_set(v->term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &name) != GHOSTTY_SUCCESS) goto fail;
     size_t history_bytes=64u*1024u*1024u, history_lines=10000, no_images=0;
@@ -87,8 +113,9 @@ static bool mode(VgTerminal *v, uint16_t n) {
     GhosttyTerminalModeConfig c = {ghostty_mode_new(n, false), false};
     return ghostty_terminal_get(v->term, GHOSTTY_TERMINAL_DATA_MODE, &c) == GHOSTTY_SUCCESS && c.value;
 }
-int vg_snapshot(void *p, VgInfo *info, VgPaint paint, void *userdata) {
+int vg_snapshot(void *p, VgInfo *info, VgPaint paint, void *userdata, int force) {
     VgTerminal *v = p;
+    info->painted_cells = 0;
     TRY(ghostty_render_state_update(v->render, v->term));
     TRY(ghostty_terminal_get(v->term, GHOSTTY_TERMINAL_DATA_COLS, &info->columns));
     TRY(ghostty_terminal_get(v->term, GHOSTTY_TERMINAL_DATA_ROWS, &info->rows));
@@ -120,8 +147,14 @@ int vg_snapshot(void *p, VgInfo *info, VgPaint paint, void *userdata) {
     if (result != GHOSTTY_SUCCESS) { ghostty_render_state_row_iterator_free(it); return result; }
     result = ghostty_render_state_get(v->render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &it);
     bool reverse = mode(v,5);
+    GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+    ghostty_render_state_get(v->render, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty);
     uint16_t y = 0;
     while (result == GHOSTTY_SUCCESS && ghostty_render_state_row_iterator_next(it)) {
+        bool row_dirty = false;
+        result = ghostty_render_state_row_get(it, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &row_dirty);
+        if (result != GHOSTTY_SUCCESS) break;
+        if (!force && dirty != GHOSTTY_RENDER_STATE_DIRTY_FULL && !row_dirty) { ++y; continue; }
         result = ghostty_render_state_row_get(it, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells);
         uint16_t x = 0;
         while (result == GHOSTTY_SUCCESS && ghostty_render_state_row_cells_next(cells)) {
@@ -166,7 +199,7 @@ int vg_snapshot(void *p, VgInfo *info, VgPaint paint, void *userdata) {
                     else { uri_len=0; result=GHOSTTY_OUT_OF_MEMORY; }
                 }
             }
-            if (result == GHOSTTY_SUCCESS) paint(userdata,x,y,&out,text.ptr,text.len,uri,uri_len);
+            if (result == GHOSTTY_SUCCESS) { paint(userdata,x,y,&out,text.ptr,text.len,uri,uri_len); ++info->painted_cells; }
             free(uri); free(heap); ++x;
         }
         ++y;
@@ -177,9 +210,6 @@ int vg_snapshot(void *p, VgInfo *info, VgPaint paint, void *userdata) {
 }
 void vg_scroll(void *p, int64_t delta) {
     ghostty_terminal_scroll_viewport(((VgTerminal *)p)->term,(GhosttyTerminalScrollViewport){.tag=GHOSTTY_SCROLL_VIEWPORT_DELTA,.value={.delta=delta}});
-}
-void vg_bottom(void *p) {
-    ghostty_terminal_scroll_viewport(((VgTerminal *)p)->term,(GhosttyTerminalScrollViewport){.tag=GHOSTTY_SCROLL_VIEWPORT_BOTTOM});
 }
 int vg_clear_history(void *p) {
     VgTerminal *v=p; size_t zero=0, limit=64u*1024u*1024u;
@@ -221,15 +251,30 @@ int vg_search(void *p,const uint8_t *s,size_t n,int previous) {
     if (!n) { vg_select(p,0,0,0,0,0); return 0; }
     TRY(ghostty_search_set(v->search,GHOSTTY_SEARCH_OPT_NEEDLE,&needle));
     TRY(ghostty_search_run(v->search));
-    // Ghostty NEXT goes toward older content, opposite Vibra's Next action.
-    GhosttyResult result=ghostty_search_set(v->search,previous?GHOSTTY_SEARCH_OPT_SELECT_NEXT:GHOSTTY_SEARCH_OPT_SELECT_PREV,NULL);
-    if (result==GHOSTTY_NO_VALUE) return 0;
-    if (result!=GHOSTTY_SUCCESS) return (int)result;
-    GhosttySelection selected=GHOSTTY_INIT_SIZED(GhosttySelection);
-    TRY(ghostty_search_get(v->search,GHOSTTY_SEARCH_DATA_SELECTED_MATCH,&selected));
-    TRY(ghostty_terminal_set(v->term,GHOSTTY_TERMINAL_OPT_SELECTION,&selected));
-    return 1;
+    GhosttyTerminalScrollbar original = {0};
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_SCROLLBAR,&original));
+    size_t total = 0;
+    TRY(ghostty_search_get(v->search,GHOSTTY_SEARCH_DATA_TOTAL_MATCHES,&total));
+    // Upstream indexes ASCII case-insensitively. Filter each candidate against
+    // its exact text to preserve Vibra's literal, case-sensitive search.
+    for (size_t i = 0; i < total; ++i) {
+        TRY(ghostty_search_set(v->search,previous?GHOSTTY_SEARCH_OPT_SELECT_NEXT:GHOSTTY_SEARCH_OPT_SELECT_PREV,NULL));
+        GhosttySelection selected=GHOSTTY_INIT_SIZED(GhosttySelection);
+        TRY(ghostty_search_get(v->search,GHOSTTY_SEARCH_DATA_SELECTED_MATCH,&selected));
+        GhosttyTerminalSelectionFormatOptions options=GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
+        options.unwrap=true; options.selection=&selected;
+        uint8_t *text=NULL; size_t len=0;
+        TRY(ghostty_terminal_selection_format_alloc(v->term,NULL,options,&text,&len));
+        bool exact=len==n && memcmp(text,s,n)==0;
+        ghostty_free(NULL,text,len);
+        if (!exact) continue;
+        TRY(ghostty_terminal_set(v->term,GHOSTTY_TERMINAL_OPT_SELECTION,&selected));
+        return 1;
+    }
+    ghostty_terminal_scroll_viewport(v->term,(GhosttyTerminalScrollViewport){.tag=GHOSTTY_SCROLL_VIEWPORT_ROW,.value={.row=original.offset}});
+    return 0;
 }
+
 uint8_t *vg_text(void *p,size_t *len,int selection) {
     VgTerminal *v=p; uint8_t *out=NULL; *len=0;
     if (selection) {

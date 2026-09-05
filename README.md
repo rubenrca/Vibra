@@ -6,8 +6,8 @@ integración local para agentes en una sola ventana enfocada.
 
 ![Vibra con espacios de sesiones, terminales divididas y el panel Git](docs/vibra-workspace.png)
 
-La rama GPUI reemplaza la implementación SwiftUI/AppKit y `libghostty` que llegó
-hasta Vibra 0.2.7. El historial, identidad de aplicación y canal de distribución
+La rama GPUI reemplaza la implementación SwiftUI/AppKit que llegó hasta Vibra
+0.2.7. El motor de terminal actual es `libghostty-vt`, integrado directamente en Rust. El historial, identidad de aplicación y canal de distribución
 continúan en este mismo repositorio.
 
 ## Estado de la migración
@@ -38,7 +38,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 ### Terminal
 
-- PTY nativo y emulación ANSI con `alacritty_terminal`;
+- PTY nativo y emulación ANSI con `libghostty-vt`;
 - render GPUI/Metal, truecolor, estilos, cursores, scrollback e IME;
 - teclado xterm y Kitty, mouse SGR, bracketed paste y alternate screen;
 - pegado estilo Warp (`⌘V`): texto con bracketed paste; con imagen en el clipboard y un agente CLI en foco, se envía Ctrl+V para adjuntar capturas;
@@ -100,9 +100,13 @@ desde el proceso y el texto visible.
 ## Ejecutar durante desarrollo
 
 ```bash
+./Scripts/fetch_ghostty.sh
 cargo run
 cargo run -- /ruta/al/proyecto
 ```
+
+La preparación de Ghostty descarga Zig y compila la biblioteca dentro de `.build/`,
+sin instalaciones globales. Véase [la integración Ghostty](docs/ghostty.md).
 
 Cada cambio requiere cerrar la aplicación y ejecutar nuevamente `cargo run`.
 

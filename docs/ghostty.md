@@ -1,73 +1,74 @@
-# Backend experimental Ghostty
+# Motor Ghostty de Vibra
 
-Rama: `feat/ghostty-terminal`. Estado: primer adaptador funcional para macOS; no es todavía el reemplazo definitivo de Alacritty.
+Rama: `feat/ghostty-terminal`. Ghostty es el motor único de la aplicación. Se retiraron el adaptador Alacritty y su dependencia del workspace principal; el harness histórico de evaluación sigue aislado en `tools/terminal-eval`.
 
 ## Compilar y ejecutar
 
-Desde la raíz del repo:
-
 ```sh
 ./Scripts/fetch_ghostty.sh
-cargo run --locked --features ghostty
+cargo run --locked
 ```
 
-El script descarga Zig 0.16.0 con SHA256 verificado y el commit Ghostty `492300cad104195411d12217dd22f1cd05f31376`, y compila libghostty-vt estáticamente. Todo queda en `.build/ghostty/`, sin instalaciones globales. Para reutilizar un Zig 0.16.0 existente, definir `ZIG=/ruta/a/zig` al ejecutar el script. Cargo no descarga ni compila Ghostty por su cuenta.
+El script prepara Zig 0.16.0 con SHA256 verificado y Ghostty `492300cad104195411d12217dd22f1cd05f31376`. Todo queda en `.build/ghostty/`, sin instalaciones globales. Para utilizar un Zig existente, definir `ZIG=/ruta/a/zig`. Cargo enlaza el archivo estático; la aplicación distribuida no requiere Zig ni la aplicación Ghostty.
 
-Con la feature `ghostty`, las terminales nuevas usan Ghostty. Para comparar con Alacritty usando el mismo binario:
+Ya no hace falta `--features ghostty` y se retiró `VIBRA_TERMINAL_BACKEND`. Las sesiones existentes en un proceso abierto continúan usando su binario hasta reiniciar Vibra.
 
 ```sh
-VIBRA_TERMINAL_BACKEND=alacritty cargo run --locked --features ghostty
+./Scripts/package_app.sh release --universal --sign -
 ```
 
-Sin la feature, Vibra conserva su backend anterior. No se convierten sesiones en ejecución entre motores.
-
-Para generar un bundle local:
-
-```sh
-./Scripts/package_app.sh debug --ghostty --sign -
-```
-
-Resultado: `dist/Vibra.app`. El paquete contiene la biblioteca estática y su licencia; el usuario final no necesita Ghostty ni Zig. La revisión visual se hace manualmente.
-
-Para un bundle universal, preparar antes ambas bibliotecas:
+Genera `dist/Vibra.app` con slices arm64 y x86_64 y firma ad hoc. El empaquetador prepara las bibliotecas faltantes. Para preparar ambas explícitamente:
 
 ```sh
 ./Scripts/fetch_ghostty.sh aarch64
 ./Scripts/fetch_ghostty.sh x86_64
-./Scripts/package_app.sh debug --universal --ghostty --sign -
 ```
 
-## Qué incluye
+## Integración
 
-- `TerminalPort` y `TerminalHandle` existentes, sin cambiar la UI de GPUI.
-- PTY dentro de Vibra: shell de login, entorno de sesión, entrada, resize, respuestas VT, salida, señales y recogida del proceso hijo.
-- Celdas Unicode y caracteres anchos, colores de tema y truecolor, estilos, cursor, pantalla alternativa y modos de teclado/ratón.
-- Historial limitado a 10.000 líneas y 64 MiB, con la granularidad de páginas de Ghostty; scroll, borrado y texto reciente acotado.
-- Selección normal, rectangular, por palabra y por línea; búsqueda; enlaces OSC 8 y URLs visibles.
-- Título, campana y escritura de texto al portapapeles.
-- Un puente C contra headers fijados. Rust serializa el acceso al motor, copia los datos prestados antes de liberarlos y conserva snapshots/filas mediante `Arc`.
+- GPUI conserva el dibujo de texto y la interfaz; libghostty-vt aporta emulación y estado, no el renderer de la app Ghostty.
+- PTY en el proceso de Vibra: shell de login, entorno de sesión, entrada, resize, consultas/respuestas VT, códigos de salida, señales y recogida del proceso hijo.
+- Entrada, resize y cierre despiertan al worker mediante un socket local. No hay espera fija de 10 ms para enviar teclas. El sondeo periódico restante solo permite recoger procesos y escalar su cierre.
+- El render-state indica qué filas cambiaron. Solo esas celdas cruzan el puente C/Rust; las filas sin cambios conservan su `Arc`. Cursor, scroll, selección, resize y colores se actualizan con el mismo snapshot.
+- Historial configurado a 10.000 líneas y 64 MiB, sujeto a granularidad de páginas de Ghostty. La lectura de texto reciente está acotada y no depende del scroll visible.
+- Selección normal, rectangular, por palabra y línea; búsqueda literal sensible a mayúsculas; enlaces OSC 8 y URLs visibles; teclado Kitty, ratón, foco y pantalla alternativa.
+- Los helpers de entorno, paleta e inspección de procesos viven en `terminal_support.rs` y no dependen de otro emulador.
 
-Los helpers de entorno, paleta e inspección de procesos se comparten por ahora con el módulo Alacritty. No hay dos motores procesando la misma sesión. La dependencia Alacritty permanece para permitir la comparación y vuelta atrás.
+## Portapapeles con consentimiento
 
-## Diferencias y trabajo pendiente antes de reemplazar Alacritty
+Ghostty exige contestar su callback dentro de la llamada. Para OSC 52 generamos una respuesta vacía y retenemos sus bytes en vez de escribirlos al PTY. Esto proporciona la selección de portapapeles y el terminador exactos del protocolo. Vibra copia esa plantilla y presenta el diálogo existente sin bloquear el parser.
 
-1. La búsqueda upstream es insensible a mayúsculas ASCII, mientras que el adaptador anterior busca literalmente distinguiéndolas.
-2. Las lecturas OSC 52 no están conectadas al consentimiento asíncrono de Vibra: el callback Ghostty exige respuesta síncrona. Se deja sin registrar; no se autoriza acceso al portapapeles automáticamente. La escritura de texto sí se conecta al evento existente.
-3. El primer adaptador reconstruye las celdas visibles cuando hay cambios y reutiliza las filas idénticas. Falta aprovechar el daño por fila para evitar recorrer toda la pantalla y medir memoria/latencia en la aplicación completa. El worker atiende entrada como máximo cada 10 ms cuando está inactivo.
-4. Falta validación manual de aplicaciones TUI, selección compleja, teclado y reflow. No se ha revisado la interfaz con automatización ni probado hardware Intel/iPhone.
-5. Esta rama no implementa el transporte remoto ni modifica el cliente iOS del plan. El formatter ANSI investigado sigue disponible para esa siguiente etapa.
+Al permitir, el formatter incorpora el texto codificado en Base64 y lo envía por el canal de protocolo. Al denegar, envía la respuesta vacía. Ningún puntero prestado por Ghostty sobrevive al callback y no se transmite contenido antes del consentimiento. El bridge valida la plantilla y no recuerda permisos implícitos. Los protocolos de lectura distintos de OSC 52 conservan su denegación explícita; no se anuncian permisos para ellos. La escritura de texto al portapapeles usa el evento existente de Vibra.
 
-## Validación
+## Búsqueda literal
+
+El índice de Ghostty compara letras ASCII sin distinguir mayúsculas. El adaptador recorre sus candidatos y compara el texto exacto antes de seleccionar. Así conserva la búsqueda literal, incluyendo espacios y metacaracteres, sin añadir otro motor de expresiones regulares. Si no hay coincidencia exacta, restaura el viewport anterior.
+
+## Validación y medición
 
 ```sh
-cargo test --locked --features ghostty
 ./Scripts/verify.sh
+cargo test --locked --release infrastructure::ghostty::tests::profile_sessions -- --ignored --nocapture
 ```
 
-Las pruebas del adaptador ejercitan Unicode fragmentado, estilos, modos, pantalla alternativa, selección, búsqueda, enlaces, portapapeles de escritura, respuestas VT, historial y resize. Las pruebas de PTY real verifican entrada/entorno, tamaño, Ctrl+C, consulta de cursor, código de salida y cierre de un proceso que ignora SIGHUP. `verify.sh` conserva las pruebas del backend anterior y ejecuta Clippy con todas las features, por lo que requiere preparar Ghostty primero.
+Las pruebas cubren fragmentación UTF-8/ANSI, truecolor, caracteres anchos, modos, pantalla alternativa, selección, búsqueda exacta, enlaces, permiso y denegación de portapapeles, reutilización de filas, borrado, historial y resize. Las pruebas con PTY real cubren entrada y entorno, Ctrl+C, respuestas de cursor, salida sostenida de 12.000 líneas, cierre de un proceso que ignora SIGHUP y entrada/salida de Vim. Los tests GPUI verifican el flujo de consentimiento sin inspección visual automatizada.
 
-Verificado localmente el 2026-09-04: 134 pruebas con Ghostty, 127 sin la feature, `verify.sh` completo y bundle arm64 con firma ad hoc. El bundle no se abrió ni se revisó visualmente.
+Resultado local: 127 pruebas funcionales aprobadas, perfil manual aprobado y `verify.sh` completo sin errores. Se generó el bundle release universal (arm64 y x86_64), build 136, con firma ad hoc y sin un dylib Ghostty externo.
 
-La CI prepara las dos arquitecturas, ejecuta las pruebas y empaqueta un bundle universal experimental. Esto configura la verificación remota; su ejecución en GitHub depende de publicar la rama.
+Medición local del 2026-09-04, Apple M5 Pro, macOS 26.6.2, Rust release y Zig ReleaseFast. Ocho motores de 120×40 con 4.000 líneas de historial cada uno; 800 actualizaciones de una fila:
 
-Antecedentes y mediciones del parser: [evaluación](evaluations/ghostty-vt.md). Plan del cliente remoto: [iOS](plans/ios-remote-terminal.md).
+| Métrica | Resultado |
+| --- | ---: |
+| Consumir actualización y obtener snapshot, mediana | 0,005 ms |
+| Consumir actualización y obtener snapshot, p95 | 0,010 ms |
+| Celdas exportadas por el puente | 96.960 |
+| Celdas si se exportara toda la pantalla cada vez | 3.840.000 |
+| Reducción de celdas exportadas en esta carga | 97,475 % |
+| Pico RSS del proceso antes/después de crear y ejercitar los ocho motores | 11.141.120 / 50.806.784 bytes |
+| Ida y vuelta a una shell real, mediana / p95 de 30 muestras | 0,137 / 0,150 ms |
+
+La latencia incluye la observación del resultado con sondeo de 100 µs. El RSS es el máximo del proceso de pruebas, no memoria exclusiva de cada terminal. Estas cifras miden el adaptador y el PTY; no miden FPS ni latencia visual de GPUI, batería o red. El perfil se ejecuta explícitamente y queda fuera de CI para no imponer umbrales de tiempo inestables.
+
+El usuario validó visualmente la primera integración. La nueva implementación no se revisó con automatización de navegador. La compilación Intel no sustituye una prueba en hardware Intel.
+
+Esta migración no implementa todavía el transporte ni el cliente iOS: [plan remoto](plans/ios-remote-terminal.md). La [evaluación original](evaluations/ghostty-vt.md) conserva los antecedentes y las mediciones comparativas de los parsers.

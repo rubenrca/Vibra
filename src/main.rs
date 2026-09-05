@@ -14,8 +14,8 @@ use gpui::{
     TitlebarOptions, WindowBounds, WindowOptions, actions, px, size,
 };
 
-use crate::infrastructure::alacritty::AlacrittyTerminalPort;
 use crate::infrastructure::files::LocalFileSystemPort;
+use crate::infrastructure::ghostty::GhosttyTerminalPort;
 use crate::infrastructure::git::GitCliPort;
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, SettingsRepository};
@@ -324,11 +324,7 @@ fn main() {
 }
 
 fn terminal_backend() -> Arc<dyn crate::ports::terminal::TerminalPort> {
-    #[cfg(feature = "ghostty")]
-    if std::env::var("VIBRA_TERMINAL_BACKEND").as_deref() != Ok("alacritty") {
-        return Arc::new(crate::infrastructure::ghostty::GhosttyTerminalPort);
-    }
-    Arc::new(AlacrittyTerminalPort)
+    Arc::new(GhosttyTerminalPort)
 }
 
 #[cfg(test)]

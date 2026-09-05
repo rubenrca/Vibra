@@ -55,4 +55,4 @@ git -C "$source_dir" checkout --detach "$revision"
 cd "$source_dir"
 "$zig_bin" build -Demit-lib-vt -Demit-xcframework=false -Doptimize=ReleaseFast \
   "-Dtarget=$arch-macos.14.0" --prefix "$repo_root/.build/ghostty/$arch"
-print -- "Ghostty $revision ready for $arch. Run cargo run --features ghostty."
+print -- "Ghostty $revision ready for $arch. Run cargo run."

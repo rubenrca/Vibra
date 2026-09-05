@@ -2,7 +2,7 @@
 
 Fecha: 2026-09-04. Resultado: viable para un adaptador experimental; todavía no justifica cambiar el motor de producción.
 
-Continuación: se implementó el [primer adaptador experimental](../ghostty.md) en `feat/ghostty-terminal`. Las mediciones de este documento corresponden al harness aislado, no al rendimiento de esa integración.
+Continuación: se implementó la [migración de la aplicación a Ghostty](../ghostty.md) en `feat/ghostty-terminal`. Las mediciones de este documento corresponden al harness aislado, no al rendimiento de esa integración.
 
 ## Decisión recomendada
 

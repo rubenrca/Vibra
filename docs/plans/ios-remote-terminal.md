@@ -2,7 +2,7 @@
 
 Fecha: 2026-09-04. Estado: plan acordado, pendiente de implementación.
 
-Evaluación posterior: [libghostty-vt](../evaluations/ghostty-vt.md). Viable para un adaptador experimental; este plan conserva Alacritty hasta comprobar paridad de la integración completa.
+Actualización: la [migración a Ghostty](../ghostty.md) está implementada en macOS. El transporte y el cliente iOS descritos aquí siguen pendientes.
 
 ## 1. Objetivo y alcance
 
@@ -30,7 +30,7 @@ Vibra macOS ↔ Relay ↔ Vibra iPhone
       └── Contenido cifrado entre dispositivos ──┘
 ```
 
-**Mac:** conservar Rust, GPUI y Alacritty. Añadir el servicio remoto dentro del proceso de Vibra, independiente del socket de hooks. No instalar helpers ni modificar la configuración de la shell.
+**Mac:** conservar Rust, GPUI y Ghostty. Añadir el servicio remoto dentro del proceso de Vibra, independiente del socket de hooks. No instalar helpers ni modificar la configuración de la shell.
 
 **iPhone:** proyecto Xcode independiente dentro de `ios/`, nombre Vibra y bundle ID `app.vibra.VibraMobile`. Utilizar SwiftUI, cámara y Keychain de Apple, y `URLSessionWebSocketTask`. Incorporar SwiftTerm mediante Swift Package Manager; fijar inicialmente la versión `1.20.0`.
 
@@ -56,12 +56,12 @@ Separar la autorización de conexión al relay de la autenticación entre dispos
 
 ### Pantalla y recuperación
 
-Tomar de Orca la idea de **estado inicial explícito y actualizaciones ordenadas**, conservando Alacritty como fuente de verdad.
+Tomar de Orca la idea de **estado inicial explícito y actualizaciones ordenadas**, conservando Ghostty como fuente de verdad.
 
 Para evitar modificar su lector de PTY o añadir otro parser en el Mac:
 
 - Extender `TerminalHandle` con lectura de pantalla remota e historial, independiente del scroll y selección locales.
-- Capturar el estado de Alacritty y generar secuencias ANSI de dibujo en el Mac. SwiftTerm recibe esas secuencias para representar la pantalla.
+- Capturar el estado de Ghostty y usar su formatter VT para generar secuencias ANSI de dibujo en el Mac. SwiftTerm recibe esas secuencias para representar la pantalla.
 - Enviar una pantalla completa al abrir o reconectar; después, solo filas modificadas y cursor, hasta 20 veces por segundo y únicamente mientras exista un observador.
 - Mantener revisiones propias para la sincronización remota. No consumir eventos ni indicadores de cambios utilizados por GPUI.
 - Ante una discontinuidad o una cola saturada, reemplazar las actualizaciones pendientes por una pantalla completa.
@@ -91,7 +91,7 @@ Fly.io será la opción de alojamiento inicial. La entrega deja el despliegue pr
 **Orden de implementación:**
 
 1. Protocolo, relay local e interoperabilidad del cifrado Rust–Swift.
-2. Lectura remota de Alacritty, entrada, sincronización y arbitraje de tamaño.
+2. Lectura remota de Ghostty, entrada, sincronización y arbitraje de tamaño.
 3. App iOS y controles de vinculación y permisos en el Mac.
 4. Preparación del despliegue e instrucciones para instalar y probar en el iPhone.
 

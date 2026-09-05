@@ -5,15 +5,12 @@ edition = "2024"
 rust-version = "1.96"
 publish = false
 
-[features]
-ghostty = []
-
 [build-dependencies]
 cc = "1.2"
 
 [dependencies]
-alacritty_terminal = "=0.26.0"
 anyhow = "1.0"
+base64 = "0.22"
 async-channel = "2.5"
 directories = "6.0"
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "runtime_shaders"] }

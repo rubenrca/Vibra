@@ -1,7 +1,7 @@
-//! Experimental libghostty-vt backend. The terminal state is protected by one
+//! libghostty-vt backend. The terminal state is protected by one
 //! mutex; callbacks only enqueue data and never reenter it. The PTY worker owns
 //! the child and reaps it, independently of the lifetime of the UI handle.
-use super::alacritty::{
+use super::terminal_support::{
     COLOR_SUPPRESSING_ENV, indexed_color_with, process_invoked_name, process_working_directory,
     terminal_child_environment,
 };
@@ -15,7 +15,7 @@ use std::{
     io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::process::CommandExt,
+        unix::{net::UnixStream, process::CommandExt},
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -44,6 +44,7 @@ struct Info {
     history: u64,
     offset: u64,
     modes: u32,
+    painted_cells: u32,
 }
 #[repr(C)]
 struct Cell {
@@ -72,9 +73,9 @@ unsafe extern "C" {
         info: *mut Info,
         paint: Option<PaintFn>,
         data: *mut c_void,
+        force: i32,
     ) -> i32;
     fn vg_scroll(p: *mut c_void, delta: i64);
-    fn vg_bottom(p: *mut c_void);
     fn vg_clear_history(p: *mut c_void) -> i32;
     fn vg_select(p: *mut c_void, action: i32, kind: i32, x: u16, y: u16, right: i32) -> i32;
     fn vg_search(p: *mut c_void, s: *const u8, n: usize, previous: i32) -> i32;
@@ -122,8 +123,37 @@ unsafe extern "C" fn event(data: *mut c_void, kind: i32, p: *const u8, n: usize)
                 String::from_utf8_lossy(data).into_owned(),
             ));
         }
+        4 => {
+            if let Some((prefix, suffix)) = clipboard_template(data) {
+                let _ = context
+                    .events
+                    .try_send(TerminalEvent::ClipboardLoad(Arc::new(move |text| {
+                        use base64::Engine as _;
+                        format!(
+                            "{}{}{}",
+                            prefix,
+                            base64::engine::general_purpose::STANDARD.encode(text),
+                            suffix
+                        )
+                    })));
+            }
+        }
         _ => {}
     }
+}
+
+// Only accept an empty OSC 52 response. Destination is limited to the protocol's
+// clipboard selectors; arbitrary terminal output cannot become a reply template.
+fn clipboard_template(data: &[u8]) -> Option<(String, String)> {
+    let text = std::str::from_utf8(data).ok()?;
+    let body = text.strip_prefix("\x1b]52;")?;
+    let (destination, suffix) = body.split_once(';')?;
+    if !destination.bytes().all(|c| b"cps01234567".contains(&c))
+        || !matches!(suffix, "\x07" | "\x1b\\")
+    {
+        return None;
+    }
+    Some((format!("\x1b]52;{destination};"), suffix.to_owned()))
 }
 unsafe extern "C" fn paint(
     data: *mut c_void,
@@ -135,12 +165,12 @@ unsafe extern "C" fn paint(
     uri: *const u8,
     uri_len: usize,
 ) {
-    let lines = unsafe { &mut *data.cast::<Vec<Vec<TerminalCell>>>() };
+    let lines = unsafe { &mut *data.cast::<Vec<Arc<[TerminalCell]>>>() };
     let c = unsafe { &*cell };
     let Some(row) = lines.get_mut(y as usize) else {
         return;
     };
-    let Some(slot) = row.get_mut(x as usize) else {
+    let Some(slot) = Arc::make_mut(row).get_mut(x as usize) else {
         return;
     };
     let rgb = |a: [u8; 3]| TerminalRgb::new(a[0], a[1], a[2]);
@@ -181,6 +211,8 @@ struct Engine {
     dirty: bool,
     theme_generation: u64,
     size: TerminalSize,
+    #[cfg(test)]
+    last_painted_cells: u32,
 }
 // SAFETY: no upstream state is accessed concurrently. Engine is only exposed
 // through Mutex, and borrowed callback/string pointers never escape a call.
@@ -212,6 +244,8 @@ impl Engine {
             dirty: true,
             theme_generation: u64::MAX,
             size,
+            #[cfg(test)]
+            last_painted_cells: 0,
         };
         engine.resize(size)?;
         engine.update_palette()?;
@@ -262,34 +296,43 @@ impl Engine {
             return Ok(cache.clone());
         }
         let mut info = Info::default();
-        checked(unsafe { vg_snapshot(self.p(), &mut info, None, std::ptr::null_mut()) })?;
-        let mut lines: Vec<Vec<TerminalCell>> = (0..info.rows as usize)
-            .map(|y| {
-                (0..info.columns as usize)
-                    .map(|x| TerminalCell::blank(y, x))
-                    .collect()
-            })
-            .collect();
+        checked(unsafe { vg_snapshot(self.p(), &mut info, None, std::ptr::null_mut(), 0) })?;
+        let force = self
+            .cache
+            .as_ref()
+            .is_none_or(|s| s.columns != info.columns as usize || s.rows != info.rows as usize);
+        let mut lines: Vec<Arc<[TerminalCell]>> = if force {
+            (0..info.rows as usize)
+                .map(|y| {
+                    (0..info.columns as usize)
+                        .map(|x| TerminalCell::blank(y, x))
+                        .collect::<Vec<_>>()
+                        .into()
+                })
+                .collect()
+        } else {
+            self.cache.as_ref().unwrap().lines.clone()
+        };
         checked(unsafe {
             vg_snapshot(
                 self.p(),
                 &mut info,
                 Some(paint),
-                (&mut lines as *mut Vec<Vec<TerminalCell>>).cast(),
+                (&mut lines as *mut Vec<Arc<[TerminalCell]>>).cast(),
+                force.into(),
             )
         })?;
-        let lines = lines
-            .into_iter()
-            .enumerate()
-            .map(|(i, line)| {
-                if let Some(old) = self.cache.as_ref().and_then(|c| c.lines.get(i))
-                    && old.as_ref() == line.as_slice()
-                {
-                    return old.clone();
+        if let Some(old) = &self.cache {
+            for (line, previous) in lines.iter_mut().zip(&old.lines) {
+                if !Arc::ptr_eq(line, previous) && line.as_ref() == previous.as_ref() {
+                    *line = previous.clone();
                 }
-                Arc::from(line)
-            })
-            .collect();
+            }
+        }
+        #[cfg(test)]
+        {
+            self.last_painted_cells = info.painted_cells;
+        }
         let cursor = (info.cursor_visible != 0).then_some(TerminalCursor {
             row: info.cursor_y as usize,
             column: info.cursor_x as usize,
@@ -315,7 +358,7 @@ impl Engine {
     }
     fn mode(&self) -> TerminalInputMode {
         let mut i = Info::default();
-        if unsafe { vg_snapshot(self.p(), &mut i, None, std::ptr::null_mut()) } != 0 {
+        if unsafe { vg_snapshot(self.p(), &mut i, None, std::ptr::null_mut(), 0) } != 0 {
             return TerminalInputMode::default();
         }
         let m = |b: u32| i.modes & (1u32 << b) != 0u32;
@@ -410,6 +453,7 @@ struct GhosttyTerminal {
     alive: Arc<AtomicBool>,
     pid: u32,
     probe: File,
+    signal: UnixStream,
 }
 fn window_size(s: TerminalSize) -> libc::winsize {
     libc::winsize {
@@ -500,6 +544,9 @@ impl GhosttyTerminal {
             return Err(std::io::Error::last_os_error().into());
         }
         let probe = master.try_clone()?;
+        let (signal, worker_signal) = UnixStream::pair()?;
+        signal.set_nonblocking(true)?;
+        worker_signal.set_nonblocking(true)?;
         let child = command
             .spawn()
             .with_context(|| format!("no se pudo iniciar {program}"))?;
@@ -521,7 +568,7 @@ impl GhosttyTerminal {
                 pty_worker(
                     master,
                     child,
-                    rx,
+                    (rx, worker_signal),
                     worker_engine,
                     tx,
                     worker_wakeup,
@@ -543,7 +590,15 @@ impl GhosttyTerminal {
             alive,
             pid,
             probe,
+            signal,
         }))
+    }
+    fn dispatch(&self, command: PtyCommand) -> Result<()> {
+        self.commands.send(command).context("PTY cerrado")?;
+        // A full socket already contains a wakeup. The command queue is the
+        // source of truth, so the signal carries no payload and can coalesce.
+        let _ = (&self.signal).write(&[1]);
+        Ok(())
     }
     fn foreground(&self) -> Option<u32> {
         if !self.alive.load(Ordering::Acquire) {
@@ -561,12 +616,13 @@ fn wake(events: &Sender<TerminalEvent>, pending: &AtomicBool) {
 fn pty_worker(
     mut master: File,
     mut child: Child,
-    commands: mpsc::Receiver<PtyCommand>,
+    control: (mpsc::Receiver<PtyCommand>, UnixStream),
     engine: Arc<Mutex<Engine>>,
     events: Sender<TerminalEvent>,
     pending: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
 ) {
+    let (commands, mut signal) = control;
     let mut output = [0u8; 65536];
     let mut writes = VecDeque::new();
     let mut shutdown = None;
@@ -607,6 +663,9 @@ fn pty_worker(
                 libc::kill(-(child.id() as i32), signal);
             }
         }
+        // Resize can emit in-band reports even when the child is waiting and
+        // produces no further output. Flush every callback batch, not just feed.
+        writes.append(&mut engine.lock().unwrap().callbacks.replies);
         let mut changed = false;
         // Bound each batch so continuous output cannot starve shutdown/input.
         for _ in 0..16 {
@@ -673,16 +732,31 @@ fn pty_worker(
         if read_closed && shutdown.is_none() {
             shutdown = Some(Instant::now());
         }
-        let mut poll = libc::pollfd {
-            fd: master.as_raw_fd(),
-            events: libc::POLLIN | if writes.is_empty() { 0 } else { libc::POLLOUT },
-            revents: 0,
-        };
-        if read_closed {
-            thread::sleep(Duration::from_millis(10));
-        } else {
-            unsafe {
-                libc::poll(&mut poll, 1, 10);
+        let mut polls = [
+            libc::pollfd {
+                fd: if read_closed { -1 } else { master.as_raw_fd() },
+                events: libc::POLLIN | if writes.is_empty() { 0 } else { libc::POLLOUT },
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: signal.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // Input/resize/close wake immediately. The timeout is only for child
+        // reaping (descendants can retain the slave) and shutdown escalation.
+        unsafe {
+            libc::poll(
+                polls.as_mut_ptr(),
+                2,
+                if shutdown.is_some() { 10 } else { 100 },
+            );
+        }
+        let mut notifications = [0u8; 256];
+        while let Ok(n) = signal.read(&mut notifications) {
+            if n == 0 {
+                break;
             }
         }
     }
@@ -700,21 +774,10 @@ impl TerminalHandle for GhosttyTerminal {
         if !self.alive.load(Ordering::Acquire) {
             bail!("la terminal ya terminó")
         }
-        {
-            let mut e = self.engine.lock().unwrap();
-            unsafe {
-                vg_bottom(e.p());
-            }
-            e.dirty = true;
-        }
-        self.commands
-            .send(PtyCommand::Input(input))
-            .context("PTY cerrado")
+        self.dispatch(PtyCommand::Input(input))
     }
     fn resize(&self, size: TerminalSize) -> Result<()> {
-        self.commands
-            .send(PtyCommand::Resize(size))
-            .context("PTY cerrado")
+        self.dispatch(PtyCommand::Resize(size))
     }
     fn scroll(&self, lines: i32) {
         let mut e = self.engine.lock().unwrap();
@@ -824,7 +887,7 @@ impl TerminalHandle for GhosttyTerminal {
         self.wakeup.store(false, Ordering::Release);
     }
     fn shutdown(&self) {
-        let _ = self.commands.send(PtyCommand::Shutdown);
+        let _ = self.dispatch(PtyCommand::Shutdown);
     }
 }
 
@@ -1035,6 +1098,213 @@ mod tests {
             Some("https://example.com")
         );
         assert_eq!(plain_hyperlink(&snapshot.lines[1], 0), None);
+    }
+
+    #[test]
+    fn clipboard_reads_are_owned_and_wait_for_consent() {
+        use base64::Engine as _;
+        let (tx, rx) = async_channel::unbounded();
+        let mut e = Engine::new(TerminalSize::default(), tx).unwrap();
+        for byte in b"\x1b]52;c;?\x07\x1b]52;p;?\x1b\\" {
+            e.feed(&[*byte]);
+        }
+        assert!(
+            e.callbacks.replies.is_empty(),
+            "must not answer before consent"
+        );
+        let TerminalEvent::ClipboardLoad(first) = rx.try_recv().unwrap() else {
+            panic!("missing consent event")
+        };
+        let TerminalEvent::ClipboardLoad(second) = rx.try_recv().unwrap() else {
+            panic!("missing consent event")
+        };
+        // Call after further parser mutations and terminal destruction: callbacks
+        // must contain owned protocol strings, never a borrowed Ghostty request.
+        e.feed(b"still responsive");
+        drop(e);
+        let secret = "Español\n\x1b]52;c;injection";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(secret);
+        assert_eq!(first(secret), format!("\x1b]52;c;{encoded}\x07"));
+        assert_eq!(second("hello"), "\x1b]52;p;aGVsbG8=\x1b\\");
+        assert!(clipboard_template(b"\x1b]52;c;payload\x07").is_none());
+        assert!(clipboard_template(b"\x1b]52;x;\x07").is_none());
+    }
+
+    #[test]
+    fn literal_search_preserves_case_whitespace_and_wraps() {
+        let mut e = engine();
+        e.feed(b"Hello hello HELLO  src/(main|lib).rs\r\nhello");
+        for needle in ["hello", "Hello", "HELLO", "src/(main|lib).rs", "  "] {
+            assert_eq!(
+                unsafe { vg_search(e.p(), needle.as_ptr(), needle.len(), 0) },
+                1,
+                "{needle}"
+            );
+            // Selection formatter trims whitespace for copying; compare that policy.
+            assert_eq!(e.text(true).unwrap().trim_end(), needle.trim_end());
+        }
+        assert_eq!(unsafe { vg_search(e.p(), b"hElLo".as_ptr(), 5, 0) }, 0);
+        for direction in [0, 0, 0, 1, 1] {
+            assert_eq!(
+                unsafe { vg_search(e.p(), b"hello".as_ptr(), 5, direction) },
+                1
+            );
+            assert_eq!(e.text(true).as_deref(), Some("hello"));
+        }
+    }
+
+    #[test]
+    fn incremental_snapshot_keeps_clean_rows_and_clears_dirty_cells() {
+        let mut e = engine();
+        e.feed(b"row zero\r\nrow one\r\nrow two");
+        let before = e.snapshot().unwrap();
+        e.feed(b"\x1b[2;1H\x1b[2Kchanged");
+        let _ = e.mode(); // Querying modes must not consume pending cell damage.
+        let after = e.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&before.lines[0], &after.lines[0]));
+        assert!(Arc::ptr_eq(&before.lines[2], &after.lines[2]));
+        assert!(!Arc::ptr_eq(&before.lines[1], &after.lines[1]));
+        assert!(
+            e.last_painted_cells <= 160,
+            "clean rows must not cross FFI: {}",
+            e.last_painted_cells
+        );
+        assert_eq!(after.lines[1][0].text(), "c");
+        assert_eq!(after.lines[1][7].text(), " ");
+        e.feed(b"\x1b[2J");
+        assert!(
+            e.snapshot()
+                .unwrap()
+                .lines
+                .iter()
+                .flat_map(|r| r.iter())
+                .all(|c| c.text() == " ")
+        );
+    }
+
+    #[test]
+    fn real_pty_sustained_output_and_recent_text_ignore_viewport() {
+        let t = GhosttyTerminal::spawn(Uuid::new_v4(), Path::new("/tmp"), &HashMap::new(),
+            Some(("/bin/sh", &["-c", "i=0; while [ $i -lt 12000 ]; do printf 'line-%s abcdefghijklmnopqrstuvwxyz0123456789\\n' $i; i=$((i+1)); done; printf 'FINAL-TAIL'; read answer"]))).unwrap();
+        wait_for(&t, "FINAL-TAIL");
+        let before = t.snapshot();
+        assert!(before.history_size > 0);
+        t.scroll(50);
+        let scrolled = t.snapshot();
+        assert!(scrolled.display_offset > 0);
+        assert_ne!(before.lines[0], scrolled.lines[0]);
+        let recent = t.recent_text(3).unwrap();
+        assert!(recent.contains("FINAL-TAIL"));
+        assert!(!recent.contains("line-0 "));
+        t.shutdown();
+    }
+
+    #[test]
+    fn real_vim_enters_and_leaves_alternate_screen() {
+        let t = GhosttyTerminal::spawn(
+            Uuid::new_v4(),
+            Path::new("/tmp"),
+            &HashMap::new(),
+            Some(("/usr/bin/vim", &["-Nu", "NONE", "-n", "-i", "NONE"])),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !t.input_mode().alternate_screen {
+            assert!(
+                Instant::now() < deadline,
+                "vim did not enter alternate screen"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        t.send_input(b":q!\r".to_vec()).unwrap();
+        while t.alive.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "vim did not exit");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!t.input_mode().alternate_screen);
+    }
+
+    #[test]
+    #[ignore = "manual performance measurement, not a timing-sensitive CI assertion"]
+    fn profile_sessions() {
+        fn peak_rss() -> i64 {
+            let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+            assert_eq!(
+                unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) },
+                0
+            );
+            unsafe { usage.assume_init().ru_maxrss }
+        }
+        let baseline = peak_rss();
+        let mut engines = Vec::new();
+        for _ in 0..8 {
+            let mut e = engine();
+            e.resize(TerminalSize {
+                columns: 120,
+                rows: 40,
+                ..TerminalSize::default()
+            })
+            .unwrap();
+            e.feed(
+                "build: abcdefghijklmnopqrstuvwxyz 0123456789\r\n"
+                    .repeat(4000)
+                    .as_bytes(),
+            );
+            e.snapshot().unwrap();
+            engines.push(e);
+        }
+        let mut elapsed = Vec::new();
+        let mut cells = 0u64;
+        for i in 0..800 {
+            let e = &mut engines[i % 8];
+            let start = Instant::now();
+            e.feed(format!("\x1b[2;1Htick {i:08}").as_bytes());
+            e.snapshot().unwrap();
+            elapsed.push(start.elapsed().as_secs_f64() * 1000.);
+            cells += u64::from(e.last_painted_cells);
+        }
+        elapsed.sort_by(f64::total_cmp);
+        println!(
+            "PROFILE 8 sessions: update median_ms={:.3} p95_ms={:.3}; cells={cells}/{} full-screen baseline; peak_rss_before={} after={} bytes",
+            elapsed[400],
+            elapsed[760],
+            800 * 120 * 40,
+            baseline,
+            peak_rss()
+        );
+        let t = GhosttyTerminal::spawn(
+            Uuid::new_v4(),
+            Path::new("/tmp"),
+            &HashMap::new(),
+            Some((
+                "/bin/sh",
+                &[
+                    "-c",
+                    "printf 'READY\\n'; while read value; do printf 'ACK-%s\\n' \"$value\"; done",
+                ],
+            )),
+        )
+        .unwrap();
+        wait_for(&t, "READY");
+        let mut latency = Vec::new();
+        for i in 0..30 {
+            let token = format!("ACK-{i:04}");
+            let start = Instant::now();
+            t.send_input(format!("{i:04}\n").into_bytes()).unwrap();
+            loop {
+                if t.recent_text(40).unwrap().contains(&token) {
+                    break;
+                }
+                assert!(start.elapsed() < Duration::from_secs(5));
+                thread::sleep(Duration::from_micros(100));
+            }
+            latency.push(start.elapsed().as_secs_f64() * 1000.);
+        }
+        latency.sort_by(f64::total_cmp);
+        println!(
+            "PROFILE PTY roundtrip (100us observation polling): median_ms={:.3} p95_ms={:.3}",
+            latency[15], latency[28]
+        );
     }
 
     #[test]
