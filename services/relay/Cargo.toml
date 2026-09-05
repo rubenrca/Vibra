@@ -1,0 +1,10 @@
+[package]
+name = "vibra-relay"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+vibra-remote = { path = "../remote" }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal"] }
+futures-util = { version = "0.3", features = ["sink"] }
+serde_json = "1"

@@ -1,0 +1,7 @@
+**/target
+**/.build
+**/.swiftpm
+.git
+dist
+ios
+third_party

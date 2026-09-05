@@ -27,3 +27,6 @@ uint8_t *vg_text(void *, size_t *, int);
 void vg_buffer_free(uint8_t *, size_t);
 
 uint8_t *vg_recent_text(void *, size_t *, size_t);
+uint8_t *vg_remote_row(void *, size_t *, uint16_t);
+int vg_remote_info(void *, VgInfo *);
+int vg_remote_palette(void *, uint8_t *);

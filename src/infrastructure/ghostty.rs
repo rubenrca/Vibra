@@ -63,6 +63,9 @@ type EventFn = unsafe extern "C" fn(*mut c_void, i32, *const u8, usize);
 type PaintFn =
     unsafe extern "C" fn(*mut c_void, u16, u16, *const Cell, *const u8, usize, *const u8, usize);
 unsafe extern "C" {
+    fn vg_remote_palette(p: *mut c_void, rgb: *mut u8) -> i32;
+    fn vg_remote_info(p: *mut c_void, info: *mut Info) -> i32;
+    fn vg_remote_row(p: *mut c_void, n: *mut usize, row: u16) -> *mut u8;
     fn vg_new(c: u16, r: u16, event: EventFn, data: *mut c_void) -> *mut c_void;
     fn vg_free(p: *mut c_void);
     fn vg_feed(p: *mut c_void, s: *const u8, n: usize);
@@ -434,10 +437,10 @@ impl TerminalPort for GhosttyTerminalPort {
         directory: &Path,
         environment: &HashMap<String, String>,
     ) -> Result<Arc<dyn TerminalHandle>> {
-        Ok(
-            GhosttyTerminal::spawn(session_id, directory, environment, None)?
-                as Arc<dyn TerminalHandle>,
-        )
+        let handle = GhosttyTerminal::spawn(session_id, directory, environment, None)?
+            as Arc<dyn TerminalHandle>;
+        super::remote::hub().register(session_id, &handle);
+        Ok(handle)
     }
 }
 enum PtyCommand {
@@ -454,6 +457,7 @@ struct GhosttyTerminal {
     pid: u32,
     probe: File,
     signal: UnixStream,
+    ownership: Mutex<(TerminalSize, bool)>,
 }
 fn window_size(s: TerminalSize) -> libc::winsize {
     libc::winsize {
@@ -591,6 +595,7 @@ impl GhosttyTerminal {
             pid,
             probe,
             signal,
+            ownership: Mutex::new((size, false)),
         }))
     }
     fn dispatch(&self, command: PtyCommand) -> Result<()> {
@@ -774,10 +779,103 @@ impl TerminalHandle for GhosttyTerminal {
         if !self.alive.load(Ordering::Acquire) {
             bail!("la terminal ya terminó")
         }
+        let ownership = self.ownership.lock().unwrap();
+        if ownership.1 {
+            bail!("El iPhone controla esta terminal; recupera el control desde el menú del pane")
+        }
         self.dispatch(PtyCommand::Input(input))
     }
     fn resize(&self, size: TerminalSize) -> Result<()> {
+        let mut ownership = self.ownership.lock().unwrap();
+        ownership.0 = size;
+        if ownership.1 {
+            return Ok(());
+        }
         self.dispatch(PtyCommand::Resize(size))
+    }
+    fn remote_controlled(&self) -> bool {
+        self.ownership.lock().unwrap().1
+    }
+    fn remote_claim(&self, size: TerminalSize) -> Result<()> {
+        let mut ownership = self.ownership.lock().unwrap();
+        self.dispatch(PtyCommand::Resize(size))?;
+        ownership.1 = true;
+        Ok(())
+    }
+    fn remote_resize(&self, size: TerminalSize) -> Result<()> {
+        let ownership = self.ownership.lock().unwrap();
+        if !ownership.1 {
+            bail!("remote lease released")
+        }
+        self.dispatch(PtyCommand::Resize(size))
+    }
+    fn remote_release(&self) {
+        let mut ownership = self.ownership.lock().unwrap();
+        if ownership.1 {
+            let _ = self.dispatch(PtyCommand::Resize(ownership.0));
+            ownership.1 = false;
+        }
+    }
+    fn remote_input(&self, input: Vec<u8>) -> Result<()> {
+        let ownership = self.ownership.lock().unwrap();
+        if !ownership.1 || !self.alive.load(Ordering::Acquire) {
+            bail!("No remote controller")
+        }
+        self.dispatch(PtyCommand::Input(input))
+    }
+    fn remote_size(&self) -> TerminalSize {
+        self.engine.lock().unwrap().size
+    }
+    fn remote_frame(&self) -> Result<RemoteFrame> {
+        if !self.alive.load(Ordering::Acquire) {
+            bail!("terminal closed")
+        }
+        let e = self.engine.lock().unwrap();
+        let mut info = Info::default();
+        checked(unsafe { vg_remote_info(e.p(), &mut info) })?;
+        let mut lines = Vec::with_capacity(info.rows as usize);
+        for row in 0..info.rows {
+            let mut n = 0;
+            let p = unsafe { vg_remote_row(e.p(), &mut n, row) };
+            if p.is_null() {
+                bail!("remote formatter failed")
+            }
+            let text =
+                String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, n) }).into_owned();
+            unsafe { vg_buffer_free(p, n) };
+            lines.push(text);
+        }
+        let mut rgb = [0u8; 259 * 3];
+        checked(unsafe { vg_remote_palette(e.p(), rgb.as_mut_ptr()) })?;
+        let mut palette = String::new();
+        for (index, color) in rgb.chunks_exact(3).enumerate() {
+            let code = if index < 256 {
+                format!("4;{index}")
+            } else {
+                (index - 256 + 10).to_string()
+            };
+            palette.push_str(&format!(
+                "\x1b]{code};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+                color[0], color[1], color[2]
+            ));
+        }
+        Ok(RemoteFrame {
+            columns: info.columns,
+            rows: info.rows,
+            lines,
+            palette,
+            cursor: format!(
+                "\x1b[0m\x1b[{} q\x1b[{};{}H\x1b[?25{}",
+                (match info.cursor_style {
+                    0 => 6,
+                    2 => 4,
+                    _ => 2,
+                }) - u8::from(info.cursor_blinking != 0),
+                info.cursor_y + 1,
+                info.cursor_x + 1,
+                if info.cursor_visible != 0 { "h" } else { "l" }
+            ),
+        })
     }
     fn scroll(&self, lines: i32) {
         let mut e = self.engine.lock().unwrap();
@@ -927,6 +1025,106 @@ mod tests {
     fn engine() -> Engine {
         let (tx, _) = async_channel::unbounded();
         Engine::new(TerminalSize::default(), tx).unwrap()
+    }
+    #[test]
+    fn remote_export_preserves_local_viewport_selection_and_damage() {
+        let t = GhosttyTerminal::spawn(
+            Uuid::new_v4(),
+            Path::new("/tmp"),
+            &HashMap::new(),
+            Some(("/bin/sleep", &["60"])),
+        )
+        .unwrap();
+        {
+            let mut e = t.engine.lock().unwrap();
+            for n in 0..100 {
+                e.feed(format!("history-{n}\r\n").as_bytes());
+            }
+            e.feed("\x1b[2J\x1b[HEspañol 日本語 🦀\r\n\x1b[38;2;17;101;221mBLUE".as_bytes());
+        }
+        t.scroll(-40);
+        t.start_selection(
+            TerminalSelectionType::Simple,
+            TerminalPoint { row: 0, column: 0 },
+            TerminalCellSide::Left,
+        );
+        t.update_selection(TerminalPoint { row: 0, column: 4 }, TerminalCellSide::Right);
+        let before = t.snapshot();
+        let selection = t.selection_text();
+        let frame = t.remote_frame().unwrap();
+        assert!(frame.lines[0].contains("Español 日本語 🦀"));
+        assert!(!frame.lines.iter().any(|l| l.contains("history-")));
+        assert_eq!(t.snapshot(), before);
+        assert_eq!(t.selection_text(), selection);
+        let mut replay = engine();
+        replay.feed(super::super::remote::draw(&frame, None).as_bytes());
+        let rendered = replay.snapshot().unwrap();
+        assert_eq!(rendered.lines[1][0].text(), "B");
+        assert_eq!(
+            rendered.lines[1][0].foreground,
+            TerminalRgb::new(17, 101, 221)
+        );
+        assert!(replay.text(false).unwrap().contains("Español 日本語 🦀"));
+        t.scroll(-i32::MAX);
+        let clean = t.snapshot();
+        t.engine.lock().unwrap().feed(b"\x1b[1;1HZ");
+        let changed = t.remote_frame().unwrap();
+        assert!(changed.lines[0].contains('Z'));
+        if let Some(path) = std::env::var_os("VIBRA_SCREEN_FIXTURE") {
+            let data = serde_json::json!({"full":super::super::remote::draw(&frame,None),"patch":super::super::remote::draw(&changed,Some(&frame))});
+            std::fs::write(path, serde_json::to_vec(&data).unwrap()).unwrap();
+        }
+        let painted = t.snapshot();
+        assert!(clean != painted);
+        assert_eq!(painted.lines[0][0].text(), "Z");
+        t.engine.lock().unwrap().feed(b"\x1b[?1049h\x1b[HALTERNATE");
+        assert!(t.remote_frame().unwrap().lines[0].contains("ALTERNATE"));
+        t.shutdown();
+    }
+    #[test]
+    fn remote_ownership_restores_latest_local_size_and_blocks_local_input() {
+        let t = GhosttyTerminal::spawn(
+            Uuid::new_v4(),
+            Path::new("/tmp"),
+            &HashMap::new(),
+            Some(("/bin/sleep", &["60"])),
+        )
+        .unwrap();
+        let wait_size = |cols| {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while t.remote_size().columns != cols {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        t.resize(TerminalSize {
+            columns: 100,
+            ..TerminalSize::default()
+        })
+        .unwrap();
+        wait_size(100);
+        t.remote_claim(TerminalSize {
+            columns: 40,
+            rows: 20,
+            ..TerminalSize::default()
+        })
+        .unwrap();
+        wait_size(40);
+        assert!(t.remote_controlled());
+        assert!(t.send_input(b"local".to_vec()).is_err());
+        t.resize(TerminalSize {
+            columns: 120,
+            ..TerminalSize::default()
+        })
+        .unwrap();
+        assert_eq!(t.remote_size().columns, 40);
+        t.remote_input(b"remote".to_vec()).unwrap();
+        t.remote_release();
+        wait_size(120);
+        assert!(!t.remote_controlled());
+        assert!(t.remote_resize(TerminalSize::default()).is_err());
+        assert!(t.remote_input(b"stale".to_vec()).is_err());
+        t.shutdown();
     }
     #[test]
     fn fragmented_unicode_styles_modes_and_alternate_screen() {

@@ -292,6 +292,26 @@ pub trait TerminalPort: Send + Sync {
 }
 
 pub trait TerminalHandle: Send + Sync {
+    /// Independent of local viewport, selection and render damage.
+    fn remote_size(&self) -> TerminalSize {
+        TerminalSize::default()
+    }
+    fn remote_frame(&self) -> Result<RemoteFrame> {
+        anyhow::bail!("remote unsupported")
+    }
+    fn remote_claim(&self, _size: TerminalSize) -> Result<()> {
+        anyhow::bail!("remote unsupported")
+    }
+    fn remote_resize(&self, _size: TerminalSize) -> Result<()> {
+        anyhow::bail!("remote unsupported")
+    }
+    fn remote_release(&self) {}
+    fn remote_controlled(&self) -> bool {
+        false
+    }
+    fn remote_input(&self, _input: Vec<u8>) -> Result<()> {
+        anyhow::bail!("remote unsupported")
+    }
     fn events(&self) -> Receiver<TerminalEvent>;
     fn send_input(&self, input: Vec<u8>) -> Result<()>;
     fn resize(&self, size: TerminalSize) -> Result<()>;
@@ -333,4 +353,13 @@ pub trait TerminalHandle: Send + Sync {
     fn hyperlink_at(&self, point: TerminalPoint) -> Option<String>;
     fn acknowledge_wakeup(&self);
     fn shutdown(&self);
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteFrame {
+    pub columns: u16,
+    pub rows: u16,
+    pub lines: Vec<String>,
+    pub cursor: String,
+    pub palette: String,
 }

@@ -7,6 +7,7 @@ pub mod notifications;
 pub mod paths;
 pub mod persistence;
 pub mod process;
+pub mod remote;
 pub mod settings;
 pub mod sparkle;
 mod terminal_support;

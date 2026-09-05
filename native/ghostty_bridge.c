@@ -308,3 +308,47 @@ uint8_t *vg_recent_text(void *p, size_t *len, size_t lines) {
     if (ghostty_terminal_selection_format_alloc(v->term,NULL,options,&out,len)!=GHOSTTY_SUCCESS) return NULL;
     return out;
 }
+
+// Read the active grid without moving local viewport/selection or clearing render damage.
+int vg_remote_info(void *p, VgInfo *i) {
+    VgTerminal *v=p; bool visible=false;
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_COLS,&i->columns));
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_ROWS,&i->rows));
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_CURSOR_X,&i->cursor_x));
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_CURSOR_Y,&i->cursor_y));
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE,&visible));
+    // CURSOR_STYLE in terminal_get is the SGR style, not the visual cursor shape.
+    // Updating the existing render cache retains its dirty rows; only vg_snapshot's
+    // paint path clears them. Never create a second consumer of terminal damage.
+    TRY(ghostty_render_state_update(v->render,v->term));
+    GhosttyRenderStateCursor cursor=GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
+    TRY(ghostty_render_state_get(v->render,GHOSTTY_RENDER_STATE_DATA_CURSOR,&cursor));
+    i->cursor_style=(uint8_t)cursor.visual_style; i->cursor_blinking=cursor.blinking;
+    i->cursor_visible=visible; return 0;
+}
+uint8_t *vg_remote_row(void *p, size_t *len, uint16_t row) {
+    VgTerminal *v=p; uint16_t cols=0, rows=0; size_t total=0; *len=0;
+    if (ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_COLS,&cols)!=GHOSTTY_SUCCESS ||
+        ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_ROWS,&rows)!=GHOSTTY_SUCCESS ||
+        ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_TOTAL_ROWS,&total)!=GHOSTTY_SUCCESS || row>=rows || total<rows) return NULL;
+    GhosttySelection selection=GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttyPoint first={.tag=GHOSTTY_POINT_TAG_SCREEN,.value={.coordinate={.x=0,.y=(uint32_t)(total-rows+row)}}};
+    GhosttyPoint last=first; last.value.coordinate.x=cols-1;
+    if (ghostty_terminal_grid_ref(v->term,first,&selection.start)!=GHOSTTY_SUCCESS ||
+        ghostty_terminal_grid_ref(v->term,last,&selection.end)!=GHOSTTY_SUCCESS) return NULL;
+    GhosttyFormatterTerminalOptions options=GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
+    options.emit=GHOSTTY_FORMATTER_FORMAT_VT; options.trim=false; options.selection=&selection;
+    GhosttyFormatter f=NULL; uint8_t *out=NULL;
+    if (ghostty_formatter_terminal_new(NULL,&f,v->term,options)!=GHOSTTY_SUCCESS) return NULL;
+    GhosttyResult r=ghostty_formatter_format_alloc(f,NULL,&out,len); ghostty_formatter_free(f);
+    return r==GHOSTTY_SUCCESS?out:NULL;
+}
+
+int vg_remote_palette(void *p, uint8_t *rgb) {
+    VgTerminal *v=p;
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_COLOR_PALETTE,rgb));
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND,rgb+256*3));
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND,rgb+257*3));
+    TRY(ghostty_terminal_get(v->term,GHOSTTY_TERMINAL_DATA_COLOR_CURSOR,rgb+258*3));
+    return 0;
+}

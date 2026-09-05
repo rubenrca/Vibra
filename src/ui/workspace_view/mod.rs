@@ -1,3 +1,32 @@
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsPage {
+    General,
+    Appearance,
+    Iphone,
+    Agents,
+    Security,
+}
+impl SettingsPage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Appearance => "Apariencia",
+            Self::Iphone => "iPhone",
+            Self::Agents => "Agentes",
+            Self::Security => "Privacidad",
+        }
+    }
+    fn id(self) -> &'static str {
+        match self {
+            Self::General => "settings-general",
+            Self::Appearance => "settings-appearance",
+            Self::Iphone => "settings-iphone",
+            Self::Agents => "settings-agents",
+            Self::Security => "settings-privacy",
+        }
+    }
+}
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -370,6 +399,8 @@ enum ContextMenuAction {
     CreateSpace,
     DeleteSpace,
     ClosePane,
+    ShareRemote,
+    ReclaimRemote,
     SplitRight,
     SplitDown,
     ToggleZoom,
@@ -600,6 +631,11 @@ pub struct WorkspaceView {
     palette_selected: usize,
     palette_files: Vec<PathBuf>,
     settings_open: bool,
+    settings_page: SettingsPage,
+    remote_feedback: Option<String>,
+    remote_copied: bool,
+    remote_advanced_open: bool,
+    remote_forget_confirm: bool,
     context_menu: Option<ContextMenuState>,
     ide_menu_open: bool,
     installed_editors: Vec<InstalledEditor>,
@@ -746,6 +782,9 @@ impl WorkspaceView {
                 Timer::after(SIDEBAR_GIT_POLL_INTERVAL).await;
                 if this
                     .update(cx, |this, cx| {
+                        if crate::infrastructure::remote::hub().status().enabled {
+                            cx.notify();
+                        }
                         if crate::ui::idle::should_poll_sidebar_git(
                             this.left_sidebar_visible,
                             this.left_sidebar_mode == LeftSidebarMode::Sessions,
@@ -817,6 +856,11 @@ impl WorkspaceView {
             palette_selected: 0,
             palette_files: Vec::new(),
             settings_open: false,
+            settings_page: SettingsPage::General,
+            remote_feedback: None,
+            remote_copied: false,
+            remote_advanced_open: false,
+            remote_forget_confirm: false,
             context_menu: None,
             ide_menu_open: false,
             installed_editors: Vec::new(),
@@ -1534,6 +1578,17 @@ impl WorkspaceView {
                     self.persist(cx);
                 }
             }
+            (ContextMenuKind::Pane { session_id }, ContextMenuAction::ShareRemote) => {
+                if let Some(identity) = self.pane_identity_by_id(session_id, cx) {
+                    crate::infrastructure::remote::hub().title(session_id, &identity.title);
+                }
+                crate::infrastructure::remote::hub().toggle_share(session_id);
+                cx.notify();
+            }
+            (ContextMenuKind::Pane { session_id }, ContextMenuAction::ReclaimRemote) => {
+                crate::infrastructure::remote::hub().reclaim(session_id);
+                cx.notify();
+            }
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::Rename) => {
                 self.begin_rename_prompt(RenamePromptKind::Pane { session_id }, cx);
             }
@@ -2149,6 +2204,7 @@ impl WorkspaceView {
     fn handle_terminal_view_event(&mut self, event: &TerminalViewEvent, cx: &mut Context<Self>) {
         match event {
             TerminalViewEvent::TitleChanged { session_id, title } => {
+                crate::infrastructure::remote::hub().title(*session_id, title);
                 if self.snapshot.update_session_title(*session_id, title) {
                     self.sync_servers_panel(cx);
                     self.persist(cx);
@@ -4525,9 +4581,10 @@ impl WorkspaceView {
                 .child(
                     div()
                         .id("settings-modal")
-                        .w(px(560.0))
+                        .w(px(780.0))
+                        .h(px(660.0))
                         .max_w_full()
-                        .max_h(px(700.0))
+                        .max_h_full()
                         .mx_4()
                         .rounded(px(12.0))
                         .border_1()
@@ -4567,9 +4624,7 @@ impl WorkspaceView {
                                             div()
                                                 .text_size(px(9.0))
                                                 .text_color(colors().subtle)
-                                                .child(
-                                                    "Personaliza Vibra y sus integraciones locales",
-                                                ),
+                                                .child("Configura tu espacio de trabajo"),
                                         ),
                                 )
                                 .child(
@@ -4591,10 +4646,77 @@ impl WorkspaceView {
                                     },
                                 )),
                         )
-                        .child(self.settings_modal_content(window, cx)),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_1()
+                                .min_h(px(0.0))
+                                .child(self.settings_navigation(cx))
+                                .child(self.settings_modal_content(window, cx)),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .px_5()
+                                .py_2()
+                                .border_t_1()
+                                .border_color(colors().border_subtle)
+                                .text_xs()
+                                .text_color(colors().subtle)
+                                .child("Los cambios se guardan automáticamente."),
+                        ),
                 )
                 .into_any_element(),
         )
+    }
+
+    fn settings_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut navigation = div()
+            .id("settings-navigation")
+            .w(px(150.0))
+            .flex_none()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .border_r_1()
+            .border_color(colors().border_subtle);
+        for page in [
+            SettingsPage::General,
+            SettingsPage::Appearance,
+            SettingsPage::Iphone,
+            SettingsPage::Agents,
+            SettingsPage::Security,
+        ] {
+            let selected = self.settings_page == page;
+            navigation = navigation.child(
+                div()
+                    .id(page.id())
+                    .px_3()
+                    .py_2()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .text_sm()
+                    .bg(if selected {
+                        colors().selection
+                    } else {
+                        colors().panel
+                    })
+                    .text_color(if selected {
+                        colors().foreground
+                    } else {
+                        colors().muted
+                    })
+                    .hover(|style| style.bg(colors().selection))
+                    .child(page.label())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.settings_page = page;
+                        this.remote_forget_confirm = false;
+                        cx.notify();
+                    })),
+            );
+        }
+        navigation.into_any_element()
     }
 
     fn settings_modal_content(
@@ -4622,7 +4744,8 @@ impl WorkspaceView {
             "Opcionales"
         };
         div()
-            .id("settings-modal-content")
+            .id(self.settings_page.id())
+            .min_w(px(0.0))
             .flex_1()
             .min_h(px(0.0))
             .overflow_y_scroll()
@@ -4630,6 +4753,8 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .gap_4()
+            .when(self.settings_page == SettingsPage::Iphone, |panel| panel.child(self.remote_settings(cx)))
+            .when(self.settings_page == SettingsPage::Appearance, |panel| panel
             .child(self.settings_section_heading(
                 "Apariencia",
                 "Elige cómo se ve Vibra y ajusta la lectura de la terminal.",
@@ -4832,8 +4957,10 @@ impl WorkspaceView {
                             )),
                     ),
             )
+            )
+            .when(self.settings_page == SettingsPage::General, |panel| panel
             .child(self.settings_section_heading(
-                "Workspace",
+                "Al abrir Vibra",
                 "Configura qué elementos estarán disponibles al abrir Vibra.",
             ))
             .child(
@@ -4861,7 +4988,7 @@ impl WorkspaceView {
                     ))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
-                            label: "Sidebar al iniciar",
+                            label: "Lista de sesiones",
                             description: "Muestra la lista de sesiones al abrir la aplicación.",
                             enabled: left_sidebar,
                             divider: true,
@@ -4874,7 +5001,7 @@ impl WorkspaceView {
                     ))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
-                            label: "Files / Git al iniciar",
+                            label: "Panel de archivos y Git",
                             description: "Abre el panel derecho del proyecto al iniciar.",
                             enabled: git_panel,
                             divider: false,
@@ -4890,8 +5017,10 @@ impl WorkspaceView {
                         },
                     )),
             )
+            )
+            .when(self.settings_page == SettingsPage::Agents, |panel| panel
             .child(self.settings_section_heading(
-                "Actividad de agentes CLI",
+                "Agentes y notificaciones",
                 "Sigue el estado de los asistentes que ejecutas dentro de Vibra.",
             ))
             .child(
@@ -5029,8 +5158,10 @@ impl WorkspaceView {
                         },
                     )),
             )
+            )
+            .when(self.settings_page == SettingsPage::Security, |panel| panel
             .child(self.settings_section_heading(
-                "Seguridad",
+                "Privacidad de la terminal",
                 "Protecciones aplicadas a las integraciones locales de la terminal.",
             ))
             .child(
@@ -5074,8 +5205,235 @@ impl WorkspaceView {
                             .child("Cada lectura requiere confirmación. La comunicación local usa un socket privado y un token distinto por pane."),
                     ),
             )
+            )
             .child(div().h(px(1.0)))
             .into_any_element()
+    }
+
+    fn remote_result(&mut self, result: anyhow::Result<()>, cx: &mut Context<Self>) {
+        match result {
+            Err(error) => self.remote_feedback = Some(error.to_string()),
+            Ok(()) => {
+                self.remote_feedback = None;
+                self.persistence_error = None;
+            }
+        }
+        cx.notify();
+    }
+    fn remote_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::infrastructure::remote::hub;
+        let status = hub().status();
+        let mut panel = div()
+            .p_4()
+            .rounded(px(9.0))
+            .border_1()
+            .border_color(colors().border_subtle)
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(div().text_sm().child("iPhone"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors().subtle)
+                    .child("Continúa tus terminales desde el teléfono."),
+            )
+            .child(div().text_xs().child(if status.paired && !status.enabled {
+                "iPhone vinculado · acceso desactivado"
+            } else if status.pending.is_some() {
+                "Un iPhone espera tu aprobación"
+            } else if status.paired {
+                "iPhone vinculado"
+            } else if status.invitation.is_some() {
+                "Escanea el código con Vibra en tu iPhone"
+            } else {
+                "Vincula tu iPhone para comenzar"
+            }));
+        if let Some(message) = &self.remote_feedback {
+            panel = panel.child(
+                div()
+                    .p_3()
+                    .rounded(px(6.0))
+                    .bg(colors().selection)
+                    .text_xs()
+                    .child(message.clone()),
+            );
+        }
+        if status.paired {
+            panel = panel.child(div().text_xs().text_color(colors().subtle)
+                .child("Haz clic derecho dentro de una terminal y elige Compartir con iPhone. Puedes recuperar el control desde el Mac en cualquier momento."));
+        } else if status.invitation.is_none() && status.pending.is_none() {
+            panel = panel
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors().subtle)
+                        .child("Conecta una vez. Después, elige qué terminales quieres compartir."),
+                )
+                .child(div().text_xs().child("1 · Crea tu código de vinculación"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors().subtle)
+                        .child("2 · Escanéalo con Vibra en tu iPhone"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors().subtle)
+                        .child("3 · Acepta el iPhone en este Mac"),
+                )
+                .child(
+                    self.settings_primary_button(
+                        "Vincular iPhone",
+                        "remote-pair",
+                        cx,
+                        |this, cx| {
+                            this.remote_copied = false;
+                            this.remote_result(hub().pair(), cx);
+                        },
+                    )
+                    .h(px(36.0))
+                    .border_1()
+                    .border_color(colors().accent),
+                );
+        }
+        if let Some(name) = status.pending {
+            panel = panel
+                .child(format!(
+                    "¿Permitir que {name} controle las terminales compartidas?"
+                ))
+                .child(self.settings_primary_button(
+                    "Aceptar y vincular",
+                    "remote-approve",
+                    cx,
+                    |_, cx| {
+                        hub().approve(true);
+                        cx.notify();
+                    },
+                ))
+                .child(
+                    self.settings_button("Rechazar", "remote-reject", cx, |_, cx| {
+                        hub().approve(false);
+                        cx.notify();
+                    }),
+                );
+        }
+        if let Some(invitation) = status.invitation {
+            panel = panel
+                .child(
+                    div()
+                        .text_xs()
+                        .child("Abre Vibra en tu iPhone y toca Escanear código QR. Después, acepta la conexión aquí. El código dura 5 minutos."),
+                )
+                .child(self.settings_button(
+                    if self.remote_copied { "Invitación copiada" } else { "Copiar invitación" },
+                    "remote-copy",
+                    cx,
+                    |this, cx| {
+                        if let Some(value) = hub().status().invitation {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(value));
+                            this.remote_copied = true;
+                            cx.notify();
+                        }
+                    },
+                ));
+            if let Ok(qr) = qrcode::QrCode::new(invitation.as_bytes()) {
+                let width = qr.width();
+                let modules = qr.to_colors();
+                let mut grid = div()
+                    .flex()
+                    .flex_col()
+                    .p_4()
+                    .bg(gpui::rgb(0xffffff))
+                    .w(px((width * 3 + 32) as f32));
+                for row in 0..width {
+                    grid = grid.child(div().flex().children((0..width).map(|col| {
+                        div().w(px(3.0)).h(px(3.0)).flex_none().bg(gpui::rgb(
+                            if modules[row * width + col] == qrcode::Color::Dark {
+                                0x000000
+                            } else {
+                                0xffffff
+                            },
+                        ))
+                    })));
+                }
+                panel = panel.child(grid);
+            }
+        }
+        if status.relay.starts_with("ws://") && !status.paired {
+            panel = panel.child(div().text_xs().text_color(colors().subtle)
+                .child("Configurado para probar en el simulador. Para usar tu iPhone físico, configura un servidor seguro en Opciones avanzadas."));
+        }
+        if status.paired || status.enabled {
+            panel = panel.child(self.settings_toggle_row(
+                SettingsToggleRow {
+                    label: "Permitir acceso desde el iPhone",
+                    description: "Al desactivarlo, el Mac recupera el control. La vinculación se conserva.",
+                    enabled: status.enabled,
+                    divider: false,
+                    id: "remote-enabled-toggle",
+                }, cx, |this, cx| {
+                    if hub().status().enabled {
+                        hub().disable();
+                        cx.notify();
+                    } else {
+                        this.remote_result(hub().enable(), cx);
+                    }
+                }));
+        }
+        if status.paired {
+            if self.remote_forget_confirm {
+                panel = panel.child(div().text_xs().child("El iPhone perderá el acceso. Para volver, tendrás que escanear otro código."))
+                        .child(self.settings_button("Confirmar desvinculación", "remote-revoke-confirm", cx, |this,cx| {
+                            this.remote_forget_confirm = false;
+                            this.remote_result(hub().revoke(),cx);
+                        }))
+                        .child(self.settings_button("Cancelar", "remote-revoke-cancel", cx, |this,cx| {
+                            this.remote_forget_confirm = false; cx.notify();
+                        }));
+            } else {
+                panel = panel.child(self.settings_button(
+                    "Desvincular iPhone",
+                    "remote-revoke",
+                    cx,
+                    |this, cx| {
+                        this.remote_forget_confirm = true;
+                        cx.notify();
+                    },
+                ));
+            }
+        }
+        panel = panel.child(self.settings_button(
+            if self.remote_advanced_open {
+                "Ocultar opciones avanzadas"
+            } else {
+                "Opciones avanzadas"
+            },
+            "remote-advanced",
+            cx,
+            |this, cx| {
+                this.remote_advanced_open = !this.remote_advanced_open;
+                cx.notify();
+            },
+        ));
+        if self.remote_advanced_open {
+            panel = panel
+                .child(div().text_xs().child("Servidor de conexión"))
+                .child(div().text_xs().text_color(colors().subtle).child(status.relay.clone()))
+                .child(div().text_xs().text_color(colors().subtle).child(status.description))
+                .child(div().text_xs().text_color(colors().subtle)
+                    .child("Para conectar por Internet, copia la dirección wss:// de tu servidor y aplícala aquí. Cambiarla requiere volver a vincular el iPhone."))
+                .child(self.settings_button("Usar dirección copiada", "remote-relay", cx, |this,cx| {
+                    let relay=cx.read_from_clipboard().and_then(|c|c.text()).unwrap_or_default();
+                    if !relay.trim().starts_with("wss://") && !relay.trim().starts_with("ws://") {
+                        this.remote_result(Err(anyhow::anyhow!("Copia primero la dirección del servidor (wss://…), no la invitación del iPhone.")),cx);
+                    } else {
+                        this.remote_result(hub().configure(relay.trim()),cx);
+                    }
+                }));
+        }
+        panel.into_any_element()
     }
 
     fn settings_section_heading(
@@ -5471,6 +5829,20 @@ impl WorkspaceView {
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.select_dev_terminal_tab(session_id, window, cx);
                                         }))
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            cx.listener(
+                                                move |this, event: &MouseDownEvent, _, cx| {
+                                                    this.open_context_menu(
+                                                        ContextMenuKind::Pane { session_id },
+                                                        f32::from(event.position.x),
+                                                        f32::from(event.position.y),
+                                                        cx,
+                                                    );
+                                                    cx.stop_propagation();
+                                                },
+                                            ),
+                                        )
                                         .child(
                                             div()
                                                 .max_w(px(140.0))
@@ -6457,7 +6829,21 @@ impl WorkspaceView {
             ContextMenuKind::SidebarBackground => {
                 vec![("Crear espacio", ContextMenuAction::CreateSpace, false)]
             }
-            ContextMenuKind::Pane { .. } => vec![
+            ContextMenuKind::Pane { session_id } => vec![
+                (
+                    if crate::infrastructure::remote::hub().shared(*session_id) {
+                        "Dejar de compartir con iPhone"
+                    } else {
+                        "Compartir con iPhone"
+                    },
+                    ContextMenuAction::ShareRemote,
+                    false,
+                ),
+                (
+                    "Recuperar control del iPhone",
+                    ContextMenuAction::ReclaimRemote,
+                    false,
+                ),
                 ("Renombrar", ContextMenuAction::Rename, false),
                 ("Cerrar pane", ContextMenuAction::ClosePane, true),
                 ("Dividir a la derecha", ContextMenuAction::SplitRight, false),

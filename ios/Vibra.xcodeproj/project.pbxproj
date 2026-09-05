@@ -1,0 +1,48 @@
+// !$*UTF8*$!
+{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {
+260851E064C349378A70FECE = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keychain.swift; sourceTree = "<group>"; };
+D7F75D686A4146F8487DE07B = { isa = PBXBuildFile; fileRef = 260851E064C349378A70FECE; };
+C0E88B79C020E6C68AE55E47 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteModel.swift; sourceTree = "<group>"; };
+7C5B7CA3404A3126D8FABED2 = { isa = PBXBuildFile; fileRef = C0E88B79C020E6C68AE55E47; };
+975E25515ADCE081371651C1 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Scanner.swift; sourceTree = "<group>"; };
+DF0F06D3F50F3D1AADEA26B5 = { isa = PBXBuildFile; fileRef = 975E25515ADCE081371651C1; };
+89B91856CE5ABE59EC78404B = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
+A88187EB5A9DDD80690F504C = { isa = PBXBuildFile; fileRef = 89B91856CE5ABE59EC78404B; };
+B304B242C02A309887E8735A = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VibraApp.swift; sourceTree = "<group>"; };
+4F6075B638B33E9038B396BA = { isa = PBXBuildFile; fileRef = B304B242C02A309887E8735A; };
+38A007151ABE87CC01A5B6E9 = { isa = PBXFileReference; explicitFileType = wrapper.application; path = Vibra.app; sourceTree = BUILT_PRODUCTS_DIR; };
+3A2A88DEEFF3D1D23E496597 = { isa = PBXGroup; path = Vibra; sourceTree = "<group>"; children = (260851E064C349378A70FECE,C0E88B79C020E6C68AE55E47,975E25515ADCE081371651C1,89B91856CE5ABE59EC78404B,B304B242C02A309887E8735A); };
+1EE63A94BAD0DF0FCB0E7B8C = { isa = PBXGroup; name = Products; sourceTree = "<group>"; children = (38A007151ABE87CC01A5B6E9); };
+325F10A6957A34D66CB8C0E4 = { isa = PBXGroup; sourceTree = "<group>"; children = (3A2A88DEEFF3D1D23E496597,1EE63A94BAD0DF0FCB0E7B8C); };
+939BB46A04C3640C8C427E92 = { isa = XCLocalSwiftPackageReference; relativePath = VibraRemoteProtocol; };
+2A4C3B84009D0BA24C742A69 = { isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git"; requirement = {kind = exactVersion; version = 1.20.0;}; };
+054AC65FB5FAF622087C50DD = { isa = XCSwiftPackageProductDependency; package = 939BB46A04C3640C8C427E92; productName = VibraRemoteProtocol; };
+07AB5C17DCF5C6C8CDB715A5 = { isa = PBXBuildFile; productRef = 054AC65FB5FAF622087C50DD; };
+88C2C2B3E18A5C63D5D4FBF5 = { isa = XCSwiftPackageProductDependency; package = 2A4C3B84009D0BA24C742A69; productName = SwiftTerm; };
+A5382989247805A1C7888371 = { isa = PBXBuildFile; productRef = 88C2C2B3E18A5C63D5D4FBF5; };
+BCE16DD0260827ECF338C787 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (D7F75D686A4146F8487DE07B,7C5B7CA3404A3126D8FABED2,DF0F06D3F50F3D1AADEA26B5,A88187EB5A9DDD80690F504C,4F6075B638B33E9038B396BA); runOnlyForDeploymentPostprocessing = 0; };
+7561BFB015D8F536760CB671 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (07AB5C17DCF5C6C8CDB715A5,A5382989247805A1C7888371); runOnlyForDeploymentPostprocessing = 0; };
+0189424A5A60FED329FA868E = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+89E1FD6268CC0F221A2BE178 = { isa = XCBuildConfiguration; name = Debug; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; SWIFT_OPTIMIZATION_LEVEL = "-Onone";}; };
+E6DE6C99132752C914FEF632 = { isa = XCBuildConfiguration; name = Release; buildSettings = {CLANG_ENABLE_MODULES = YES; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SWIFT_VERSION = 5.0; SWIFT_OPTIMIZATION_LEVEL = "-O";}; };
+862894B703A6DEDF96A9DD6C = { isa = XCConfigurationList; buildConfigurations = (89E1FD6268CC0F221A2BE178,E6DE6C99132752C914FEF632); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+7082CC0B6FC1282FCEABD07A = { isa = XCBuildConfiguration; name = Debug; buildSettings = {PRODUCT_BUNDLE_IDENTIFIER = app.vibra.VibraMobile; PRODUCT_NAME = Vibra; TARGETED_DEVICE_FAMILY = 1;
+CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = Vibra/Info.plist; MARKETING_VERSION = 0.1.0; CURRENT_PROJECT_VERSION = 1;
+INFOPLIST_KEY_NSCameraUsageDescription = "Escanear la invitación del Mac para vincular Vibra.";
+INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+
+SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+ SWIFT_OPTIMIZATION_LEVEL = "-Onone";}; };
+639A7CA24D39909E713B47F7 = { isa = XCBuildConfiguration; name = Release; buildSettings = {PRODUCT_BUNDLE_IDENTIFIER = app.vibra.VibraMobile; PRODUCT_NAME = Vibra; TARGETED_DEVICE_FAMILY = 1;
+CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = Vibra/Info.plist; MARKETING_VERSION = 0.1.0; CURRENT_PROJECT_VERSION = 1;
+INFOPLIST_KEY_NSCameraUsageDescription = "Escanear la invitación del Mac para vincular Vibra.";
+INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+
+SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+ SWIFT_OPTIMIZATION_LEVEL = "-O";}; };
+C57128001CE614BF8549D6BB = { isa = XCConfigurationList; buildConfigurations = (7082CC0B6FC1282FCEABD07A,639A7CA24D39909E713B47F7); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+0E8A3AD980EC179856012B7E = { isa = PBXNativeTarget; name = Vibra; productName = Vibra; productType = "com.apple.product-type.application"; productReference = 38A007151ABE87CC01A5B6E9; buildConfigurationList = C57128001CE614BF8549D6BB; buildPhases = (BCE16DD0260827ECF338C787,7561BFB015D8F536760CB671,0189424A5A60FED329FA868E); buildRules = (); dependencies = (); packageProductDependencies = (054AC65FB5FAF622087C50DD,88C2C2B3E18A5C63D5D4FBF5); };
+98F54143AB4E86B28C3AFEE0 = { isa = PBXProject; attributes = {LastUpgradeCheck = 2660;}; buildConfigurationList = 862894B703A6DEDF96A9DD6C; compatibilityVersion = "Xcode 14.0"; developmentRegion = es; knownRegions = (es,en,Base); mainGroup = 325F10A6957A34D66CB8C0E4; productRefGroup = 1EE63A94BAD0DF0FCB0E7B8C; projectDirPath = ""; projectRoot = ""; packageReferences = (939BB46A04C3640C8C427E92,2A4C3B84009D0BA24C742A69); targets = (0E8A3AD980EC179856012B7E); };
+}; rootObject = 98F54143AB4E86B28C3AFEE0; }

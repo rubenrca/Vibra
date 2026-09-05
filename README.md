@@ -207,7 +207,7 @@ GPUI views
 WorkspaceSnapshot + acciones de dominio
    ├── WorkspaceRepository ── JSON versionado y migración Swift
    ├── SettingsRepository  ── preferencias persistentes
-   ├── TerminalPort        ── AlacrittyTerminal (PTY + parser)
+   ├── TerminalPort        ── GhosttyTerminal (PTY + libghostty-vt)
    ├── FileSystemPort      ── filesystem local confinado
    ├── GitPort             ── status y diff mediante git CLI
    └── AutomationServer    ── socket Unix + capacidades por pane

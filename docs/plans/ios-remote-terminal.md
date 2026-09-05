@@ -1,17 +1,22 @@
 # Vibra iOS: control remoto sencillo de terminales
 
-Fecha: 2026-09-04. Estado: implementación iniciada en `feat/ios-remote-terminal`.
+Fecha: 2026-09-04. Estado: implementación disponible en `feat/ios-remote-terminal`, preparada para pruebas manuales.
 
-Actualización: la [migración a Ghostty](../ghostty.md) está implementada en macOS. El transporte y el cliente iOS descritos aquí siguen pendientes.
+La [migración a Ghostty](../ghostty.md) está en `main`. El control remoto se desarrolla en su propia rama. [Guía de prueba e instalación](ios-remote-testing.md).
 
 ## Avance
 
-- Completado: contrato JSON v1 en `services/protocol`, límites de mensajes/entrada/tamaño e historial, y recuperación de revisiones de pantalla.
-- Completado: paquete Swift nativo para el sobre versionado y prueba que decodifica y vuelve a codificar una pantalla generada por Rust, preservando Unicode y ANSI.
-- Siguiente: relay local y prueba de interoperabilidad Noise Rust–Swift. La prueba JSON no valida cifrado.
-- Pendiente: conexión con panes Ghostty, permisos y controles del Mac, aplicación iOS y prueba por internet.
+- Implementados: protocolo v1, relay Rust, Noise IK interoperable Rust–Swift, fragmentación cifrada y límites.
+- Implementados: exportación del área activa Ghostty con filas VT, cursor y paleta; revisiones y resync; historial independiente; teclado compartido con GPUI; arbitraje del tamaño y recuperación del control.
+- Implementados: ajustes del Mac, QR de un solo uso, confirmación, Llavero, revocación y compartir panes, incluyendo terminales inferiores.
+- Implementada: app SwiftUI iOS 17 con SwiftTerm, cámara QR, vinculación, lista de panes, terminal, teclas auxiliares, pegado confirmado, historial y reconexión sin repetir entradas.
+- Preparados: proyecto Xcode, scripts de compilación y arranque local, Docker y configuración Fly.io de una instancia.
+- Verificados por CLI: Rust/Swift, sesión cifrada a través de relay real, permisos, heartbeat, PTY/tamaño, reconstrucción Ghostty–SwiftTerm y builds iOS para simulador/dispositivo.
+- Pendientes de entorno externo: firma e instalación en el iPhone del usuario, alojamiento del relay y aceptación por datos móviles. La revisión visual queda a cargo del usuario.
 
-Estos módulos están aislados de la aplicación: todavía no habilitan red ni control remoto. Verificación: `./Scripts/verify_remote.sh`.
+Ajuste de simplicidad: ante un cliente lento se cierra la conexión tras cinco segundos de envío bloqueado y se reconstruye una pantalla completa al reconectar. No se mantiene una cola de deltas atrasados. Las selecciones remotas se cierran al reconectar; hace falta elegir la terminal de nuevo.
+
+Verificación: `./Scripts/verify.sh`, `./Scripts/verify_remote.sh`, `./Scripts/build_ios.sh simulator` y `./Scripts/build_ios.sh device`. Prueba local: `./Scripts/test_remote.sh`.
 
 ## 1. Objetivo y alcance
 

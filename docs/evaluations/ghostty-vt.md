@@ -4,7 +4,7 @@ Fecha: 2026-09-04. Resultado: viable para un adaptador experimental; todavía no
 
 Continuación: se implementó la [migración de la aplicación a Ghostty](../ghostty.md) en `feat/ghostty-terminal`. Las mediciones de este documento corresponden al harness aislado, no al rendimiento de esa integración.
 
-## Decisión recomendada
+## Recomendación original (antes de la migración)
 
 Evaluar Ghostty estaba justificado: compila como biblioteca estática, se integra desde Rust y su exportación ANSI funciona con SwiftTerm en las pruebas realizadas. Recomiendo avanzar con un adaptador detrás de `TerminalPort`, manteniendo Alacritty como motor predeterminado hasta demostrar paridad. Si la prioridad inmediata es entregar iOS con el menor trabajo posible, conservar Alacritty sigue siendo la opción de menor alcance.
 
