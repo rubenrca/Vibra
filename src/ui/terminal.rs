@@ -345,12 +345,6 @@ impl TerminalView {
             .and_then(|handle| handle.foreground_process_name())
     }
 
-    pub fn session_process_id(&self) -> Option<u32> {
-        self.handle
-            .as_ref()
-            .and_then(|handle| handle.session_process_id())
-    }
-
     pub fn apply_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
         self.update_font_size(size, false, cx);
     }

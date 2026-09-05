@@ -15,12 +15,6 @@ pub fn should_poll_git_snapshot(right_sidebar_visible: bool) -> bool {
     right_sidebar_visible
 }
 
-/// Listening-server scan only while the Servers surface shows and the window
-/// is frontmost.
-pub fn should_poll_servers(panel_visible: bool, window_active: bool) -> bool {
-    panel_visible && window_active
-}
-
 /// Sessions-sidebar branch metadata only while that surface is open.
 pub fn should_poll_sidebar_git(left_sidebar_visible: bool, sessions_mode: bool) -> bool {
     left_sidebar_visible && sessions_mode
@@ -39,9 +33,6 @@ mod tests {
         assert!(should_poll_terminal_idle(true));
         assert!(!should_poll_git_snapshot(false));
         assert!(should_poll_git_snapshot(true));
-        assert!(!should_poll_servers(false, true));
-        assert!(!should_poll_servers(true, false));
-        assert!(should_poll_servers(true, true));
         assert!(!should_poll_sidebar_git(false, true));
         assert!(!should_poll_sidebar_git(true, false));
         assert!(should_poll_sidebar_git(true, true));

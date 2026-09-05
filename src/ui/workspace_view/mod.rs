@@ -43,7 +43,6 @@ use uuid::Uuid;
 use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
     SessionSnapshot, SidebarEntry, TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis,
-    WorkspaceTitleSource,
 };
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentKind, AgentRuntimeState, AutomationCommand,
@@ -65,7 +64,6 @@ use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
 use crate::ui::agent_marks::{agent_compact_badge, agent_sidebar_badge, agent_status_color};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
-use crate::ui::servers::{ServerRoot, ServersView, ServersViewEvent};
 use crate::ui::terminal::{TerminalDragPreview, TerminalView, TerminalViewEvent};
 use crate::ui::theme::{self, AppearanceMode, ThemeTone, colors};
 use crate::{
@@ -301,7 +299,6 @@ enum LeftSidebarMode {
 enum RightSidebarMode {
     Files,
     Diff,
-    Servers,
 }
 
 #[derive(Debug, Clone)]
@@ -329,7 +326,6 @@ enum PaletteAction {
     ToggleGit,
     ShowSessions,
     ShowFiles,
-    ShowServers,
     ShowInfo,
     ShowSettings,
     SelectWorkspace {
@@ -587,9 +583,6 @@ pub struct WorkspaceView {
     git_port: Arc<dyn GitPort>,
     diff_view: Entity<DiffView>,
     _diff_subscription: Subscription,
-    servers_view: Entity<ServersView>,
-    _servers_subscription: Subscription,
-    _servers_observe: Subscription,
     pending_focus_session: Option<Uuid>,
     terminals: HashMap<Uuid, Entity<TerminalView>>,
     /// Per-sidebar-session utility consoles. Showing one never changes the
@@ -634,7 +627,6 @@ pub struct WorkspaceView {
     settings_page: SettingsPage,
     remote_feedback: Option<String>,
     remote_copied: bool,
-    remote_advanced_open: bool,
     remote_forget_confirm: bool,
     context_menu: Option<ContextMenuState>,
     ide_menu_open: bool,
@@ -756,20 +748,6 @@ impl WorkspaceView {
             &diff_view,
             |_this, _diff_view, _event: &DiffViewEvent, cx| cx.notify(),
         );
-        let servers_view = cx.new(ServersView::new);
-        let servers_subscription = cx.subscribe(
-            &servers_view,
-            |this, _, event: &ServersViewEvent, cx| match event {
-                ServersViewEvent::FocusPane(session_id) => {
-                    if this.is_dev_terminal(*session_id, cx) {
-                        this.reveal_dev_terminal_session(*session_id, cx);
-                    } else {
-                        this.focus_session_from_sidebar(*session_id, cx);
-                    }
-                }
-            },
-        );
-        let servers_observe = cx.observe(&servers_view, |_this, _, cx| cx.notify());
         let (agent_hook_status, agent_hook_error) = match agent_hook_status() {
             Ok(status) => (Some(status), None),
             Err(error) => (
@@ -814,9 +792,6 @@ impl WorkspaceView {
             git_port,
             diff_view,
             _diff_subscription: diff_subscription,
-            servers_view,
-            _servers_subscription: servers_subscription,
-            _servers_observe: servers_observe,
             pending_focus_session: None,
             terminals: HashMap::new(),
             dev_terminals: HashMap::new(),
@@ -859,7 +834,6 @@ impl WorkspaceView {
             settings_page: SettingsPage::General,
             remote_feedback: None,
             remote_copied: false,
-            remote_advanced_open: false,
             remote_forget_confirm: false,
             context_menu: None,
             ide_menu_open: false,
@@ -900,7 +874,6 @@ impl WorkspaceView {
         view.refresh_project_files(cx);
         view.refresh_sidebar_workspace_meta(cx);
         view.sync_git_panel_visibility(cx);
-        view.sync_servers_panel(cx);
         view
     }
 
@@ -908,15 +881,6 @@ impl WorkspaceView {
         let visible = self.right_sidebar_visible || self.right_sidebar_progress > 0.001;
         self.diff_view
             .update(cx, |diff_view, cx| diff_view.set_panel_visible(visible, cx));
-    }
-
-    fn sync_servers_panel(&self, cx: &mut Context<Self>) {
-        let visible = self.right_sidebar_visible || self.right_sidebar_progress > 0.001;
-        let roots = self.collect_server_roots(cx);
-        self.servers_view.update(cx, |view, cx| {
-            view.set_roots(roots, cx);
-            view.set_panel_visible(visible, cx);
-        });
     }
 
     fn pane_identity_with_cwd(
@@ -977,124 +941,6 @@ impl WorkspaceView {
             .flat_map(|tab| &tab.sessions)
             .find(|session| session.id == session_id)?;
         Some(self.pane_identity(session, 0, cx))
-    }
-
-    fn collect_server_roots(&self, cx: &Context<Self>) -> Vec<ServerRoot> {
-        let workspace_count = self.snapshot.workspace_entries().len();
-        let mut roots = Vec::new();
-        for project in &self.snapshot.projects {
-            for workspace in project.workspaces.as_deref().unwrap_or_default() {
-                let meta = self.sidebar_workspace_meta.get(&workspace.id);
-                let primary_cwd = workspace.primary_working_directory();
-                let cwd = meta
-                    .map(|meta| meta.cwd.as_str())
-                    .or(primary_cwd.as_deref())
-                    .unwrap_or("");
-                let workspace_label =
-                    if workspace.title_source == Some(WorkspaceTitleSource::Manual) {
-                        workspace.name.clone()
-                    } else {
-                        let live = directory_basename(cwd);
-                        if live.is_empty() || live == "—" {
-                            workspace.name.clone()
-                        } else {
-                            live
-                        }
-                    };
-                for tab in &workspace.tabs {
-                    for (pane_index, session) in tab.sessions.iter().enumerate() {
-                        let Some(terminal) = self.terminals.get(&session.id) else {
-                            continue;
-                        };
-                        let terminal = terminal.read(cx);
-                        let Some(pid) = terminal.session_process_id() else {
-                            continue;
-                        };
-                        let live_cwd = terminal.current_working_directory();
-                        let live_cwd_str = live_cwd.to_string_lossy().into_owned();
-                        let identity =
-                            self.pane_identity_with_cwd(session, pane_index, &live_cwd_str);
-                        let label = if workspace_count > 1 {
-                            format!("{workspace_label} · {}", identity.title)
-                        } else {
-                            identity.title
-                        };
-                        roots.push(ServerRoot {
-                            pane_id: session.id,
-                            label,
-                            pid,
-                            cwd: live_cwd,
-                            project_root: PathBuf::from(&project.root_path),
-                        });
-                    }
-                }
-            }
-        }
-        let drawer_terminals: Vec<(Uuid, Entity<TerminalView>)> = self
-            .dev_terminals
-            .iter()
-            .flat_map(|(workspace_id, drawer)| {
-                drawer
-                    .terminals
-                    .iter()
-                    .map(|terminal| (*workspace_id, terminal.clone()))
-            })
-            .collect();
-        for (workspace_id, terminal) in drawer_terminals {
-            let (pid, session_id, cwd) = {
-                let terminal = terminal.read(cx);
-                (
-                    terminal.session_process_id(),
-                    terminal.session_id(),
-                    terminal.current_working_directory(),
-                )
-            };
-            let Some(pid) = pid else {
-                continue;
-            };
-            let (workspace_label, project_root) = self
-                .snapshot
-                .projects
-                .iter()
-                .find_map(|project| {
-                    project
-                        .workspaces
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .find(|workspace| workspace.id == workspace_id)
-                        .map(|workspace| {
-                            (workspace.name.clone(), PathBuf::from(&project.root_path))
-                        })
-                })
-                .unwrap_or_else(|| ("Dev terminal".into(), self.selected_live_cwd(cx)));
-            let title = directory_basename(&cwd.to_string_lossy());
-            let label = if workspace_count > 1 {
-                format!("{workspace_label} · {title}")
-            } else {
-                format!("Dev terminal · {title}")
-            };
-            roots.push(ServerRoot {
-                pane_id: session_id,
-                label,
-                pid,
-                cwd,
-                project_root,
-            });
-        }
-        roots
-    }
-
-    fn focus_session_from_sidebar(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
-        if self.snapshot.select_terminal_global(session_id) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
-            self.persist(cx);
-        }
-        self.pending_focus_session = Some(session_id);
-        cx.notify();
     }
 
     fn sync_diff_root(&self, cx: &mut Context<Self>) {
@@ -1493,7 +1339,6 @@ impl WorkspaceView {
                 self.agent_names.insert(session_id, name);
                 self.rename_prompt = None;
                 self.persistence_error = None;
-                self.sync_servers_panel(cx);
             }
             RenamePromptKind::CreateSpace { workspace_id } => {
                 if self
@@ -1763,11 +1608,6 @@ impl WorkspaceView {
                     action: PaletteAction::ShowFiles,
                 },
                 PaletteItem {
-                    label: "Sidebar: Servers".into(),
-                    detail: String::new(),
-                    action: PaletteAction::ShowServers,
-                },
-                PaletteItem {
                     label: "Sidebar: Info".into(),
                     detail: String::new(),
                     action: PaletteAction::ShowInfo,
@@ -1881,13 +1721,6 @@ impl WorkspaceView {
             PaletteAction::ShowFiles => {
                 self.right_sidebar_mode = RightSidebarMode::Files;
                 self.refresh_project_files(cx);
-                self.set_right_sidebar_visible(true, true, cx);
-            }
-            PaletteAction::ShowServers => {
-                self.right_sidebar_mode = RightSidebarMode::Servers;
-                self.sync_servers_panel(cx);
-                self.servers_view
-                    .update(cx, |view, cx| view.refresh_now(cx));
                 self.set_right_sidebar_visible(true, true, cx);
             }
             PaletteAction::ShowInfo => {
@@ -2043,7 +1876,6 @@ impl WorkspaceView {
         self.right_sidebar_visible = visible;
         self.settings.git_panel_visible = visible;
         self.sync_git_panel_visibility(cx);
-        self.sync_servers_panel(cx);
         if persist {
             self.persist_settings(cx);
         }
@@ -2177,7 +2009,6 @@ impl WorkspaceView {
             self.terminal_subscriptions.insert(session_id, subscription);
         }
         self.sync_terminal_surface_visibility(cx);
-        self.sync_servers_panel(cx);
     }
 
     fn visible_terminal_ids(&self) -> HashSet<Uuid> {
@@ -2206,10 +2037,8 @@ impl WorkspaceView {
             TerminalViewEvent::TitleChanged { session_id, title } => {
                 crate::infrastructure::remote::hub().title(*session_id, title);
                 if self.snapshot.update_session_title(*session_id, title) {
-                    self.sync_servers_panel(cx);
                     self.persist(cx);
                 } else if self.is_dev_terminal(*session_id, cx) {
-                    self.sync_servers_panel(cx);
                     cx.notify();
                 }
             }
@@ -2238,7 +2067,6 @@ impl WorkspaceView {
                 }
                 // Path/branch/title in the sessions sidebar follow the live cwd.
                 self.refresh_sidebar_workspace_meta(cx);
-                self.sync_servers_panel(cx);
                 if changed {
                     self.persist(cx);
                 } else {
@@ -2362,18 +2190,6 @@ impl WorkspaceView {
             Err(error) => AutomationResponse::failure(error),
         };
         let _ = request.response.send(response);
-    }
-
-    fn project_id_for_workspace(&self, workspace_id: Uuid) -> Option<Uuid> {
-        self.snapshot.projects.iter().find_map(|project| {
-            project
-                .workspaces
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .any(|workspace| workspace.id == workspace_id)
-                .then_some(project.id)
-        })
     }
 
     fn project_id_for_session(&self, session_id: Uuid) -> Option<Uuid> {
@@ -2928,15 +2744,9 @@ impl WorkspaceView {
             return;
         }
         self.window_is_active = window.is_window_active();
-        self.servers_view.update(cx, |view, cx| {
-            view.set_window_active(self.window_is_active, cx)
-        });
         self._activation_subscription =
-            Some(cx.observe_window_activation(window, |this, window, cx| {
+            Some(cx.observe_window_activation(window, |this, window, _cx| {
                 this.window_is_active = window.is_window_active();
-                let active = this.window_is_active;
-                this.servers_view
-                    .update(cx, |view, cx| view.set_window_active(active, cx));
             }));
     }
 
@@ -3099,7 +2909,6 @@ impl WorkspaceView {
             });
         drawer.terminals.push(terminal.clone());
         drawer.selected_id = session_id;
-        self.sync_servers_panel(cx);
         terminal
     }
 
@@ -3140,29 +2949,6 @@ impl WorkspaceView {
         }
     }
 
-    fn reveal_dev_terminal_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
-        let Some(workspace_id) = self.dev_workspace_for_session(session_id, cx) else {
-            return;
-        };
-        if self.current_workspace_id() != Some(workspace_id)
-            && let Some(project_id) = self.project_id_for_workspace(workspace_id)
-            && self.snapshot.select_workspace(project_id, workspace_id)
-        {
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
-            self.persist(cx);
-        }
-        if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) {
-            drawer.selected_id = session_id;
-            drawer.visible = true;
-        }
-        self.pending_focus_dev_terminal = true;
-        self.sync_terminal_surface_visibility(cx);
-        self.sync_servers_panel(cx);
-        cx.notify();
-    }
-
     fn set_dev_terminal_visible(
         &mut self,
         visible: bool,
@@ -3180,7 +2966,6 @@ impl WorkspaceView {
                 drawer.visible = true;
             }
             self.sync_terminal_surface_visibility(cx);
-            self.sync_servers_panel(cx);
             cx.notify();
             cx.defer_in(window, move |_, window, cx| {
                 terminal.read(cx).focus_handle(cx).focus(window);
@@ -3221,7 +3006,6 @@ impl WorkspaceView {
             drawer.visible = true;
         }
         self.sync_terminal_surface_visibility(cx);
-        self.sync_servers_panel(cx);
         cx.notify();
         cx.defer_in(window, move |_, window, cx| {
             terminal.read(cx).focus_handle(cx).focus(window);
@@ -3283,7 +3067,6 @@ impl WorkspaceView {
             self.dev_terminals.remove(&workspace_id);
             self.pending_focus_dev_terminal = false;
             self.sync_terminal_surface_visibility(cx);
-            self.sync_servers_panel(cx);
             self.focus_selected_terminal(window, cx);
             cx.notify();
             return;
@@ -3296,7 +3079,6 @@ impl WorkspaceView {
         }
         let selected = self.selected_dev_terminal(workspace_id, cx);
         self.sync_terminal_surface_visibility(cx);
-        self.sync_servers_panel(cx);
         cx.notify();
         if let Some(terminal) = selected {
             cx.defer_in(window, move |_, window, cx| {
@@ -5236,7 +5018,7 @@ impl WorkspaceView {
                 div()
                     .text_xs()
                     .text_color(colors().subtle)
-                    .child("Continúa tus terminales desde el teléfono."),
+                    .child("Controla tus terminales desde el iPhone en la misma red Wi-Fi. Sin servidor ni cuenta adicional."),
             )
             .child(div().text_xs().child(if status.paired && !status.enabled {
                 "iPhone vinculado · acceso desactivado"
@@ -5361,10 +5143,6 @@ impl WorkspaceView {
                 panel = panel.child(grid);
             }
         }
-        if status.relay.starts_with("ws://") && !status.paired {
-            panel = panel.child(div().text_xs().text_color(colors().subtle)
-                .child("Configurado para probar en el simulador. Para usar tu iPhone físico, configura un servidor seguro en Opciones avanzadas."));
-        }
         if status.paired || status.enabled {
             panel = panel.child(self.settings_toggle_row(
                 SettingsToggleRow {
@@ -5404,35 +5182,12 @@ impl WorkspaceView {
                 ));
             }
         }
-        panel = panel.child(self.settings_button(
-            if self.remote_advanced_open {
-                "Ocultar opciones avanzadas"
-            } else {
-                "Opciones avanzadas"
-            },
-            "remote-advanced",
-            cx,
-            |this, cx| {
-                this.remote_advanced_open = !this.remote_advanced_open;
-                cx.notify();
-            },
-        ));
-        if self.remote_advanced_open {
-            panel = panel
-                .child(div().text_xs().child("Servidor de conexión"))
-                .child(div().text_xs().text_color(colors().subtle).child(status.relay.clone()))
-                .child(div().text_xs().text_color(colors().subtle).child(status.description))
-                .child(div().text_xs().text_color(colors().subtle)
-                    .child("Para conectar por Internet, copia la dirección wss:// de tu servidor y aplícala aquí. Cambiarla requiere volver a vincular el iPhone."))
-                .child(self.settings_button("Usar dirección copiada", "remote-relay", cx, |this,cx| {
-                    let relay=cx.read_from_clipboard().and_then(|c|c.text()).unwrap_or_default();
-                    if !relay.trim().starts_with("wss://") && !relay.trim().starts_with("ws://") {
-                        this.remote_result(Err(anyhow::anyhow!("Copia primero la dirección del servidor (wss://…), no la invitación del iPhone.")),cx);
-                    } else {
-                        this.remote_result(hub().configure(relay.trim()),cx);
-                    }
-                }));
-        }
+        panel = panel.child(
+            div()
+                .text_xs()
+                .text_color(colors().subtle)
+                .child(status.description),
+        );
         panel.into_any_element()
     }
 
@@ -6514,15 +6269,9 @@ impl WorkspaceView {
 
     fn utility_mode_tabs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.right_sidebar_mode;
-        let server_count = self.servers_view.read(cx).server_count();
         let modes = [
             (RightSidebarMode::Files, "Files", "chrome-icons/files.svg"),
             (RightSidebarMode::Diff, "Git", "chrome-icons/git-branch.svg"),
-            (
-                RightSidebarMode::Servers,
-                "Servers",
-                "chrome-icons/radio.svg",
-            ),
         ];
 
         div()
@@ -6567,11 +6316,6 @@ impl WorkspaceView {
                                         diff_view.refresh_now(cx);
                                     });
                                 }
-                                RightSidebarMode::Servers => {
-                                    this.sync_servers_panel(cx);
-                                    this.servers_view
-                                        .update(cx, |view, cx| view.refresh_now(cx));
-                                }
                             }
                             cx.notify();
                         }))
@@ -6580,20 +6324,6 @@ impl WorkspaceView {
                         } else {
                             colors().subtle
                         }))
-                        .when(
-                            item_mode == RightSidebarMode::Servers && server_count > 0,
-                            |tab| {
-                                tab.child(
-                                    div()
-                                        .absolute()
-                                        .top(px(8.0))
-                                        .right(px(5.0))
-                                        .size(px(6.0))
-                                        .rounded_full()
-                                        .bg(colors().success),
-                                )
-                            },
-                        )
                 },
             )))
             .child(self.ide_button(cx))
@@ -6617,7 +6347,6 @@ impl WorkspaceView {
         let content = match mode {
             RightSidebarMode::Files => self.files_sidebar_content(cx),
             RightSidebarMode::Diff => self.diff_view.clone().into_any_element(),
-            RightSidebarMode::Servers => self.servers_view.clone().into_any_element(),
         };
 
         // Outer clips to animated width; inner keeps the full panel layout.

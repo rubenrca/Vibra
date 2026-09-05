@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.17 — 2026-09-05
+
+- Add encrypted iPhone terminal control on the same local network, with QR pairing, Mac approval, and explicit sharing per terminal. No hosted relay or additional account is required.
+- Preserve device pairing across Mac restarts and improve reconnects, interrupted pairing, and pending input cleanup.
+- Complete the Ghostty terminal migration and organize app settings.
+- Remove the Servers panel, background port scanning, and obsolete relay code.
+
 ## 0.3.16 — 2026-09-04
 
 - Frame the workspace as subtle, closely spaced panels and give split terminals the same visual separation while preserving draggable resizing and pane zoom.

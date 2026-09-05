@@ -33,7 +33,12 @@ import VibraRemoteProtocol
     #if targetEnvironment(simulator)
       Keychain.runSimulatorProbeIfRequested()
     #endif
-    do { paired = try Keychain.read("pairing") != nil } catch {
+    do {
+      if let data = try Keychain.read("pairing") {
+        paired = (try? Invitation.parse(data, paired: true)) != nil
+        if !paired { status = "Actualiza Vibra en el Mac y escanea un QR nuevo para la conexión local" }
+      }
+    } catch {
       self.status = "No se pudo acceder al Llavero"
       self.error = Self.connectionError(error)
     }
@@ -50,24 +55,17 @@ import VibraRemoteProtocol
     }
     if code.domain == NSURLErrorDomain {
       return
-        "No se pudo conectar con el relay (código \(code.code)). Comprueba que está iniciado y que la dirección es correcta."
+        "No se pudo conectar con el Mac (código \(code.code)). Conecta ambos dispositivos a la misma red Wi-Fi, permite el acceso a la red local y mantén Vibra abierto en el Mac."
     }
     return "No se pudo vincular con el Mac. Si la invitación expiró o fue utilizada, genera otra."
   }
   func scan(_ text: String) {
     do {
       let invite = try Invitation.parse(Data(text.utf8))
-      #if !targetEnvironment(simulator)
-        if invite.relay.hasPrefix("ws://") {
-          self.error =
-            "El relay local solo funciona en el simulador. Configura un relay wss:// en el Mac y genera otro QR."
-          return
-        }
-      #endif
       disconnect()
       invitation = invite
       connect(invite)
-    } catch { self.error = "La invitación no es válida o expiró. Genera un QR nuevo en el Mac." }
+    } catch { self.error = "La invitación no es compatible o expiró. Actualiza Vibra en ambos dispositivos y genera un QR nuevo en el Mac." }
   }
   func resume() {
     reconnect = true
@@ -81,6 +79,10 @@ import VibraRemoteProtocol
       connect(invite)
     }
   }
+  func retry() {
+    disconnect()
+    resume()
+  }
   func suspend() {
     reconnect = false
     disconnect()
@@ -89,8 +91,14 @@ import VibraRemoteProtocol
   func forget() {
     reconnect = false
     disconnect()
-    Keychain.remove("pairing")
-    Keychain.remove("identity")
+    do {
+      try Keychain.remove("pairing")
+    } catch {
+      self.error = Self.connectionError(error)
+      status = "No se pudo eliminar la vinculación"
+      return
+    }
+    // Keep this device's identity; deleting the pairing is enough to forget the Mac.
     paired = false
     invitation = nil
     panes = []
@@ -111,6 +119,8 @@ import VibraRemoteProtocol
     connected = false
     ready = false
     selected = nil
+    resetPaneActions()
+    panes = []
     tracker = FrameTracker()
   }
   private static func phoneName() -> String {
@@ -138,28 +148,32 @@ import VibraRemoteProtocol
         let channel = try NoiseChannel(
           privateKey: privateKey, remote: Data(base64Encoded: invite.public_key)!)
         let config = URLSessionConfiguration.ephemeral
+        config.waitsForConnectivity = true
         config.timeoutIntervalForRequest = 130
         config.timeoutIntervalForResource = 86_400
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        let ws = session.webSocketTask(with: URL(string: invite.relay)!)
+        let ws = session.webSocketTask(with: URL(string: invite.endpoint)!)
         ws.maximumMessageSize = 65_535
         self.socket = ws
         ws.resume()
-        let hello = ["role": "phone", "channel": invite.channel, "token": invite.token]
-        try await ws.send(
-          .string(String(data: try JSONSerialization.data(withJSONObject: hello), encoding: .utf8)!)
-        )
-        guard case .string("peer") = try await ws.receive() else { throw RemoteError.disconnected }
+        let handshakeDeadline = Task {
+          try? await Task.sleep(for: .seconds(130))
+          guard !Task.isCancelled else { return }
+          ws.cancel(with: .goingAway, reason: nil)
+        }
+        defer { handshakeDeadline.cancel() }
         try await ws.send(
           .data(
             channel.introduce(
               invitation: invite.invitation, name: Self.phoneName())))
+        guard self.generation == token else { return }
         self.status = "Confirma este iPhone en Ajustes del Mac"
         guard case .data(let response) = try await ws.receive() else {
           throw RemoteError.unauthenticated
         }
         try channel.complete(response)
+        handshakeDeadline.cancel()
         guard self.generation == token else { return }
         try Keychain.write("pairing", JSONEncoder().encode(invite))
         self.paired = true
@@ -240,8 +254,14 @@ import VibraRemoteProtocol
       }
     }
   }
-  func open(_ pane: Pane) {
+  private func resetPaneActions() {
+    pendingPaste = nil
+    history = nil
+    control = false
     requestedSize = nil
+  }
+  func open(_ pane: Pane) {
+    resetPaneActions()
     selected = pane
     ready = false
     tracker = FrameTracker()
@@ -257,6 +277,7 @@ import VibraRemoteProtocol
     ready = false
   }
   func close() {
+    resetPaneActions()
     if let pane = selected { enqueue(.init("close", pane: pane.id)) }
     selected = nil
     ready = false
@@ -275,6 +296,7 @@ import VibraRemoteProtocol
         modifiers: control ? ["control"] : []))
   }
   func paste(_ text: String) {
+    guard ready, selected != nil else { return }
     guard text.utf8.count <= 65_536 else {
       error = "El texto supera 64 KB"
       return
@@ -334,6 +356,7 @@ import VibraRemoteProtocol
     case "control_released":
       if message.pane_id == selected?.id {
         selected = nil
+        resetPaneActions()
         ready = false
         tracker = FrameTracker()
         status = "El Mac recuperó el control"

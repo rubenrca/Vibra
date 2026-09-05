@@ -47,9 +47,9 @@ struct ContentView: View {
                 )
                 .foregroundStyle(model.connected ? Color.green : Color.secondary)
                 if !model.connected {
-                  Text("Mantén Vibra abierto en el Mac. La conexión se restablece automáticamente.")
+                  Text("Conecta el iPhone y el Mac a la misma red Wi-Fi y mantén Vibra abierto. Permite el acceso a la red local en Ajustes de iOS.")
                     .font(.subheadline).foregroundStyle(.secondary)
-                  Button("Intentar de nuevo") { model.resume() }
+                  Button("Intentar de nuevo") { model.retry() }
                 }
               }
               if model.connected {
@@ -90,7 +90,7 @@ struct ContentView: View {
                   Image(systemName: "laptopcomputer.and.iphone")
                     .font(.largeTitle).foregroundStyle(.tint)
                   Text("Tu terminal, contigo").font(.title2.bold())
-                  Text("Conecta Vibra con tu Mac para continuar desde el iPhone.")
+                  Text("Controla tu Mac desde el iPhone en la misma red Wi-Fi. Sin servidor ni cuenta adicional.")
                     .foregroundStyle(.secondary)
                   Label("Abre Ajustes → iPhone en el Mac", systemImage: "1.circle")
                   Label("Pulsa Vincular iPhone", systemImage: "2.circle")
@@ -153,7 +153,7 @@ struct ContentView: View {
             Section("Tu Mac") {
               Label(model.connected ? "Conectado" : "Sin conexión", systemImage: "desktopcomputer")
               Text(model.status).font(.caption).foregroundStyle(.secondary)
-              if !model.connected { Button("Reconectar") { model.resume() } }
+              if !model.connected { Button("Reconectar") { model.retry() } }
             }
             Section {
               Button("Desvincular este Mac", role: .destructive) { confirmForget = true }

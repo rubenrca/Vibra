@@ -1,15 +1,18 @@
 # Control remoto Vibra · iOS
 
-Workspace independiente de GPUI: `protocol` define y valida mensajes; `remote` implementa Noise y fragmentación; `relay` reenvía WebSockets cifrados. La app Mac integra el servicio en `src/infrastructure/remote.rs`. Cliente SwiftUI/SwiftTerm en `ios/Vibra.xcodeproj`.
+Workspace independiente de GPUI: `protocol` define y valida mensajes; `remote` implementa Noise, fragmentación y el transporte directo local. La app Mac integra el servicio en `src/infrastructure/remote.rs`. Cliente SwiftUI/SwiftTerm en `ios/Vibra.xcodeproj`.
 
-[Guía para probar y alojar](../docs/plans/ios-remote-testing.md) · [Plan y decisiones](../docs/plans/ios-remote-terminal.md).
+[Guía para probar](../docs/plans/ios-remote-testing.md).
 
-## Conexión y autorización
+## Conexión local y autorización
 
-- WSS a `/ws`; WS solo para loopback de pruebas. El primer mensaje JSON de routing lleva rol, canal y token. El Mac registra además el token del teléfono. El relay guarda registros en RAM y permite reconectar al dueño durante una hora desde la desconexión; un reinicio pierde todos los registros y el Mac los vuelve a crear.
-- El relay responde `ready` al Mac y `peer` a ambos al unirlos. Después reenvía exclusivamente mensajes binarios y ping/pong. Solo hay un teléfono por conexión; un cierre termina ambas puntas. No registra contenido ni credenciales en logs.
-- Noise `IK_25519_ChaChaPoly_SHA256`, prólogo UTF-8 `Vibra remote v1`; iOS inicia con la clave pública del Mac obtenida del QR. Su primer payload cifrado lleva invitación y nombre. El Mac verifica la identidad vinculada o consume la invitación de cinco minutos y pide confirmación local. Responde `approved` dentro del segundo mensaje Noise.
-- Claves privadas y vinculación en Llavero del sistema. Desactivado al iniciar; panes compartidos solo durante la ejecución actual. Revocar y cambiar relay rotan todas las credenciales. QR y confirmación no se sustituyen por autenticación del relay.
+La primera versión de producto conecta **Vibra Mac ↔ Vibra iPhone en la misma red**, sin servidores externos. `src/infrastructure/remote.rs` abre un listener TCP en 8788 al activar el acceso; lo cierra al desactivar, desvincular o salir. El cliente resuelve el nombre Bonjour del Mac.
+
+- Invitación v2: `endpoint=ws://NOMBRE.local:8788/local`, clave pública del Mac, invitación aleatoria y caducidad. El teléfono rechaza las URLs públicas y los QR antiguos de relay.
+- No hay handshake de routing. El primer mensaje WebSocket es el handshake Noise `IK_25519_ChaChaPoly_SHA256`, con prólogo `Vibra remote v1`. WebSocket aporta framing; la autenticación y el cifrado los proporciona Noise.
+- El Mac verifica la identidad vinculada o consume una invitación de cinco minutos y pide confirmación local. Responde `approved` cifrado dentro del segundo mensaje Noise. La invitación se consume incluso si se rechaza la solicitud.
+- Claves privadas y vinculación en Llavero. El acceso está desactivado al iniciar; panes compartidos solo durante la ejecución actual. Revocar rota la identidad del Mac.
+- La conexión local no requiere Internet. Requiere IPv4 local y una red que permita la comunicación entre dispositivos y la resolución Bonjour. Redes de invitados aisladas pueden impedirla.
 
 ## Transporte y contrato v1
 
@@ -31,8 +34,8 @@ Límites: JSON 1 MiB, input 64 KiB, 128 panes, 1.000 líneas de historial, tama�
 
 Solo una terminal tiene control remoto por conexión. Su PTY adopta el tamaño del iPhone y recuerda los cambios de tamaño locales para restaurarlos. Recuperar control invalida también resizes pendientes. El heartbeat autenticado caduca a los 15 segundos. Cerrar, descompartir, revocar, desconectar o pasar iOS a segundo plano libera el control; los errores también lo liberan mediante RAII.
 
-El relay limita sockets a 512, registros a 1.024, buffers de websocket y plazo de introducción a cinco segundos. No hay base de datos, cuentas, archivos, creación de terminales ni acceso al socket de automatización.
+No hay base de datos, cuentas, archivos, creación de terminales ni acceso al socket de automatización.
 
 ## Verificar
 
-`./Scripts/verify_remote.sh` ejecuta tests Rust, Clippy, fixtures actuales contra Swift y una sesión cifrada mediante el relay real. `./Scripts/build_ios.sh simulator` y `device` compilan la app nativa. El servicio se puede ejecutar solo con `cargo run --locked --manifest-path services/Cargo.toml -p vibra-relay`; por defecto escucha únicamente en `127.0.0.1:8787`.
+`./Scripts/verify_remote.sh` ejecuta tests Rust, Clippy, fixtures actuales contra Swift y una sesión cifrada directa mediante el listener integrado del Mac. `./Scripts/build_ios.sh simulator` y `device` compilan la app nativa.

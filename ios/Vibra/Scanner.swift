@@ -19,12 +19,13 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
   private let worker = DispatchQueue(label: "app.vibra.camera")
   private var preview: AVCaptureVideoPreviewLayer?
   private var consumed = false
+  private var stopped = false
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .black
     AVCaptureDevice.requestAccess(for: .video) { [weak self] allowed in
       DispatchQueue.main.async {
-        guard let self else { return }
+        guard let self, !self.stopped else { return }
         if allowed {
           self.start()
         } else {
@@ -68,7 +69,10 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
     stop()
     scanned?(value)
   }
-  func stop() { worker.async { self.session.stopRunning() } }
+  func stop() {
+    stopped = true
+    worker.async { self.session.stopRunning() }
+  }
   private func explain(_ text: String) {
     let label = UILabel(frame: view.bounds.insetBy(dx: 24, dy: 24))
     label.text = text

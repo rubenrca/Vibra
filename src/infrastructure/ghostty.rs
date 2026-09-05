@@ -917,9 +917,6 @@ impl TerminalHandle for GhosttyTerminal {
     fn foreground_process_id(&self) -> Option<u32> {
         self.foreground()
     }
-    fn session_process_id(&self) -> Option<u32> {
-        self.alive.load(Ordering::Acquire).then_some(self.pid)
-    }
     fn recent_text(&self, lines: usize) -> Option<String> {
         let e = self.engine.lock().unwrap();
         let mut n = 0;

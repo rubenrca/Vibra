@@ -28,6 +28,8 @@
 	<string>14.0</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Vibra usa Finder únicamente para mover archivos a la Papelera de forma recuperable.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Conectar con tu iPhone para controlar las terminales que compartas en la misma red local.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

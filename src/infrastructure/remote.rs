@@ -17,29 +17,29 @@ use vibra_remote::{
     tokio,
     tungstenite::Message as Ws,
 };
-const KEYCHAIN_SERVICE: &str = "app.vibra.remote.v1";
+const KEYCHAIN_SERVICE: &str = "app.vibra.remote.local.v1";
+const LOCAL_PORT: u16 = 8788;
 #[derive(Clone, Serialize, Deserialize)]
 struct Credentials {
     private: String,
     public: String,
-    channel: String,
-    host_token: String,
-    phone_token: String,
     paired: Option<String>,
-    relay: String,
 }
 impl Credentials {
-    fn fresh(relay: String) -> Result<Self> {
+    fn fresh() -> Result<Self> {
         let key = wire::keypair()?;
         Ok(Self {
             private: wire::base64(&key.private),
             public: wire::base64(&key.public),
-            channel: wire::secret()?,
-            host_token: wire::secret()?,
-            phone_token: wire::secret()?,
             paired: None,
-            relay,
         })
+    }
+    fn load() -> Result<Option<Self>> {
+        match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, "mac") {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Err(error) if error.code() == -25300 => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
     fn save(&self) -> Result<()> {
         security_framework::passwords::set_generic_password(
@@ -61,6 +61,7 @@ struct Pending {
     approved: Option<bool>,
 }
 struct State {
+    endpoint: Option<String>,
     enabled: bool,
     generation: u64,
     credentials: Option<Credentials>,
@@ -101,29 +102,38 @@ impl State {
     }
 }
 pub struct Hub {
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     state: Mutex<State>,
 }
 #[derive(Clone)]
 pub struct Status {
     pub enabled: bool,
     pub description: String,
-    pub relay: String,
     pub invitation: Option<String>,
     pub pending: Option<String>,
     pub paired: bool,
 }
 pub fn hub() -> &'static Hub {
     static HUB: OnceLock<Hub> = OnceLock::new();
-    HUB.get_or_init(|| Hub {
-        state: Mutex::new(State {
-            enabled: false,
-            generation: 0,
-            credentials: None,
-            invitation: None,
-            panes: HashMap::new(),
-            pending: None,
-            status: "Control remoto desactivado".into(),
-        }),
+    HUB.get_or_init(|| {
+        let loaded = Credentials::load();
+        let status = match &loaded {
+            Ok(_) => "Control remoto desactivado".into(),
+            Err(error) => format!("No se pudo leer la vinculación del Llavero: {error}"),
+        };
+        Hub {
+            worker: Mutex::new(None),
+            state: Mutex::new(State {
+                endpoint: None,
+                enabled: false,
+                generation: 0,
+                credentials: loaded.ok().flatten(),
+                invitation: None,
+                panes: HashMap::new(),
+                pending: None,
+                status,
+            }),
+        }
     })
 }
 fn now() -> u64 {
@@ -134,7 +144,9 @@ fn now() -> u64 {
 }
 impl Hub {
     pub fn register(&self, id: Uuid, handle: &Arc<dyn TerminalHandle>) {
-        self.state.lock().unwrap().panes.insert(
+        let mut state = self.state.lock().unwrap();
+        state.panes.retain(|_, pane| pane.handle.strong_count() > 0);
+        state.panes.insert(
             id,
             Shared {
                 title: None,
@@ -192,8 +204,10 @@ impl Hub {
         }
     }
     pub fn disable(&self) {
+        let mut worker = self.worker.lock().unwrap();
         let mut s = self.state.lock().unwrap();
         s.enabled = false;
+        s.endpoint = None;
         s.generation += 1;
         s.pending = None;
         s.invitation = None;
@@ -202,72 +216,83 @@ impl Hub {
         }
         Self::release_all(&s);
         s.status = "Control remoto desactivado".into();
+        drop(s);
+        if let Some(thread) = worker.take() {
+            let _ = thread.join();
+        }
     }
     pub fn enable(&'static self) -> Result<()> {
+        let mut worker = self.worker.lock().unwrap();
         let mut s = self.state.lock().unwrap();
         if s.enabled {
             return Ok(());
         }
+        // macOS advertises LocalHostName through Bonjour; no IP address to configure.
+        let output = std::process::Command::new("/usr/sbin/scutil")
+            .args(["--get", "LocalHostName"])
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "No se pudo obtener el nombre local de este Mac"
+        );
+        let hostname = String::from_utf8(output.stdout)?;
+        let endpoint = format!("ws://{}.local:{LOCAL_PORT}/local", hostname.trim());
+        wire::validate_local_endpoint(&endpoint)?;
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, LOCAL_PORT))
+            .map_err(|e| {
+            anyhow::anyhow!("No se pudo activar la conexión local (puerto {LOCAL_PORT}): {e}")
+        })?;
+        listener.set_nonblocking(true)?;
         if s.credentials.is_none() {
-            s.credentials = Some(
-                match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, "mac") {
-                    Ok(bytes) => serde_json::from_slice::<Credentials>(&bytes)?,
-                    Err(error) if error.code() == -25300 => {
-                        Credentials::fresh("ws://127.0.0.1:8787/ws".into())?
-                    }
-                    Err(error) => return Err(error.into()),
-                },
-            );
+            s.credentials = Some(match Credentials::load()? {
+                Some(credentials) => credentials,
+                None => Credentials::fresh()?,
+            });
         }
         let c = s.credentials.as_ref().unwrap().clone();
-        wire::validate_relay(&c.relay)?;
         c.save()?;
         s.enabled = true;
         s.generation += 1;
-        s.status = "Conectando al relay…".into();
+        s.endpoint = Some(endpoint);
+        s.status = "Esperando al iPhone en la misma red Wi-Fi".into();
         let generation = s.generation;
         drop(s);
-        std::thread::Builder::new()
-            .name("vibra-remote".into())
+        let thread = std::thread::Builder::new()
+            .name("vibra-remote-local".into())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .expect("remote runtime");
-                rt.block_on(async move {
-                    while self.current(generation) {
-                        let _ = self.connect(generation, &c).await;
-                        self.reset_connection(generation);
-                        if self.current(generation) {
-                            tokio::time::sleep(Duration::from_secs(2)).await;
-                        }
-                    }
+                let result = rt.block_on(async {
+                    let listener = tokio::net::TcpListener::from_std(listener)?;
+                    self.listen(generation, &c, listener).await
                 });
-            })?;
-        Ok(())
-    }
-    pub fn configure(&'static self, relay: &str) -> Result<()> {
-        wire::validate_relay(relay)?;
-        self.disable();
-        let c = Credentials::fresh(relay.into())?;
-        c.save()?;
-        self.state.lock().unwrap().credentials = Some(c);
-        self.enable()
+                if result.is_err() && self.current(generation) {
+                    let mut s = self.state.lock().unwrap();
+                    Self::release_all(&s);
+                    s.enabled = false;
+                    s.endpoint = None;
+                    s.status =
+                        "No se pudo mantener la conexión local. Vuelve a activar el acceso.".into();
+                }
+            });
+        match thread {
+            Ok(thread) => {
+                *worker = Some(thread);
+                Ok(())
+            }
+            Err(error) => {
+                let mut s = self.state.lock().unwrap();
+                s.enabled = false;
+                s.endpoint = None;
+                Err(error.into())
+            }
+        }
     }
     pub fn pair(&'static self) -> Result<()> {
-        self.enable()?;
-        // Rotate relay credentials too: revoked phones cannot occupy the new route.
-        let relay = self
-            .state
-            .lock()
-            .unwrap()
-            .credentials
-            .as_ref()
-            .unwrap()
-            .relay
-            .clone();
         self.disable();
-        let c = Credentials::fresh(relay)?;
+        let c = Credentials::fresh()?;
         c.save()?;
         {
             let mut s = self.state.lock().unwrap();
@@ -277,9 +302,8 @@ impl Hub {
         self.enable()
     }
     pub fn revoke(&'static self) -> Result<()> {
-        let relay = self.status().relay;
         self.disable();
-        let c = Credentials::fresh(relay)?;
+        let c = Credentials::fresh()?;
         c.save()?;
         self.state.lock().unwrap().credentials = Some(c);
         Ok(())
@@ -298,10 +322,8 @@ impl Hub {
             .and_then(|(token, expiry)| {
                 let c = s.credentials.as_ref()?;
                 serde_json::to_string(&wire::Invitation {
-                    version: 1,
-                    relay: c.relay.clone(),
-                    channel: c.channel.clone(),
-                    token: c.phone_token.clone(),
+                    version: 2,
+                    endpoint: s.endpoint.clone()?,
                     public_key: c.public.clone(),
                     invitation: token.clone(),
                     expires: *expiry,
@@ -311,11 +333,6 @@ impl Hub {
         Status {
             enabled: s.enabled,
             description: s.status.clone(),
-            relay: s
-                .credentials
-                .as_ref()
-                .map(|c| c.relay.clone())
-                .unwrap_or_else(|| "ws://127.0.0.1:8787/ws".into()),
             invitation,
             pending: s
                 .pending
@@ -342,7 +359,7 @@ impl Hub {
         }
         Self::release_all(&s);
         s.pending = None;
-        s.status = "Sin iPhone conectado · esperando relay".into();
+        s.status = "Esperando al iPhone en la misma red Wi-Fi".into();
     }
     fn handle(&self, id: Uuid) -> Result<Arc<dyn TerminalHandle>> {
         let s = self.state.lock().unwrap();
@@ -377,32 +394,41 @@ impl Hub {
             .take(128)
             .collect()
     }
-    async fn connect(&self, generation: u64, c: &Credentials) -> Result<()> {
-        let (mut socket, _) =
-            tokio::time::timeout(Duration::from_secs(10), wire::connect_async(&c.relay)).await??;
-        socket
-            .send(Ws::Text(
-                serde_json::to_string(&wire::Hello {
-                    role: "host".into(),
-                    channel: c.channel.clone(),
-                    token: c.host_token.clone(),
-                    peer_token: Some(c.phone_token.clone()),
-                })?
-                .into(),
-            ))
-            .await?;
-        let mut tick = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            ensure!(self.current(generation), "disabled");
-            tokio::select! {
-                incoming=socket.next()=>match incoming { Some(Ok(Ws::Text(t))) if t=="peer" => break, Some(Ok(Ws::Text(t))) if t=="ready" => self.describe(generation,"Relay conectado · esperando iPhone"), Some(Ok(Ws::Pong(_)))=>{}, _=>bail!("relay disconnected") },
-                _=tick.tick()=>socket.send(Ws::Ping(vec![].into())).await?,
+    async fn listen(
+        &self,
+        generation: u64,
+        c: &Credentials,
+        listener: tokio::net::TcpListener,
+    ) -> Result<()> {
+        // Cancellation covers idle accept, upgrade, pairing and all pending writes.
+        let stopped = async {
+            while self.current(generation) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
+        };
+        tokio::select! {
+            _ = stopped => Ok(()),
+            result = async {
+                loop {
+                    let (stream, address) = listener.accept().await?;
+                    if !wire::is_local_address(address.ip()) { continue; }
+                    let session = async {
+                        let socket = tokio::time::timeout(Duration::from_secs(5), wire::accept_local(stream)).await??;
+                        self.session(generation, c, socket).await
+                    };
+                    let _ = session.await;
+                    self.reset_connection(generation);
+                }
+                #[allow(unreachable_code)]
+                Ok::<(), anyhow::Error>(())
+            } => result,
         }
+    }
+    async fn session(&self, generation: u64, c: &Credentials, mut socket: Socket) -> Result<()> {
         let private = wire::unbase64(&c.private)?;
         let mut handshake = wire::handshake(&private, None)?;
         let mut plain = vec![0; wire::WIRE_LIMIT];
-        let record = receive_binary(&mut socket, Duration::from_secs(15)).await?;
+        let record = receive_binary(&mut socket, Duration::from_secs(5)).await?;
         let n = handshake.read_message(&record, &mut plain)?;
         let intro: wire::Introduction = serde_json::from_slice(&plain[..n])?;
         ensure!(
@@ -442,7 +468,13 @@ impl Hub {
                 match approved {
                     Some(false) => bail!("rejected"),
                     Some(true) => break,
-                    None => tokio::time::sleep(Duration::from_millis(100)).await,
+                    None => tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+                        message = socket.next() => match message {
+                            Some(Ok(Ws::Ping(_))) | Some(Ok(Ws::Pong(_))) => {},
+                            _ => bail!("pairing connection closed or unexpected message"),
+                        },
+                    },
                 }
             }
             let mut s = self.state.lock().unwrap();
@@ -454,7 +486,11 @@ impl Hub {
         }
         ensure!(self.current(generation), "disabled");
         let n = handshake.write_message(b"approved", &mut plain)?;
-        socket.send(Ws::Binary(plain[..n].to_vec().into())).await?;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            socket.send(Ws::Binary(plain[..n].to_vec().into())),
+        )
+        .await??;
         let mut cipher = wire::Channel::new(handshake.into_transport_mode()?);
         self.describe(
             generation,
@@ -738,13 +774,6 @@ mod tests {
             })
         }
     }
-    struct Relay(std::process::Child);
-    impl Drop for Relay {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
     async fn read(socket: &mut Socket, cipher: &mut wire::Channel) -> Envelope {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
@@ -761,8 +790,9 @@ mod tests {
     }
     #[test]
     fn remote_invitation_is_expiring_single_use_and_invalidated_by_disable() {
-        let credentials = Credentials::fresh("ws://127.0.0.1:8787/ws".into()).unwrap();
+        let credentials = Credentials::fresh().unwrap();
         let mut state = State {
+            endpoint: None,
             enabled: true,
             generation: 1,
             credentials: Some(credentials),
@@ -798,6 +828,7 @@ mod tests {
                 .is_err()
         );
         let hub = Hub {
+            worker: Mutex::new(None),
             state: Mutex::new(state),
         };
         hub.disable();
@@ -851,30 +882,100 @@ mod tests {
         );
     }
     #[tokio::test]
-    #[ignore = "requires built relay; run Scripts/verify_remote.sh"]
-    async fn remote_relay_end_to_end() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    async fn remote_local_rejects_unknown_identity_and_stops_idle_connections() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        drop(listener);
-        let path = std::env::var("VIBRA_RELAY_TEST_BINARY").expect("relay binary");
-        let _relay = Relay(
-            std::process::Command::new(path)
-                .env("VIBRA_RELAY_BIND", address.to_string())
-                .spawn()
-                .unwrap(),
-        );
-        for attempt in 0..100 {
-            if tokio::net::TcpStream::connect(address).await.is_ok() {
-                break;
+        let c = Credentials::fresh().unwrap();
+        let hub = Hub {
+            worker: Mutex::new(None),
+            state: Mutex::new(State {
+                endpoint: None,
+                enabled: true,
+                generation: 1,
+                credentials: Some(c.clone()),
+                invitation: None,
+                panes: HashMap::new(),
+                pending: None,
+                status: String::new(),
+            }),
+        };
+        let host = hub.listen(1, &c, listener);
+        let client = async {
+            let (mut socket, _) = wire::connect_async(&format!("ws://{address}/local"))
+                .await
+                .unwrap();
+            let phone = wire::keypair().unwrap();
+            let mut noise =
+                wire::handshake(&phone.private, Some(&wire::unbase64(&c.public).unwrap())).unwrap();
+            let mut out = vec![0; wire::WIRE_LIMIT];
+            let intro = serde_json::to_vec(&wire::Introduction {
+                name: "Unknown".into(),
+                invitation: "invalid".into(),
+            })
+            .unwrap();
+            let n = noise.write_message(&intro, &mut out).unwrap();
+            socket
+                .send(Ws::Binary(out[..n].to_vec().into()))
+                .await
+                .unwrap();
+            assert!(
+                receive_binary(&mut socket, Duration::from_secs(1))
+                    .await
+                    .is_err()
+            );
+            assert!(hub.state.lock().unwrap().pending.is_none());
+            // Abandoning approval must release the listener immediately, not after 120s.
+            hub.state.lock().unwrap().invitation = Some(("fresh".into(), now() + 300));
+            let (mut abandoned, _) = wire::connect_async(&format!("ws://{address}/local"))
+                .await
+                .unwrap();
+            let mut noise =
+                wire::handshake(&phone.private, Some(&wire::unbase64(&c.public).unwrap())).unwrap();
+            let intro = serde_json::to_vec(&wire::Introduction {
+                name: "Abandoned".into(),
+                invitation: "fresh".into(),
+            })
+            .unwrap();
+            let n = noise.write_message(&intro, &mut out).unwrap();
+            abandoned
+                .send(Ws::Binary(out[..n].to_vec().into()))
+                .await
+                .unwrap();
+            while hub.state.lock().unwrap().pending.is_none() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            assert!(attempt < 99);
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+            abandoned.close(None).await.unwrap();
+            while hub.state.lock().unwrap().pending.is_some() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert!(hub.state.lock().unwrap().invitation.is_none());
+            let (mut next, _) = wire::connect_async(&format!("ws://{address}/local"))
+                .await
+                .unwrap();
+            next.close(None).await.unwrap();
+            // A client stalled before its HTTP upgrade must not prevent shutdown or rebind.
+            let _idle = tokio::net::TcpStream::connect(address).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            hub.disable();
+        };
+        let (result, ()) =
+            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(host, client) })
+                .await
+                .unwrap();
+        result.unwrap();
+        assert!(std::net::TcpListener::bind(address).is_ok());
+    }
+    #[tokio::test]
+    async fn remote_local_end_to_end() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
         let phone = wire::keypair().unwrap();
-        let mut c = Credentials::fresh(format!("ws://{address}/ws")).unwrap();
+        let mut c = Credentials::fresh().unwrap();
         c.paired = Some(wire::base64(&phone.public));
         let hub = Hub {
+            worker: Mutex::new(None),
             state: Mutex::new(State {
+                endpoint: None,
                 enabled: true,
                 generation: 1,
                 credentials: Some(c.clone()),
@@ -893,24 +994,12 @@ mod tests {
         hub.register(id, &handle);
         hub.register(hidden, &handle);
         hub.toggle_share(id);
-        let host = hub.connect(1, &c);
+        let host = hub.listen(1, &c, listener);
         let client = async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let (mut socket, _) = wire::connect_async(&c.relay).await.unwrap();
-            socket
-                .send(Ws::Text(
-                    serde_json::to_string(&wire::Hello {
-                        role: "phone".into(),
-                        channel: c.channel.clone(),
-                        token: c.phone_token.clone(),
-                        peer_token: None,
-                    })
-                    .unwrap()
-                    .into(),
-                ))
+            let (mut socket, _) = wire::connect_async(&format!("ws://{address}/local"))
                 .await
                 .unwrap();
-            assert!(matches!(socket.next().await,Some(Ok(Ws::Text(t))) if t=="peer"));
             let mut noise =
                 wire::handshake(&phone.private, Some(&wire::unbase64(&c.public).unwrap())).unwrap();
             let mut out = vec![0; wire::WIRE_LIMIT];
@@ -1052,13 +1141,14 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(16)).await;
             assert!(!terminal.remote_controlled());
             socket.close(None).await.ok();
+            hub.disable();
         };
         let (result, ()) = tokio::time::timeout(Duration::from_secs(25), async {
             tokio::join!(host, client)
         })
         .await
         .unwrap();
-        assert!(result.is_err());
+        assert!(result.is_ok());
         assert!(!terminal.remote_controlled());
     }
 }

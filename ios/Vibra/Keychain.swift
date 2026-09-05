@@ -35,12 +35,15 @@ enum Keychain {
       throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
     }
   }
-  static func remove(_ name: String) {
-    SecItemDelete(
+  static func remove(_ name: String) throws {
+    let status = SecItemDelete(
       [
         kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: "app.vibra.mobile.remote.v1", kSecAttrAccount as String: name,
       ] as CFDictionary)
+    guard status == errSecSuccess || status == errSecItemNotFound else {
+      throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+    }
   }
 }
 
@@ -57,13 +60,13 @@ enum Keychain {
         .appendingPathComponent("keychain-probe-" + marker + ".json")
       var report: [String: Any] = [:]
       do {
-        defer { remove(name) }
+        defer { try? remove(name) }
         let expected = Data("Vibra keychain integration test".utf8)
         try write(name, expected)
         guard try read(name) == expected else {
           throw NSError(domain: "VibraKeychainProbe", code: 1)
         }
-        remove(name)
+        try remove(name)
         guard try read(name) == nil else { throw NSError(domain: "VibraKeychainProbe", code: 2) }
         report = ["ok": true]
       } catch {

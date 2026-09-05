@@ -17,5 +17,4 @@ VIBRA_SCREEN_FIXTURE="$screen_fixture" cargo test --locked remote_export_preserv
 cmp "$screen_fixture" ios/VibraRemoteProtocol/Tests/VibraRemoteProtocolTests/Fixtures/screen.json
 VIBRA_PROTOCOL_FIXTURES="$fixtures" swift test --package-path ios/VibraRemoteProtocol
 
-cargo build --locked --manifest-path services/Cargo.toml -p vibra-relay
-VIBRA_RELAY_TEST_BINARY="$repo_root/services/target/debug/vibra-relay" cargo test --locked remote_relay_end_to_end -- --ignored
+cargo test --locked remote_local_

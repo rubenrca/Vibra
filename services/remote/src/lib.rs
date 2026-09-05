@@ -1,4 +1,4 @@
-//! Relay routing is separate from Noise authentication. Never log these messages.
+//! Direct local transport and Noise authentication. Never log these messages.
 use anyhow::{Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 pub use futures_util::{SinkExt, StreamExt};
@@ -30,35 +30,9 @@ pub const CHUNK: usize = 60_000;
 pub const WIRE_LIMIT: usize = 65_535;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Hello {
-    pub role: String,
-    pub channel: String,
-    pub token: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peer_token: Option<String>,
-}
-impl Hello {
-    pub fn valid(&self) -> bool {
-        matches!(self.role.as_str(), "host" | "phone")
-            && [&self.channel, &self.token]
-                .iter()
-                .all(|s| s.len() == 44 && unbase64(s).is_ok_and(|x| x.len() == 32))
-            && match self.role.as_str() {
-                "host" => self
-                    .peer_token
-                    .as_ref()
-                    .is_some_and(|x| x.len() == 44 && unbase64(x).is_ok_and(|b| b.len() == 32)),
-                _ => self.peer_token.is_none(),
-            }
-    }
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Invitation {
     pub version: u16,
-    pub relay: String,
-    pub channel: String,
-    pub token: String,
+    pub endpoint: String,
     pub public_key: String,
     pub invitation: String,
     pub expires: u64,
@@ -136,28 +110,109 @@ impl Channel {
         Ok((plain[0] == 1).then(|| std::mem::take(&mut self.partial)))
     }
 }
-pub fn validate_relay(value: &str) -> Result<()> {
+/// Only local network destinations are accepted for the direct transport.
+pub fn is_local_address(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+        std::net::IpAddr::V6(ip) => {
+            ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()
+        }
+    }
+}
+pub fn validate_local_endpoint(value: &str) -> Result<()> {
     let url = url::Url::parse(value)?;
+    let host = url.host_str().unwrap_or_default();
+    let bonjour = host.strip_suffix(".local").is_some_and(|name| {
+        !name.is_empty()
+            && name.len() <= 63
+            && !name.starts_with('-')
+            && !name.ends_with('-')
+            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    });
+    let local = host == "localhost"
+        || bonjour
+        || host
+            .trim_matches(['[', ']'])
+            .parse()
+            .is_ok_and(is_local_address);
     ensure!(
-        url.username().is_empty()
+        url.scheme() == "ws"
+            && local
+            && url.port().is_some_and(|p| p >= 1024)
+            && url.path() == "/local"
+            && url.username().is_empty()
             && url.password().is_none()
             && url.query().is_none()
             && url.fragment().is_none(),
-        "relay URL must not contain credentials/query/fragment"
-    );
-    ensure!(url.path() == "/ws", "relay path must be /ws");
-    let local = url
-        .host_str()
-        .is_some_and(|h| h == "localhost" || h == "127.0.0.1" || h == "[::1]");
-    ensure!(
-        url.scheme() == "wss" || (url.scheme() == "ws" && local),
-        "use wss://; ws:// is only allowed on loopback"
+        "invalid local endpoint"
     );
     Ok(())
+}
+/// WebSocket is just framing; authentication and encryption happen in Noise IK.
+/// Routing credentials and terminal content are never sent as plaintext.
+#[allow(clippy::result_large_err)] // Tungstenite requires an HTTP ErrorResponse in its callback.
+pub async fn accept_local(
+    stream: tokio::net::TcpStream,
+) -> Result<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, tungstenite::Error> {
+    use tungstenite::handshake::server::{Request, Response};
+    let config = tungstenite::protocol::WebSocketConfig::default()
+        .read_buffer_size(16 * 1024)
+        .write_buffer_size(16 * 1024)
+        .max_write_buffer_size(128 * 1024)
+        .max_message_size(Some(WIRE_LIMIT))
+        .max_frame_size(Some(WIRE_LIMIT));
+    tokio_tungstenite::accept_hdr_async_with_config(
+        MaybeTlsStream::Plain(stream),
+        |request: &Request, response: Response| {
+            if request.uri().path() != "/local" || request.uri().query().is_some() {
+                return Err(Response::builder().status(404).body(None).unwrap());
+            }
+            Ok(response)
+        },
+        Some(config),
+    )
+    .await
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_endpoints_reject_public_hosts_and_legacy_routing() {
+        for endpoint in [
+            "ws://my-mac.local:8788/local",
+            "ws://192.168.1.2:8788/local",
+            "ws://10.0.0.2:8788/local",
+            "ws://172.16.0.2:8788/local",
+            "ws://127.0.0.1:8788/local",
+        ] {
+            assert!(validate_local_endpoint(endpoint).is_ok(), "{endpoint}");
+        }
+        for endpoint in [
+            "wss://relay.example/ws",
+            "ws://relay.example:8788/local",
+            "ws://8.8.8.8:8788/local",
+            "ws://172.32.0.2:8788/local",
+            "ws://mac.local.evil.com:8788/local",
+            "ws://mac.local:8788/ws",
+            "ws://mac.local:8788/local?token=x",
+            "ws://user@mac.local:8788/local",
+            "ws://mac.local/local",
+            "ws://mac.local:80/local",
+        ] {
+            assert!(validate_local_endpoint(endpoint).is_err(), "{endpoint}");
+        }
+    }
+    #[tokio::test]
+    async fn local_upgrade_rejects_other_paths() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = async { accept_local(listener.accept().await.unwrap().0).await };
+        let url = format!("ws://{address}/ws");
+        let phone = connect_async(&url);
+        let (host, phone) = tokio::join!(host, phone);
+        assert!(host.is_err());
+        assert!(phone.is_err());
+    }
     #[test]
     fn encrypted_fragments_replay_tamper_and_identity() {
         let a = keypair().unwrap();

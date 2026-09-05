@@ -8,5 +8,5 @@
     <key>127.0.0.1</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
   </dict>
 </dict>
-<key>NSLocalNetworkUsageDescription</key><string>Conectar con el relay local durante las pruebas de Vibra.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Conectar directamente con Vibra en tu Mac dentro de la misma red Wi-Fi.</string>
 </dict></plist>
