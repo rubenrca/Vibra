@@ -1,3 +1,5 @@
+//! Lifecycle of the utility terminals, owned by a workspace rather than a pane.
+
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
@@ -6,15 +8,12 @@ use gpui::{
 };
 use uuid::Uuid;
 
-use super::{ContextMenuKind, WorkspaceView, directory_basename};
 use crate::ToggleDevTerminal;
 use crate::ui::terminal::{TerminalView, TerminalViewEvent};
+
+use super::{ContextMenuKind, DEV_TERMINAL_HEIGHT, WorkspaceView, directory_basename};
 use crate::ui::theme::colors;
 
-const DEV_TERMINAL_HEIGHT: f32 = 260.0;
-
-/// Bottom-console PTYs for one sidebar session. They stay alive while that
-/// session exists, but they are never shared across sessions.
 pub(super) struct DevTerminalDrawer {
     pub(super) terminals: Vec<Entity<TerminalView>>,
     pub(super) selected_id: Uuid,
@@ -58,8 +57,8 @@ impl WorkspaceView {
             .terminals
             .iter()
             .find(|terminal| terminal.read(cx).session_id() == drawer.selected_id)
+            .or_else(|| drawer.terminals.first())
             .cloned()
-            .or_else(|| drawer.terminals.first().cloned())
     }
 
     fn spawn_dev_terminal(
@@ -143,7 +142,7 @@ impl WorkspaceView {
         }
     }
 
-    pub(super) fn shutdown_dev_drawer(&mut self, workspace_id: Uuid, cx: &mut Context<Self>) {
+    fn shutdown_dev_drawer(&mut self, workspace_id: Uuid, cx: &mut Context<Self>) {
         let Some(drawer) = self.dev_terminals.remove(&workspace_id) else {
             return;
         };
@@ -203,21 +202,11 @@ impl WorkspaceView {
         let Some(workspace_id) = self.current_workspace_id() else {
             return;
         };
-        if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) {
-            drawer.visible = true;
-        }
         let terminal = self.spawn_dev_terminal(workspace_id, cx);
-        if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) {
-            drawer.visible = true;
-        }
-        self.sync_terminal_surface_visibility(cx);
-        cx.notify();
-        cx.defer_in(window, move |_, window, cx| {
-            terminal.read(cx).focus_handle(cx).focus(window);
-        });
+        self.select_dev_terminal_tab(terminal.read(cx).session_id(), window, cx);
     }
 
-    fn select_dev_terminal_tab(
+    pub(super) fn select_dev_terminal_tab(
         &mut self,
         session_id: Uuid,
         window: &mut Window,
@@ -248,27 +237,19 @@ impl WorkspaceView {
         let Some(workspace_id) = self.dev_workspace_for_session(session_id, cx) else {
             return;
         };
-        let Some(index) = self.dev_terminals.get(&workspace_id).and_then(|drawer| {
-            drawer
-                .terminals
-                .iter()
-                .position(|terminal| terminal.read(cx).session_id() == session_id)
-        }) else {
+        let Some(drawer) = self.dev_terminals.get_mut(&workspace_id) else {
             return;
         };
-        let terminal = self
-            .dev_terminals
-            .get_mut(&workspace_id)
-            .map(|drawer| drawer.terminals.remove(index));
-        if let Some(terminal) = terminal {
-            terminal.read(cx).shutdown();
-        }
+        let Some(index) = drawer
+            .terminals
+            .iter()
+            .position(|terminal| terminal.read(cx).session_id() == session_id)
+        else {
+            return;
+        };
+        drawer.terminals.remove(index).read(cx).shutdown();
         self.dev_terminal_subscriptions.remove(&session_id);
-        let empty = self
-            .dev_terminals
-            .get(&workspace_id)
-            .is_some_and(|drawer| drawer.terminals.is_empty());
-        if empty {
+        if drawer.terminals.is_empty() {
             self.dev_terminals.remove(&workspace_id);
             self.pending_focus_dev_terminal = false;
             self.sync_terminal_surface_visibility(cx);
@@ -276,9 +257,7 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
-        if let Some(drawer) = self.dev_terminals.get_mut(&workspace_id)
-            && drawer.selected_id == session_id
-        {
+        if drawer.selected_id == session_id {
             let next = index.min(drawer.terminals.len() - 1);
             drawer.selected_id = drawer.terminals[next].read(cx).session_id();
         }

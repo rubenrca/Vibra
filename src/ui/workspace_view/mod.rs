@@ -1,15 +1,18 @@
+//! Workspace state and coordination. Feature modules share this view's state:
+//! settings owns its pages, automation resolves agent activity, and dev_terminal
+//! manages utility PTYs. None of them introduces a second workspace model.
+
 mod automation;
 mod chrome;
 mod dev_terminal;
 mod files;
 mod settings;
 
+use automation::HookAgentPresence;
+use chrome::*;
 use dev_terminal::DevTerminalDrawer;
+use files::*;
 use settings::SettingsPage;
-
-pub(crate) use automation::*;
-pub(crate) use chrome::*;
-pub(crate) use files::*;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -29,13 +32,10 @@ use crate::domain::workspace::{
     SessionSnapshot, SidebarEntry, TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis,
 };
 use crate::infrastructure::automation::{
-    AgentAttention, AgentHookStatus, AgentKind, AgentRuntimeState, AutomationCommand,
-    AutomationIncoming, AutomationResponse, AutomationServer, agent_hook_status,
+    AgentAttention, AgentHookStatus, AgentRuntimeState, AutomationServer, agent_hook_status,
 };
 use crate::infrastructure::editor::InstalledEditor;
-use crate::infrastructure::notifications::{
-    AgentActivitySnapshot, AgentNotificationDelivery, agent_notification_copy, should_notify_agent,
-};
+use crate::infrastructure::notifications::AgentActivitySnapshot;
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{
     AppSettings, MAX_LEFT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH, MIN_LEFT_SIDEBAR_WIDTH,
@@ -79,7 +79,10 @@ const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(160);
 const SIDEBAR_ANIM_FRAME: Duration = Duration::from_millis(16);
 /// How often to refresh per-workspace branch/path metadata in the sessions sidebar.
 const SIDEBAR_GIT_POLL_INTERVAL: Duration = Duration::from_secs(3);
-const HOOK_OBSERVATION_TTL: Duration = Duration::from_secs(15 * 60);
+/// IDE-style utility console height. It is intentionally compact so the main
+/// terminal remains the primary surface.
+const DEV_TERMINAL_HEIGHT: f32 = 260.0;
+
 /// Cached git metadata for a workspace sidebar tab (cmux-style).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SidebarWorkspaceMeta {
@@ -88,34 +91,6 @@ pub(crate) struct SidebarWorkspaceMeta {
     ahead: usize,
     behind: usize,
     dirty: bool,
-}
-
-#[derive(Clone)]
-struct TerminalAgentObservation {
-    presence: TerminalAgentPresence,
-    observed_at: Instant,
-}
-
-#[derive(Clone)]
-struct HookAgentPresence {
-    kind: Option<AgentKind>,
-    state: AgentRuntimeState,
-    attention: Option<AgentAttention>,
-    model: Option<String>,
-    session_id: Option<String>,
-    observed_at: Instant,
-}
-
-#[derive(Clone)]
-struct ResolvedAgentPresence {
-    kind: String,
-    state: Option<AgentRuntimeState>,
-    attention: Option<AgentAttention>,
-    model: Option<String>,
-    kind_source: &'static str,
-    state_source: Option<&'static str>,
-    process_id: Option<u32>,
-    session_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -559,7 +534,7 @@ pub struct WorkspaceView {
     automation_socket: Option<PathBuf>,
     _automation_server: Option<AutomationServer>,
     _automation_task: Option<gpui::Task<()>>,
-    agent_presence: HashMap<Uuid, TerminalAgentObservation>,
+    agent_presence: HashMap<Uuid, TerminalAgentPresence>,
     hook_agent_presence: HashMap<Uuid, HookAgentPresence>,
     /// Optional names assigned to panes from the pane context menu.
     agent_names: HashMap<Uuid, String>,
@@ -580,7 +555,6 @@ pub struct WorkspaceView {
     expanded_directories: HashSet<PathBuf>,
     project_files: Vec<ProjectFileRow>,
     selected_file_path: Option<PathBuf>,
-    show_hidden_files: bool,
     file_error: Option<SharedString>,
     palette_mode: Option<PaletteMode>,
     palette_query: String,
@@ -787,7 +761,6 @@ impl WorkspaceView {
             expanded_directories: HashSet::new(),
             project_files: Vec::new(),
             selected_file_path: None,
-            show_hidden_files: settings.show_hidden_files,
             file_error: None,
             palette_mode: None,
             palette_query: String::new(),
@@ -868,7 +841,7 @@ impl WorkspaceView {
                 self.home_directory.as_deref(),
             ),
             agent_kind: presence.as_ref().map(|presence| presence.kind.clone()),
-            agent_state: presence.as_ref().and_then(|presence| presence.state),
+            agent_state: presence.as_ref().map(|presence| presence.state),
             agent_attention: presence.as_ref().and_then(|presence| presence.attention),
             agent_model: presence.and_then(|presence| presence.model),
         }
@@ -1079,7 +1052,7 @@ impl WorkspaceView {
         self.files_request_id = self.files_request_id.wrapping_add(1);
         let request_id = self.files_request_id;
         let expanded = self.expanded_directories.clone();
-        let show_hidden = self.show_hidden_files;
+        let show_hidden = self.settings.show_hidden_files;
         let port = self.file_port.clone();
         let selected = self.selected_file_path.clone();
         let task = cx.background_spawn(async move {
@@ -2023,8 +1996,10 @@ impl WorkspaceView {
                     cx.notify();
                 }
             }
-            TerminalViewEvent::Exited { session_id, code } => {
-                let _exited_session = (*session_id, *code);
+            TerminalViewEvent::Exited {
+                session_id,
+                code: _code,
+            } => {
                 self.agent_presence.remove(session_id);
                 self.hook_agent_presence.remove(session_id);
                 self.agent_names.remove(session_id);
@@ -2043,11 +2018,11 @@ impl WorkspaceView {
                 let previous = self.agent_presence.get(session_id);
                 let occupant_changed = match (previous, presence) {
                     (Some(previous), Some(current)) => {
-                        !previous.presence.kind.eq_ignore_ascii_case(&current.kind)
-                            || (previous.presence.kind_source == TerminalAgentKindSource::Process
+                        !previous.kind.eq_ignore_ascii_case(&current.kind)
+                            || (previous.kind_source == TerminalAgentKindSource::Process
                                 && current.kind_source != TerminalAgentKindSource::Process)
                             || matches!(
-                                (previous.presence.process_id, current.process_id),
+                                (previous.process_id, current.process_id),
                                 (Some(left), Some(right)) if left != right
                             )
                     }
@@ -2055,20 +2030,14 @@ impl WorkspaceView {
                     _ => false,
                 };
                 let definitive_exit = previous.is_some_and(|previous| {
-                    previous.presence.kind_source == TerminalAgentKindSource::Process
+                    previous.kind_source == TerminalAgentKindSource::Process
                 }) || !self.hook_agent_presence.contains_key(session_id);
                 if occupant_changed && (presence.is_some() || definitive_exit) {
                     self.agent_names.remove(session_id);
                     self.hook_agent_presence.remove(session_id);
                 }
                 if let Some(presence) = presence {
-                    self.agent_presence.insert(
-                        *session_id,
-                        TerminalAgentObservation {
-                            presence: presence.clone(),
-                            observed_at: Instant::now(),
-                        },
-                    );
+                    self.agent_presence.insert(*session_id, presence.clone());
                 } else {
                     self.agent_presence.remove(session_id);
                 }
@@ -2079,67 +2048,6 @@ impl WorkspaceView {
                 self.set_terminal_font_size(*size, cx);
             }
         }
-    }
-
-    fn handle_automation_request(&mut self, request: AutomationIncoming, cx: &mut Context<Self>) {
-        let pane_id = request.envelope.pane_id;
-        let authorized = self
-            .automation_tokens
-            .get(&pane_id)
-            .is_some_and(|token| *token == request.envelope.token);
-        if !authorized {
-            let _ = request
-                .response
-                .send(AutomationResponse::failure("capacidad inválida o expirada"));
-            return;
-        }
-
-        let result: Result<serde_json::Value, String> = match request.envelope.command {
-            AutomationCommand::SetAgentState { state } => {
-                self.set_hook_agent_presence(pane_id, None, state, None, None, None);
-                self.publish_agent_activity(pane_id);
-                cx.notify();
-                Ok(self.agent_status_value(pane_id))
-            }
-            AutomationCommand::SetAgentPresence {
-                kind,
-                state,
-                attention,
-                model,
-                session_id,
-            } => {
-                self.set_hook_agent_presence(
-                    pane_id,
-                    Some(kind),
-                    state,
-                    attention,
-                    model,
-                    session_id,
-                );
-                self.publish_agent_activity(pane_id);
-                cx.notify();
-                Ok(self.agent_status_value(pane_id))
-            }
-            AutomationCommand::ClearAgentPresence { session_id } => {
-                let clear = self
-                    .hook_agent_presence
-                    .get(&pane_id)
-                    .is_none_or(|presence| {
-                        session_id.is_none() || presence.session_id.as_ref() == session_id.as_ref()
-                    });
-                if clear {
-                    self.hook_agent_presence.remove(&pane_id);
-                    self.publish_agent_activity(pane_id);
-                    cx.notify();
-                }
-                Ok(self.agent_status_value(pane_id))
-            }
-        };
-        let response = match result {
-            Ok(data) => AutomationResponse::success(data),
-            Err(error) => AutomationResponse::failure(error),
-        };
-        let _ = request.response.send(response);
     }
 
     fn project_id_for_session(&self, session_id: Uuid) -> Option<Uuid> {
@@ -2154,178 +2062,6 @@ impl WorkspaceView {
                 .any(|session| session.id == session_id)
                 .then_some(project.id)
         })
-    }
-
-    fn set_hook_agent_presence(
-        &mut self,
-        pane_id: Uuid,
-        kind: Option<AgentKind>,
-        state: AgentRuntimeState,
-        attention: Option<AgentAttention>,
-        model: Option<String>,
-        session_id: Option<String>,
-    ) {
-        let now = Instant::now();
-        let new_session = session_id.as_deref();
-        let session_changed = self
-            .hook_agent_presence
-            .get(&pane_id)
-            .and_then(|presence| presence.session_id.as_deref())
-            .zip(new_session)
-            .is_some_and(|(previous, current)| previous != current);
-        if session_changed {
-            self.agent_names.remove(&pane_id);
-        }
-        let entry = self
-            .hook_agent_presence
-            .entry(pane_id)
-            .or_insert_with(|| HookAgentPresence {
-                kind: None,
-                state,
-                attention: None,
-                model: None,
-                session_id: None,
-                observed_at: now,
-            });
-        if kind.is_some() {
-            entry.kind = kind;
-        }
-        entry.state = state;
-        entry.attention = attention;
-        if model.is_some() || session_changed {
-            entry.model = model;
-        }
-        if session_id.is_some() {
-            entry.session_id = session_id;
-        }
-        entry.observed_at = now;
-    }
-
-    fn resolved_agent_presence(&self, pane_id: Uuid) -> Option<ResolvedAgentPresence> {
-        let now = Instant::now();
-        let detected = self.agent_presence.get(&pane_id);
-        let hook = self
-            .hook_agent_presence
-            .get(&pane_id)
-            .filter(|presence| now.duration_since(presence.observed_at) <= HOOK_OBSERVATION_TTL);
-        // A process identity is stronger than a stale hook from a previous
-        // occupant. Ignore mismatched hooks instead of merging two agents.
-        let hook = hook.filter(|hook| {
-            detected.is_none_or(|detected| {
-                detected.presence.kind_source != TerminalAgentKindSource::Process
-                    || hook.kind.is_none_or(|kind| {
-                        detected
-                            .presence
-                            .kind
-                            .eq_ignore_ascii_case(kind.display_name())
-                    })
-            })
-        });
-        let terminal_kind = detected.map(|presence| {
-            (
-                presence.presence.kind.as_str(),
-                presence.presence.kind_source,
-            )
-        });
-        let (kind, kind_source) = match (terminal_kind, hook.and_then(|presence| presence.kind)) {
-            (Some((kind, TerminalAgentKindSource::Process)), _) => (kind.to_owned(), "process"),
-            (_, Some(kind)) => (kind.display_name().to_owned(), "hook"),
-            (Some((kind, TerminalAgentKindSource::Title)), _) => (kind.to_owned(), "title"),
-            (Some((kind, TerminalAgentKindSource::Screen)), _) => (kind.to_owned(), "screen"),
-            (None, None) => return None,
-        };
-        let terminal_state = detected.map(|presence| {
-            (
-                terminal_agent_state_to_runtime_state(presence.presence.state),
-                presence.observed_at,
-            )
-        });
-        let hook_state = hook.map(|presence| (presence.state, presence.observed_at));
-        let (state, state_source, attention) = match (hook_state, terminal_state) {
-            (Some((state, _)), _) => (
-                Some(state),
-                Some("hook"),
-                hook.and_then(|presence| presence.attention),
-            ),
-            (None, Some((state, _))) => (Some(state), Some("heuristic"), None),
-            (None, None) => (None, None, None),
-        };
-        Some(ResolvedAgentPresence {
-            kind,
-            state,
-            attention,
-            model: hook.and_then(|presence| presence.model.clone()),
-            kind_source,
-            state_source,
-            process_id: detected.and_then(|presence| presence.presence.process_id),
-            session_id: hook.and_then(|presence| presence.session_id.clone()),
-        })
-    }
-
-    fn agent_status_value(&self, pane_id: Uuid) -> serde_json::Value {
-        let presence = self.resolved_agent_presence(pane_id);
-        serde_json::json!({
-            "kind": presence.as_ref().map(|presence| presence.kind.as_str()),
-            "state": presence.as_ref().and_then(|presence| presence.state).map(agent_runtime_state_label),
-            "attention": presence.as_ref().and_then(|presence| presence.attention).map(AgentAttention::label),
-            "model": presence.as_ref().and_then(|presence| presence.model.as_deref()),
-            "kindSource": presence.as_ref().map(|presence| presence.kind_source),
-            "stateSource": presence.as_ref().and_then(|presence| presence.state_source),
-            "source": presence.as_ref().and_then(|presence| presence.state_source),
-            "processId": presence.as_ref().and_then(|presence| presence.process_id),
-            "sessionId": presence.as_ref().and_then(|presence| presence.session_id.as_deref()),
-        })
-    }
-
-    fn session_is_selected(&self, pane_id: Uuid) -> bool {
-        self.snapshot
-            .selected_session()
-            .is_some_and(|session| session.id == pane_id)
-    }
-
-    fn publish_agent_activity(&mut self, pane_id: Uuid) {
-        let current = self.resolved_agent_presence(pane_id).and_then(|presence| {
-            presence.state.map(|state| AgentActivitySnapshot {
-                kind: presence.kind,
-                state,
-                attention: presence.attention,
-            })
-        });
-        let previous = self.agent_activity_seen.get(&pane_id);
-        if let Some(notification) = should_notify_agent(
-            previous,
-            current.as_ref(),
-            self.session_is_selected(pane_id),
-            self.window_is_active,
-            self.settings.agent_notifications,
-        ) {
-            match notification.delivery {
-                AgentNotificationDelivery::Banner => {
-                    let agent = current
-                        .as_ref()
-                        .or(previous)
-                        .map(|snapshot| snapshot.kind.as_str())
-                        .unwrap_or("Agente");
-                    let (title, body) = agent_notification_copy(notification.kind, agent);
-                    crate::infrastructure::notifications::deliver(
-                        &title,
-                        &body,
-                        &format!("vibra.agent.{pane_id}"),
-                    );
-                }
-                AgentNotificationDelivery::Sound => {
-                    crate::infrastructure::notifications::play_completion_sound();
-                }
-            }
-        }
-        match current {
-            Some(snapshot) => {
-                self.agent_activity_seen.insert(pane_id, snapshot);
-            }
-            None => {
-                self.agent_activity_seen.remove(&pane_id);
-            }
-        }
     }
 
     fn focus_selected_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {

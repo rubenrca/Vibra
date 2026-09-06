@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.18 — 2026-09-06
+
+- Expand Git review to use the workspace area, with updated navigation and roomier inline diffs.
+- Restore the native window position and fit it to the available display area when reopening Vibra.
+- Organize workspace settings, utility terminals, agent activity, and remote sessions into focused modules.
+- Simplify file icons and Git status indicators while preserving the file tree behavior.
+
 ## 0.3.17 — 2026-09-05
 
 - Add encrypted iPhone terminal control on the same local network, with QR pairing, Mac approval, and explicit sharing per terminal. No hosted relay or additional account is required.
