@@ -571,42 +571,24 @@ impl WorkspaceSnapshot {
     }
 
     pub fn select_terminal_global(&mut self, session_id: Uuid) -> bool {
-        let found = self
-            .projects
-            .iter()
-            .enumerate()
-            .find_map(|(project_index, project)| {
-                project
-                    .workspaces
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .enumerate()
-                    .find_map(|(workspace_index, workspace)| {
-                        workspace
-                            .tabs
-                            .iter()
-                            .enumerate()
-                            .find_map(|(tab_index, tab)| {
-                                tab.sessions
-                                    .iter()
-                                    .any(|session| session.id == session_id)
-                                    .then_some((project_index, workspace_index, tab_index))
-                            })
-                    })
-            });
-        let Some((project_index, workspace_index, tab_index)) = found else {
-            return false;
-        };
-        let project_id = self.projects[project_index].id;
-        let project = &mut self.projects[project_index];
-        let workspace = &mut project.workspaces.as_mut().expect("normalized")[workspace_index];
-        project.selected_workspace_id = Some(workspace.id);
-        workspace.selected_tab_id = Some(workspace.tabs[tab_index].id);
-        workspace.tabs[tab_index].selected_session_id = Some(session_id);
-        self.selected_project_id = Some(project_id);
-        project.normalize();
-        true
+        for project in &mut self.projects {
+            for workspace in project.workspaces.iter_mut().flatten() {
+                let Some(tab) = workspace
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| tab.sessions.iter().any(|session| session.id == session_id))
+                else {
+                    continue;
+                };
+                tab.selected_session_id = Some(session_id);
+                workspace.selected_tab_id = Some(tab.id);
+                project.selected_workspace_id = Some(workspace.id);
+                self.selected_project_id = Some(project.id);
+                project.normalize();
+                return true;
+            }
+        }
+        false
     }
 
     pub fn focus_terminal(&mut self, direction: PaneFocusDirection) -> bool {
@@ -1433,25 +1415,22 @@ impl WorkspaceSnapshot {
             return false;
         }
         for project in &mut self.projects {
-            let Some(workspaces) = project.workspaces.as_mut() else {
+            let Some(session) = project
+                .workspaces
+                .iter_mut()
+                .flatten()
+                .flat_map(|workspace| &mut workspace.tabs)
+                .flat_map(|tab| &mut tab.sessions)
+                .find(|session| session.id == session_id)
+            else {
                 continue;
             };
-            for workspace in workspaces {
-                for tab in &mut workspace.tabs {
-                    if let Some(session) = tab
-                        .sessions
-                        .iter_mut()
-                        .find(|session| session.id == session_id)
-                    {
-                        if session.title == title {
-                            return false;
-                        }
-                        session.title = title.to_owned();
-                        project.normalize();
-                        return true;
-                    }
-                }
+            if session.title == title {
+                return false;
             }
+            session.title = title.to_owned();
+            project.normalize();
+            return true;
         }
         false
     }
@@ -1466,40 +1445,29 @@ impl WorkspaceSnapshot {
         let path = path.to_string_lossy().into_owned();
 
         for project in &mut self.projects {
-            let Some(workspaces) = project.workspaces.as_mut() else {
-                continue;
-            };
-            for workspace in workspaces {
-                let mut found = false;
-                let mut path_changed = false;
-                for tab in &mut workspace.tabs {
-                    if let Some(session) = tab
-                        .sessions
-                        .iter_mut()
-                        .find(|session| session.id == session_id)
-                    {
-                        found = true;
-                        if session.working_directory != path {
-                            session.working_directory = path.clone();
-                            path_changed = true;
-                        }
-                        break;
-                    }
-                }
-                if !found {
+            for workspace in project.workspaces.iter_mut().flatten() {
+                let Some(session) = workspace
+                    .tabs
+                    .iter_mut()
+                    .flat_map(|tab| &mut tab.sessions)
+                    .find(|session| session.id == session_id)
+                else {
                     continue;
+                };
+                let path_changed = session.working_directory != path;
+                if path_changed {
+                    session.working_directory = path.clone();
                 }
 
-                // cmux-style: automatic workspace titles track the primary session cwd.
+                // Automatic workspace titles track the primary session cwd.
                 let is_primary = workspace
                     .primary_session()
                     .is_some_and(|session| session.id == session_id);
                 let auto_title = workspace.title_source != Some(WorkspaceTitleSource::Manual);
-                let mut name_changed = false;
-                if is_primary && auto_title && workspace.name != directory_name {
+                let name_changed = is_primary && auto_title && workspace.name != directory_name;
+                if name_changed {
                     workspace.name = directory_name;
                     workspace.title_source = Some(WorkspaceTitleSource::Automatic);
-                    name_changed = true;
                 }
 
                 if path_changed || name_changed {
@@ -2694,6 +2662,75 @@ mod tests {
             "title updates must not rewrite the Swift-era sessions vector"
         );
         assert!(!snapshot.update_session_title(session_id, "zsh — tests"));
+    }
+
+    #[test]
+    fn global_session_operations_find_unselected_projects_workspaces_and_tabs() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        let root = Path::new("/tmp/vibra-global");
+        snapshot.create_workspace(root);
+        snapshot.create_workspace(root);
+        let (tab_id, session_id) = snapshot
+            .create_terminal_tab_with_options(false, None)
+            .unwrap();
+        let project_id = snapshot.selected_project_id;
+        let workspace_id = snapshot.selected_workspace().unwrap().id;
+        snapshot.create_workspace(Path::new("/tmp/vibra-other"));
+        let selection = snapshot.selected_session().unwrap().id;
+
+        assert!(snapshot.update_session_title(session_id, "  background  "));
+        assert!(
+            snapshot.update_session_working_directory(
+                session_id,
+                Path::new("/tmp/vibra-global/nested")
+            )
+        );
+        assert_eq!(snapshot.selected_session().unwrap().id, selection);
+
+        assert!(snapshot.select_terminal_global(session_id));
+        assert_eq!(snapshot.selected_project_id, project_id);
+        assert_eq!(snapshot.selected_workspace().unwrap().id, workspace_id);
+        assert_eq!(snapshot.selected_tab().unwrap().id, tab_id);
+        let session = snapshot.selected_session().unwrap();
+        assert_eq!(session.id, session_id);
+        assert_eq!(session.title, "background");
+        assert_eq!(session.working_directory, "/tmp/vibra-global/nested");
+        // Selecting an already selected session still reports success.
+        assert!(snapshot.select_terminal_global(session_id));
+    }
+
+    #[test]
+    fn unknown_session_operations_leave_the_snapshot_unchanged() {
+        for mut snapshot in [WorkspaceSnapshot::default(), {
+            let mut snapshot = WorkspaceSnapshot::default();
+            snapshot.create_workspace(Path::new("/tmp/vibra-known"));
+            snapshot
+        }] {
+            let before = snapshot.clone();
+            let unknown = Uuid::new_v4();
+            assert!(!snapshot.select_terminal_global(unknown));
+            assert!(!snapshot.update_session_title(unknown, "unknown"));
+            assert!(!snapshot.update_session_working_directory(unknown, Path::new("/tmp/unknown")));
+            assert_eq!(snapshot, before);
+        }
+    }
+
+    #[test]
+    fn background_session_directory_changes_preserve_the_workspace_title() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/vibra-primary"));
+        let session_id = snapshot
+            .split_selected_terminal_with_focus(PaneSplitDirection::Right, false)
+            .unwrap();
+        let name = snapshot.selected_workspace().unwrap().name.clone();
+        let path = Path::new("/tmp/background");
+
+        assert!(snapshot.update_session_working_directory(session_id, path));
+        assert_eq!(snapshot.selected_workspace().unwrap().name, name);
+        let before = snapshot.clone();
+        assert!(!snapshot.update_session_working_directory(session_id, path));
+        assert!(!snapshot.update_session_title(session_id, "  "));
+        assert_eq!(snapshot, before);
     }
 
     #[test]

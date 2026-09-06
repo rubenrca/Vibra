@@ -13,10 +13,14 @@ use std::{
 use uuid::Uuid;
 use vibra_remote::{
     self as wire, SinkExt, StreamExt,
-    protocol::{Envelope, ErrorCode, Input, Key, Message, Modifier, Pane, ReleaseReason, Size},
+    protocol::{Envelope, Input, Key, Message, Modifier, Pane, Size},
     tokio,
     tungstenite::Message as Ws,
 };
+
+mod session;
+use session::{RemoteSession, RequestGuard};
+
 const KEYCHAIN_SERVICE: &str = "app.vibra.remote.local.v1";
 const LOCAL_PORT: u16 = 8788;
 #[derive(Clone, Serialize, Deserialize)]
@@ -496,73 +500,44 @@ impl Hub {
             generation,
             "iPhone conectado · selecciona una terminal compartida",
         );
-        let mut controller: Option<(Uuid, Arc<dyn TerminalHandle>)> = None;
-        let mut previous: Option<RemoteFrame> = None;
-        let mut revision = 0u64;
+        let mut session = RemoteSession::default();
         let mut tick = tokio::time::interval(Duration::from_millis(50));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut heartbeat = Instant::now();
         let mut last_ping = Instant::now();
-        let mut last_request = 0;
-        let mut rate = (Instant::now(), 0usize, 0usize);
+        let mut requests = RequestGuard::new(Instant::now());
         // RAII releases PTY size on every error, cancellation and disconnected peer.
         let _release = ConnectionRelease(self, generation);
         loop {
             ensure!(self.current(generation), "disabled");
             tokio::select! {
-                incoming=socket.next()=> {
-                    let Some(Ok(incoming))=incoming else { bail!("disconnected") };
-                    let record=match incoming { Ws::Binary(b)=>b, Ws::Ping(b)=>{socket.send(Ws::Pong(b)).await?;continue},Ws::Pong(_)=>continue,_=>bail!("invalid transport") };
-                    let Some(bytes)=cipher.open(&record)? else {continue};
-                    let envelope=Envelope::decode(&bytes)?;
-                    ensure!(envelope.request_id>last_request,"replayed request"); last_request=envelope.request_id;
-                    if rate.0.elapsed()>Duration::from_secs(1) { rate=(Instant::now(),0,0); } rate.1+=bytes.len(); rate.2+=1; ensure!(rate.1<=256*1024 && rate.2<=200,"input rate exceeded");
-                    heartbeat=Instant::now();
-                    let request=envelope.request_id;
-                    let response=match envelope.message {
-                        Message::Ping {nonce}=>Some(Message::Pong {nonce}),Message::Pong{..}=>None,
-                        Message::ListPanes{}=>Some(Message::Panes {panes:self.panes()}),
-                        Message::Open{pane_id,size}=> {
-                            if let Ok(h)=self.handle(pane_id) {
-                                if let Some((_,old))=controller.take() {old.remote_release();}
-                                h.remote_claim(terminal_size(size))?; controller=Some((pane_id,h)); previous=None;
-                                self.describe(generation,"iPhone controla una terminal · menú del pane para recuperar"); None
-                            } else {Some(Message::Error{code:ErrorCode::NotShared})}
-                        },
-                        Message::Close{pane_id}=> {
-                            if controller.as_ref().is_some_and(|(id,_)|*id==pane_id) {controller.take().unwrap().1.remote_release();previous=None;}
-                            Some(Message::ControlReleased{pane_id,reason:ReleaseReason::Closed})
-                        },
-                        Message::Resize{pane_id,size}=> {
-                            if let Some((id,h))=&controller && *id==pane_id && h.remote_controlled() && self.handle(pane_id).is_ok() {h.remote_resize(terminal_size(size))?;previous=None;None} else {Some(Message::Error{code:ErrorCode::NotController})}
-                        },
-                        Message::Input{pane_id,input}=> {
-                            if let Some((id,h))=&controller && *id==pane_id && previous.is_some() && self.handle(pane_id).is_ok() && h.remote_controlled() {h.remote_input(encode_input(input,h.input_mode()))?;None} else {Some(Message::Error{code:ErrorCode::NotController})}
-                        },
-                        Message::Resync{pane_id}=> {if controller.as_ref().is_some_and(|(id,_)|*id==pane_id) {previous=None;} None},
-                        Message::History{pane_id,lines}=>self.handle(pane_id).ok().map(|h|Message::HistoryResult{pane_id,text:bounded_history(h.recent_text(lines as usize).unwrap_or_default())}),
-                        _=>Some(Message::Error{code:ErrorCode::InvalidMessage}),
-                    };
-                    if let Some(message)=response {send(&mut socket,&mut cipher,Envelope::new(request,message)).await?;}
-                },
-                _=tick.tick()=> {
-                    ensure!(heartbeat.elapsed()<Duration::from_secs(15),"heartbeat expired");
-                    if last_ping.elapsed()>Duration::from_secs(5) {send(&mut socket,&mut cipher,Envelope::new(0,Message::Ping{nonce:now()})).await?;last_ping=Instant::now();}
-                    if let Some((id,h))=&controller {
-                        let id=*id;
-                        if !h.remote_controlled() || self.handle(id).is_err() {
-                            h.remote_release();controller=None;previous=None;
-                            send(&mut socket,&mut cipher,Envelope::new(0,Message::ControlReleased{pane_id:id,reason:ReleaseReason::Reclaimed})).await?;
-                        } else {
-                            let frame=h.remote_frame()?;
-                            if previous.as_ref()!=Some(&frame) {
-                                let full=previous.as_ref().is_none_or(|p|p.columns!=frame.columns || p.rows!=frame.rows);
-                                let ansi=draw(&frame,if full {None} else {previous.as_ref()});
-                                let base=revision;revision+=1;
-                                let message=if full {Message::Screen{pane_id:id,revision,size:Size{columns:frame.columns,rows:frame.rows},ansi}} else {Message::Patch{pane_id:id,base_revision:base,revision,ansi}};
-                                send(&mut socket,&mut cipher,Envelope::new(0,message)).await?;previous=Some(frame);
-                            }
+                incoming = socket.next() => {
+                    let Some(Ok(incoming)) = incoming else { bail!("disconnected") };
+                    let record = match incoming {
+                        Ws::Binary(bytes) => bytes,
+                        Ws::Ping(bytes) => {
+                            socket.send(Ws::Pong(bytes)).await?;
+                            continue;
                         }
+                        Ws::Pong(_) => continue,
+                        _ => bail!("invalid transport"),
+                    };
+                    let Some(bytes) = cipher.open(&record)? else { continue };
+                    let envelope = Envelope::decode(&bytes)?;
+                    requests.accept(envelope.request_id, bytes.len(), Instant::now())?;
+                    heartbeat = Instant::now();
+                    if let Some(message) = session.handle(self, generation, envelope.message)? {
+                        send(&mut socket, &mut cipher, Envelope::new(envelope.request_id, message)).await?;
+                    }
+                }
+                _ = tick.tick() => {
+                    ensure!(heartbeat.elapsed() < Duration::from_secs(15), "heartbeat expired");
+                    if last_ping.elapsed() > Duration::from_secs(5) {
+                        send(&mut socket, &mut cipher, Envelope::new(0, Message::Ping { nonce: now() })).await?;
+                        last_ping = Instant::now();
+                    }
+                    if let Some(message) = session.screen_update(self)? {
+                        send(&mut socket, &mut cipher, Envelope::new(0, message)).await?;
                     }
                 }
             }
@@ -700,6 +675,8 @@ fn encode_input(input: Input, mode: crate::ports::terminal::TerminalInputMode) -
 mod tests {
     use super::*;
     use crate::ports::terminal::*;
+    use wire::protocol::{ErrorCode, ReleaseReason};
+
     struct TestTerminal {
         state: Mutex<(bool, TerminalSize, Vec<u8>)>,
     }
@@ -774,6 +751,162 @@ mod tests {
             })
         }
     }
+
+    fn test_hub(credentials: Credentials) -> Hub {
+        Hub {
+            worker: Mutex::new(None),
+            state: Mutex::new(State {
+                endpoint: None,
+                enabled: true,
+                generation: 1,
+                credentials: Some(credentials),
+                invitation: None,
+                panes: HashMap::new(),
+                pending: None,
+                status: String::new(),
+            }),
+        }
+    }
+
+    fn share_test_terminal(hub: &Hub) -> (Uuid, Arc<TestTerminal>) {
+        let terminal = Arc::new(TestTerminal {
+            state: Mutex::new((false, TerminalSize::default(), Vec::new())),
+        });
+        let id = Uuid::new_v4();
+        hub.register(id, &(terminal.clone() as Arc<dyn TerminalHandle>));
+        hub.toggle_share(id);
+        (id, terminal)
+    }
+
+    #[test]
+    fn remote_input_requires_a_screen_after_open_resize_and_resync() {
+        let hub = test_hub(Credentials::fresh().unwrap());
+        let (pane_id, terminal) = share_test_terminal(&hub);
+        let mut session = RemoteSession::default();
+        let size = Size {
+            columns: 40,
+            rows: 20,
+        };
+        let input = || Message::Input {
+            pane_id,
+            input: Input::Text { text: "a".into() },
+        };
+        let not_controller = Some(Message::Error {
+            code: ErrorCode::NotController,
+        });
+
+        assert_eq!(session.handle(&hub, 1, input()).unwrap(), not_controller);
+        assert_eq!(
+            session
+                .handle(&hub, 1, Message::Resize { pane_id, size })
+                .unwrap(),
+            not_controller
+        );
+        assert_eq!(
+            session
+                .handle(&hub, 1, Message::Open { pane_id, size })
+                .unwrap(),
+            None
+        );
+        assert!(terminal.remote_controlled());
+        assert_eq!(session.handle(&hub, 1, input()).unwrap(), not_controller);
+        assert!(terminal.state.lock().unwrap().2.is_empty());
+        assert!(matches!(
+            session.screen_update(&hub).unwrap(),
+            Some(Message::Screen { revision: 1, .. })
+        ));
+        assert_eq!(session.screen_update(&hub).unwrap(), None);
+        assert_eq!(session.handle(&hub, 1, input()).unwrap(), None);
+        assert_eq!(terminal.state.lock().unwrap().2, b"a");
+
+        for (message, revision) in [
+            (Message::Resync { pane_id }, 2),
+            (Message::Resize { pane_id, size }, 3),
+        ] {
+            assert_eq!(session.handle(&hub, 1, message).unwrap(), None);
+            assert_eq!(session.handle(&hub, 1, input()).unwrap(), not_controller);
+            assert!(matches!(
+                session.screen_update(&hub).unwrap(),
+                Some(Message::Screen { revision: actual, .. }) if actual == revision
+            ));
+            assert_eq!(session.handle(&hub, 1, input()).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn remote_control_switches_panes_and_rechecks_sharing_before_input_or_resize() {
+        let hub = test_hub(Credentials::fresh().unwrap());
+        let (first, first_terminal) = share_test_terminal(&hub);
+        let (second, second_terminal) = share_test_terminal(&hub);
+        let mut session = RemoteSession::default();
+        let size = Size {
+            columns: 40,
+            rows: 20,
+        };
+        for pane_id in [first, second] {
+            session
+                .handle(&hub, 1, Message::Open { pane_id, size })
+                .unwrap();
+            assert!(matches!(
+                session.screen_update(&hub).unwrap(),
+                Some(Message::Screen { .. })
+            ));
+        }
+        assert!(!first_terminal.remote_controlled());
+        assert!(second_terminal.remote_controlled());
+        session
+            .handle(&hub, 1, Message::Close { pane_id: first })
+            .unwrap();
+        assert!(second_terminal.remote_controlled());
+        let unknown = Uuid::new_v4();
+        assert_eq!(
+            session
+                .handle(
+                    &hub,
+                    1,
+                    Message::Open {
+                        pane_id: unknown,
+                        size
+                    }
+                )
+                .unwrap(),
+            Some(Message::Error {
+                code: ErrorCode::NotShared,
+            })
+        );
+        assert!(second_terminal.remote_controlled());
+
+        hub.toggle_share(second);
+        for message in [
+            Message::Input {
+                pane_id: second,
+                input: Input::Text {
+                    text: "blocked".into(),
+                },
+            },
+            Message::Resize {
+                pane_id: second,
+                size,
+            },
+        ] {
+            assert_eq!(
+                session.handle(&hub, 1, message).unwrap(),
+                Some(Message::Error {
+                    code: ErrorCode::NotController,
+                })
+            );
+        }
+        assert!(second_terminal.state.lock().unwrap().2.is_empty());
+        assert_eq!(
+            session.screen_update(&hub).unwrap(),
+            Some(Message::ControlReleased {
+                pane_id: second,
+                reason: ReleaseReason::Reclaimed,
+            })
+        );
+        assert_eq!(session.screen_update(&hub).unwrap(), None);
+    }
+
     async fn read(socket: &mut Socket, cipher: &mut wire::Channel) -> Envelope {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
@@ -886,19 +1019,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let c = Credentials::fresh().unwrap();
-        let hub = Hub {
-            worker: Mutex::new(None),
-            state: Mutex::new(State {
-                endpoint: None,
-                enabled: true,
-                generation: 1,
-                credentials: Some(c.clone()),
-                invitation: None,
-                panes: HashMap::new(),
-                pending: None,
-                status: String::new(),
-            }),
-        };
+        let hub = test_hub(c.clone());
         let host = hub.listen(1, &c, listener);
         let client = async {
             let (mut socket, _) = wire::connect_async(&format!("ws://{address}/local"))
@@ -972,19 +1093,7 @@ mod tests {
         let phone = wire::keypair().unwrap();
         let mut c = Credentials::fresh().unwrap();
         c.paired = Some(wire::base64(&phone.public));
-        let hub = Hub {
-            worker: Mutex::new(None),
-            state: Mutex::new(State {
-                endpoint: None,
-                enabled: true,
-                generation: 1,
-                credentials: Some(c.clone()),
-                invitation: None,
-                panes: HashMap::new(),
-                pending: None,
-                status: String::new(),
-            }),
-        };
+        let hub = test_hub(c.clone());
         let terminal = Arc::new(TestTerminal {
             state: Mutex::new((false, TerminalSize::default(), Vec::new())),
         });
