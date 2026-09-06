@@ -4,5 +4,6 @@
 // Starts a native macOS window drag from the mouse-down event currently being
 // dispatched. This lets Vibra keep interactive controls out of the drag region.
 void vibra_start_window_drag(void);
+void vibra_restore_window_frame(void *view);
 
 #endif

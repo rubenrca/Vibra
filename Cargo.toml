@@ -22,6 +22,7 @@ uuid = { version = "1.24", features = ["serde", "v4"] }
 vibra-remote = { path = "services/remote" }
 security-framework = "3"
 qrcode = { version = "0.14", default-features = false }
+raw-window-handle = "0.6"
 
 [dev-dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["test-support"] }

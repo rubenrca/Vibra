@@ -213,6 +213,14 @@ WorkspaceSnapshot + acciones de dominio
    └── AutomationServer    ── socket Unix + capacidades por pane
 ```
 
+La vista principal se organiza en `src/ui/workspace_view/`:
+
+- `mod.rs`: coordinación del workspace, eventos y composición de la ventana.
+- `settings.rs`: páginas de configuración y aplicación de preferencias.
+- `dev_terminal.rs`: ciclo de vida y renderizado de las consolas inferiores.
+- `files.rs`: recorrido del árbol de archivos, iconos e indicadores Git.
+- `chrome.rs` y `automation.rs`: etiquetas de la interfaz y conversión de estados de agentes.
+
 ## Licencia y reconocimientos
 
 Vibra usa licencia MIT. Consulta [NOTICE.md](NOTICE.md) para dependencias y

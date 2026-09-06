@@ -78,38 +78,52 @@ pub(crate) fn collect_search_files(
     Ok(())
 }
 
+struct FileIconStyle {
+    glyph: Option<&'static str>,
+    color: gpui::Rgba,
+}
+
+fn file_icon_style(name: &str) -> FileIconStyle {
+    let lower = name.to_ascii_lowercase();
+    let extension = Path::new(&lower)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("");
+    let (glyph, color) = match (lower.as_str(), extension) {
+        ("cargo.toml" | "cargo.lock", _) | (_, "toml") => ("⚙", colors().muted),
+        (_, "rs") => ("Rs", gpui::rgb(0xdea584)),
+        (_, "md" | "mdx") => ("Md", colors().accent),
+        (_, "json" | "jsonc") => ("{}", gpui::rgb(0xcbcb41)),
+        (_, "lock") => ("L", colors().subtle),
+        (_, "yml" | "yaml") => ("Y", colors().muted),
+        (_, "gitignore" | "gitattributes") | (".gitignore", _) => ("⊘", gpui::rgb(0xf05033)),
+        ("license" | "licence" | "notice" | "copying", _) => ("©", colors().subtle),
+        (_, "ts" | "tsx") => ("Ts", gpui::rgb(0x519aba)),
+        (_, "js" | "jsx" | "mjs" | "cjs") => ("Js", gpui::rgb(0xcbcb41)),
+        (_, "css" | "scss") => ("#", gpui::rgb(0x9b7ed9)),
+        (_, "html" | "htm" | "svg") => ("<>", gpui::rgb(0xe34c26)),
+        (_, "py") => ("Py", gpui::rgb(0x3572a5)),
+        (_, "go") => ("Go", gpui::rgb(0x00add8)),
+        (_, "sh" | "bash" | "zsh") => ("$", colors().success),
+        (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => ("▣", gpui::rgb(0xa074c4)),
+        _ => {
+            return FileIconStyle {
+                glyph: None,
+                color: colors().subtle,
+            };
+        }
+    };
+    FileIconStyle {
+        glyph: Some(glyph),
+        color,
+    }
+}
+
 pub(crate) fn file_tree_icon_color(kind: FileEntryKind, name: &str) -> gpui::Rgba {
     match kind {
         FileEntryKind::Directory => colors().folder,
         FileEntryKind::Symlink => colors().accent,
-        FileEntryKind::File => {
-            let lower = name.to_ascii_lowercase();
-            let ext = std::path::Path::new(name)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            match (lower.as_str(), ext.as_str()) {
-                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => colors().muted,
-                (_, "rs") => gpui::rgb(0xdea584),
-                (_, "md" | "mdx") => colors().accent,
-                (_, "json" | "jsonc") => gpui::rgb(0xcbcb41),
-                (_, "lock") => colors().subtle,
-                (_, "yml" | "yaml") => colors().muted,
-                (_, "gitignore" | "gitattributes") | (".gitignore", _) => gpui::rgb(0xf05033),
-                ("license" | "licence" | "notice" | "copying", _) => colors().subtle,
-                (_, "ts" | "tsx") => gpui::rgb(0x519aba),
-                (_, "js" | "jsx" | "mjs" | "cjs") => gpui::rgb(0xcbcb41),
-                (_, "css" | "scss") => gpui::rgb(0x9b7ed9),
-                (_, "html" | "htm" | "svg") => gpui::rgb(0xe34c26),
-                (_, "py") => gpui::rgb(0x3572a5),
-                (_, "go") => gpui::rgb(0x00add8),
-                (_, "sh" | "bash" | "zsh") => colors().success,
-                (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => gpui::rgb(0xa074c4),
-                _ if name.starts_with('.') => colors().subtle,
-                _ => colors().subtle,
-            }
-        }
+        FileEntryKind::File => file_icon_style(name).color,
     }
 }
 
@@ -141,36 +155,12 @@ pub(crate) fn file_tree_icon(
             .child("↗")
             .into_any_element(),
         FileEntryKind::File => {
-            let lower = name.to_ascii_lowercase();
-            let ext = std::path::Path::new(name)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let glyph = match (lower.as_str(), ext.as_str()) {
-                ("cargo.toml" | "cargo.lock", _) | (_, "toml") => "⚙",
-                (_, "rs") => "Rs",
-                (_, "md" | "mdx") => "Md",
-                (_, "json" | "jsonc") => "{}",
-                (_, "lock") => "L",
-                (_, "yml" | "yaml") => "Y",
-                (_, "gitignore" | "gitattributes") | (".gitignore", _) => "⊘",
-                ("license" | "licence" | "notice" | "copying", _) => "©",
-                (_, "ts" | "tsx") => "Ts",
-                (_, "js" | "jsx" | "mjs" | "cjs") => "Js",
-                (_, "css" | "scss") => "#",
-                (_, "html" | "htm" | "svg") => "<>",
-                (_, "py") => "Py",
-                (_, "go") => "Go",
-                (_, "sh" | "bash" | "zsh") => "$",
-                (_, "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico") => "▣",
-                _ => {
-                    return svg()
-                        .path("file-icons/file.svg")
-                        .size(px(13.0))
-                        .text_color(color)
-                        .into_any_element();
-                }
+            let Some(glyph) = file_icon_style(name).glyph else {
+                return svg()
+                    .path("file-icons/file.svg")
+                    .size(px(13.0))
+                    .text_color(color)
+                    .into_any_element();
             };
             div()
                 .font_family("JetBrains Mono")
@@ -225,61 +215,33 @@ pub(crate) fn aggregate_dir_status(
     rel: &str,
     statuses: &HashMap<String, GitFileStatus>,
 ) -> Option<GitFileStatus> {
-    let mut best: Option<GitFileStatus> = None;
-    for (path, status) in statuses {
-        let under = rel.is_empty() || path_is_under_dir(path, rel);
-        if !under {
-            continue;
-        }
-        best = Some(match best {
-            None => *status,
-            Some(current) if git_status_rank(*status) < git_status_rank(current) => *status,
-            Some(current) => current,
-        });
-    }
-    best
+    statuses
+        .iter()
+        .filter(|(path, _)| rel.is_empty() || path_is_under_dir(path, rel))
+        .map(|(_, status)| *status)
+        .min_by_key(|status| git_status_rank(*status))
 }
 
 /// Right-side indicator: letter for modified/renamed, colored dots for add/delete.
 pub(crate) fn git_status_trailing(status: GitFileStatus) -> Div {
-    match status {
-        GitFileStatus::Modified | GitFileStatus::TypeChanged => div()
-            .flex_none()
-            .font_family("JetBrains Mono")
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(colors().git_modified)
-            .child("M"),
-        GitFileStatus::Renamed => div()
-            .flex_none()
-            .font_family("JetBrains Mono")
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(colors().git_added)
-            .child("R"),
-        GitFileStatus::Copied => div()
-            .flex_none()
-            .font_family("JetBrains Mono")
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(colors().git_added)
-            .child("C"),
-        GitFileStatus::Conflicted => div()
-            .flex_none()
-            .font_family("JetBrains Mono")
-            .text_size(px(10.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(colors().git_deleted)
-            .child("U"),
-        GitFileStatus::Added | GitFileStatus::Untracked => div()
-            .size(px(6.0))
-            .flex_none()
-            .rounded_full()
-            .bg(colors().git_added),
-        GitFileStatus::Deleted => div()
-            .size(px(6.0))
-            .flex_none()
-            .rounded_full()
-            .bg(colors().git_deleted),
-    }
+    let label = match status {
+        GitFileStatus::Modified | GitFileStatus::TypeChanged => "M",
+        GitFileStatus::Renamed => "R",
+        GitFileStatus::Copied => "C",
+        GitFileStatus::Conflicted => "U",
+        GitFileStatus::Added | GitFileStatus::Untracked | GitFileStatus::Deleted => {
+            return div()
+                .size(px(6.0))
+                .flex_none()
+                .rounded_full()
+                .bg(git_status_color(status));
+        }
+    };
+    div()
+        .flex_none()
+        .font_family("JetBrains Mono")
+        .text_size(px(10.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(git_status_color(status))
+        .child(label)
 }

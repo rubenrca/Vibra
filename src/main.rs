@@ -275,6 +275,7 @@ fn run() -> Result<()> {
                     ..Default::default()
                 },
                 |window, cx| {
+                    infrastructure::window::restore_frame(window);
                     let focus_handle = cx.focus_handle();
                     focus_handle.focus(window);
                     cx.new(|cx| {

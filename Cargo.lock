@@ -6220,6 +6220,7 @@ dependencies = [
  "gpui",
  "libc",
  "qrcode",
+ "raw-window-handle",
  "security-framework",
  "serde",
  "serde_json",

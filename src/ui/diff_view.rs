@@ -5,9 +5,9 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use gpui::{
-    Context, Div, EventEmitter, HighlightStyle, IntoElement, ListHorizontalSizingBehavior,
-    PathBuilder, Render, Rgba, SharedString, Stateful, StyledText, Task, TextStyle, Timer,
-    WhiteSpace, Window, canvas, div, point, prelude::*, px, uniform_list,
+    Context, Div, EventEmitter, FocusHandle, HighlightStyle, IntoElement,
+    ListHorizontalSizingBehavior, PathBuilder, Render, Rgba, SharedString, Stateful, StyledText,
+    Task, TextStyle, Timer, WhiteSpace, Window, canvas, div, point, prelude::*, px, uniform_list,
 };
 
 use crate::ports::git::{
@@ -66,6 +66,9 @@ pub struct DiffView {
     status_root: Option<PathBuf>,
     status_index: Arc<HashMap<String, GitFileStatus>>,
     panel_visible: bool,
+    review_expanded: bool,
+    review_diff_height: f32,
+    focus_handle: FocusHandle,
     /// Paths currently loading a diff.
     loading: HashSet<String>,
     refreshing: bool,
@@ -168,6 +171,9 @@ impl DiffView {
             status_root: None,
             status_index: Arc::new(HashMap::new()),
             panel_visible: false,
+            review_expanded: false,
+            review_diff_height: MAX_INLINE_DIFF_HEIGHT,
+            focus_handle: cx.focus_handle(),
             loading: HashSet::new(),
             refreshing: false,
             branch_refreshing: false,
@@ -192,6 +198,25 @@ impl DiffView {
     /// Repo root + relative path → status, for coloring the Files tree (Zed-style).
     pub fn status_index(&self) -> (Option<PathBuf>, Arc<HashMap<String, GitFileStatus>>) {
         (self.status_root.clone(), self.status_index.clone())
+    }
+
+    pub fn review_expanded(&self) -> bool {
+        self.review_expanded
+    }
+
+    pub fn toggle_review_expanded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_review_expanded(!self.review_expanded, cx);
+        self.focus_handle.focus(window);
+    }
+
+    pub fn set_review_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        if self.review_expanded == expanded {
+            return;
+        }
+        self.review_expanded = expanded;
+        self.mode_menu_open = false;
+        cx.emit(DiffViewEvent);
+        cx.notify();
     }
 
     pub fn set_panel_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -239,6 +264,7 @@ impl DiffView {
         if self.context_root == root {
             return;
         }
+        self.set_review_expanded(false, cx);
         self.context_root = root;
         self.snapshot_request_id = self.snapshot_request_id.wrapping_add(1);
         self.branch_request_id = self.branch_request_id.wrapping_add(1);
@@ -279,6 +305,7 @@ impl DiffView {
             cx.notify();
             return;
         }
+        self.set_review_expanded(false, cx);
         self.mode = mode;
         self.expanded.clear();
         self.documents.clear();
@@ -654,35 +681,78 @@ impl DiffView {
             GitPanelMode::Branch => self.branch_refreshing,
             GitPanelMode::History => self.history_refreshing,
         };
-        let (branch, meta) = self.header_meta(loading);
+        let (branch, mut meta) = self.header_meta(loading);
+        if self.mode == GitPanelMode::History {
+            meta.insert(
+                0,
+                div()
+                    .text_size(px(11.0))
+                    .text_color(colors().muted)
+                    .child(branch),
+            );
+        }
 
         div()
             .w_full()
             .flex_none()
-            .h(px(44.0))
+            .min_h(px(44.0))
             .flex()
+            .flex_wrap()
             .items_center()
+            .justify_between()
             .gap_2()
             .px_3()
+            .py_2()
             .bg(colors().panel)
             .border_b_1()
             .border_color(colors().border_subtle)
-            .child(self.mode_trigger(cx))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .id("git-header-expand")
+                            .flex_none()
+                            .w(px(24.0))
+                            .h(px(26.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .cursor_pointer()
+                            .hover(|button| button.bg(colors().hover))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_review_expanded(window, cx);
+                            }))
+                            .child(
+                                gpui::svg()
+                                    .path(if self.review_expanded {
+                                        "chrome-icons/chevrons-right.svg"
+                                    } else {
+                                        "chrome-icons/chevrons-left.svg"
+                                    })
+                                    .size(px(16.0))
+                                    .text_color(colors().muted),
+                            ),
+                    )
+                    .child(self.mode_trigger(cx)),
+            )
             .child(
                 div()
                     .min_w(px(0.0))
-                    .flex_1()
+                    .max_w_full()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(12.0))
-                            .text_color(colors().muted)
-                            .child(branch),
-                    )
-                    .children(meta),
+                    .children(
+                        meta.into_iter()
+                            .map(|item| item.flex_none().whitespace_nowrap()),
+                    ),
             )
     }
 
@@ -800,11 +870,15 @@ impl DiffView {
         div()
             .id("git-mode-trigger")
             .flex_none()
-            .h(px(28.0))
-            .px_3()
-            .rounded(px(8.0))
+            .h(px(26.0))
+            .px_2()
+            .rounded(px(6.0))
             .border_1()
-            .border_color(colors().border_subtle)
+            .border_color(if open {
+                colors().muted
+            } else {
+                colors().border_subtle
+            })
             .bg(if open {
                 colors().selection
             } else {
@@ -816,22 +890,23 @@ impl DiffView {
             .cursor_pointer()
             .hover(|button| button.bg(colors().hover))
             .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
                 this.mode_menu_open = !this.mode_menu_open;
                 cx.notify();
             }))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(11.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(colors().foreground)
                     .child(self.mode.label()),
             )
             .child(
-                div()
+                gpui::svg()
+                    .path("chrome-icons/chevron-down.svg")
                     .ml_1()
-                    .text_size(px(9.0))
-                    .text_color(colors().subtle)
-                    .child("▾"),
+                    .size(px(10.0))
+                    .text_color(colors().muted),
             )
     }
 
@@ -849,7 +924,10 @@ impl DiffView {
                     .id("git-mode-dismiss")
                     .absolute()
                     .inset_0()
+                    .occlude()
                     .on_click(cx.listener(|this, _, _, cx| {
+                        // Consume the dismissal so this click cannot reopen the trigger below.
+                        cx.stop_propagation();
                         this.mode_menu_open = false;
                         cx.notify();
                     })),
@@ -858,8 +936,9 @@ impl DiffView {
                 div()
                     .absolute()
                     .top(px(42.0))
-                    .left(px(10.0))
+                    .left(px(40.0))
                     .w(px(200.0))
+                    .occlude()
                     .rounded(px(12.0))
                     .border_1()
                     .border_color(colors().border_subtle)
@@ -885,6 +964,7 @@ impl DiffView {
                             })
                             .hover(|row| row.bg(colors().hover))
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
                                 this.set_mode(mode, cx);
                             }))
                             .child(
@@ -1168,7 +1248,7 @@ impl DiffView {
         }
 
         let height = ((row_count as f32) * DIFF_ROW_HEIGHT)
-            .clamp(MIN_INLINE_DIFF_HEIGHT, MAX_INLINE_DIFF_HEIGHT);
+            .clamp(MIN_INLINE_DIFF_HEIGHT, self.review_diff_height);
         let widest_row_index = document
             .as_ref()
             .map(|document| document.widest_row_index)
@@ -1687,7 +1767,13 @@ impl DiffView {
 }
 
 impl Render for DiffView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Leave room for workspace chrome, the Git toolbar, and the file header.
+        self.review_diff_height = if self.review_expanded {
+            (f32::from(window.viewport_size().height) - 180.0).max(MIN_INLINE_DIFF_HEIGHT)
+        } else {
+            MAX_INLINE_DIFF_HEIGHT
+        };
         let error = self.error.clone();
         let menu_open = self.mode_menu_open;
         let empty_message = self.empty_message();
@@ -1695,6 +1781,15 @@ impl Render for DiffView {
         let show_files = empty_message.is_none()
             && matches!(self.mode, GitPanelMode::Worktree | GitPanelMode::Branch);
         div()
+            .id("git-review")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if this.review_expanded && matches!(event.keystroke.key.as_str(), "escape" | "esc")
+                {
+                    this.set_review_expanded(false, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .size_full()
             .relative()
             .flex()

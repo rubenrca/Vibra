@@ -62,6 +62,24 @@ impl AssetSource for VibraAssets {
             "chrome-icons/open-external.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../Resources/ChromeIcons/open-external.svg"
             ))),
+            "chrome-icons/collapse.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/ChromeIcons/collapse.svg"
+            ))),
+            "chrome-icons/expand.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/ChromeIcons/expand.svg"
+            ))),
+            "chrome-icons/chevron-left.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/ChromeIcons/chevron-left.svg"
+            ))),
+            "chrome-icons/chevron-down.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/ChromeIcons/chevron-down.svg"
+            ))),
+            "chrome-icons/chevrons-left.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/ChromeIcons/chevrons-left.svg"
+            ))),
+            "chrome-icons/chevrons-right.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../../Resources/ChromeIcons/chevrons-right.svg"
+            ))),
             "chrome-icons/chevron-right.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../../Resources/ChromeIcons/chevron-right.svg"
             ))),
@@ -89,6 +107,12 @@ impl AssetSource for VibraAssets {
             "chrome-icons/git-branch.svg",
             "chrome-icons/open-external.svg",
             "chrome-icons/chevron-right.svg",
+            "chrome-icons/chevrons-right.svg",
+            "chrome-icons/chevrons-left.svg",
+            "chrome-icons/chevron-down.svg",
+            "chrome-icons/chevron-left.svg",
+            "chrome-icons/expand.svg",
+            "chrome-icons/collapse.svg",
         ];
         Ok(assets
             .into_iter()
