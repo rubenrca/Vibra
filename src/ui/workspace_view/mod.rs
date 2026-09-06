@@ -3309,13 +3309,6 @@ impl WorkspaceView {
         let project_root = self.project_root();
         let (git_root, git_statuses) = self.diff_view.read(cx).status_index();
         let status_root = git_root.unwrap_or_else(|| project_root.clone());
-        let project_name = project_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("FILES")
-            .to_uppercase();
-        let changed_count = git_statuses.len();
 
         div()
             .id("project-files-content")
@@ -3325,42 +3318,6 @@ impl WorkspaceView {
             .flex_col()
             .overflow_hidden()
             .bg(colors().panel)
-            .child(
-                div()
-                    .h(px(34.0))
-                    .w_full()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(7.0))
-                    .px(px(10.0))
-                    .child(
-                        svg()
-                            .path("file-icons/folder.svg")
-                            .size(px(14.0))
-                            .text_color(colors().folder),
-                    )
-                    .child(
-                        div()
-                            .max_w(px(140.0))
-                            .truncate()
-                            .text_size(px(9.5))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(colors().muted)
-                            .child(project_name),
-                    )
-                    .child(div().h(px(1.0)).flex_1().bg(colors().border_subtle))
-                    .when(changed_count > 0, |header| {
-                        header.child(
-                            div()
-                                .flex_none()
-                                .font_family("JetBrains Mono")
-                                .text_size(px(8.5))
-                                .text_color(colors().warning)
-                                .child(changed_count.to_string()),
-                        )
-                    }),
-            )
             // File tree
             .child(
                 div()
@@ -3369,7 +3326,7 @@ impl WorkspaceView {
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .px_1()
-                    .pt_0()
+                    .pt_1()
                     .pb_2()
                     .children(rows.into_iter().map(|row| {
                         let path = row.entry.path.clone();

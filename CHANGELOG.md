@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.19 — 2026-09-06
+
+- Remove the project-name header from the file tree to leave more room for files.
+- Simplify the staged changes separator with a compact label and count.
+
 ## 0.3.18 — 2026-09-06
 
 - Expand Git review to use the workspace area, with updated navigation and roomier inline diffs.

@@ -1030,7 +1030,7 @@ impl DiffView {
         }
         if !staged.is_empty() {
             list = list
-                .child(Self::file_section_header("STAGED", staged.len()))
+                .child(Self::file_section_header("Staged", staged.len()))
                 .children(staged.into_iter().map(|change| self.file_card(change, cx)));
         }
         list
@@ -1038,26 +1038,28 @@ impl DiffView {
 
     fn file_section_header(label: &'static str, count: usize) -> Div {
         div()
-            .h(px(30.0))
+            .h(px(32.0))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(7.0))
+            .gap(px(6.0))
             .px_3()
             .bg(colors().panel)
             .child(
                 div()
-                    .text_size(px(9.0))
+                    .text_size(px(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(colors().muted)
                     .child(label),
             )
-            .child(div().h(px(1.0)).flex_1().bg(colors().border_subtle))
             .child(
                 div()
-                    .font_family("JetBrains Mono")
-                    .text_size(px(8.5))
+                    .px(px(5.0))
+                    .py(px(1.0))
+                    .rounded(px(4.0))
+                    .bg(colors().elevated)
+                    .text_size(px(9.0))
                     .text_color(colors().subtle)
                     .child(count.to_string()),
             )
