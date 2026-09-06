@@ -3,20 +3,18 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.18</title>
-            <pubDate>Sun, 06 Sep 2026 15:13:41 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.18</link>
-            <sparkle:version>144</sparkle:version>
-            <sparkle:shortVersionString>0.3.18</sparkle:shortVersionString>
+            <title>0.3.19</title>
+            <pubDate>Sun, 06 Sep 2026 15:24:15 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.19</link>
+            <sparkle:version>147</sparkle:version>
+            <sparkle:shortVersionString>0.3.19</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Expand Git review to use the workspace area, with updated navigation and roomier inline diffs.</li>
-  <li>Restore the native window position and fit it to the available display area when reopening Vibra.</li>
-  <li>Organize workspace settings, utility terminals, agent activity, and remote sessions into focused modules.</li>
-  <li>Simplify file icons and Git status indicators while preserving the file tree behavior.</li>
+  <li>Remove the project-name header from the file tree to leave more room for files.</li>
+  <li>Simplify the staged changes separator with a compact label and count.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.18/Vibra-0.3.18.dmg" length="13744720" type="application/octet-stream" sparkle:edSignature="2jPk3b3D7t2rL+wyKVT0KhWDkAH/AK3fRcx5jxvZdWhcABAo2mvRPkuf1e4pl7XcBYJ7Xd6uQrp1K/Ooan2fAQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.19/Vibra-0.3.19.dmg" length="13740930" type="application/octet-stream" sparkle:edSignature="QuK9cevt2SgQxYN7TdTieMSI7H3IqJK8qfUSDBjhPkG60mjzTTZPh9WIJjumfdHThTWQtRU8dY1U01/ze48EAQ=="/>
         </item>
     </channel>
 </rss>
