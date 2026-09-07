@@ -69,12 +69,6 @@ impl Theme {
         }
     }
 
-    pub fn scrollbar_thumb(self) -> Rgba {
-        let mut color = self.muted;
-        color.a = if self.is_dark() { 0.45 } else { 0.40 };
-        color
-    }
-
     pub fn terminal_palette(self) -> TerminalPalette {
         let dark = self.is_dark();
         let black = if dark {

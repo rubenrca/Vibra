@@ -139,8 +139,6 @@ pub struct TerminalView {
     last_grid_size: Option<(usize, usize)>,
     last_mouse_point: Option<TerminalPoint>,
     accumulated_scroll_y: f32,
-    scrollbar_dragging: bool,
-    scrollbar_drag_offset: f32,
     hovered_hyperlink: Option<String>,
     search_active: bool,
     search_query: String,
@@ -268,8 +266,6 @@ impl TerminalView {
             last_grid_size: None,
             last_mouse_point: None,
             accumulated_scroll_y: 0.0,
-            scrollbar_dragging: false,
-            scrollbar_drag_offset: 0.0,
             hovered_hyperlink: None,
             search_active: false,
             search_query: String::new(),
@@ -900,24 +896,6 @@ impl TerminalView {
     ) {
         self.focus_handle.focus(window);
         self.reset_cursor_blink();
-        if event.button == MouseButton::Left
-            && let Some((track, thumb, snapshot)) = self.scrollbar_at(event.position)
-        {
-            let pointer_y: f32 = event.position.y.into();
-            let thumb_top: f32 = thumb.top().into();
-            let thumb_bottom: f32 = thumb.bottom().into();
-            let thumb_height: f32 = thumb.size.height.into();
-            self.scrollbar_dragging = true;
-            self.scrollbar_drag_offset = if (thumb_top..=thumb_bottom).contains(&pointer_y) {
-                pointer_y - thumb_top
-            } else {
-                thumb_height / 2.0
-            };
-            self.update_scrollbar_drag(event.position.y, track, thumb, &snapshot);
-            cx.notify();
-            cx.stop_propagation();
-            return;
-        }
         let Some((point, side)) = self.terminal_point(event.position, true) else {
             return;
         };
@@ -982,12 +960,6 @@ impl TerminalView {
     }
 
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if event.button == MouseButton::Left && self.scrollbar_dragging {
-            self.scrollbar_dragging = false;
-            cx.notify();
-            cx.stop_propagation();
-            return;
-        }
         let Some((point, side)) = self.terminal_point(event.position, true) else {
             return;
         };
@@ -1021,19 +993,6 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.scrollbar_dragging {
-            if let Some(handle) = &self.handle {
-                let snapshot = handle.snapshot();
-                if let Some((track, thumb)) =
-                    scrollbar_metrics(self.last_terminal_bounds.unwrap_or_default(), &snapshot)
-                {
-                    self.update_scrollbar_drag(event.position.y, track, thumb, &snapshot);
-                    cx.notify();
-                    cx.stop_propagation();
-                }
-            }
-            return;
-        }
         let inside = self.terminal_point(event.position, false);
         let hovered_hyperlink = inside
             .and_then(|(point, _)| self.handle.as_ref()?.hyperlink_at(point))
@@ -1123,42 +1082,6 @@ impl TerminalView {
             TerminalCellSide::Left
         };
         Some((TerminalPoint { row, column }, side))
-    }
-
-    fn scrollbar_at(
-        &self,
-        position: gpui::Point<Pixels>,
-    ) -> Option<(Bounds<Pixels>, Bounds<Pixels>, Arc<TerminalSnapshot>)> {
-        let bounds = self.last_terminal_bounds?;
-        let snapshot = self.handle.as_ref()?.snapshot();
-        let (track, thumb) = scrollbar_metrics(bounds, &snapshot)?;
-        track
-            .contains(&position)
-            .then_some((track, thumb, snapshot))
-    }
-
-    fn update_scrollbar_drag(
-        &self,
-        pointer_y: Pixels,
-        track: Bounds<Pixels>,
-        thumb: Bounds<Pixels>,
-        snapshot: &TerminalSnapshot,
-    ) {
-        let available: f32 = (track.size.height - thumb.size.height).into();
-        if available <= 0.0 || snapshot.history_size == 0 {
-            return;
-        }
-        let pointer_y: f32 = pointer_y.into();
-        let track_top: f32 = track.top().into();
-        let thumb_top = (pointer_y - track_top - self.scrollbar_drag_offset).clamp(0.0, available);
-        let progress = thumb_top / available;
-        let target_offset = ((1.0 - progress) * snapshot.history_size as f32).round() as usize;
-        let delta = target_offset as i64 - snapshot.display_offset as i64;
-        if delta != 0
-            && let Some(handle) = &self.handle
-        {
-            handle.scroll(delta.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-        }
     }
 
     fn install_focus_observers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1348,7 +1271,6 @@ struct TerminalPaintState {
     cursor: Option<PaintQuad>,
     cursor_bounds: Option<Bounds<Pixels>>,
     composition: Option<ShapedLine>,
-    scrollbar: Option<PaintQuad>,
     cursor_blinking: bool,
     cell_width: Pixels,
     line_height: Pixels,
@@ -1537,7 +1459,6 @@ impl Render for TerminalView {
                                         Some(cell_width),
                                     )
                                 });
-                            let scrollbar = scrollbar_quad(bounds, &snapshot);
                             TerminalPaintState {
                                 lines,
                                 cell_backgrounds,
@@ -1545,7 +1466,6 @@ impl Render for TerminalView {
                                 cursor,
                                 cursor_bounds,
                                 composition,
-                                scrollbar,
                                 cursor_blinking: snapshot
                                     .cursor
                                     .is_some_and(|cursor| cursor.blinking),
@@ -1587,9 +1507,6 @@ impl Render for TerminalView {
                             let origin =
                                 point(bounds.left(), bounds.top() + state.line_height * row);
                             let _ = line.paint(origin, state.line_height, window, cx);
-                        }
-                        if let Some(scrollbar) = state.scrollbar {
-                            window.paint_quad(scrollbar);
                         }
                         if let (Some(composition), Some(cursor_bounds)) =
                             (state.composition, state.cursor_bounds)
@@ -1837,7 +1754,6 @@ impl Render for TerminalDragPreview {
                             cursor,
                             cursor_bounds,
                             composition: None,
-                            scrollbar: scrollbar_quad(bounds, &snapshot),
                             cursor_blinking: snapshot.cursor.is_some_and(|cursor| cursor.blinking),
                             cell_width,
                             line_height,
@@ -1870,9 +1786,6 @@ impl Render for TerminalDragPreview {
                             let origin =
                                 point(bounds.left(), bounds.top() + state.line_height * row);
                             let _ = line.paint(origin, state.line_height, window, cx);
-                        }
-                        if let Some(scrollbar) = state.scrollbar {
-                            window.paint_quad(scrollbar);
                         }
                     },
                 )
@@ -2035,37 +1948,6 @@ fn snapshot_surface_color(snapshot: &TerminalSnapshot) -> Hsla {
     sample
         .map(to_hsla)
         .unwrap_or_else(|| colors().terminal.into())
-}
-
-fn scrollbar_quad(bounds: Bounds<Pixels>, snapshot: &TerminalSnapshot) -> Option<PaintQuad> {
-    let (_, thumb) = scrollbar_metrics(bounds, snapshot)?;
-    Some(fill(thumb, colors().scrollbar_thumb()))
-}
-
-fn scrollbar_metrics(
-    bounds: Bounds<Pixels>,
-    snapshot: &TerminalSnapshot,
-) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
-    if snapshot.history_size == 0 || bounds.size.height <= px(8.0) {
-        return None;
-    }
-
-    let track = Bounds::new(
-        point(bounds.right() - px(12.0), bounds.top() + px(4.0)),
-        size(px(12.0), bounds.size.height - px(8.0)),
-    );
-    let track_height: f32 = track.size.height.into();
-    let total_lines = snapshot.history_size + snapshot.rows;
-    let thumb_height = (track_height * snapshot.rows as f32 / total_lines as f32)
-        .max(24.0)
-        .min(track_height);
-    let progress = 1.0 - snapshot.display_offset as f32 / snapshot.history_size as f32;
-    let top = track.top() + px((track_height - thumb_height) * progress);
-    let thumb = Bounds::new(
-        point(bounds.right() - px(4.0), top),
-        size(px(3.0), px(thumb_height)),
-    );
-    Some((track, thumb))
 }
 
 fn display_text(cell: &TerminalCell) -> &str {

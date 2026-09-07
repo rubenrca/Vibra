@@ -356,11 +356,8 @@ impl Render for PaneDividerDragView {
 
 impl Render for SidebarResizeDragView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // Keep sidebar resizing available without a floating bar during the drag.
         div()
-            .w(px(2.0))
-            .h(px(48.0))
-            .rounded_full()
-            .bg(colors().muted)
     }
 }
 
