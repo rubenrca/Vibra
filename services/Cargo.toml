@@ -1,3 +1,0 @@
-[workspace]
-members = ["protocol", "remote"]
-resolver = "3"

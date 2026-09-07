@@ -1301,7 +1301,6 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.install_focus_observers(window, cx);
         let entity = cx.entity();
-        let remote_controlled = self.handle.as_ref().is_some_and(|h| h.remote_controlled());
         let handle = self.handle.clone();
         let marked_text: SharedString = self.marked_text.clone().into();
         let canvas_marked_text = marked_text.clone();
@@ -1581,31 +1580,6 @@ impl Render for TerminalView {
                                     colors().danger
                                 })
                                 .child(status),
-                        ),
-                )
-            })
-            .when(remote_controlled, |terminal| {
-                terminal.child(
-                    div()
-                        .absolute()
-                        .top_1()
-                        .left_1()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .bg(colors().elevated)
-                        .text_xs()
-                        .child("iPhone controla esta terminal · clic para recuperar")
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                if let Some(h) = &this.handle {
-                                    h.remote_release();
-                                }
-                                this.error = None;
-                                cx.notify();
-                                cx.stop_propagation();
-                            }),
                         ),
                 )
             })

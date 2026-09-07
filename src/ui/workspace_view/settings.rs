@@ -15,7 +15,6 @@ use crate::infrastructure::automation::{
 pub(super) enum SettingsPage {
     General,
     Appearance,
-    Iphone,
     Agents,
     Security,
 }
@@ -25,7 +24,6 @@ impl SettingsPage {
         match self {
             Self::General => "General",
             Self::Appearance => "Apariencia",
-            Self::Iphone => "iPhone",
             Self::Agents => "Agentes",
             Self::Security => "Privacidad",
         }
@@ -35,7 +33,6 @@ impl SettingsPage {
         match self {
             Self::General => "settings-general",
             Self::Appearance => "settings-appearance",
-            Self::Iphone => "settings-iphone",
             Self::Agents => "settings-agents",
             Self::Security => "settings-privacy",
         }
@@ -65,218 +62,6 @@ fn settings_button_base(label: &'static str, id: &'static str) -> Stateful<Div> 
 }
 
 impl WorkspaceView {
-    fn remote_result(&mut self, result: anyhow::Result<()>, cx: &mut Context<Self>) {
-        match result {
-            Err(error) => self.remote_feedback = Some(error.to_string()),
-            Ok(()) => {
-                self.remote_feedback = None;
-                self.persistence_error = None;
-            }
-        }
-        cx.notify();
-    }
-
-    fn remote_settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        use crate::infrastructure::remote::hub;
-        let status = hub().status();
-        let mut panel = div()
-            .p_4()
-            .rounded(px(9.0))
-            .border_1()
-            .border_color(colors().border_subtle)
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(div().text_sm().child("iPhone"))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(colors().subtle)
-                    .child("Controla tus terminales desde el iPhone en la misma red Wi-Fi. Sin servidor ni cuenta adicional."),
-            )
-            .child(div().text_xs().child(if status.paired && !status.enabled {
-                "iPhone vinculado · acceso desactivado"
-            } else if status.pending.is_some() {
-                "Un iPhone espera tu aprobación"
-            } else if status.paired {
-                "iPhone vinculado"
-            } else if status.invitation.is_some() {
-                "Escanea el código con Vibra en tu iPhone"
-            } else {
-                "Vincula tu iPhone para comenzar"
-            }));
-        if let Some(message) = &self.remote_feedback {
-            panel = panel.child(
-                div()
-                    .p_3()
-                    .rounded(px(6.0))
-                    .bg(colors().selection)
-                    .text_xs()
-                    .child(message.clone()),
-            );
-        }
-        if status.paired {
-            panel = panel.child(div().text_xs().text_color(colors().subtle)
-                .child("Haz clic derecho dentro de una terminal y elige Compartir con iPhone. Puedes recuperar el control desde el Mac en cualquier momento."));
-        } else if status.invitation.is_none() && status.pending.is_none() {
-            panel = panel
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(colors().subtle)
-                        .child("Conecta una vez. Después, elige qué terminales quieres compartir."),
-                )
-                .child(div().text_xs().child("1 · Crea tu código de vinculación"))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(colors().subtle)
-                        .child("2 · Escanéalo con Vibra en tu iPhone"),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(colors().subtle)
-                        .child("3 · Acepta el iPhone en este Mac"),
-                )
-                .child(
-                    self.settings_primary_button(
-                        "Vincular iPhone",
-                        "remote-pair",
-                        cx,
-                        |this, cx| {
-                            this.remote_copied = false;
-                            this.remote_result(hub().pair(), cx);
-                        },
-                    )
-                    .h(px(36.0))
-                    .border_1()
-                    .border_color(colors().accent),
-                );
-        }
-        if let Some(name) = status.pending {
-            panel = panel
-                .child(format!(
-                    "¿Permitir que {name} controle las terminales compartidas?"
-                ))
-                .child(self.settings_primary_button(
-                    "Aceptar y vincular",
-                    "remote-approve",
-                    cx,
-                    |_, cx| {
-                        hub().approve(true);
-                        cx.notify();
-                    },
-                ))
-                .child(
-                    self.settings_button("Rechazar", "remote-reject", cx, |_, cx| {
-                        hub().approve(false);
-                        cx.notify();
-                    }),
-                );
-        }
-        if let Some(invitation) = status.invitation {
-            panel = panel
-                .child(
-                    div()
-                        .text_xs()
-                        .child("Abre Vibra en tu iPhone y toca Escanear código QR. Después, acepta la conexión aquí. El código dura 5 minutos."),
-                )
-                .child(self.settings_button(
-                    if self.remote_copied { "Invitación copiada" } else { "Copiar invitación" },
-                    "remote-copy",
-                    cx,
-                    |this, cx| {
-                        if let Some(value) = hub().status().invitation {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(value));
-                            this.remote_copied = true;
-                            cx.notify();
-                        }
-                    },
-                ));
-            if let Ok(qr) = qrcode::QrCode::new(invitation.as_bytes()) {
-                let width = qr.width();
-                let modules = qr.to_colors();
-                let mut grid = div()
-                    .flex()
-                    .flex_col()
-                    .p_4()
-                    .bg(gpui::rgb(0xffffff))
-                    .w(px((width * 3 + 32) as f32));
-                for row in modules.chunks(width) {
-                    grid = grid.child(div().flex().children(row.iter().map(|color| {
-                        div().w(px(3.0)).h(px(3.0)).flex_none().bg(gpui::rgb(
-                            if *color == qrcode::Color::Dark {
-                                0x000000
-                            } else {
-                                0xffffff
-                            },
-                        ))
-                    })));
-                }
-                panel = panel.child(grid);
-            }
-        }
-        if status.paired || status.enabled {
-            panel = panel.child(self.settings_toggle_row(
-                SettingsToggleRow {
-                    label: "Permitir acceso desde el iPhone",
-                    description: "Al desactivarlo, el Mac recupera el control. La vinculación se conserva.",
-                    enabled: status.enabled,
-                    divider: false,
-                    id: "remote-enabled-toggle",
-                }, cx, |this, cx| {
-                    if hub().status().enabled {
-                        hub().disable();
-                        cx.notify();
-                    } else {
-                        this.remote_result(hub().enable(), cx);
-                    }
-                }));
-        }
-        if status.paired {
-            if self.remote_forget_confirm {
-                panel = panel
-                    .child(div().text_xs().child("El iPhone perderá el acceso. Para volver, tendrás que escanear otro código."))
-                    .child(self.settings_button(
-                        "Confirmar desvinculación",
-                        "remote-revoke-confirm",
-                        cx,
-                        |this, cx| {
-                            this.remote_forget_confirm = false;
-                            this.remote_result(hub().revoke(), cx);
-                        },
-                    ))
-                    .child(self.settings_button(
-                        "Cancelar",
-                        "remote-revoke-cancel",
-                        cx,
-                        |this, cx| {
-                            this.remote_forget_confirm = false;
-                            cx.notify();
-                        },
-                    ));
-            } else {
-                panel = panel.child(self.settings_button(
-                    "Desvincular iPhone",
-                    "remote-revoke",
-                    cx,
-                    |this, cx| {
-                        this.remote_forget_confirm = true;
-                        cx.notify();
-                    },
-                ));
-            }
-        }
-        panel = panel.child(
-            div()
-                .text_xs()
-                .text_color(colors().subtle)
-                .child(status.description),
-        );
-        panel.into_any_element()
-    }
-
     fn settings_section_heading(
         &self,
         title: &'static str,
@@ -676,7 +461,6 @@ impl WorkspaceView {
         for page in [
             SettingsPage::General,
             SettingsPage::Appearance,
-            SettingsPage::Iphone,
             SettingsPage::Agents,
             SettingsPage::Security,
         ] {
@@ -703,7 +487,6 @@ impl WorkspaceView {
                     .child(page.label())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.settings_page = page;
-                        this.remote_forget_confirm = false;
                         cx.notify();
                     })),
             );
@@ -727,7 +510,6 @@ impl WorkspaceView {
             .flex_col()
             .gap_4();
         let panel = match self.settings_page {
-            SettingsPage::Iphone => panel.child(self.remote_settings(cx)),
             SettingsPage::Appearance => self.appearance_settings(panel, window, cx),
             SettingsPage::General => self.general_settings(panel, cx),
             SettingsPage::Agents => self.agent_settings(panel, cx),

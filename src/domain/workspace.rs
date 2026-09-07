@@ -184,6 +184,8 @@ pub enum PaneBranch {
 pub struct SessionSnapshot {
     pub id: Uuid,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_task_title: Option<String>,
     pub working_directory: String,
 }
 
@@ -1409,6 +1411,28 @@ impl WorkspaceSnapshot {
             .collect()
     }
 
+    pub fn update_agent_task_title(&mut self, session_id: Uuid, title: &str) -> bool {
+        let title = title.trim();
+        if title.is_empty() {
+            return false;
+        }
+        let Some(session) = self
+            .projects
+            .iter_mut()
+            .flat_map(|project| project.workspaces.iter_mut().flatten())
+            .flat_map(|workspace| &mut workspace.tabs)
+            .flat_map(|tab| &mut tab.sessions)
+            .find(|session| session.id == session_id)
+        else {
+            return false;
+        };
+        if session.agent_task_title.as_deref() == Some(title) {
+            return false;
+        }
+        session.agent_task_title = Some(title.chars().take(80).collect());
+        true
+    }
+
     pub fn update_session_title(&mut self, session_id: Uuid, title: &str) -> bool {
         let title = title.trim();
         if title.is_empty() {
@@ -2064,6 +2088,7 @@ impl SessionSnapshot {
         Self {
             id: Uuid::new_v4(),
             title: "Terminal".to_owned(),
+            agent_task_title: None,
             working_directory,
         }
     }
@@ -2072,6 +2097,52 @@ impl SessionSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_task_titles_persist_and_survive_terminal_updates_without_renaming_manual_workspaces() {
+        let mut snapshot = WorkspaceSnapshot::default();
+        snapshot.create_workspace(Path::new("/tmp/task-one"));
+        let first = snapshot.selected_session().unwrap().id;
+        let project = snapshot.selected_project_id.unwrap();
+        let workspace = snapshot.selected_workspace().unwrap().id;
+        snapshot.rename_workspace(project, workspace, "Mi nombre");
+        snapshot.create_workspace(Path::new("/tmp/task-two"));
+        assert!(snapshot.update_agent_task_title(first, "Corregir login"));
+        assert!(!snapshot.update_agent_task_title(first, "Corregir login"));
+        assert!(!snapshot.update_agent_task_title(first, " "));
+        assert!(!snapshot.update_agent_task_title(Uuid::new_v4(), "Otra tarea"));
+        assert!(
+            snapshot
+                .selected_session()
+                .unwrap()
+                .agent_task_title
+                .is_none()
+        );
+        snapshot.update_session_title(first, "zsh");
+        snapshot.update_session_working_directory(first, Path::new("/tmp/new-dir"));
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let restored: WorkspaceSnapshot = serde_json::from_str(&json).unwrap();
+        let session = restored
+            .terminal_sessions()
+            .into_iter()
+            .find(|s| s.id == first)
+            .unwrap();
+        assert_eq!(session.agent_task_title.as_deref(), Some("Corregir login"));
+        let entry = restored
+            .workspace_entries()
+            .into_iter()
+            .find(|e| e.workspace_id == workspace)
+            .unwrap();
+        assert!(entry.title_is_manual);
+        assert_eq!(entry.workspace_name, "Mi nombre");
+        let old = serde_json::json!({"id": first, "title": "Terminal", "workingDirectory": "/tmp"});
+        assert!(
+            serde_json::from_value::<SessionSnapshot>(old)
+                .unwrap()
+                .agent_task_title
+                .is_none()
+        );
+    }
 
     fn uuid(value: &str) -> Uuid {
         Uuid::parse_str(value).unwrap()

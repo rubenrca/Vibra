@@ -138,6 +138,7 @@ fn parse_agent_presence(arguments: &[String]) -> Result<AutomationCommand> {
         bail!("atención esperada: permission, question, plan o notification");
     }
     Ok(AutomationCommand::SetAgentPresence {
+        task_title: None,
         kind,
         state,
         attention,
@@ -156,6 +157,7 @@ fn parse_agent_attention(arguments: &[String]) -> Result<AutomationCommand> {
         .and_then(|attention| AgentAttention::parse(attention))
         .unwrap_or(AgentAttention::Notification);
     Ok(AutomationCommand::SetAgentPresence {
+        task_title: None,
         kind,
         state: AgentRuntimeState::Waiting,
         attention: Some(attention),
@@ -200,6 +202,14 @@ pub(super) fn agent_hook_command(
         .map(str::to_owned);
     let model = agent_hook_model(payload);
     let presence = |state, attention| AutomationCommand::SetAgentPresence {
+        task_title: (event == "prompt")
+            .then(|| {
+                payload
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .and_then(agent_task_title)
+            })
+            .flatten(),
         kind,
         state,
         attention,
@@ -271,4 +281,136 @@ fn parse_agent_flag(arguments: &[String], flag: &str) -> Result<Option<String>> 
         .cloned()
         .map(Some)
         .with_context(|| format!("falta valor para {flag}"))
+}
+
+/// A local, bounded label from the user's first prose line. Follow-up acknowledgements
+/// do not replace the task; code and injected context are not useful sidebar labels.
+fn agent_task_title(prompt: &str) -> Option<String> {
+    let line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    if line.starts_with(['<', '/', '#']) || line.starts_with("```") {
+        return None;
+    }
+    let clean: String = line.chars().filter(|ch| !ch.is_control()).collect();
+    let mut text = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = text
+        .trim_matches(|ch: char| !ch.is_alphanumeric())
+        .to_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "sí" | "si"
+            | "no"
+            | "ok"
+            | "okay"
+            | "dale"
+            | "haz eso"
+            | "hazlo"
+            | "continúa"
+            | "continua"
+            | "sigue"
+            | "perfecto"
+            | "gracias"
+            | "yes"
+            | "continue"
+            | "go ahead"
+            | "do it"
+            | "thanks"
+            | "proceed"
+    ) {
+        return None;
+    }
+    text = text.trim_start_matches(['¿', '¡']).trim().to_owned();
+    for prefix in [
+        "por favor, ",
+        "por favor ",
+        "puedes ",
+        "podrías ",
+        "quiero que ",
+        "necesito que ",
+        "please ",
+        "can you ",
+        "could you ",
+    ] {
+        if text.to_lowercase().starts_with(prefix) {
+            text = text[prefix.len()..].trim().to_owned();
+        }
+    }
+    let text = text
+        .trim_matches(|ch: char| ch.is_whitespace() || matches!(ch, '¿' | '?' | '¡' | '!' | '.'));
+    if text.chars().count() < 4 {
+        return None;
+    }
+    let mut title = String::new();
+    for word in text.split_whitespace().take(9) {
+        if title.chars().count() + usize::from(!title.is_empty()) + word.chars().count() > 56 {
+            break;
+        }
+        if !title.is_empty() {
+            title.push(' ');
+        }
+        title.push_str(word);
+    }
+    if title.is_empty() {
+        title = text.chars().take(56).collect();
+    }
+    if title != text {
+        title.push('…');
+    }
+    let mut chars = title.chars();
+    Some(chars.next()?.to_uppercase().collect::<String>() + chars.as_str())
+}
+
+#[cfg(test)]
+mod task_title_tests {
+    use super::*;
+
+    #[test]
+    fn prompt_hooks_carry_titles_but_lifecycle_events_do_not() {
+        for kind in [AgentKind::Claude, AgentKind::Codex] {
+            let payload =
+                serde_json::json!({"prompt": "¿Puedes corregir el login?", "session_id": "one"});
+            assert!(
+                matches!(agent_hook_command(kind, "prompt", &payload).unwrap(),
+                AutomationCommand::SetAgentPresence { task_title: Some(title), state: AgentRuntimeState::Working, .. }
+                if title == "Corregir el login")
+            );
+            for event in ["stop", "session-start", "permission"] {
+                assert!(matches!(
+                    agent_hook_command(kind, event, &payload).unwrap(),
+                    AutomationCommand::SetAgentPresence {
+                        task_title: None,
+                        ..
+                    }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn titles_ignore_acknowledgements_and_non_prose_and_bound_unicode() {
+        for prompt in [
+            "Sí!",
+            "continúa",
+            "haz eso",
+            "OK",
+            "",
+            "<environment_context>",
+            "```rust",
+            "/help",
+        ] {
+            assert_eq!(agent_task_title(prompt), None, "{prompt}");
+        }
+        assert_eq!(
+            agent_task_title("por favor corregir el login\nDetalles adicionales"),
+            Some("Corregir el login".into())
+        );
+        let title = agent_task_title(&"á".repeat(100)).unwrap();
+        assert_eq!(title.chars().count(), 57);
+        assert!(title.ends_with('…'));
+        let title = agent_task_title("Agregar soporte para notificaciones cuando el agente termine de ejecutar todas las pruebas").unwrap();
+        assert!(title.chars().count() <= 57);
+        assert!(title.ends_with('…'));
+    }
 }

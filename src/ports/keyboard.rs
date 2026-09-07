@@ -1,4 +1,4 @@
-//! Shared mode-aware keyboard encoder for local and remote input.
+//! Mode-aware keyboard encoder for terminal input.
 use super::terminal::TerminalInputMode;
 #[derive(Clone, Copy, Default)]
 pub struct TerminalModifiers {

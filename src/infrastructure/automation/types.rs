@@ -136,6 +136,8 @@ pub enum AutomationCommand {
         state: AgentRuntimeState,
     },
     SetAgentPresence {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_title: Option<String>,
         kind: AgentKind,
         state: AgentRuntimeState,
         #[serde(default, skip_serializing_if = "Option::is_none")]

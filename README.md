@@ -64,6 +64,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - identidad resuelta por proceso foreground, sesión, título y texto reciente;
 - nombres personalizados para panes desde su menú contextual;
 - hooks estructurados de Claude y Codex para estados de trabajo, espera, permisos y fin de sesión;
+- títulos automáticos a partir de la primera línea del mensaje enviado a Claude o Codex, con hooks instalados: se acortan localmente, se guardan por pane y respetan los nombres manuales de la sidebar; respuestas como «sí» o «continúa» conservan el título anterior;
 - socket Unix local protegido por capacidades UUID;
 
 La CLI de Vibra no orquesta agentes ni layouts desde una terminal: no crea panes o

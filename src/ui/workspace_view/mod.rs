@@ -333,8 +333,6 @@ enum ContextMenuAction {
     CreateSpace,
     DeleteSpace,
     ClosePane,
-    ShareRemote,
-    ReclaimRemote,
     SplitRight,
     SplitDown,
     ToggleZoom,
@@ -372,7 +370,7 @@ impl Render for TabDragView {
             .items_center()
             .justify_center()
             .px(px(10.0))
-            .rounded(px(7.0))
+            .rounded_full()
             .bg(if selected {
                 colors().selection
             } else {
@@ -559,9 +557,6 @@ pub struct WorkspaceView {
     palette_files: Vec<PathBuf>,
     settings_open: bool,
     settings_page: SettingsPage,
-    remote_feedback: Option<String>,
-    remote_copied: bool,
-    remote_forget_confirm: bool,
     context_menu: Option<ContextMenuState>,
     ide_menu_open: bool,
     installed_editors: Vec<InstalledEditor>,
@@ -695,9 +690,6 @@ impl WorkspaceView {
                 Timer::after(SIDEBAR_GIT_POLL_INTERVAL).await;
                 if this
                     .update(cx, |this, cx| {
-                        if crate::infrastructure::remote::hub().status().enabled {
-                            cx.notify();
-                        }
                         if crate::ui::idle::should_poll_sidebar_git(
                             this.left_sidebar_visible,
                             this.left_sidebar_mode == LeftSidebarMode::Sessions,
@@ -766,9 +758,6 @@ impl WorkspaceView {
             palette_files: Vec::new(),
             settings_open: false,
             settings_page: SettingsPage::General,
-            remote_feedback: None,
-            remote_copied: false,
-            remote_forget_confirm: false,
             context_menu: None,
             ide_menu_open: false,
             installed_editors: Vec::new(),
@@ -828,7 +817,7 @@ impl WorkspaceView {
         let presence = self.resolved_agent_presence(session.id);
         PaneIdentity {
             title: tab_display_title(
-                alias,
+                alias.or(session.agent_task_title.as_deref()),
                 Some(session.title.as_str()),
                 Some(working_directory),
                 index,
@@ -1340,17 +1329,6 @@ impl WorkspaceView {
                 if self.snapshot.remove_sidebar_space(space_id) {
                     self.persist(cx);
                 }
-            }
-            (ContextMenuKind::Pane { session_id }, ContextMenuAction::ShareRemote) => {
-                if let Some(identity) = self.pane_identity_by_id(session_id, cx) {
-                    crate::infrastructure::remote::hub().title(session_id, &identity.title);
-                }
-                crate::infrastructure::remote::hub().toggle_share(session_id);
-                cx.notify();
-            }
-            (ContextMenuKind::Pane { session_id }, ContextMenuAction::ReclaimRemote) => {
-                crate::infrastructure::remote::hub().reclaim(session_id);
-                cx.notify();
             }
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::Rename) => {
                 self.begin_rename_prompt(RenamePromptKind::Pane { session_id }, cx);
@@ -1968,7 +1946,6 @@ impl WorkspaceView {
     fn handle_terminal_view_event(&mut self, event: &TerminalViewEvent, cx: &mut Context<Self>) {
         match event {
             TerminalViewEvent::TitleChanged { session_id, title } => {
-                crate::infrastructure::remote::hub().title(*session_id, title);
                 if self.snapshot.update_session_title(*session_id, title) {
                     self.persist(cx);
                 } else if self.is_dev_terminal(*session_id, cx) {
@@ -3714,7 +3691,7 @@ impl WorkspaceView {
                     .items_center()
                     .justify_center()
                     .px(px(10.0))
-                    .rounded(px(7.0))
+                    .rounded_full()
                     .when(can_reorder, |tab| tab.cursor_move())
                     .when(!can_reorder, |tab| tab.cursor_pointer())
                     .bg(if selected {
@@ -3747,6 +3724,8 @@ impl WorkspaceView {
                         cx.listener(move |this, _, window, cx| {
                             this.reorder_drag = Some(ReorderDrag::Tab(tab_id));
                             this.select_tab(tab_id, window, cx);
+                            // Tabs own their drag gesture; only the empty bar moves the window.
+                            cx.stop_propagation();
                         }),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -3889,6 +3868,11 @@ impl WorkspaceView {
             .items_center()
             .px(px(12.0))
             .bg(colors().terminal)
+            .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                crate::infrastructure::window::start_drag();
+                cx.stop_propagation();
+            })
             .child(tab_list)
     }
 
@@ -4544,21 +4528,7 @@ impl WorkspaceView {
             ContextMenuKind::SidebarBackground => {
                 vec![("Crear espacio", ContextMenuAction::CreateSpace, false)]
             }
-            ContextMenuKind::Pane { session_id } => vec![
-                (
-                    if crate::infrastructure::remote::hub().shared(*session_id) {
-                        "Dejar de compartir con iPhone"
-                    } else {
-                        "Compartir con iPhone"
-                    },
-                    ContextMenuAction::ShareRemote,
-                    false,
-                ),
-                (
-                    "Recuperar control del iPhone",
-                    ContextMenuAction::ReclaimRemote,
-                    false,
-                ),
+            ContextMenuKind::Pane { .. } => vec![
                 ("Renombrar", ContextMenuAction::Rename, false),
                 ("Cerrar pane", ContextMenuAction::ClosePane, true),
                 ("Dividir a la derecha", ContextMenuAction::SplitRight, false),

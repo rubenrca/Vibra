@@ -67,6 +67,7 @@ mod tests {
                 attention: Some(AgentAttention::Permission),
                 model: Some(model),
                 session_id: Some(session_id),
+                task_title: None,
             } if session_id == "session-1" && model == "gpt-5.4"
         ));
         assert!(matches!(
@@ -246,6 +247,7 @@ mod tests {
                 attention: None,
                 model: None,
                 session_id: Some(session_id),
+                task_title: None,
             } if session_id == "session-1"
         ));
         assert!(matches!(

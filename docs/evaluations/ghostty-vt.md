@@ -53,7 +53,7 @@ Ghostty fue más rápido en estas cargas. Esto no mide FPS, latencia de teclado,
 
 El formatter de Ghostty exporta la pantalla a secuencias VT e incluye opciones para cursor, estilos y modos. Permite reducir el serializador manual necesario para reconstruir una pantalla en SwiftTerm. Los snapshots binarios son otra API: conservan más estado, incluso entrada de parser incompleta, pero SwiftTerm no los interpreta y su formato no promete compatibilidad estable. No deben convertirse en el protocolo móvil.
 
-La exportación ANSI por sí sola no resuelve una reconexión exacta: aún hay que coordinar snapshot y stream con una secuencia, tratar buffers alternativos y estado que no se exporte, controlar las respuestas del emulador remoto y probar resize/reflow. Un Mac seguirá siendo autoridad sobre la sesión y el PTY. Ningún motor sustituye al relay, al cifrado o al emparejamiento del plan iOS.
+La exportación ANSI por sí sola no resuelve una reconexión exacta: aún hay que coordinar snapshot y stream con una secuencia, tratar buffers alternativos y estado que no se exporte, controlar las respuestas del emulador remoto y probar resize/reflow. Un Mac seguirá siendo autoridad sobre la sesión y el PTY.
 
 ## Coste real de migrar Vibra
 

@@ -123,6 +123,7 @@ impl WorkspaceView {
                 true
             }
             AutomationCommand::SetAgentPresence {
+                task_title,
                 kind,
                 state,
                 attention,
@@ -137,6 +138,11 @@ impl WorkspaceView {
                     model,
                     session_id,
                 );
+                if let Some(title) = task_title
+                    && self.snapshot.update_agent_task_title(pane_id, &title)
+                {
+                    self.persist(cx);
+                }
                 true
             }
             AutomationCommand::ClearAgentPresence { session_id } => {

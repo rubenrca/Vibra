@@ -71,4 +71,4 @@ La latencia incluye la observación del resultado con sondeo de 100 µs. El RSS 
 
 El usuario validó visualmente la primera integración. La nueva implementación no se revisó con automatización de navegador. La compilación Intel no sustituye una prueba en hardware Intel.
 
-Esta migración no implementa todavía el transporte ni el cliente iOS: [plan remoto](plans/ios-remote-terminal.md). La [evaluación original](evaluations/ghostty-vt.md) conserva los antecedentes y las mediciones comparativas de los parsers.
+La [evaluación original](evaluations/ghostty-vt.md) conserva los antecedentes y las mediciones comparativas de los parsers.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.20 — 2026-09-07
+
+- Name sidebar tabs from Claude and Codex prompts using installed hooks; persist short task titles, preserve manual names, and keep the previous title for brief acknowledgements.
+- Improve diff scrolling, terminal tab titles, and IDE launcher icons.
+- Hide the terminal scrollbar and sidebar resize indicator, and refine rounded terminal tabs.
+- Remove iPhone remote control, pairing, terminal sharing, and the associated client, services, and dependencies.
+
 ## 0.3.19 — 2026-09-06
 
 - Remove the project-name header from the file tree to leave more room for files.
