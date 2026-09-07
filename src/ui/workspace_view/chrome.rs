@@ -54,8 +54,13 @@ pub(crate) fn is_generic_tab_title(title: &str) -> bool {
 }
 
 pub(crate) fn title_path_suffix(title: &str) -> Option<&str> {
+    let title = title.trim();
+    if title.starts_with('/') || title == "~" || title.starts_with("~/") {
+        return Some(title);
+    }
     title
-        .split_once(": ")
+        .split_once(':')
+        .filter(|(prefix, _)| prefix.contains('@') || is_generic_tab_title(prefix))
         .map(|(_, rest)| rest.trim())
         .filter(|rest| rest.starts_with('/') || rest.starts_with('~'))
 }
@@ -76,7 +81,7 @@ pub(crate) fn live_command_title(title: Option<&str>) -> Option<String> {
     if title.is_empty() || is_generic_tab_title(title) || title_path_suffix(title).is_some() {
         return None;
     }
-    Some(compact_chrome_label(title, 42))
+    Some(title.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// Compact tab label: alias first, then the complete live command, then the directory.
@@ -87,18 +92,19 @@ pub(crate) fn tab_display_title(
     index: usize,
 ) -> String {
     if let Some(alias) = alias.map(str::trim).filter(|alias| !alias.is_empty()) {
-        return compact_chrome_label(alias, 22);
+        return alias.to_owned();
     }
-    if let Some(path) = title.and_then(title_path_suffix) {
+    if let Some(command) = live_command_title(title) {
+        return command;
+    }
+    if let Some(path) = working_directory {
         let name = directory_basename(path);
         if name != "—" {
             return name;
         }
     }
-    if let Some(command) = live_command_title(title) {
-        return compact_chrome_label(&command, 22);
-    }
-    if let Some(path) = working_directory {
+    // OSC prompt titles may lag behind `cd`; the live cwd above is authoritative.
+    if let Some(path) = title.and_then(title_path_suffix) {
         let name = directory_basename(path);
         if name != "—" {
             return name;
@@ -114,7 +120,7 @@ pub(crate) fn pane_detail_title(
     working_directory: Option<&str>,
     home: Option<&Path>,
 ) -> Option<String> {
-    let command = live_command_title(title);
+    let command = live_command_title(title).map(|command| compact_chrome_label(&command, 42));
     let path = working_directory
         .map(|path| format_sidebar_path(path, home))
         .filter(|path| path != "—");

@@ -568,6 +568,7 @@ pub struct WorkspaceView {
     context_menu: Option<ContextMenuState>,
     ide_menu_open: bool,
     installed_editors: Vec<InstalledEditor>,
+    ide_icons: HashMap<&'static str, Arc<gpui::Image>>,
     rename_prompt: Option<RenamePrompt>,
     right_sidebar_visible: bool,
     /// Visual open amount for the right sidebar (`0.0` closed … `1.0` open).
@@ -774,6 +775,7 @@ impl WorkspaceView {
             context_menu: None,
             ide_menu_open: false,
             installed_editors: Vec::new(),
+            ide_icons: HashMap::new(),
             rename_prompt: None,
             right_sidebar_visible: settings.git_panel_visible,
             right_sidebar_progress: if settings.git_panel_visible { 1.0 } else { 0.0 },
@@ -1416,6 +1418,17 @@ impl WorkspaceView {
             return;
         }
         self.installed_editors = crate::infrastructure::editor::installed_editors();
+        for editor in &self.installed_editors {
+            if !self.ide_icons.contains_key(editor.bundle_identifier)
+                && let Some(png) =
+                    crate::infrastructure::editor::editor_icon_png(editor.bundle_identifier)
+            {
+                self.ide_icons.insert(
+                    editor.bundle_identifier,
+                    Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
+                );
+            }
+        }
         if self.installed_editors.is_empty() {
             self.persistence_error = Some(
                 "No se encontró un IDE compatible. Instala Cursor, VS Code, Windsurf, Zed, Xcode, Sublime Text o VSCodium"
@@ -4926,6 +4939,15 @@ impl WorkspaceView {
                         .children(self.installed_editors.clone().into_iter().enumerate().map(
                             |(index, editor)| {
                                 let label = editor.name;
+                                let icon = self.ide_icons.get(editor.bundle_identifier).cloned();
+                                let icon = match icon {
+                                    Some(icon) => gpui::img(icon).size(px(16.0)).into_any_element(),
+                                    None => svg()
+                                        .path("chrome-icons/open-external.svg")
+                                        .size(px(16.0))
+                                        .text_color(colors().subtle)
+                                        .into_any_element(),
+                                };
                                 div()
                                     .id(SharedString::from(format!("ide-menu-item-{index}")))
                                     .h(px(32.0))
@@ -4942,12 +4964,7 @@ impl WorkspaceView {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.open_with_editor(editor.clone(), cx);
                                     }))
-                                    .child(
-                                        svg()
-                                            .path("chrome-icons/open-external.svg")
-                                            .size(px(13.0))
-                                            .text_color(colors().subtle),
-                                    )
+                                    .child(div().size(px(16.0)).flex_none().child(icon))
                                     .child(label)
                             },
                         )),
@@ -5154,7 +5171,7 @@ mod tests {
                 Some("/Users/demo/Dev/Vibra"),
                 0
             ),
-            "src"
+            "Vibra"
         );
         assert_eq!(
             tab_display_title(
@@ -5163,7 +5180,7 @@ mod tests {
                 Some("/Users/demo/Dev/Vibra"),
                 0,
             ),
-            "claude --dangerously-…"
+            "claude --dangerously-skip-permissions"
         );
         assert_eq!(
             tab_display_title(
@@ -5181,6 +5198,34 @@ mod tests {
         assert_eq!(
             tab_display_title(None, Some("Terminal"), None, 2),
             "Terminal 3"
+        );
+    }
+
+    #[test]
+    fn tab_titles_follow_live_cwd_without_losing_task_names() {
+        for title in ["demo@mac:~/old", "demo@mac: ~/old", "/old", "~/old"] {
+            assert_eq!(
+                tab_display_title(None, Some(title), Some("/Dev/current"), 0),
+                "current"
+            );
+        }
+        assert_eq!(
+            tab_display_title(None, Some("demo@mac:~/old"), None, 0),
+            "old"
+        );
+        assert_eq!(
+            tab_display_title(
+                None,
+                Some("Review: /src/parser.rs"),
+                Some("/Dev/current"),
+                0
+            ),
+            "Review: /src/parser.rs"
+        );
+        let name = "Revisar nombres de las sesiones";
+        assert_eq!(
+            tab_display_title(Some(name), Some("zsh"), Some("/Dev/current"), 0),
+            name
         );
     }
 

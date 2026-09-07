@@ -71,6 +71,28 @@ fn bundle_is_registered(bundle_identifier: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Read the app's native icon on the UI thread. No files or network requests are needed.
+pub fn editor_icon_png(bundle_identifier: &str) -> Option<Vec<u8>> {
+    unsafe extern "C" {
+        fn vibra_copy_editor_icon_png(
+            identifier: *const std::ffi::c_char,
+            length: *mut usize,
+        ) -> *mut u8;
+    }
+    let identifier = std::ffi::CString::new(bundle_identifier).ok()?;
+    let mut length = 0;
+    // SAFETY: both arguments remain valid for the call. The bridge returns an
+    // owned malloc allocation of `length` bytes, or null on failure.
+    let bytes = unsafe { vibra_copy_editor_icon_png(identifier.as_ptr(), &mut length) };
+    if bytes.is_null() {
+        return None;
+    }
+    // SAFETY: copy the bridge's buffer before releasing its allocation exactly once.
+    let png = unsafe { std::slice::from_raw_parts(bytes, length) }.to_vec();
+    unsafe { libc::free(bytes.cast()) };
+    Some(png)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

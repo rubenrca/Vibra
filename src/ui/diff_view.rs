@@ -5,9 +5,10 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use gpui::{
-    Context, Div, EventEmitter, FocusHandle, HighlightStyle, IntoElement,
-    ListHorizontalSizingBehavior, PathBuilder, Render, Rgba, SharedString, Stateful, StyledText,
-    Task, TextStyle, Timer, WhiteSpace, Window, canvas, div, point, prelude::*, px, uniform_list,
+    AnyView, Context, Div, Entity, EventEmitter, FocusHandle, HighlightStyle, IntoElement,
+    ListHorizontalSizingBehavior, PathBuilder, Render, Rgba, SharedString, Stateful,
+    StyleRefinement, StyledText, Task, TextStyle, Timer, WhiteSpace, Window, canvas, div, point,
+    prelude::*, px, uniform_list,
 };
 
 use crate::ports::git::{
@@ -15,14 +16,14 @@ use crate::ports::git::{
     GitGraphRow, GitHistory, GitPort, GitRepositorySnapshot, assign_commit_lanes,
 };
 use crate::ui::diff_document::DiffDocument;
-use crate::ui::syntax::{SyntaxSpan, expand_tabs};
-use crate::ui::theme::colors;
+use crate::ui::syntax::SyntaxSpan;
+use crate::ui::theme::{Theme, colors};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
 const DIFF_ROW_HEIGHT: f32 = 22.0;
 const DIFF_FONT_SIZE: f32 = 12.0;
-const DIFF_GUTTER_WIDTH: f32 = 40.0;
-const DIFF_MARKER_WIDTH: f32 = 3.0;
+const DIFF_GUTTER_WIDTH: f32 = 38.0;
+const DIFF_MARKER_WIDTH: f32 = 18.0;
 const HISTORY_ROW_HEIGHT: f32 = 36.0;
 const HISTORY_HEADER_HEIGHT: f32 = 24.0;
 const GRAPH_LANE_WIDTH: f32 = 12.0;
@@ -30,7 +31,8 @@ const HISTORY_AUTHOR_WIDTH: f32 = 88.0;
 const HISTORY_DATE_WIDTH: f32 = 88.0;
 const HISTORY_SHA_WIDTH: f32 = 64.0;
 const HISTORY_PAGE: usize = 250;
-/// Cap each expanded file's diff viewport so several cards can stay open.
+
+/// Bound each file viewport; only its visible code rows are rendered.
 const MAX_INLINE_DIFF_HEIGHT: f32 = 440.0;
 const MIN_INLINE_DIFF_HEIGHT: f32 = 66.0;
 
@@ -59,10 +61,11 @@ pub struct DiffView {
     branch_changes: Option<GitBranchChanges>,
     history: Option<Arc<GitHistory>>,
     history_graph: Arc<Vec<GitGraphRow>>,
-    /// Paths currently expanded (accordion — multiple allowed, Warp-style).
+    /// Paths currently expanded; multiple files may stay open.
     expanded: HashSet<String>,
     /// Prepared diffs for expanded (and recently expanded) paths.
     documents: HashMap<String, CachedDiffDocument>,
+    inline_views: HashMap<String, Entity<InlineDiffView>>,
     status_root: Option<PathBuf>,
     status_index: Arc<HashMap<String, GitFileStatus>>,
     panel_visible: bool,
@@ -135,6 +138,50 @@ struct PendingDiffLoad {
     source: DiffSource,
 }
 
+/// Owns wheel invalidation for one file, independently from the review panel.
+struct InlineDiffView {
+    document: Arc<DiffDocument>,
+    theme: Theme,
+    height: f32,
+    #[cfg(test)]
+    render_count: usize,
+}
+
+impl Render for InlineDiffView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.render_count += 1;
+        }
+        let document = self.document.clone();
+        let widest_row_index = document.widest_row_index;
+        uniform_list(
+            "diff-code-rows",
+            document.diff.rows.len(),
+            cx.processor(move |_, range: std::ops::Range<usize>, _, _| {
+                range
+                    .filter_map(|index| {
+                        let row = document.diff.rows.get(index)?;
+                        let spans = document
+                            .highlights
+                            .get(index)
+                            .map_or(&[][..], Vec::as_slice);
+                        Some(DiffView::diff_row(
+                            row,
+                            &document.display_lines[index],
+                            spans,
+                        ))
+                    })
+                    .collect()
+            }),
+        )
+        .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+        .with_width_from_item(Some(widest_row_index))
+        .h(px(self.height))
+        .w_full()
+    }
+}
+
 pub struct DiffViewEvent;
 
 impl EventEmitter<DiffViewEvent> for DiffView {}
@@ -168,6 +215,7 @@ impl DiffView {
             history_graph: Arc::new(Vec::new()),
             expanded: HashSet::new(),
             documents: HashMap::new(),
+            inline_views: HashMap::new(),
             status_root: None,
             status_index: Arc::new(HashMap::new()),
             panel_visible: false,
@@ -257,6 +305,7 @@ impl DiffView {
         }
         self.set_mode(GitPanelMode::Worktree, cx);
         self.expand_path(relative_path, cx);
+        cx.notify();
         true
     }
 
@@ -275,6 +324,7 @@ impl DiffView {
         self.history_refreshing = false;
         self.expanded.clear();
         self.documents.clear();
+        self.inline_views.clear();
         self.loading.clear();
         self.pending_loads.clear();
         self.branch_changes = None;
@@ -309,6 +359,7 @@ impl DiffView {
         self.mode = mode;
         self.expanded.clear();
         self.documents.clear();
+        self.inline_views.clear();
         self.loading.clear();
         self.pending_loads.clear();
         match mode {
@@ -355,6 +406,7 @@ impl DiffView {
                         if this.mode == GitPanelMode::Worktree {
                             this.expanded.clear();
                             this.documents.clear();
+                            this.inline_views.clear();
                             this.loading.clear();
                             this.pending_loads.clear();
                         }
@@ -475,6 +527,8 @@ impl DiffView {
         });
         self.loading
             .retain(|path| self.pending_loads.contains_key(path));
+        self.inline_views
+            .retain(|path, _| self.documents.contains_key(path));
         self.evict_diff_caches();
     }
 
@@ -521,6 +575,8 @@ impl DiffView {
         }
         self.documents
             .retain(|path, _| self.expanded.contains(path));
+        self.inline_views
+            .retain(|path, _| self.documents.contains_key(path));
     }
 
     fn expand_path(&mut self, path: String, cx: &mut Context<Self>) {
@@ -1065,7 +1121,7 @@ impl DiffView {
             )
     }
 
-    fn file_card(&self, change: GitFileChange, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn file_card(&mut self, change: GitFileChange, cx: &mut Context<Self>) -> Stateful<Div> {
         let path = change.path.clone();
         let expanded = self.expanded.contains(&path);
         let loading = self.loading.contains(&path);
@@ -1216,7 +1272,7 @@ impl DiffView {
     }
 
     fn inline_diff_body(
-        &self,
+        &mut self,
         path: &str,
         document: Option<Arc<DiffDocument>>,
         loading: bool,
@@ -1251,12 +1307,36 @@ impl DiffView {
 
         let height = ((row_count as f32) * DIFF_ROW_HEIGHT)
             .clamp(MIN_INLINE_DIFF_HEIGHT, self.review_diff_height);
-        let widest_row_index = document
-            .as_ref()
-            .map(|document| document.widest_row_index)
-            .unwrap_or(0);
-        let list_id: SharedString = format!("inline-diff-{}", path).into();
-        let document_for_list = document.clone();
+        let document = document.expect("nonempty diff has a prepared document");
+        let theme = colors();
+        let view = self.inline_views.entry(path.to_owned()).or_insert_with(|| {
+            cx.new(|_| InlineDiffView {
+                document: document.clone(),
+                theme,
+                height,
+                #[cfg(test)]
+                render_count: 0,
+            })
+        });
+        // A scroll only dirties its own file view. Unchanged sibling views reuse
+        // their layout and paint instead of rebuilding every visible syntax run.
+        view.update(cx, |view, cx| {
+            if !Arc::ptr_eq(&view.document, &document)
+                || view.theme != theme
+                || view.height != height
+            {
+                view.document = document;
+                view.theme = theme;
+                view.height = height;
+                cx.notify();
+            }
+        });
+        let body = AnyView::from(view.clone()).cached(
+            StyleRefinement::default()
+                .w_full()
+                .h(px(height))
+                .flex_none(),
+        );
 
         div()
             .w_full()
@@ -1283,32 +1363,10 @@ impl DiffView {
                         .child("Diff truncado"),
                 )
             })
-            .child(
-                uniform_list(
-                    list_id,
-                    row_count,
-                    cx.processor(move |_this, range: std::ops::Range<usize>, _window, _cx| {
-                        let Some(document) = document_for_list.as_ref() else {
-                            return Vec::new();
-                        };
-                        range
-                            .filter_map(|index| {
-                                let row = document.diff.rows.get(index)?;
-                                let spans: &[SyntaxSpan] =
-                                    document.highlights.get(index).map_or(&[], Vec::as_slice);
-                                Some(Self::diff_row(row, spans))
-                            })
-                            .collect()
-                    }),
-                )
-                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
-                .with_width_from_item(Some(widest_row_index))
-                .h(px(height))
-                .w_full(),
-            )
+            .child(body)
     }
 
-    fn diff_row(row: &GitDiffRow, spans: &[SyntaxSpan]) -> Div {
+    fn diff_row(row: &GitDiffRow, text: &SharedString, spans: &[SyntaxSpan]) -> Div {
         let background = match row.kind {
             GitDiffRowKind::Addition => colors().diff_added_bg,
             GitDiffRowKind::Deletion => colors().diff_deleted_bg,
@@ -1323,23 +1381,21 @@ impl DiffView {
             GitDiffRowKind::Hunk | GitDiffRowKind::Section => colors().diff_hunk_bg,
             _ => colors().gutter,
         };
-        let marker = match row.kind {
-            GitDiffRowKind::Addition => colors().diff_added,
-            GitDiffRowKind::Deletion => colors().diff_deleted,
-            GitDiffRowKind::Notice => colors().warning,
-            _ => gpui::rgba(0x00000000),
+        let (marker, marker_color) = match row.kind {
+            GitDiffRowKind::Addition => ("+", colors().diff_added),
+            GitDiffRowKind::Deletion => ("−", colors().diff_deleted),
+            GitDiffRowKind::Notice => ("!", colors().warning),
+            _ => ("", colors().subtle),
         };
-        if matches!(row.kind, GitDiffRowKind::Hunk | GitDiffRowKind::Section) {
-            return Self::diff_separator(gutter_bg);
-        }
-        let line_number = match row.kind {
-            GitDiffRowKind::Deletion => row.old_line,
-            GitDiffRowKind::Notice => None,
-            _ => row.new_line.or(row.old_line),
-        }
-        .map(|line| line.to_string())
-        .unwrap_or_default();
-        let code = Self::styled_code_line(&row.text, spans, row.kind);
+        let old_line = row
+            .old_line
+            .map(|line| line.to_string())
+            .unwrap_or_default();
+        let new_line = row
+            .new_line
+            .map(|line| line.to_string())
+            .unwrap_or_default();
+        let code = Self::styled_code_line(text, spans, row.kind);
 
         div()
             .h(px(DIFF_ROW_HEIGHT))
@@ -1351,35 +1407,18 @@ impl DiffView {
             .font_family("JetBrains Mono")
             .text_size(px(DIFF_FONT_SIZE))
             .line_height(px(DIFF_ROW_HEIGHT))
-            .child(Self::diff_gutter(&line_number, gutter_bg))
+            .child(Self::diff_gutter(&old_line, gutter_bg))
+            .child(Self::diff_gutter(&new_line, gutter_bg))
             .child(
                 div()
                     .w(px(DIFF_MARKER_WIDTH))
                     .h_full()
                     .flex_none()
-                    .bg(marker),
+                    .text_center()
+                    .text_color(marker_color)
+                    .child(marker),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .pl_2()
-                    .pr_4()
-                    .child(code),
-            )
-    }
-
-    fn diff_separator(gutter_bg: Rgba) -> Div {
-        div()
-            .h(px(DIFF_ROW_HEIGHT))
-            .w_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .bg(colors().diff_hunk_bg)
-            .child(Self::diff_gutter("", gutter_bg))
-            .child(div().w(px(DIFF_MARKER_WIDTH)).h_full().flex_none())
-            .child(div().flex_1().h(px(1.0)).mr_4().bg(colors().border_subtle))
+            .child(div().flex_none().whitespace_nowrap().pr_4().child(code))
     }
 
     fn diff_gutter(number: &str, background: Rgba) -> Div {
@@ -1724,8 +1763,11 @@ impl DiffView {
             )
     }
 
-    fn styled_code_line(text: &str, spans: &[SyntaxSpan], kind: GitDiffRowKind) -> StyledText {
-        let text = expand_tabs(text);
+    fn styled_code_line(
+        text: &SharedString,
+        spans: &[SyntaxSpan],
+        kind: GitDiffRowKind,
+    ) -> StyledText {
         let default_color = match kind {
             GitDiffRowKind::Hunk | GitDiffRowKind::Section => colors().muted,
             GitDiffRowKind::Notice => colors().warning,
@@ -1748,7 +1790,7 @@ impl DiffView {
             GitDiffRowKind::Hunk | GitDiffRowKind::Section | GitDiffRowKind::Notice
         ) || spans.is_empty()
         {
-            return StyledText::new(text.to_owned()).with_default_highlights(
+            return StyledText::new(text.clone()).with_default_highlights(
                 &default_style,
                 std::iter::empty::<(std::ops::Range<usize>, HighlightStyle)>(),
             );
@@ -1764,7 +1806,7 @@ impl DiffView {
             Some((span.range.clone(), span.kind.highlight_style()))
         });
 
-        StyledText::new(text.to_owned()).with_default_highlights(&default_style, highlights)
+        StyledText::new(text.clone()).with_default_highlights(&default_style, highlights)
     }
 }
 
@@ -1917,6 +1959,99 @@ fn lane_color(lane: usize) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ReviewCacheTest {
+        files: Vec<Entity<InlineDiffView>>,
+    }
+
+    impl Render for ReviewCacheTest {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .children(self.files.iter().map(|file| {
+                    AnyView::from(file.clone())
+                        .cached(StyleRefinement::default().w_full().h(px(220.0)).flex_none())
+                }))
+        }
+    }
+
+    #[gpui::test]
+    fn scrolling_one_file_reuses_unchanged_sibling_code(cx: &mut gpui::TestAppContext) {
+        use crate::ports::git::GitDiff;
+        use gpui::AppContext;
+
+        let document = Arc::new(DiffDocument::prepare(GitDiff {
+            path: "main.rs".into(),
+            rows: (1..=100)
+                .map(|line| GitDiffRow {
+                    old_line: Some(line),
+                    new_line: Some(line),
+                    kind: GitDiffRowKind::Context,
+                    text: "let value = 42;".into(),
+                })
+                .collect(),
+            additions: 0,
+            deletions: 0,
+            binary: false,
+            truncated: false,
+        }));
+        let files = (0..2)
+            .map(|_| {
+                cx.new(|_| InlineDiffView {
+                    document: document.clone(),
+                    theme: colors(),
+                    height: 220.0,
+                    render_count: 0,
+                })
+            })
+            .collect::<Vec<_>>();
+        let window = cx.add_window(|_, _| ReviewCacheTest {
+            files: files.clone(),
+        });
+        let draw = |cx: &mut gpui::TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.draw(cx).clear();
+            })
+            .unwrap();
+        };
+        draw(cx);
+        let before = files
+            .iter()
+            .map(|file| file.read_with(cx, |view, _| view.render_count))
+            .collect::<Vec<_>>();
+        assert!(before.iter().all(|count| *count > 0));
+
+        // Wheel input invalidates the entity that owns the list's scroll listener.
+        files[0].update(cx, |_, cx| cx.notify());
+        draw(cx);
+        assert!(files[0].read_with(cx, |view, _| view.render_count) > before[0]);
+        assert_eq!(
+            files[1].read_with(cx, |view, _| view.render_count),
+            before[1]
+        );
+
+        // A reloaded document must still invalidate its own cached paint.
+        files[1].update(cx, |view, cx| {
+            view.document = Arc::new(DiffDocument::prepare(GitDiff {
+                path: "main.rs".into(),
+                rows: vec![GitDiffRow {
+                    old_line: None,
+                    new_line: Some(1),
+                    kind: GitDiffRowKind::Addition,
+                    text: "let updated = true;".into(),
+                }],
+                additions: 1,
+                deletions: 0,
+                binary: false,
+                truncated: false,
+            }));
+            cx.notify();
+        });
+        draw(cx);
+        assert!(files[1].read_with(cx, |view, _| view.render_count) > before[1]);
+    }
 
     #[test]
     fn diff_source_tracks_worktree_file_changes() {

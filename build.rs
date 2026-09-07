@@ -10,6 +10,8 @@ fn main() {
     println!("cargo:rerun-if-changed=native/notification_bridge.h");
     println!("cargo:rerun-if-changed=native/window_bridge.m");
     println!("cargo:rerun-if-changed=native/window_bridge.h");
+    println!("cargo:rerun-if-changed=native/editor_bridge.m");
+    println!("cargo:rerun-if-changed=native/editor_bridge.h");
     println!("cargo:rerun-if-changed=native/process_inspect.c");
     println!("cargo:rerun-if-changed=native/process_inspect.h");
     println!("cargo:rerun-if-env-changed=VIBRA_SPARKLE_FRAMEWORK");
@@ -31,6 +33,12 @@ fn main() {
         .include(manifest_dir.join("native"))
         .flag("-fobjc-arc")
         .compile("vibra_window_bridge");
+    cc::Build::new()
+        .file(manifest_dir.join("native/editor_bridge.m"))
+        .include(manifest_dir.join("native"))
+        .flag("-fobjc-arc")
+        .flag("-fobjc-exceptions")
+        .compile("vibra_editor_bridge");
     cc::Build::new()
         .file(manifest_dir.join("native/process_inspect.c"))
         .include(manifest_dir.join("native"))

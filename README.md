@@ -52,7 +52,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos y guías de indentación;
 - árbol de archivos que conserva el terminal como superficie central y enfoca los archivos modificados directamente en Git;
 - panel Git con tres vistas: working tree, cambios de la rama frente a la base por defecto, e historial de commits con grafo de lanes;
-- diffs de solo lectura estilo Warp: tarjetas expandibles, gutter de línea y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
+- diffs de solo lectura con tarjetas de archivo plegables, numeración anterior/nueva, encabezados de bloques y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - las mutaciones Git se realizan desde la terminal integrada;
 - pestaña `Servers` con procesos en escucha TCP de los PTY (vite, next, etc.), salto al pane, abrir URL y detener.
 
@@ -104,6 +104,9 @@ desde el proceso y el texto visible.
 cargo run
 cargo run -- /ruta/al/proyecto
 ```
+
+Para evaluar fluidez y rendimiento, usa `cargo run --release`; `cargo run` compila
+sin optimizaciones y añade coste al renderizado.
 
 La preparación de Ghostty descarga Zig y compila la biblioteca dentro de `.build/`,
 sin instalaciones globales. Véase [la integración Ghostty](docs/ghostty.md).
