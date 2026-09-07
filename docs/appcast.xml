@@ -3,18 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.19</title>
-            <pubDate>Sun, 06 Sep 2026 15:24:15 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.19</link>
-            <sparkle:version>147</sparkle:version>
-            <sparkle:shortVersionString>0.3.19</sparkle:shortVersionString>
+            <title>0.3.20</title>
+            <pubDate>Mon, 07 Sep 2026 10:19:33 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.20</link>
+            <sparkle:version>151</sparkle:version>
+            <sparkle:shortVersionString>0.3.20</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Remove the project-name header from the file tree to leave more room for files.</li>
-  <li>Simplify the staged changes separator with a compact label and count.</li>
+  <li>Name sidebar tabs from Claude and Codex prompts using installed hooks; persist short task titles, preserve manual names, and keep the previous title for brief acknowledgements.</li>
+  <li>Improve diff scrolling, terminal tab titles, and IDE launcher icons.</li>
+  <li>Hide the terminal scrollbar and sidebar resize indicator, and refine rounded terminal tabs.</li>
+  <li>Remove iPhone remote control, pairing, terminal sharing, and the associated client, services, and dependencies.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.19/Vibra-0.3.19.dmg" length="13740930" type="application/octet-stream" sparkle:edSignature="QuK9cevt2SgQxYN7TdTieMSI7H3IqJK8qfUSDBjhPkG60mjzTTZPh9WIJjumfdHThTWQtRU8dY1U01/ze48EAQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.20/Vibra-0.3.20.dmg" length="12714480" type="application/octet-stream" sparkle:edSignature="9gOVXXsW/eLsPwIhQbn2wV25JPywd6HYkqtOIIXr58AtQkuY1zN80ZF38/uqBfgzUiLqgB3SO9Rj5SKygHlMAA=="/>
         </item>
     </channel>
 </rss>
