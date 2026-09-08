@@ -529,18 +529,7 @@ impl DiffView {
                                 };
                                 cx.notify();
                             }))
-                    }))
-                    .child(
-                        div()
-                            .id("refresh-branch-comparison")
-                            .px_2()
-                            .py_1()
-                            .cursor_pointer()
-                            .text_size(px(11.0))
-                            .text_color(colors().accent)
-                            .child("Refresh")
-                            .on_click(cx.listener(|this, _, _, cx| this.refresh_branch(true, cx))),
-                    ),
+                    })),
             )
             .when_some(self.branch_picker, |view, is_base| {
                 let options = std::iter::once((
