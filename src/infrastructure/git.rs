@@ -7,8 +7,8 @@ use std::thread;
 use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
-    GitBranchChanges, GitBranchSummary, GitCommit, GitDiff, GitDiffRow, GitDiffRowKind,
-    GitFileChange, GitFileStatus, GitHistory, GitPort, GitRepositorySnapshot,
+    GitBranchChanges, GitBranchRef, GitBranchSummary, GitCommit, GitDiff, GitDiffRow,
+    GitDiffRowKind, GitFileChange, GitFileStatus, GitHistory, GitPort, GitRepositorySnapshot,
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
@@ -266,14 +266,63 @@ impl GitPort for GitCliPort {
         })
     }
 
-    fn branch_changes(&self, root: &Path) -> Result<Option<GitBranchChanges>> {
+    fn branches(&self, root: &Path) -> Result<Vec<GitBranchRef>> {
+        let Some(root) = repository_root(root)? else {
+            return Ok(Vec::new());
+        };
+        let output = run_git(
+            &root,
+            [
+                "for-each-ref",
+                "--format=%(refname)%09%(symref)",
+                "refs/heads",
+                "refs/remotes",
+            ],
+        )?;
+        ensure_success(&output, "git list branches")?;
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let (reference, symbolic) = line.split_once('\t')?;
+                if !symbolic.is_empty() {
+                    return None;
+                }
+                let remote = reference.starts_with("refs/remotes/");
+                let name = reference.strip_prefix(if remote {
+                    "refs/remotes/"
+                } else {
+                    "refs/heads/"
+                })?;
+                Some(GitBranchRef {
+                    reference: reference.into(),
+                    name: name.into(),
+                    remote,
+                })
+            })
+            .collect())
+    }
+
+    fn branch_changes(
+        &self,
+        root: &Path,
+        base: Option<&str>,
+        head: Option<&str>,
+    ) -> Result<Option<GitBranchChanges>> {
         let Some(root) = repository_root(root)? else {
             return Ok(None);
         };
         let Some(summary) = self.branch_summary(&root)? else {
             return Ok(None);
         };
-        let Some(base) = compare_base(&root, &summary.branch)? else {
+        let explicit_base = base.is_some();
+        let selected_head = head
+            .map(|reference| resolve_commit(&root, reference))
+            .transpose()?;
+        let base = match base {
+            Some(reference) => Some(reference.to_owned()),
+            None => compare_base(&root, &summary.branch)?,
+        };
+        let Some(base) = base else {
             return Ok(Some(GitBranchChanges {
                 snapshot: GitRepositorySnapshot {
                     root,
@@ -283,14 +332,19 @@ impl GitPort for GitCliPort {
                     deletions: 0,
                 },
                 base: String::new(),
-                merge_base: String::new(),
+                base_revision: String::new(),
+                head_revision: selected_head,
                 commits_ahead: 0,
             }));
         };
-        let merge_base = merge_base(&root, &base)?;
-        let mut changes = diff_name_status(&root, &merge_base)?;
+        let base_revision = if selected_head.is_some() || explicit_base {
+            resolve_commit(&root, &base)?
+        } else {
+            merge_base(&root, &base)?
+        };
+        let mut changes = diff_name_status(&root, &base_revision, selected_head.as_deref())?;
         let mut stats = HashMap::<String, (usize, usize)>::new();
-        collect_numstat_against(&root, &merge_base, &mut stats)?;
+        collect_numstat_against(&root, &base_revision, selected_head.as_deref(), &mut stats)?;
         for change in &mut changes {
             if let Some((additions, deletions)) = stats.get(&change.path) {
                 change.additions = Some(*additions);
@@ -301,7 +355,11 @@ impl GitPort for GitCliPort {
             .iter()
             .map(|change| (change.path.clone(), ()))
             .collect();
-        for path in untracked_paths(&root)? {
+        for path in if selected_head.is_none() {
+            untracked_paths(&root)?
+        } else {
+            Vec::new()
+        } {
             if !seen.contains_key(&path) {
                 changes.push(GitFileChange {
                     status: GitFileStatus::Untracked,
@@ -321,17 +379,27 @@ impl GitPort for GitCliPort {
         });
         let additions = changes.iter().filter_map(|change| change.additions).sum();
         let deletions = changes.iter().filter_map(|change| change.deletions).sum();
-        let commits_ahead = rev_count(&root, &format!("{merge_base}..HEAD"))?;
+        let commits_ahead = rev_count(
+            &root,
+            &format!(
+                "{base_revision}..{}",
+                selected_head.as_deref().unwrap_or("HEAD")
+            ),
+        )?;
         Ok(Some(GitBranchChanges {
             snapshot: GitRepositorySnapshot {
                 root,
-                branch: summary.branch,
+                branch: head
+                    .map(display_branch_ref)
+                    .unwrap_or(&summary.branch)
+                    .to_owned(),
                 changes,
                 additions,
                 deletions,
             },
-            base,
-            merge_base,
+            base: display_branch_ref(&base).to_owned(),
+            base_revision,
+            head_revision: selected_head,
             commits_ahead,
         }))
     }
@@ -384,11 +452,15 @@ impl GitPort for GitCliPort {
         &self,
         repository: &Path,
         revision: &str,
+        head: Option<&str>,
         change: &GitFileChange,
     ) -> Result<GitDiff> {
         validate_relative_path(&change.path)?;
         validate_revision(revision)?;
-        if change.untracked || revision.is_empty() {
+        if let Some(head) = head {
+            validate_revision(head)?;
+        }
+        if head.is_none() && (change.untracked || revision.is_empty()) {
             return self.diff(repository, change);
         }
         let root =
@@ -398,20 +470,18 @@ impl GitPort for GitCliPort {
         let mut deletions = 0;
         let mut binary = false;
         let mut truncated = false;
-        let patch = run_git_diff(
-            &root,
-            [
-                "diff",
-                "--no-ext-diff",
-                "--no-color",
-                "--unified=3",
-                revision,
-                "--",
-                &change.path,
-            ],
-            "git diff revision",
-            false,
-        )?;
+        let mut args = vec![
+            "--literal-pathspecs",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--unified=3",
+            revision,
+        ];
+        args.extend(head);
+        args.extend(["--", &change.path]);
+        let patch = run_git_diff(&root, args, "git diff revision", false)?;
         append_patch(
             &patch,
             None,
@@ -666,6 +736,22 @@ fn validate_revision(revision: &str) -> Result<()> {
     Ok(())
 }
 
+fn display_branch_ref(reference: &str) -> &str {
+    reference
+        .strip_prefix("refs/heads/")
+        .or_else(|| reference.strip_prefix("refs/remotes/"))
+        .unwrap_or(reference)
+}
+
+fn resolve_commit(root: &Path, reference: &str) -> Result<String> {
+    validate_revision(reference)?;
+    if reference.is_empty() {
+        bail!("Select a branch to compare");
+    }
+    rev_parse(root, &format!("{reference}^{{commit}}"))?
+        .with_context(|| format!("Branch not found: {reference}"))
+}
+
 fn current_branch(root: &Path) -> Result<String> {
     let output = run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])?;
     if !output.status.success() {
@@ -769,18 +855,18 @@ fn rev_parse_symbolic(root: &Path, rev: &str) -> Result<Option<String>> {
     Ok((!value.is_empty() && value != "HEAD").then_some(value))
 }
 
-fn diff_name_status(root: &Path, revision: &str) -> Result<Vec<GitFileChange>> {
+fn diff_name_status(root: &Path, revision: &str, head: Option<&str>) -> Result<Vec<GitFileChange>> {
     validate_revision(revision)?;
-    let output = run_git(
-        root,
-        [
-            "diff",
-            "--name-status",
-            "--no-ext-diff",
-            "--find-renames",
-            revision,
-        ],
-    )?;
+    let mut args = vec![
+        "diff",
+        "--name-status",
+        "--no-ext-diff",
+        "--find-renames",
+        revision,
+    ];
+    args.extend(head);
+    args.push("--");
+    let output = run_git(root, args)?;
     ensure_success(&output, "git diff --name-status")?;
     Ok(parse_name_status(&String::from_utf8_lossy(&output.stdout)))
 }
@@ -829,10 +915,14 @@ fn parse_name_status(output: &str) -> Vec<GitFileChange> {
 fn collect_numstat_against(
     root: &Path,
     revision: &str,
+    head: Option<&str>,
     stats: &mut HashMap<String, (usize, usize)>,
 ) -> Result<()> {
     validate_revision(revision)?;
-    let output = run_git(root, ["diff", "--no-ext-diff", "--numstat", revision])?;
+    let mut args = vec!["diff", "--no-ext-diff", "--numstat", revision];
+    args.extend(head);
+    args.push("--");
+    let output = run_git(root, args)?;
     ensure_success(&output, "git diff --numstat")?;
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let mut fields = line.splitn(3, '\t');
@@ -1134,7 +1224,10 @@ mod tests {
         git(&root, &["commit", "-qm", "add feature"]);
         fs::write(root.join("tracked.txt"), "one\nchanged\n").unwrap();
 
-        let changes = GitCliPort.branch_changes(&root).unwrap().unwrap();
+        let changes = GitCliPort
+            .branch_changes(&root, None, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(changes.commits_ahead, 1);
         assert!(!changes.base.is_empty());
         assert!(changes.snapshot.changes.iter().any(|change| {
@@ -1147,6 +1240,176 @@ mod tests {
                 .iter()
                 .any(|change| change.path == "tracked.txt")
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_selectors_list_local_and_remote_refs_without_aliases_or_tags() {
+        let root = repository();
+        git(&root, &["branch", "-M", "main"]);
+        git(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(
+            &root,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        git(&root, &["branch", "origin/main"]);
+        git(&root, &["tag", "main"]);
+        let branches = GitCliPort.branches(&root).unwrap();
+        assert_eq!(branches.len(), 3);
+        assert!(
+            branches
+                .iter()
+                .any(|branch| branch.reference == "refs/heads/main" && !branch.remote)
+        );
+        assert!(
+            branches
+                .iter()
+                .any(|branch| branch.reference == "refs/heads/origin/main" && !branch.remote)
+        );
+        assert!(
+            branches
+                .iter()
+                .any(|branch| branch.reference == "refs/remotes/origin/main" && branch.remote)
+        );
+        let changes = GitCliPort
+            .branch_changes(
+                &root,
+                Some("refs/remotes/origin/main"),
+                Some("refs/heads/main"),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(changes.snapshot.changes.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn selected_branches_compare_both_tips_and_pin_diffs_without_checkout() {
+        let root = repository();
+        git(&root, &["branch", "-M", "main"]);
+        git(&root, &["checkout", "-qb", "remote-tip"]);
+        fs::write(root.join("remote.txt"), "remote version\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "remote change"]);
+        git(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&root, &["checkout", "-q", "main"]);
+        fs::write(root.join("local.txt"), "saved local version\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "local change"]);
+        fs::write(root.join("tracked.txt"), "staged\n").unwrap();
+        git(&root, &["add", "."]);
+        fs::write(root.join("local.txt"), "unsaved local version\n").unwrap();
+        fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+        let port = GitCliPort;
+        let before = port.snapshot(&root).unwrap();
+        let changes = port
+            .branch_changes(
+                &root,
+                Some("refs/remotes/origin/main"),
+                Some("refs/heads/main"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(changes.snapshot.changes.len(), 2);
+        assert_eq!(
+            (changes.snapshot.additions, changes.snapshot.deletions),
+            (1, 1)
+        );
+        let local = changes
+            .snapshot
+            .changes
+            .iter()
+            .find(|c| c.path == "local.txt")
+            .unwrap();
+        let remote = changes
+            .snapshot
+            .changes
+            .iter()
+            .find(|c| c.path == "remote.txt")
+            .unwrap();
+        assert_eq!(remote.status, GitFileStatus::Deleted);
+        let diff = port
+            .diff_against(
+                &root,
+                &changes.base_revision,
+                changes.head_revision.as_deref(),
+                local,
+            )
+            .unwrap();
+        assert!(
+            diff.rows
+                .iter()
+                .any(|row| row.text == "saved local version")
+        );
+        assert!(
+            !diff
+                .rows
+                .iter()
+                .any(|row| row.text == "unsaved local version")
+        );
+        assert_eq!(before, port.snapshot(&root).unwrap());
+        let worktree = port
+            .branch_changes(&root, Some("refs/remotes/origin/main"), None)
+            .unwrap()
+            .unwrap();
+        assert!(worktree.head_revision.is_none());
+        assert!(
+            worktree
+                .snapshot
+                .changes
+                .iter()
+                .any(|c| c.path == "untracked.txt")
+        );
+        assert!(
+            worktree
+                .snapshot
+                .changes
+                .iter()
+                .any(|c| c.path == "remote.txt" && c.status == GitFileStatus::Deleted)
+        );
+        let reverse = port
+            .branch_changes(
+                &root,
+                Some("refs/heads/main"),
+                Some("refs/remotes/origin/main"),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            reverse
+                .snapshot
+                .changes
+                .iter()
+                .any(|c| c.path == "remote.txt" && c.status == GitFileStatus::Added)
+        );
+        git(&root, &["commit", "-qam", "advance local"]);
+        let pinned = port
+            .diff_against(
+                &root,
+                &changes.base_revision,
+                changes.head_revision.as_deref(),
+                local,
+            )
+            .unwrap();
+        assert_eq!(pinned, diff);
+        let refreshed = port
+            .branch_changes(
+                &root,
+                Some("refs/remotes/origin/main"),
+                Some("refs/heads/main"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_ne!(refreshed.head_revision, changes.head_revision);
+        assert!(
+            port.branch_changes(&root, Some("missing"), Some("refs/heads/main"))
+                .is_err()
+        );
+        assert!(port.branch_changes(&root, Some("--help"), None).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

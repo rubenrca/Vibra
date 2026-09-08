@@ -12,8 +12,8 @@ use gpui::{
 };
 
 use crate::ports::git::{
-    GitBranchChanges, GitCommit, GitDiffRow, GitDiffRowKind, GitFileChange, GitFileStatus,
-    GitGraphRow, GitHistory, GitPort, GitRepositorySnapshot, assign_commit_lanes,
+    GitBranchChanges, GitBranchRef, GitCommit, GitDiffRow, GitDiffRowKind, GitFileChange,
+    GitFileStatus, GitGraphRow, GitHistory, GitPort, GitRepositorySnapshot, assign_commit_lanes,
 };
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::syntax::SyntaxSpan;
@@ -59,6 +59,11 @@ pub struct DiffView {
     mode_menu_open: bool,
     snapshot: Option<GitRepositorySnapshot>,
     branch_changes: Option<GitBranchChanges>,
+    branches: Vec<GitBranchRef>,
+    selected_base: Option<String>,
+    selected_head: Option<String>,
+    branch_picker: Option<bool>,
+    branch_error: Option<SharedString>,
     history: Option<Arc<GitHistory>>,
     history_graph: Arc<Vec<GitGraphRow>>,
     /// Paths currently expanded; multiple files may stay open.
@@ -98,6 +103,7 @@ struct DiffSource {
     repository: PathBuf,
     change: GitFileChange,
     against: Option<String>,
+    head: Option<String>,
     worktree_version: Option<WorktreeFileVersion>,
 }
 
@@ -112,6 +118,7 @@ impl DiffSource {
         snapshot: &GitRepositorySnapshot,
         change: &GitFileChange,
         against: Option<&str>,
+        head: Option<&str>,
     ) -> Self {
         let worktree_version = std::fs::metadata(snapshot.root.join(&change.path))
             .ok()
@@ -123,7 +130,12 @@ impl DiffSource {
             repository: snapshot.root.clone(),
             change: change.clone(),
             against: against.map(str::to_owned),
-            worktree_version,
+            worktree_version: if head.is_some() {
+                None
+            } else {
+                worktree_version
+            },
+            head: head.map(str::to_owned),
         }
     }
 }
@@ -211,6 +223,11 @@ impl DiffView {
             mode_menu_open: false,
             snapshot: None,
             branch_changes: None,
+            branches: Vec::new(),
+            selected_base: None,
+            selected_head: None,
+            branch_picker: None,
+            branch_error: None,
             history: None,
             history_graph: Arc::new(Vec::new()),
             expanded: HashSet::new(),
@@ -315,6 +332,11 @@ impl DiffView {
         }
         self.set_review_expanded(false, cx);
         self.context_root = root;
+        self.selected_base = None;
+        self.selected_head = None;
+        self.branches.clear();
+        self.branch_picker = None;
+        self.branch_error = None;
         self.snapshot_request_id = self.snapshot_request_id.wrapping_add(1);
         self.branch_request_id = self.branch_request_id.wrapping_add(1);
         self.history_request_id = self.history_request_id.wrapping_add(1);
@@ -351,6 +373,7 @@ impl DiffView {
 
     fn set_mode(&mut self, mode: GitPanelMode, cx: &mut Context<Self>) {
         self.mode_menu_open = false;
+        self.branch_picker = None;
         if self.mode == mode {
             cx.notify();
             return;
@@ -423,11 +446,162 @@ impl DiffView {
         }));
     }
 
+    fn change_branch_selection(
+        &mut self,
+        is_base: bool,
+        reference: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if is_base {
+            self.selected_base = reference;
+        } else {
+            self.selected_head = reference;
+        }
+        self.branch_picker = None;
+        self.branch_request_id = self.branch_request_id.wrapping_add(1);
+        self._branch_task = None;
+        self.branch_refreshing = false;
+        self.branch_changes = None;
+        self.expanded.clear();
+        self.documents.clear();
+        self.inline_views.clear();
+        self.pending_loads.clear();
+        self.loading.clear();
+        self.refresh_branch(true, cx);
+    }
+
+    fn branch_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex_none()
+            .w_full()
+            .px_3()
+            .py_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children([true, false].into_iter().map(|is_base| {
+                        let selected = if is_base {
+                            &self.selected_base
+                        } else {
+                            &self.selected_head
+                        };
+                        let label = selected
+                            .as_ref()
+                            .map(|reference| {
+                                self.branches
+                                    .iter()
+                                    .find(|branch| &branch.reference == reference)
+                                    .map(|branch| branch.name.as_str())
+                                    .unwrap_or(reference)
+                            })
+                            .unwrap_or(if is_base { "Auto" } else { "Working tree" });
+                        div()
+                            .id(if is_base {
+                                "branch-base"
+                            } else {
+                                "branch-head"
+                            })
+                            .px_2()
+                            .py_1()
+                            .rounded(px(5.0))
+                            .bg(colors().elevated)
+                            .text_size(px(11.0))
+                            .text_color(colors().foreground)
+                            .cursor_pointer()
+                            .hover(|view| view.bg(colors().hover))
+                            .child(format!(
+                                "{}: {} ▾",
+                                if is_base { "Base" } else { "Compare" },
+                                label
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.branch_picker = if this.branch_picker == Some(is_base) {
+                                    None
+                                } else {
+                                    Some(is_base)
+                                };
+                                cx.notify();
+                            }))
+                    }))
+                    .child(
+                        div()
+                            .id("refresh-branch-comparison")
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .text_size(px(11.0))
+                            .text_color(colors().accent)
+                            .child("Refresh")
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh_branch(true, cx))),
+                    ),
+            )
+            .when_some(self.branch_picker, |view, is_base| {
+                let options = std::iter::once((
+                    None,
+                    if is_base {
+                        "Auto base".to_owned()
+                    } else {
+                        "Working tree".to_owned()
+                    },
+                ))
+                .chain(self.branches.iter().map(|branch| {
+                    (
+                        Some(branch.reference.clone()),
+                        format!(
+                            "{} · {}",
+                            branch.name,
+                            if branch.remote { "Remote" } else { "Local" }
+                        ),
+                    )
+                }));
+                view.child(
+                    div()
+                        .id("branch-options")
+                        .max_h(px(180.0))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .children(options.enumerate().map(|(index, (reference, label))| {
+                            div()
+                                .id(("branch-option", index))
+                                .px_2()
+                                .py_1()
+                                .flex_none()
+                                .cursor_pointer()
+                                .text_size(px(11.0))
+                                .text_color(colors().foreground)
+                                .hover(|row| row.bg(colors().hover))
+                                .child(label)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.change_branch_selection(is_base, reference.clone(), cx);
+                                }))
+                        })),
+                )
+            })
+            .child(div().text_size(px(10.0)).text_color(colors().subtle).child(
+                if self.selected_head.is_some() {
+                    "Saved branch versions · remote refs from last fetch"
+                } else if self.selected_base.is_some() {
+                    "Working tree vs selected base · includes uncommitted changes"
+                } else {
+                    "Working tree vs common ancestor · includes uncommitted changes"
+                },
+            ))
+    }
+
     fn refresh_branch(&mut self, notify_loading: bool, cx: &mut Context<Self>) {
         if self.branch_refreshing {
             return;
         }
         self.branch_refreshing = true;
+        self.branch_error = None;
         if notify_loading {
             cx.notify();
         }
@@ -435,20 +609,33 @@ impl DiffView {
         let request_id = self.branch_request_id;
         let root = self.context_root.clone();
         let port = self.git_port.clone();
-        let task = cx.background_spawn(async move { port.branch_changes(&root) });
+        let base = self.selected_base.clone();
+        let head = self.selected_head.clone();
+        let task = cx.background_spawn(async move {
+            let branches = port.branches(&root);
+            let changes = port.branch_changes(&root, base.as_deref(), head.as_deref());
+            (branches, changes)
+        });
         self._branch_task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
+            let (branches, result) = task.await;
             let _ = this.update(cx, |this, cx| {
                 if request_id != this.branch_request_id {
                     return;
                 }
                 this.branch_refreshing = false;
+                if let Ok(branches) = branches {
+                    this.branches = branches;
+                }
                 match result {
                     Ok(Some(changes)) => {
                         if this.mode == GitPanelMode::Branch {
-                            let against = (!changes.merge_base.is_empty())
-                                .then(|| changes.merge_base.clone());
-                            this.reconcile_documents(&changes.snapshot, against.as_deref());
+                            let against = (!changes.base_revision.is_empty())
+                                .then(|| changes.base_revision.clone());
+                            this.reconcile_documents(
+                                &changes.snapshot,
+                                against.as_deref(),
+                                changes.head_revision.as_deref(),
+                            );
                         }
                         this.branch_changes = Some(changes);
                         if this.mode == GitPanelMode::Branch {
@@ -456,7 +643,16 @@ impl DiffView {
                         }
                     }
                     Ok(None) => this.branch_changes = None,
-                    Err(error) => this.error = Some(format!("Git: {error:#}").into()),
+                    Err(error) => {
+                        this.branch_error = Some(format!("Git: {error:#}").into());
+                        this.branch_changes = None;
+                        if this.mode == GitPanelMode::Branch {
+                            this.documents.clear();
+                            this.inline_views.clear();
+                            this.pending_loads.clear();
+                            this.loading.clear();
+                        }
+                    }
                 }
                 cx.notify();
             });
@@ -502,14 +698,19 @@ impl DiffView {
     /// Discard documents and in-flight work whose Git source no longer matches
     /// the latest snapshot. A path remaining present is not enough: staging or
     /// changing it must invalidate the prepared rows as well.
-    fn reconcile_documents(&mut self, snapshot: &GitRepositorySnapshot, against: Option<&str>) {
+    fn reconcile_documents(
+        &mut self,
+        snapshot: &GitRepositorySnapshot,
+        against: Option<&str>,
+        head: Option<&str>,
+    ) {
         let sources: HashMap<String, DiffSource> = snapshot
             .changes
             .iter()
             .map(|change| {
                 (
                     change.path.clone(),
-                    DiffSource::new(snapshot, change, against),
+                    DiffSource::new(snapshot, change, against, head),
                 )
             })
             .collect();
@@ -550,7 +751,7 @@ impl DiffView {
         self.error = None;
         let snapshot_unchanged = self.snapshot.as_ref() == Some(&snapshot);
         if self.mode == GitPanelMode::Worktree {
-            self.reconcile_documents(&snapshot, None);
+            self.reconcile_documents(&snapshot, None, None);
         }
         if snapshot_unchanged {
             if self.mode == GitPanelMode::Worktree {
@@ -625,11 +826,18 @@ impl DiffView {
                 GitPanelMode::Branch => self
                     .branch_changes
                     .as_ref()
-                    .map(|changes| changes.merge_base.clone())
+                    .map(|changes| changes.base_revision.clone())
                     .filter(|base| !base.is_empty()),
                 GitPanelMode::Worktree | GitPanelMode::History => None,
             };
-            Some(DiffSource::new(snapshot, &change, against.as_deref()))
+            let head = if self.mode == GitPanelMode::Branch {
+                self.branch_changes
+                    .as_ref()
+                    .and_then(|changes| changes.head_revision.as_deref())
+            } else {
+                None
+            };
+            Some(DiffSource::new(snapshot, &change, against.as_deref(), head))
         }) else {
             self.loading.remove(&path);
             return;
@@ -664,6 +872,7 @@ impl DiffView {
                 port.diff_against(
                     &source_for_task.repository,
                     revision,
+                    source_for_task.head.as_deref(),
                     &source_for_task.change,
                 )
             } else {
@@ -1818,7 +2027,11 @@ impl Render for DiffView {
         } else {
             MAX_INLINE_DIFF_HEIGHT
         };
-        let error = self.error.clone();
+        let error = if self.mode == GitPanelMode::Branch {
+            self.branch_error.clone().or_else(|| self.error.clone())
+        } else {
+            self.error.clone()
+        };
         let menu_open = self.mode_menu_open;
         let empty_message = self.empty_message();
         let show_history = empty_message.is_none() && self.mode == GitPanelMode::History;
@@ -1841,6 +2054,9 @@ impl Render for DiffView {
             .overflow_hidden()
             .bg(colors().panel)
             .child(self.header(cx))
+            .when(self.mode == GitPanelMode::Branch, |view| {
+                view.child(self.branch_controls(cx))
+            })
             .when_some(error, |view, error| {
                 view.child(
                     div()
@@ -1882,7 +2098,11 @@ impl DiffView {
                 }
             }
             GitPanelMode::Branch => {
-                if self.branch_changes.is_none() && (self.branch_refreshing || self.refreshing) {
+                if self.branch_error.is_some() && self.branch_changes.is_none() {
+                    Some("Select available branches and try again.")
+                } else if self.branch_changes.is_none()
+                    && (self.branch_refreshing || self.refreshing)
+                {
                     Some("Comparing with the base branch…")
                 } else if self.snapshot.is_none() && self.branch_changes.is_none() {
                     Some("No Git repository in this project.")
@@ -2078,14 +2298,14 @@ mod tests {
             additions: 1,
             deletions: 1,
         };
-        let before = DiffSource::new(&snapshot, &change, None);
+        let before = DiffSource::new(&snapshot, &change, None, None);
 
         std::fs::write(
             root.join("main.rs"),
             "fn main() { println!(\"changed\"); }\n",
         )
         .expect("write changed contents");
-        let after = DiffSource::new(&snapshot, &change, None);
+        let after = DiffSource::new(&snapshot, &change, None, None);
 
         assert_ne!(before, after);
         std::fs::remove_dir_all(root).expect("remove test repository directory");

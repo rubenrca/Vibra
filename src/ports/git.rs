@@ -69,13 +69,21 @@ pub struct GitDiff {
     pub truncated: bool,
 }
 
-/// Committed + working-tree changes against a merge-base (feature vs default).
+/// Selected refs or working tree; automatic worktree comparison uses the merge-base.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitBranchChanges {
     pub snapshot: GitRepositorySnapshot,
     pub base: String,
-    pub merge_base: String,
+    pub base_revision: String,
+    pub head_revision: Option<String>,
     pub commits_ahead: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitBranchRef {
+    pub reference: String,
+    pub name: String,
+    pub remote: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,12 +149,19 @@ pub trait GitPort: Send + Sync {
     /// Fast branch + ahead/behind + dirty flag for sidebar tabs (no numstat/diff work).
     fn branch_summary(&self, root: &Path) -> Result<Option<GitBranchSummary>>;
     fn diff(&self, repository: &Path, change: &GitFileChange) -> Result<GitDiff>;
-    fn branch_changes(&self, root: &Path) -> Result<Option<GitBranchChanges>>;
+    fn branches(&self, root: &Path) -> Result<Vec<GitBranchRef>>;
+    fn branch_changes(
+        &self,
+        root: &Path,
+        base: Option<&str>,
+        head: Option<&str>,
+    ) -> Result<Option<GitBranchChanges>>;
     fn history(&self, root: &Path, limit: usize) -> Result<Option<GitHistory>>;
     fn diff_against(
         &self,
         repository: &Path,
         revision: &str,
+        head: Option<&str>,
         change: &GitFileChange,
     ) -> Result<GitDiff>;
 }

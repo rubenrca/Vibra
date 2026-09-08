@@ -52,6 +52,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos y guías de indentación;
 - árbol de archivos que conserva el terminal como superficie central y enfoca los archivos modificados directamente en Git;
 - panel Git con tres vistas: working tree, cambios de la rama frente a la base por defecto, e historial de commits con grafo de lanes;
+- `Branch changes` permite elegir `Base` y `Compare` entre ramas locales y referencias remotas del último fetch, sin cambiar de rama; dos ramas comparan sus versiones guardadas, y `Working tree` incluye cambios sin commit. `Auto` + `Working tree` conserva la comparación desde el ancestro común; `Refresh` vuelve a leer las referencias locales;
 - diffs de solo lectura con tarjetas de archivo plegables, numeración anterior/nueva, encabezados de bloques y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - las mutaciones Git se realizan desde la terminal integrada;
 - pestaña `Servers` con procesos en escucha TCP de los PTY (vite, next, etc.), salto al pane, abrir URL y detener.
