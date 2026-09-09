@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
-use super::*;
+use super::types::*;
 
 pub struct AutomationServer {
     path: PathBuf,
@@ -133,7 +133,7 @@ fn write_automation_response(mut stream: UnixStream, response: &AutomationRespon
 }
 
 /// Fail closed when the UI queue is full instead of growing without bound.
-pub fn enqueue_automation_request(
+pub(super) fn enqueue_automation_request(
     sender: &async_channel::Sender<AutomationIncoming>,
     incoming: AutomationIncoming,
 ) -> Result<(), &'static str> {

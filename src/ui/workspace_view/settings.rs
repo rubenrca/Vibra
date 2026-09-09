@@ -764,7 +764,7 @@ impl WorkspaceView {
                         SettingsToggleRow {
                             label: "Panel de archivos y Git",
                             description: "Abre el panel derecho del proyecto al iniciar.",
-                            enabled: self.settings.git_panel_visible,
+                            enabled: self.settings.right_sidebar_visible,
                             divider: false,
                             id: "settings-git-visible",
                         },
@@ -1013,7 +1013,7 @@ impl WorkspaceView {
     }
 
     fn appearance_mode(&self) -> AppearanceMode {
-        AppearanceMode::parse(&self.settings.appearance_mode)
+        self.settings.appearance_mode
     }
 
     pub(super) fn apply_theme_preference(&mut self, system_dark: bool, cx: &mut Context<Self>) {
@@ -1067,7 +1067,7 @@ impl WorkspaceView {
         if self.appearance_mode() == mode {
             return;
         }
-        self.settings.appearance_mode = mode.as_str().to_string();
+        self.settings.appearance_mode = mode;
         let system_dark = ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
         self.apply_theme_preference(system_dark, cx);
         self.persist_settings(cx);

@@ -46,9 +46,9 @@ enum GitPanelMode {
 impl GitPanelMode {
     fn label(self) -> &'static str {
         match self {
-            Self::Worktree => "Working tree",
-            Self::Branch => "Branch changes",
-            Self::History => "History",
+            Self::Worktree => "Árbol de trabajo",
+            Self::Branch => "Cambios de rama",
+            Self::History => "Historial",
         }
     }
 }
@@ -217,7 +217,7 @@ impl DiffView {
                 }
             }
         });
-        let mut view = Self {
+        Self {
             context_root,
             mode: GitPanelMode::Worktree,
             mode_menu_open: false,
@@ -255,9 +255,7 @@ impl DiffView {
             _history_task: None,
             _diff_tasks: Vec::new(),
             _poll_task: poll_task,
-        };
-        view.refresh(true, cx);
-        view
+        }
     }
 
     /// Repo root + relative path → status, for coloring the Files tree (Zed-style).
@@ -289,8 +287,8 @@ impl DiffView {
             return;
         }
         self.panel_visible = visible;
-        if visible && !self.refreshing {
-            self.refresh(false, cx);
+        if visible {
+            self.refresh_visible_sources(false, cx);
         }
     }
 
@@ -354,20 +352,21 @@ impl DiffView {
         self.history_graph = Arc::new(Vec::new());
         self.error = None;
         self.mode_menu_open = false;
-        self.refresh(true, cx);
-        match self.mode {
-            GitPanelMode::Worktree => {}
-            GitPanelMode::Branch => self.refresh_branch(true, cx),
-            GitPanelMode::History => self.refresh_history(true, cx),
+        if self.panel_visible {
+            self.refresh_visible_sources(true, cx);
         }
     }
 
     pub fn refresh_now(&mut self, cx: &mut Context<Self>) {
-        self.refresh(true, cx);
+        self.refresh_visible_sources(true, cx);
+    }
+
+    fn refresh_visible_sources(&mut self, notify_loading: bool, cx: &mut Context<Self>) {
+        self.refresh(notify_loading, cx);
         match self.mode {
             GitPanelMode::Worktree => {}
-            GitPanelMode::Branch => self.refresh_branch(true, cx),
-            GitPanelMode::History => self.refresh_history(true, cx),
+            GitPanelMode::Branch => self.refresh_branch(notify_loading, cx),
+            GitPanelMode::History => self.refresh_history(notify_loading, cx),
         }
     }
 
@@ -501,7 +500,7 @@ impl DiffView {
                                     .map(|branch| branch.name.as_str())
                                     .unwrap_or(reference)
                             })
-                            .unwrap_or(if is_base { "Auto" } else { "Working tree" });
+                            .unwrap_or(if is_base { "Auto" } else { "Árbol de trabajo" });
                         div()
                             .id(if is_base {
                                 "branch-base"
@@ -518,7 +517,7 @@ impl DiffView {
                             .hover(|view| view.bg(colors().hover))
                             .child(format!(
                                 "{}: {} ▾",
-                                if is_base { "Base" } else { "Compare" },
+                                if is_base { "Base" } else { "Comparar" },
                                 label
                             ))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -535,9 +534,9 @@ impl DiffView {
                 let options = std::iter::once((
                     None,
                     if is_base {
-                        "Auto base".to_owned()
+                        "Base automática".to_owned()
                     } else {
-                        "Working tree".to_owned()
+                        "Árbol de trabajo".to_owned()
                     },
                 ))
                 .chain(self.branches.iter().map(|branch| {
@@ -546,7 +545,7 @@ impl DiffView {
                         format!(
                             "{} · {}",
                             branch.name,
-                            if branch.remote { "Remote" } else { "Local" }
+                            if branch.remote { "remoto" } else { "local" }
                         ),
                     )
                 }));
@@ -576,11 +575,11 @@ impl DiffView {
             })
             .child(div().text_size(px(10.0)).text_color(colors().subtle).child(
                 if self.selected_head.is_some() {
-                    "Saved branch versions · remote refs from last fetch"
+                    "Versiones de rama guardadas · refs remotas del último fetch"
                 } else if self.selected_base.is_some() {
-                    "Working tree vs selected base · includes uncommitted changes"
+                    "Árbol de trabajo vs. la base seleccionada · incluye cambios sin confirmar"
                 } else {
-                    "Working tree vs common ancestor · includes uncommitted changes"
+                    "Árbol de trabajo vs. el ancestro común · incluye cambios sin confirmar"
                 },
             ))
     }
@@ -1284,7 +1283,7 @@ impl DiffView {
         }
         if !staged.is_empty() {
             list = list
-                .child(Self::file_section_header("Staged", staged.len()))
+                .child(Self::file_section_header("Preparados", staged.len()))
                 .children(staged.into_iter().map(|change| self.file_card(change, cx)));
         }
         list
@@ -1683,7 +1682,7 @@ impl DiffView {
                                             .text_size(px(10.5))
                                             .text_color(colors().subtle)
                                             .child(format!(
-                                                "Showing the {HISTORY_PAGE} most recent"
+                                                "Mostrando los {HISTORY_PAGE} más recientes"
                                             ))
                                             .into_any_element()
                                     });
@@ -1727,14 +1726,14 @@ impl DiffView {
                 colors().subtle,
             ))
             .child(Self::history_fixed_cell(
-                "Author",
+                "Autor",
                 HISTORY_AUTHOR_WIDTH,
                 10.5,
                 colors().subtle,
                 false,
             ))
             .child(Self::history_fixed_cell(
-                "Date",
+                "Fecha",
                 HISTORY_DATE_WIDTH,
                 10.5,
                 colors().subtle,
@@ -2073,59 +2072,59 @@ impl DiffView {
         match self.mode {
             GitPanelMode::Worktree => {
                 if self.snapshot.is_none() && self.refreshing {
-                    Some("Reading repository…")
+                    Some("Leyendo el repositorio…")
                 } else if self.snapshot.is_none() {
-                    Some("No Git repository in this project.")
+                    Some("Este proyecto no tiene un repositorio Git.")
                 } else if self
                     .snapshot
                     .as_ref()
                     .is_some_and(|snapshot| snapshot.changes.is_empty())
                 {
-                    Some("No uncommitted changes")
+                    Some("No hay cambios sin confirmar")
                 } else {
                     None
                 }
             }
             GitPanelMode::Branch => {
                 if self.branch_error.is_some() && self.branch_changes.is_none() {
-                    Some("Select available branches and try again.")
+                    Some("Elige ramas disponibles e inténtalo de nuevo.")
                 } else if self.branch_changes.is_none()
                     && (self.branch_refreshing || self.refreshing)
                 {
-                    Some("Comparing with the base branch…")
+                    Some("Comparando con la rama base…")
                 } else if self.snapshot.is_none() && self.branch_changes.is_none() {
-                    Some("No Git repository in this project.")
+                    Some("Este proyecto no tiene un repositorio Git.")
                 } else if self
                     .branch_changes
                     .as_ref()
                     .is_some_and(|changes| changes.base.is_empty())
                 {
-                    Some("No base branch (main, master, or upstream) to compare.")
+                    Some("No hay rama base (main, master o upstream) para comparar.")
                 } else if self
                     .branch_changes
                     .as_ref()
                     .is_some_and(|changes| changes.snapshot.changes.is_empty())
                 {
-                    Some("No changes on this branch")
+                    Some("No hay cambios en esta rama")
                 } else if self.branch_changes.is_none() {
-                    Some("Comparing with the base branch…")
+                    Some("Comparando con la rama base…")
                 } else {
                     None
                 }
             }
             GitPanelMode::History => {
                 if self.history.is_none() && (self.history_refreshing || self.refreshing) {
-                    Some("Loading history…")
+                    Some("Cargando historial…")
                 } else if self.history.is_none() && self.snapshot.is_none() {
-                    Some("No Git repository in this project.")
+                    Some("Este proyecto no tiene un repositorio Git.")
                 } else if self
                     .history
                     .as_ref()
                     .is_some_and(|history| history.commits.is_empty())
                 {
-                    Some("This repository has no commits yet.")
+                    Some("Este repositorio aún no tiene commits.")
                 } else if self.history.is_none() {
-                    Some("Loading history…")
+                    Some("Cargando historial…")
                 } else {
                     None
                 }
@@ -2146,11 +2145,11 @@ fn format_short_date(iso: &str) -> String {
         return iso.to_owned();
     };
     let months = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic",
     ];
     let month = months.get(month.saturating_sub(1)).copied().unwrap_or("?");
     let day = day.trim_start_matches('0');
-    format!("{month} {day}, {year}")
+    format!("{day} {month} {year}")
 }
 
 fn lane_color(lane: usize) -> Rgba {

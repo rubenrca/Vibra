@@ -2,7 +2,7 @@ name: Rust
 
 on:
   push:
-    branches: [main, rewrite/gpui, feat/ghostty-terminal]
+    branches: [main]
   pull_request:
 
 permissions:

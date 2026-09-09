@@ -3,5 +3,4 @@
 **/.swiftpm
 .git
 dist
-ios
 third_party

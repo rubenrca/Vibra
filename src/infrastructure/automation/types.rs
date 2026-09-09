@@ -6,128 +6,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+pub use crate::domain::agents::{AgentAttention, AgentKind, AgentRuntimeState};
+
 pub(crate) const MAX_AUTOMATION_REQUEST_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_AUTOMATION_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) const MAX_AGENT_HOOK_BYTES: u64 = 1024 * 1024;
 pub(crate) const AUTOMATION_IO_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) static NEXT_AUTOMATION_SERVER_ID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentRuntimeState {
-    Idle,
-    Working,
-    Waiting,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentKind {
-    Aider,
-    Amp,
-    Claude,
-    Codex,
-    Cursor,
-    Gemini,
-    Goose,
-    Grok,
-    OpenCode,
-    Pi,
-}
-
-impl AgentKind {
-    pub const ALL: [Self; 10] = [
-        Self::Aider,
-        Self::Amp,
-        Self::Claude,
-        Self::Codex,
-        Self::Cursor,
-        Self::Gemini,
-        Self::Goose,
-        Self::Grok,
-        Self::OpenCode,
-        Self::Pi,
-    ];
-
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::Aider => "Aider",
-            Self::Amp => "Amp",
-            Self::Claude => "Claude",
-            Self::Codex => "Codex",
-            Self::Cursor => "Cursor",
-            Self::Gemini => "Gemini",
-            Self::Goose => "Goose",
-            Self::Grok => "Grok",
-            Self::OpenCode => "OpenCode",
-            Self::Pi => "Pi",
-        }
-    }
-
-    pub const fn cli_name(self) -> &'static str {
-        match self {
-            Self::Aider => "aider",
-            Self::Amp => "amp",
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Cursor => "cursor",
-            Self::Gemini => "gemini",
-            Self::Goose => "goose",
-            Self::Grok => "grok",
-            Self::OpenCode => "opencode",
-            Self::Pi => "pi",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "aider" => Some(Self::Aider),
-            "amp" => Some(Self::Amp),
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            "cursor" | "cursor-agent" => Some(Self::Cursor),
-            "gemini" => Some(Self::Gemini),
-            "goose" => Some(Self::Goose),
-            "grok" => Some(Self::Grok),
-            "opencode" => Some(Self::OpenCode),
-            "pi" => Some(Self::Pi),
-            _ => None,
-        }
-    }
-}
-
 pub const AUTOMATION_QUEUE_CAPACITY: usize = 32;
 pub(crate) const AUTOMATION_MAX_CLIENT_THREADS: usize = 8;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentAttention {
-    Permission,
-    Question,
-    Plan,
-    Notification,
-}
-
-impl AgentAttention {
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "permission" => Some(Self::Permission),
-            "question" => Some(Self::Question),
-            "plan" => Some(Self::Plan),
-            "notification" => Some(Self::Notification),
-            _ => None,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Permission => "permission",
-            Self::Question => "question",
-            Self::Plan => "plan",
-            Self::Notification => "notification",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]

@@ -2,7 +2,13 @@ use std::path::Path;
 
 use gpui::{Div, div, prelude::*, px};
 
+use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
+use crate::ui::theme::colors;
+
 use super::SidebarWorkspaceMeta;
+
+pub(crate) const PANEL_GAP: f32 = 4.0;
+pub(crate) const PANEL_RADIUS: f32 = 10.0;
 
 pub(crate) fn sidebar_tab_line(
     text: &str,
@@ -211,4 +217,103 @@ pub(crate) fn format_sidebar_branch(meta: &SidebarWorkspaceMeta) -> Option<Strin
 pub(crate) fn ease_out_cubic(t: f32) -> f32 {
     let inv = 1.0 - t;
     1.0 - inv * inv * inv
+}
+
+/// Outer clip + inner full-width column so sidebar content does not reflow while animating.
+pub(crate) fn clipped_width_panel(
+    width: f32,
+    full_width: f32,
+    background: gpui::Rgba,
+    content: impl IntoElement,
+) -> Div {
+    div()
+        .w(px(width))
+        .h_full()
+        .flex_none()
+        .relative()
+        .overflow_hidden()
+        .rounded(px(PANEL_RADIUS))
+        .bg(background)
+        .border_1()
+        .border_color(colors().border_subtle)
+        .child(
+            div()
+                .w(px(full_width))
+                .h_full()
+                .flex()
+                .flex_col()
+                .child(content),
+        )
+}
+
+pub(crate) fn sidebar_agent_priority(
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+) -> u8 {
+    match (state, attention) {
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Permission)) => 50,
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Question)) => 45,
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Plan)) => 40,
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Notification)) => 35,
+        (Some(AgentRuntimeState::Working), _) => 30,
+        (Some(AgentRuntimeState::Waiting), _) => 20,
+        (Some(AgentRuntimeState::Idle), _) => 10,
+        (None, _) => 0,
+    }
+}
+
+pub(crate) fn sidebar_agent_line(
+    kind: Option<&str>,
+    model: Option<&str>,
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+) -> String {
+    let kind = kind.unwrap_or("Terminal");
+    let activity = match (state, attention) {
+        (_, Some(AgentAttention::Permission)) => "pide permiso",
+        (_, Some(AgentAttention::Question)) => "tiene una pregunta",
+        (_, Some(AgentAttention::Plan)) => "tiene un plan",
+        (_, Some(AgentAttention::Notification)) => "necesita atención",
+        (Some(AgentRuntimeState::Working), _) => "trabajando",
+        (Some(AgentRuntimeState::Waiting), _) => "esperando",
+        (Some(AgentRuntimeState::Idle), _) => "listo",
+        (None, _) => "shell",
+    };
+    match model.map(str::trim).filter(|model| !model.is_empty()) {
+        Some(model) => format!("{kind} · {} · {activity}", compact_chrome_label(model, 20)),
+        None => format!("{kind} · {activity}"),
+    }
+}
+
+pub(crate) fn sidebar_location_line(branch: Option<&str>, path: &str) -> String {
+    match branch {
+        Some(branch) => format!("{branch}  ·  {path}"),
+        None => path.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_agent_line_includes_model_only_when_reported() {
+        assert_eq!(
+            sidebar_agent_line(Some("Codex"), None, Some(AgentRuntimeState::Working), None),
+            "Codex · trabajando"
+        );
+        assert_eq!(
+            sidebar_agent_line(
+                Some("Codex"),
+                Some("gpt-5"),
+                Some(AgentRuntimeState::Working),
+                None
+            ),
+            "Codex · gpt-5 · trabajando"
+        );
+        assert_eq!(
+            sidebar_location_line(Some("main"), "~/Dev/Vibra"),
+            "main  ·  ~/Dev/Vibra"
+        );
+    }
 }

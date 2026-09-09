@@ -12,8 +12,6 @@ fn main() {
     println!("cargo:rerun-if-changed=native/window_bridge.h");
     println!("cargo:rerun-if-changed=native/editor_bridge.m");
     println!("cargo:rerun-if-changed=native/editor_bridge.h");
-    println!("cargo:rerun-if-changed=native/process_inspect.c");
-    println!("cargo:rerun-if-changed=native/process_inspect.h");
     println!("cargo:rerun-if-env-changed=VIBRA_SPARKLE_FRAMEWORK");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -39,10 +37,6 @@ fn main() {
         .flag("-fobjc-arc")
         .flag("-fobjc-exceptions")
         .compile("vibra_editor_bridge");
-    cc::Build::new()
-        .file(manifest_dir.join("native/process_inspect.c"))
-        .include(manifest_dir.join("native"))
-        .compile("vibra_process_inspect");
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=UserNotifications");
@@ -137,7 +131,25 @@ fn find_sparkle_framework(manifest_dir: &Path) -> Option<PathBuf> {
             ".build/checkouts/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework",
         ),
         manifest_dir.join("third_party/Sparkle.framework"),
+        manifest_dir.join("third_party/sparkle-2.9.4/Sparkle.framework"),
         manifest_dir.join("dist/Vibra.app/Contents/Frameworks/Sparkle.framework"),
     ];
-    candidates.into_iter().find(|path| path.is_dir())
+    if let Some(path) = candidates.into_iter().find(|path| path.is_dir()) {
+        return Some(path);
+    }
+
+    let third_party = manifest_dir.join("third_party");
+    let Ok(entries) = std::fs::read_dir(&third_party) else {
+        return None;
+    };
+    entries.flatten().find_map(|entry| {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("sparkle-") {
+            return None;
+        }
+        let framework = path.join("Sparkle.framework");
+        framework.is_dir().then_some(framework)
+    })
 }

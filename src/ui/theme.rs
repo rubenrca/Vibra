@@ -6,6 +6,7 @@
 use std::sync::{LazyLock, OnceLock, RwLock};
 
 use gpui::{Rgba, WindowAppearance, rgb, rgba};
+use serde::{Deserialize, Serialize};
 
 use crate::ports::terminal::TerminalRgb;
 
@@ -259,30 +260,14 @@ pub fn terminal_palette() -> TerminalPalette {
 }
 
 /// How the app chooses light vs dark for dual-mode palettes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AppearanceMode {
     Light,
     Dark,
     #[default]
+    #[serde(other)]
     System,
-}
-
-impl AppearanceMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Light => "light",
-            Self::Dark => "dark",
-            Self::System => "system",
-        }
-    }
-
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "light" => Self::Light,
-            "dark" => Self::Dark,
-            _ => Self::System,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

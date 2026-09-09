@@ -46,16 +46,15 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - JetBrains Mono Variable incluida en la aplicación;
 - consola inferior persistente (`⌘J`) para servidores de desarrollo: al ocultarla el proceso sigue vivo y no cambia el pane seleccionado; cada sesión de la sidebar tiene las suyas y `+` abre terminales extra.
 
-### Files, Git y Servers
+### Files y Git
 
-- panel derecho unificado con las vistas `Files`, `Git` y `Servers`;
+- panel derecho unificado con las vistas `Files` y `Git`;
 - árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos y guías de indentación;
 - árbol de archivos que conserva el terminal como superficie central y enfoca los archivos modificados directamente en Git;
 - panel Git con tres vistas: working tree, cambios de la rama frente a la base por defecto, e historial de commits con grafo de lanes;
 - `Branch changes` permite elegir `Base` y `Compare` entre ramas locales y referencias remotas del último fetch, sin cambiar de rama; dos ramas comparan sus versiones guardadas, y `Working tree` incluye cambios sin commit. `Auto` + `Working tree` conserva la comparación desde el ancestro común;
 - diffs de solo lectura con tarjetas de archivo plegables, numeración anterior/nueva, encabezados de bloques y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
-- las mutaciones Git se realizan desde la terminal integrada;
-- pestaña `Servers` con procesos en escucha TCP de los PTY (vite, next, etc.), salto al pane, abrir URL y detener.
+- las mutaciones Git se realizan desde la terminal integrada.
 
 ### Agentes y seguimiento
 
@@ -196,7 +195,7 @@ importan una sola vez.
 | `⇧⌘E` | Abrir la carpeta activa en un IDE externo |
 | `⌘,` | Abrir Settings (modal centrado) |
 | `⌘B` | Mostrar u ocultar sidebar de sesiones |
-| `⌥⌘B` | Mostrar u ocultar panel Files, Git y Servers |
+| `⌥⌘B` | Mostrar u ocultar panel Files y Git |
 | `⌘J` | Mostrar u ocultar la terminal inferior de la sesión actual |
 | `⌘U` | Buscar actualizaciones (Sparkle) |
 | `⌘V` | Pegar (bracketed paste; Ctrl+V con imagen en agentes CLI) |
@@ -224,7 +223,8 @@ La vista principal se organiza en `src/ui/workspace_view/`:
 - `settings.rs`: páginas de configuración y aplicación de preferencias.
 - `dev_terminal.rs`: ciclo de vida y renderizado de las consolas inferiores.
 - `files.rs`: recorrido del árbol de archivos, iconos e indicadores Git.
-- `chrome.rs` y `automation.rs`: etiquetas de la interfaz y conversión de estados de agentes.
+- `chrome.rs`: etiquetas, layout compartido y conversión de texto de la interfaz.
+- `automation.rs`: resolución de presencia y estado de agentes.
 
 ## Licencia y reconocimientos
 

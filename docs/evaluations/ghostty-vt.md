@@ -1,5 +1,7 @@
 # Evaluación de libghostty-vt para Vibra
 
+**Estado:** histórico. La aplicación de producción ya usa Ghostty (`libghostty-vt`) como único motor. El control remoto iOS se retiró en 0.3.20. Conserva este documento como registro de la evaluación original; no describe el runtime actual.
+
 Fecha: 2026-09-04. Resultado: viable para un adaptador experimental; todavía no justifica cambiar el motor de producción.
 
 Continuación: se implementó la [migración de la aplicación a Ghostty](../ghostty.md) en `feat/ghostty-terminal`. Las mediciones de este documento corresponden al harness aislado, no al rendimiento de esa integración.

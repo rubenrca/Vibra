@@ -6,6 +6,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use super::cli::shell_quote;
 use super::*;
 
 const CLAUDE_HOOK_SCRIPT: &str = r#"#!/bin/sh

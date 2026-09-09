@@ -3,13 +3,24 @@ mod hooks;
 mod server;
 mod types;
 
-pub use cli::*;
-pub use hooks::*;
-pub use server::*;
-pub use types::*;
+pub use cli::run_cli;
+pub use hooks::{AgentHookStatus, agent_hook_status, install_agent_hooks, uninstall_agent_hooks};
+pub use server::AutomationServer;
+pub use types::{
+    AgentAttention, AgentKind, AgentRuntimeState, AutomationCommand, AutomationIncoming,
+    AutomationResponse,
+};
+
+#[cfg(test)]
+use cli::*;
+#[cfg(test)]
+use hooks::*;
+#[cfg(test)]
+use server::*;
 
 #[cfg(test)]
 mod tests {
+    use super::types::AutomationEnvelope;
     use super::*;
     use std::fs;
     use std::os::unix::net::UnixStream;

@@ -6,7 +6,11 @@ mod automation;
 mod chrome;
 mod dev_terminal;
 mod files;
+mod input;
+mod palette;
+mod panes;
 mod settings;
+mod titlebar;
 
 use automation::HookAgentPresence;
 use chrome::*;
@@ -20,16 +24,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, Context, Div, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render, SharedString,
-    Stateful, Styled, Subscription, Task, Timer, Transformation, Window, WindowControlArea, div,
-    prelude::*, px, radians, relative, svg,
+    AnyElement, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Task, Timer,
+    Transformation, Window, div, prelude::*, px, radians, svg,
 };
 use uuid::Uuid;
 
 use crate::domain::workspace::{
-    PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
-    SessionSnapshot, SidebarEntry, TabSnapshot, WorkspaceSnapshot, WorkspaceSplitAxis,
+    PaneBranch, PaneSplitDirection, SessionSnapshot, SidebarEntry, WorkspaceSnapshot,
+    WorkspaceSplitAxis,
 };
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentRuntimeState, AutomationServer, agent_hook_status,
@@ -50,11 +53,8 @@ use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::terminal::{TerminalDragPreview, TerminalView, TerminalViewEvent};
 use crate::ui::theme::colors;
 use crate::{
-    CloseTerminal, EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp,
-    GoToTab, NewTerminalTab, NewWorkspace, NextPane, NextWorkspace, OpenIde, PreviousPane,
-    PreviousWorkspace, QuickOpen, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp,
-    ShowSettings, SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleCommandPalette,
-    ToggleDevTerminal, ToggleLeftSidebar, TogglePaneZoom, ToggleRightSidebar,
+    CloseTerminal, GoToTab, NewTerminalTab, NewWorkspace, NextWorkspace, PreviousWorkspace,
+    ShowSettings, ToggleLeftSidebar, ToggleRightSidebar,
 };
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
@@ -62,10 +62,6 @@ const TITLEBAR_CHROME_COLLAPSED: f32 = 148.0;
 /// Titlebar chrome width when the right sidebar is fully collapsed (toggle only).
 const TITLEBAR_RIGHT_CHROME_COLLAPSED: f32 = 40.0;
 const TITLEBAR_HEIGHT: f32 = 38.0;
-/// Quiet separation between the app shell and its primary work surfaces.
-const PANEL_GAP: f32 = 4.0;
-/// Shared radius keeps sidebars and the terminal reading as one panel system.
-const PANEL_RADIUS: f32 = 10.0;
 /// Card padding + badge + gap beside the session text column.
 const SIDEBAR_WORKSPACE_CARD_CHROME: f32 = 20.0 + 28.0 + 8.0;
 /// The list inset plus the chrome inside a session card.
@@ -101,52 +97,6 @@ struct PaneIdentity {
     agent_state: Option<AgentRuntimeState>,
     agent_attention: Option<AgentAttention>,
     agent_model: Option<String>,
-}
-
-/// A workspace can have several split panes and tabs. Surface the agent that
-/// needs the user most, rather than whichever pane happened to be selected
-/// when the workspace was last saved.
-fn sidebar_agent_priority(identity: &PaneIdentity) -> u8 {
-    match (identity.agent_state, identity.agent_attention) {
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Permission)) => 50,
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Question)) => 45,
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Plan)) => 40,
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Notification)) => 35,
-        (Some(AgentRuntimeState::Working), _) => 30,
-        (Some(AgentRuntimeState::Waiting), _) => 20,
-        (Some(AgentRuntimeState::Idle), _) => 10,
-        (None, _) => 0,
-    }
-}
-
-fn sidebar_agent_line(
-    kind: Option<&str>,
-    model: Option<&str>,
-    state: Option<AgentRuntimeState>,
-    attention: Option<AgentAttention>,
-) -> String {
-    let kind = kind.unwrap_or("Terminal");
-    let activity = match (state, attention) {
-        (_, Some(AgentAttention::Permission)) => "needs permission",
-        (_, Some(AgentAttention::Question)) => "has a question",
-        (_, Some(AgentAttention::Plan)) => "has a plan",
-        (_, Some(AgentAttention::Notification)) => "needs attention",
-        (Some(AgentRuntimeState::Working), _) => "working",
-        (Some(AgentRuntimeState::Waiting), _) => "waiting",
-        (Some(AgentRuntimeState::Idle), _) => "ready",
-        (None, _) => "shell",
-    };
-    match model.map(str::trim).filter(|model| !model.is_empty()) {
-        Some(model) => format!("{kind} · {} · {activity}", compact_chrome_label(model, 20)),
-        None => format!("{kind} · {activity}"),
-    }
-}
-
-fn sidebar_location_line(branch: Option<&str>, path: &str) -> String {
-    match branch {
-        Some(branch) => format!("{branch}  ·  {path}"),
-        None => path.to_owned(),
-    }
 }
 
 #[derive(Clone)]
@@ -577,6 +527,7 @@ pub struct WorkspaceView {
     _persist_task: Option<Task<()>>,
     files_request_id: u64,
     _files_task: Option<Task<()>>,
+    files_watch: Option<files::FilesWatch>,
     palette_request_id: u64,
     _palette_task: Option<Task<()>>,
     _open_ide_task: Option<Task<()>>,
@@ -596,6 +547,35 @@ pub struct WorkspaceDependencies {
     pub terminal_port: Arc<dyn TerminalPort>,
     pub file_port: Arc<dyn FileSystemPort>,
     pub git_port: Arc<dyn GitPort>,
+}
+
+fn lookup_sidebar_branch_summaries(
+    port: Arc<dyn GitPort>,
+    targets: Vec<(Uuid, PathBuf)>,
+) -> Vec<(Uuid, PathBuf, Option<GitBranchSummary>)> {
+    if targets.len() <= 1 {
+        return targets
+            .into_iter()
+            .map(|(workspace_id, cwd)| {
+                let summary = port.branch_summary(&cwd).ok().flatten();
+                (workspace_id, cwd, summary)
+            })
+            .collect();
+    }
+    let handles: Vec<_> = targets
+        .into_iter()
+        .map(|(workspace_id, cwd)| {
+            let port = port.clone();
+            std::thread::spawn(move || {
+                let summary = port.branch_summary(&cwd).ok().flatten();
+                (workspace_id, cwd, summary)
+            })
+        })
+        .collect();
+    handles
+        .into_iter()
+        .filter_map(|handle| handle.join().ok())
+        .collect()
 }
 
 impl WorkspaceView {
@@ -704,8 +684,10 @@ impl WorkspaceView {
             }
         });
         let release_subscription = cx.on_release(|this, _| {
-            if this.window_size_persist_generation > 0 {
-                let _ = this.settings_repository.save(&this.settings);
+            if this.window_size_persist_generation > 0
+                && let Err(error) = this.settings_repository.save(&this.settings)
+            {
+                eprintln!("No se pudieron guardar settings al cerrar: {error}");
             }
         });
         let mut view = Self {
@@ -763,8 +745,12 @@ impl WorkspaceView {
             installed_editors: Vec::new(),
             ide_icons: HashMap::new(),
             rename_prompt: None,
-            right_sidebar_visible: settings.git_panel_visible,
-            right_sidebar_progress: if settings.git_panel_visible { 1.0 } else { 0.0 },
+            right_sidebar_visible: settings.right_sidebar_visible,
+            right_sidebar_progress: if settings.right_sidebar_visible {
+                1.0
+            } else {
+                0.0
+            },
             right_sidebar_mode: RightSidebarMode::Diff,
             sidebar_anim_token: 0,
             _sidebar_anim_task: None,
@@ -777,6 +763,7 @@ impl WorkspaceView {
             _persist_task: None,
             files_request_id: 0,
             _files_task: None,
+            files_watch: None,
             palette_request_id: 0,
             _palette_task: None,
             _open_ide_task: None,
@@ -796,7 +783,12 @@ impl WorkspaceView {
         view.reconcile_terminal_views(cx);
         view.sync_diff_root(cx);
         view.refresh_project_files(cx);
-        view.refresh_sidebar_workspace_meta(cx);
+        if crate::ui::idle::should_poll_sidebar_git(
+            view.left_sidebar_visible,
+            view.left_sidebar_mode == LeftSidebarMode::Sessions,
+        ) {
+            view.refresh_sidebar_workspace_meta(cx);
+        }
         view.sync_git_panel_visibility(cx);
         view
     }
@@ -975,14 +967,8 @@ impl WorkspaceView {
         self.sidebar_git_request_id = self.sidebar_git_request_id.wrapping_add(1);
         let request_id = self.sidebar_git_request_id;
         let port = self.git_port.clone();
-        let task = cx.background_spawn(async move {
-            let mut results = Vec::with_capacity(targets.len());
-            for (workspace_id, cwd) in targets {
-                let summary = port.branch_summary(&cwd).ok().flatten();
-                results.push((workspace_id, cwd, summary));
-            }
-            results
-        });
+        let task =
+            cx.background_spawn(async move { lookup_sidebar_branch_summaries(port, targets) });
         self._sidebar_git_task = Some(cx.spawn(async move |this, cx| {
             let results = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -1043,6 +1029,7 @@ impl WorkspaceView {
         let show_hidden = self.settings.show_hidden_files;
         let port = self.file_port.clone();
         let selected = self.selected_file_path.clone();
+        self.sync_files_watcher(cx);
         let task = cx.background_spawn(async move {
             let mut rows = Vec::new();
             let result = collect_project_files(
@@ -1091,38 +1078,6 @@ impl WorkspaceView {
 
     fn select_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.selected_file_path = Some(path);
-        cx.notify();
-    }
-
-    fn open_palette(&mut self, mode: PaletteMode, cx: &mut Context<Self>) {
-        self.palette_mode = Some(mode);
-        self.palette_query.clear();
-        self.palette_selected = 0;
-        self.settings_open = false;
-        self.context_menu = None;
-        self.rename_prompt = None;
-        self.palette_files.clear();
-        if mode == PaletteMode::Files {
-            self.palette_request_id = self.palette_request_id.wrapping_add(1);
-            let request_id = self.palette_request_id;
-            let root = self.project_root();
-            let port = self.file_port.clone();
-            let task = cx.background_spawn(async move {
-                let mut files = Vec::new();
-                let _ = collect_search_files(port.as_ref(), &root, &root, &mut files);
-                files
-            });
-            self._palette_task = Some(cx.spawn(async move |this, cx| {
-                let files = task.await;
-                let _ = this.update(cx, |this, cx| {
-                    if request_id != this.palette_request_id {
-                        return;
-                    }
-                    this.palette_files = files;
-                    cx.notify();
-                });
-            }));
-        }
         cx.notify();
     }
 
@@ -1367,395 +1322,10 @@ impl WorkspaceView {
         }
     }
 
-    fn toggle_command_palette(
-        &mut self,
-        _: &ToggleCommandPalette,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.palette_mode.is_some() {
-            self.palette_mode = None;
-            self.palette_files.clear();
-            cx.notify();
-        } else {
-            self.open_palette(PaletteMode::Commands, cx);
-        }
-    }
-
-    fn quick_open(&mut self, _: &QuickOpen, _: &mut Window, cx: &mut Context<Self>) {
-        self.open_palette(PaletteMode::Files, cx);
-    }
-
-    fn open_ide(&mut self, _: &OpenIde, _: &mut Window, cx: &mut Context<Self>) {
-        if self.ide_menu_open {
-            self.ide_menu_open = false;
-            cx.notify();
-            return;
-        }
-        self.installed_editors = crate::infrastructure::editor::installed_editors();
-        for editor in &self.installed_editors {
-            if !self.ide_icons.contains_key(editor.bundle_identifier)
-                && let Some(png) =
-                    crate::infrastructure::editor::editor_icon_png(editor.bundle_identifier)
-            {
-                self.ide_icons.insert(
-                    editor.bundle_identifier,
-                    Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
-                );
-            }
-        }
-        if self.installed_editors.is_empty() {
-            self.persistence_error = Some(
-                "No se encontró un IDE compatible. Instala Cursor, VS Code, Windsurf, Zed, Xcode, Sublime Text o VSCodium"
-                    .into(),
-            );
-        } else {
-            self.ide_menu_open = true;
-            self.context_menu = None;
-        }
-        cx.notify();
-    }
-
-    fn open_with_editor(&mut self, editor: InstalledEditor, cx: &mut Context<Self>) {
-        self.ide_menu_open = false;
-        let path = self.selected_live_cwd(cx);
-        let launch = cx.background_spawn(async move {
-            crate::infrastructure::editor::open_in_editor(&path, &editor)
-        });
-        self._open_ide_task = Some(cx.spawn(async move |this, cx| {
-            let result = launch.await;
-            let _ = this.update(cx, |this, cx| {
-                match result {
-                    Ok(()) => {
-                        if this.persistence_error.as_ref().is_some_and(|error| {
-                            error.to_string().starts_with("No se pudo abrir el IDE:")
-                        }) {
-                            this.persistence_error = None;
-                        }
-                    }
-                    Err(error) => {
-                        this.persistence_error =
-                            Some(format!("No se pudo abrir el IDE: {error}").into());
-                    }
-                }
-                cx.notify();
-            });
-        }));
-    }
-
-    fn palette_items(&self) -> Vec<PaletteItem> {
-        let Some(mode) = self.palette_mode else {
-            return Vec::new();
-        };
-        let mut items = match mode {
-            PaletteMode::Commands => vec![
-                PaletteItem {
-                    label: "Terminal: New tab".into(),
-                    detail: "⌘T".into(),
-                    action: PaletteAction::NewTerminalTab,
-                },
-                PaletteItem {
-                    label: "Terminal: Toggle Dev Terminal".into(),
-                    detail: "⌘J".into(),
-                    action: PaletteAction::ToggleDevTerminal,
-                },
-                PaletteItem {
-                    label: "Workspace: Open current folder in IDE".into(),
-                    detail: "⇧⌘E".into(),
-                    action: PaletteAction::OpenIde,
-                },
-                PaletteItem {
-                    label: "Workspace: New".into(),
-                    detail: "⌘N".into(),
-                    action: PaletteAction::NewWorkspace,
-                },
-                PaletteItem {
-                    label: "Pane: Split right".into(),
-                    detail: "⌘D".into(),
-                    action: PaletteAction::Split(PaneSplitDirection::Right),
-                },
-                PaletteItem {
-                    label: "Pane: Split down".into(),
-                    detail: "⇧⌘D".into(),
-                    action: PaletteAction::Split(PaneSplitDirection::Down),
-                },
-                PaletteItem {
-                    label: "Pane: Split left".into(),
-                    detail: String::new(),
-                    action: PaletteAction::Split(PaneSplitDirection::Left),
-                },
-                PaletteItem {
-                    label: "Pane: Split up".into(),
-                    detail: String::new(),
-                    action: PaletteAction::Split(PaneSplitDirection::Up),
-                },
-                PaletteItem {
-                    label: "Pane: Equalize".into(),
-                    detail: "⌃⌥E".into(),
-                    action: PaletteAction::EqualizePanes,
-                },
-                PaletteItem {
-                    label: "Pane: Toggle zoom".into(),
-                    detail: "⇧⌘↵".into(),
-                    action: PaletteAction::TogglePaneZoom,
-                },
-                PaletteItem {
-                    label: "Sidebar: Toggle Sessions".into(),
-                    detail: "⌘B".into(),
-                    action: PaletteAction::ShowSessions,
-                },
-                PaletteItem {
-                    label: "Sidebar: Toggle Files / Git".into(),
-                    detail: "⌥⌘B".into(),
-                    action: PaletteAction::ToggleGit,
-                },
-                PaletteItem {
-                    label: "Sidebar: Files".into(),
-                    detail: String::new(),
-                    action: PaletteAction::ShowFiles,
-                },
-                PaletteItem {
-                    label: "Sidebar: Info".into(),
-                    detail: String::new(),
-                    action: PaletteAction::ShowInfo,
-                },
-                PaletteItem {
-                    label: "Settings: Open".into(),
-                    detail: "⌘,".into(),
-                    action: PaletteAction::ShowSettings,
-                },
-            ],
-            PaletteMode::Files => {
-                let root = self.project_root();
-                let query = self.palette_query.to_lowercase();
-                let tokens: Vec<_> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
-                self.palette_files
-                    .iter()
-                    .filter_map(|path| {
-                        let label = path
-                            .strip_prefix(&root)
-                            .unwrap_or(path)
-                            .display()
-                            .to_string();
-                        if !tokens.is_empty() {
-                            let haystack = label.to_lowercase();
-                            if !tokens.iter().all(|token| haystack.contains(token)) {
-                                return None;
-                            }
-                        }
-                        Some(PaletteItem {
-                            label,
-                            detail: path
-                                .extension()
-                                .map(|extension| extension.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                            action: PaletteAction::OpenFile(path.clone()),
-                        })
-                    })
-                    .take(100)
-                    .collect()
-            }
-        };
-        if mode == PaletteMode::Commands {
-            items.extend(
-                self.snapshot
-                    .workspace_entries()
-                    .into_iter()
-                    .map(|entry| PaletteItem {
-                        label: format!("Workspace: {}", entry.workspace_name),
-                        detail: entry.project_name,
-                        action: PaletteAction::SelectWorkspace {
-                            project_id: entry.project_id,
-                            workspace_id: entry.workspace_id,
-                        },
-                    }),
-            );
-        }
-        if mode == PaletteMode::Commands {
-            let query = self.palette_query.to_lowercase();
-            if !query.is_empty() {
-                let tokens: Vec<_> = query.split_whitespace().collect();
-                items.retain(|item| {
-                    let haystack = item.label.to_lowercase();
-                    tokens.iter().all(|token| haystack.contains(token))
-                });
-            }
-            items.truncate(100);
-        }
-        items
-    }
-
-    fn execute_palette_action(
-        &mut self,
-        action: PaletteAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.palette_mode = None;
-        match action {
-            PaletteAction::NewTerminalTab => {
-                self.open_terminal_tab_in_current_directory(window, cx);
-            }
-            PaletteAction::ToggleDevTerminal => {
-                self.toggle_dev_terminal(&ToggleDevTerminal, window, cx);
-            }
-            PaletteAction::OpenIde => self.open_ide(&OpenIde, window, cx),
-            PaletteAction::NewWorkspace => {
-                self.open_workspace_in_current_directory(window, cx);
-            }
-            PaletteAction::Split(direction) => self.split_pane(direction, window, cx),
-            PaletteAction::EqualizePanes => {
-                if self.snapshot.equalize_selected_panes() {
-                    self.persist(cx);
-                }
-            }
-            PaletteAction::TogglePaneZoom => {
-                if self.snapshot.toggle_selected_pane_zoom() {
-                    self.sync_terminal_surface_visibility(cx);
-                    self.persist(cx);
-                }
-            }
-            PaletteAction::ToggleGit => self.toggle_diff_panel(cx),
-            PaletteAction::ShowSessions => {
-                if self.left_sidebar_visible && self.left_sidebar_mode == LeftSidebarMode::Sessions
-                {
-                    self.set_left_sidebar_visible(false, true, cx);
-                } else {
-                    self.left_sidebar_mode = LeftSidebarMode::Sessions;
-                    self.set_left_sidebar_visible(true, true, cx);
-                }
-            }
-            PaletteAction::ShowFiles => {
-                self.right_sidebar_mode = RightSidebarMode::Files;
-                self.refresh_project_files(cx);
-                self.set_right_sidebar_visible(true, true, cx);
-            }
-            PaletteAction::ShowInfo => {
-                self.left_sidebar_mode = LeftSidebarMode::Info;
-                self.set_left_sidebar_visible(true, true, cx);
-            }
-            PaletteAction::ShowSettings => {
-                self.open_settings(cx);
-            }
-            PaletteAction::SelectWorkspace {
-                project_id,
-                workspace_id,
-            } => self.select_workspace(project_id, workspace_id, window, cx),
-            PaletteAction::OpenFile(path) => {
-                self.select_file_path(path, cx);
-                self.right_sidebar_mode = RightSidebarMode::Files;
-                self.set_right_sidebar_visible(true, true, cx);
-            }
-        }
-    }
-
-    fn on_workspace_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let key = event.keystroke.key.to_ascii_lowercase();
-        if self.settings_open {
-            if matches!(key.as_str(), "escape" | "esc") {
-                self.close_settings(cx);
-            }
-            cx.stop_propagation();
-            return;
-        }
-        if self.ide_menu_open {
-            if matches!(key.as_str(), "escape" | "esc") {
-                self.ide_menu_open = false;
-                cx.notify();
-            }
-            cx.stop_propagation();
-            return;
-        }
-        if self.context_menu.is_some() {
-            if matches!(key.as_str(), "escape" | "esc") {
-                self.close_context_menu(cx);
-            }
-            cx.stop_propagation();
-            return;
-        }
-        if self.rename_prompt.is_some() {
-            match key.as_str() {
-                "escape" | "esc" => {
-                    self.rename_prompt = None;
-                    cx.notify();
-                }
-                "enter" | "return" => self.confirm_rename_prompt(cx),
-                "backspace" => {
-                    if let Some(prompt) = self.rename_prompt.as_mut() {
-                        prompt.value.pop();
-                        cx.notify();
-                    }
-                }
-                _ if !event.keystroke.modifiers.platform
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt =>
-                {
-                    if let Some(text) = event.keystroke.key_char.as_ref()
-                        && let Some(prompt) = self.rename_prompt.as_mut()
-                    {
-                        prompt.value.push_str(text);
-                        cx.notify();
-                    }
-                }
-                _ => {}
-            }
-            cx.stop_propagation();
-            return;
-        }
-        if self.palette_mode.is_some() {
-            match key.as_str() {
-                "escape" | "esc" => {
-                    self.palette_mode = None;
-                    cx.notify();
-                }
-                "up" => {
-                    self.palette_selected = self.palette_selected.saturating_sub(1);
-                    cx.notify();
-                }
-                "down" => {
-                    let count = self.palette_items().len();
-                    self.palette_selected =
-                        (self.palette_selected + 1).min(count.saturating_sub(1));
-                    cx.notify();
-                }
-                "enter" | "return" => {
-                    let items = self.palette_items();
-                    if let Some(item) = items.get(self.palette_selected) {
-                        self.execute_palette_action(item.action.clone(), window, cx);
-                    }
-                }
-                "backspace" => {
-                    self.palette_query.pop();
-                    self.palette_selected = 0;
-                    cx.notify();
-                }
-                _ if !event.keystroke.modifiers.platform
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt =>
-                {
-                    if let Some(text) = event.keystroke.key_char.as_ref() {
-                        self.palette_query.push_str(text);
-                        self.palette_selected = 0;
-                        cx.notify();
-                    }
-                }
-                _ => {}
-            }
-            cx.stop_propagation();
-        }
-    }
-
     fn toggle_diff_panel(&mut self, cx: &mut Context<Self>) {
         self.set_right_sidebar_visible(!self.right_sidebar_visible, true, cx);
         if self.right_sidebar_visible {
             self.sync_diff_root(cx);
-            self.diff_view
-                .update(cx, |diff_view, cx| diff_view.refresh_now(cx));
         }
     }
 
@@ -1781,16 +1351,18 @@ impl WorkspaceView {
                 .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
         }
         if self.right_sidebar_visible == visible {
+            self.sync_files_watcher(cx);
             cx.notify();
             return;
         }
         self.right_sidebar_visible = visible;
-        self.settings.git_panel_visible = visible;
+        self.settings.right_sidebar_visible = visible;
         self.sync_git_panel_visibility(cx);
         if persist {
             self.persist_settings(cx);
         }
         self.start_sidebar_animation(cx);
+        self.sync_files_watcher(cx);
     }
 
     /// Interpolates left/right sidebar progress toward their targets (~160ms ease-out).
@@ -2090,66 +1662,6 @@ impl WorkspaceView {
             .update_session_working_directory(session_id, &path);
     }
 
-    fn split_pane(
-        &mut self,
-        direction: PaneSplitDirection,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.capture_selected_working_directory(cx);
-        if let Some(session_id) = self.snapshot.split_selected_terminal(direction) {
-            self.reconcile_terminal_views(cx);
-            self.sync_diff_root(cx);
-            self.persist(cx);
-            self.focus_terminal(session_id, window, cx);
-        }
-    }
-
-    fn focus_pane(
-        &mut self,
-        direction: PaneFocusDirection,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.snapshot.focus_terminal(direction) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
-        }
-    }
-
-    fn cycle_pane(&mut self, offset: isize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.snapshot.cycle_terminal(offset) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
-        }
-    }
-
-    fn resize_pane(&mut self, direction: PaneResizeDirection, cx: &mut Context<Self>) {
-        if self.snapshot.resize_selected_pane(direction) {
-            self.persist(cx);
-        }
-    }
-
-    fn finish_pane_resize(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.pane_resize_dirty {
-            self.pane_resize_dirty = false;
-            self.persist(cx);
-        }
-        if self.sidebar_resize_dirty {
-            self.sidebar_resize_dirty = false;
-            self.persist_settings(cx);
-        }
-        if self.reorder_drag.take().is_some() {
-            cx.notify();
-        }
-    }
-
     fn go_to_tab(&mut self, action: &GoToTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette_mode.is_some() || self.settings_open || self.rename_prompt.is_some() {
             return;
@@ -2216,19 +1728,6 @@ impl WorkspaceView {
         {
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
-        }
-        cx.notify();
-    }
-
-    fn swap_panes(&mut self, from: Uuid, onto: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        self.reorder_drag = None;
-        if self.snapshot.swap_tab_terminals(from, onto) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
-            self.persist(cx);
-            self.focus_terminal(from, window, cx);
         }
         cx.notify();
     }
@@ -2435,91 +1934,6 @@ impl WorkspaceView {
         }
     }
 
-    fn split_pane_left(&mut self, _: &SplitPaneLeft, window: &mut Window, cx: &mut Context<Self>) {
-        self.split_pane(PaneSplitDirection::Left, window, cx);
-    }
-
-    fn split_pane_right(
-        &mut self,
-        _: &SplitPaneRight,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.split_pane(PaneSplitDirection::Right, window, cx);
-    }
-
-    fn split_pane_up(&mut self, _: &SplitPaneUp, window: &mut Window, cx: &mut Context<Self>) {
-        self.split_pane(PaneSplitDirection::Up, window, cx);
-    }
-
-    fn split_pane_down(&mut self, _: &SplitPaneDown, window: &mut Window, cx: &mut Context<Self>) {
-        self.split_pane(PaneSplitDirection::Down, window, cx);
-    }
-
-    fn focus_pane_left(&mut self, _: &FocusPaneLeft, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_pane(PaneFocusDirection::Left, window, cx);
-    }
-
-    fn focus_pane_right(
-        &mut self,
-        _: &FocusPaneRight,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.focus_pane(PaneFocusDirection::Right, window, cx);
-    }
-
-    fn focus_pane_up(&mut self, _: &FocusPaneUp, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_pane(PaneFocusDirection::Up, window, cx);
-    }
-
-    fn focus_pane_down(&mut self, _: &FocusPaneDown, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_pane(PaneFocusDirection::Down, window, cx);
-    }
-
-    fn previous_pane(&mut self, _: &PreviousPane, window: &mut Window, cx: &mut Context<Self>) {
-        self.cycle_pane(-1, window, cx);
-    }
-
-    fn next_pane(&mut self, _: &NextPane, window: &mut Window, cx: &mut Context<Self>) {
-        self.cycle_pane(1, window, cx);
-    }
-
-    fn resize_pane_left(&mut self, _: &ResizePaneLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.resize_pane(PaneResizeDirection::Left, cx);
-    }
-
-    fn resize_pane_right(&mut self, _: &ResizePaneRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.resize_pane(PaneResizeDirection::Right, cx);
-    }
-
-    fn resize_pane_up(&mut self, _: &ResizePaneUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.resize_pane(PaneResizeDirection::Up, cx);
-    }
-
-    fn resize_pane_down(&mut self, _: &ResizePaneDown, _: &mut Window, cx: &mut Context<Self>) {
-        self.resize_pane(PaneResizeDirection::Down, cx);
-    }
-
-    fn equalize_panes(&mut self, _: &EqualizePanes, _: &mut Window, cx: &mut Context<Self>) {
-        if self.snapshot.equalize_selected_panes() {
-            self.persist(cx);
-        }
-    }
-
-    fn toggle_pane_zoom(
-        &mut self,
-        _: &TogglePaneZoom,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.snapshot.toggle_selected_pane_zoom() {
-            self.sync_terminal_surface_visibility(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
-        }
-    }
-
     fn toggle_left_sidebar(
         &mut self,
         _: &ToggleLeftSidebar,
@@ -2556,21 +1970,13 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.snapshot.cycle_workspace(-1) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
+            self.apply_workspace_selection_change(window, cx);
         }
     }
 
     fn next_workspace(&mut self, _: &NextWorkspace, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.cycle_workspace(1) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
+            self.apply_workspace_selection_change(window, cx);
         }
     }
 
@@ -2582,139 +1988,23 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.snapshot.select_workspace(project_id, workspace_id) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
+            self.apply_workspace_selection_change(window, cx);
         }
     }
 
     fn select_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.select_tab(tab_id) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
+            self.apply_workspace_selection_change(window, cx);
         }
     }
 
-    fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let left_progress = self.left_sidebar_progress;
-        let right_progress = self.right_sidebar_progress;
-        // Keep titlebar controls aligned with the framed panels below.
-        let left_chrome_width = if left_progress > 0.99 {
-            self.left_sidebar_width()
-        } else {
-            TITLEBAR_CHROME_COLLAPSED
-                + (self.left_sidebar_width() - TITLEBAR_CHROME_COLLAPSED) * left_progress
-        };
-        let right_chrome_width = if right_progress > 0.99 {
-            self.right_sidebar_width()
-        } else {
-            TITLEBAR_RIGHT_CHROME_COLLAPSED
-                + (self.right_sidebar_width() - TITLEBAR_RIGHT_CHROME_COLLAPSED) * right_progress
-        };
-        let right_open = right_progress > 0.5;
-        let tabs = self
-            .snapshot
-            .selected_workspace()
-            .map(|workspace| workspace.tabs.clone())
-            .unwrap_or_default();
-        let selected_tab_id = self
-            .snapshot
-            .selected_workspace()
-            .and_then(|workspace| workspace.selected_tab_id);
-        let show_tab_selector = tabs.len() > 1;
-        let right_chrome_content = if right_open {
-            self.utility_mode_tabs(cx)
-        } else {
-            div()
-                .h_full()
-                .flex_1()
-                .window_control_area(WindowControlArea::Drag)
-                .on_mouse_down(MouseButton::Left, |_, _, _| {
-                    crate::infrastructure::window::start_drag();
-                })
-                .into_any_element()
-        };
-
-        let mut center_chrome = div()
-            .h_full()
-            .flex_1()
-            .min_w(px(0.0))
-            .flex()
-            .items_center()
-            .bg(colors().titlebar);
-        if show_tab_selector {
-            center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
-        } else {
-            center_chrome = center_chrome
-                .window_control_area(WindowControlArea::Drag)
-                .on_mouse_down(MouseButton::Left, |_, _, _| {
-                    crate::infrastructure::window::start_drag();
-                });
-        }
-
-        div()
-            .h(px(TITLEBAR_HEIGHT))
-            .w_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .bg(colors().titlebar)
-            .child(
-                div()
-                    .w(px(left_chrome_width))
-                    .h_full()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .pl(px(86.0))
-                    .gap_1()
-                    .bg(colors().titlebar)
-                    .child(
-                        self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
-                            if !this.left_sidebar_visible {
-                                this.left_sidebar_mode = LeftSidebarMode::Sessions;
-                            }
-                            this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
-                        }),
-                    )
-                    .child(
-                        div()
-                            .h_full()
-                            .flex_1()
-                            .window_control_area(WindowControlArea::Drag)
-                            .on_mouse_down(MouseButton::Left, |_, _, _| {
-                                crate::infrastructure::window::start_drag();
-                            }),
-                    ),
-            )
-            .child(center_chrome)
-            .child(
-                div()
-                    .w(px(right_chrome_width))
-                    .h_full()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .pr_2()
-                    .overflow_hidden()
-                    .bg(colors().titlebar)
-                    .child(right_chrome_content)
-                    .child(self.sidebar_button(
-                        "toggle-right-sidebar",
-                        false,
-                        cx,
-                        |this, _, cx| {
-                            this.toggle_diff_panel(cx);
-                        },
-                    )),
-            )
+    fn apply_workspace_selection_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_terminal_surface_visibility(cx);
+        self.sync_diff_root(cx);
+        self.refresh_project_files(cx);
+        self.refresh_sidebar_workspace_meta(cx);
+        self.persist(cx);
+        self.focus_selected_terminal(window, cx);
     }
 
     fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2725,32 +2015,16 @@ impl WorkspaceView {
         let full_width = self.left_sidebar_width();
         let width = full_width * self.left_sidebar_progress;
         let show_handle = self.left_sidebar_progress > 0.99;
-        // Outer clips to animated width; inner keeps full layout so content doesn't reflow.
-        div()
-            .w(px(width))
-            .h_full()
-            .flex_none()
-            .relative()
-            .overflow_hidden()
-            .rounded(px(PANEL_RADIUS))
-            .bg(colors().sidebar)
-            .border_1()
-            .border_color(colors().border_subtle)
-            .child(
-                div()
-                    .w(px(full_width))
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(content),
-            )
-            .when(show_handle, |sidebar| {
+        clipped_width_panel(width, full_width, colors().sidebar, content).when(
+            show_handle,
+            |sidebar| {
                 sidebar.child(self.sidebar_resize_handle(
                     "resize-left-sidebar",
                     SidebarResizeEdge::Left,
                     cx,
                 ))
-            })
+            },
+        )
     }
 
     fn sessions_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -2781,10 +2055,15 @@ impl WorkspaceView {
                     .flat_map(|tab| tab.sessions.iter().enumerate())
                     .filter_map(|(index, session)| {
                         let identity = self.pane_identity(session, index, cx);
-                        identity
-                            .agent_kind
-                            .is_some()
-                            .then(|| (sidebar_agent_priority(&identity), identity))
+                        identity.agent_kind.is_some().then(|| {
+                            (
+                                sidebar_agent_priority(
+                                    identity.agent_state,
+                                    identity.agent_attention,
+                                ),
+                                identity,
+                            )
+                        })
                     })
                     .max_by_key(|(priority, _)| *priority)
                     .map(|(_, identity)| identity);
@@ -3601,714 +2880,6 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    fn center_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let canvas = self.terminal_canvas(cx).into_any_element();
-        let drawer = self.dev_terminal_drawer(cx);
-        div()
-            .flex_1()
-            .min_w(px(360.0))
-            .h_full()
-            .flex()
-            .flex_col()
-            .min_h(px(0.0))
-            .overflow_hidden()
-            .rounded(px(PANEL_RADIUS))
-            .border_1()
-            .border_color(colors().border_subtle)
-            .bg(colors().terminal)
-            .child(canvas)
-            .children(drawer)
-    }
-
-    fn tab_bar(
-        &mut self,
-        tabs: Vec<TabSnapshot>,
-        selected_tab_id: Option<Uuid>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let can_reorder = tabs.len() > 1;
-        let tab_count = tabs.len();
-        let dragging_tab = match self.reorder_drag {
-            Some(ReorderDrag::Tab(id)) if cx.has_active_drag() => Some(id),
-            _ => None,
-        };
-        let tab_ids = tabs.iter().map(|tab| tab.id).collect::<Vec<_>>();
-        let tab_list = div()
-            .h_full()
-            .flex_1()
-            .min_w(px(0.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(4.0))
-            .overflow_x_hidden()
-            .when(can_reorder, |list| {
-                list.child(div().w(px(24.0)).flex_none())
-            })
-            .children(tabs.into_iter().enumerate().map(|(index, tab)| {
-                let tab_id = tab.id;
-                let after_tab_id = tab_ids.get(index + 1).copied();
-                let tab_order = tab_ids.clone();
-                let selected = Some(tab_id) == selected_tab_id;
-                let session = tab
-                    .sessions
-                    .iter()
-                    .find(|session| Some(session.id) == tab.selected_session_id)
-                    .or_else(|| tab.sessions.first());
-                let identity = session.map(|session| self.pane_identity(session, index, cx));
-                let session_id = session.map(|session| session.id);
-                let title = identity
-                    .as_ref()
-                    .map(|identity| identity.title.clone())
-                    .unwrap_or_else(|| format!("Terminal {}", index + 1));
-                let title = if tab_count > 1 {
-                    format!("{title} {}", index + 1)
-                } else {
-                    title
-                };
-                let shortcut = (index < 9).then(|| format!("⌘{}", index + 1));
-                let pane_count = tab.sessions.len();
-                // A tab identifies its focused pane. Background agents keep their state in
-                // their own pane headers instead of changing an unrelated tab dot.
-                let agent_color = identity.as_ref().and_then(|identity| {
-                    agent_status_color(identity.agent_state, identity.agent_attention)
-                });
-                let drag = TabDrag {
-                    tab_id,
-                    title: title.clone(),
-                    selected,
-                    shortcut: shortcut.clone(),
-                    tab_count,
-                };
-                let is_source = dragging_tab == Some(tab_id);
-                div()
-                    .id(SharedString::from(format!("tab-{tab_id}")))
-                    .h(px(26.0))
-                    .min_w(px(0.0))
-                    .flex_1()
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .px(px(10.0))
-                    .rounded_full()
-                    .when(can_reorder, |tab| tab.cursor_move())
-                    .when(!can_reorder, |tab| tab.cursor_pointer())
-                    .bg(if selected {
-                        colors().selection
-                    } else {
-                        gpui::rgba(0x00000000)
-                    })
-                    .border_1()
-                    .border_color(if selected {
-                        colors().muted
-                    } else {
-                        colors().border_subtle
-                    })
-                    .text_color(if selected {
-                        colors().foreground
-                    } else {
-                        colors().muted
-                    })
-                    .hover(|tab| {
-                        if selected {
-                            tab
-                        } else {
-                            tab.bg(colors().hover).text_color(colors().foreground)
-                        }
-                    })
-                    .active(|tab| tab.opacity(0.88))
-                    .when(is_source, |tab| tab.opacity(0.45))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.reorder_drag = Some(ReorderDrag::Tab(tab_id));
-                            this.select_tab(tab_id, window, cx);
-                            // Tabs own their drag gesture; only the empty bar moves the window.
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_tab(tab_id, window, cx);
-                    }))
-                    .when_some(session_id, |tab, session_id| {
-                        // Keep pane actions accessible when a CLI captures terminal mouse input.
-                        tab.on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                this.select_tab(tab_id, window, cx);
-                                this.select_terminal(session_id, window, cx);
-                                let x: f32 = event.position.x.into();
-                                let y: f32 = event.position.y.into();
-                                this.open_context_menu(
-                                    ContextMenuKind::Pane { session_id },
-                                    x,
-                                    y,
-                                    cx,
-                                );
-                                cx.stop_propagation();
-                            }),
-                        )
-                    })
-                    .when(can_reorder, |tab| {
-                        tab.on_drag(drag, |drag, _, window, cx| {
-                            // Tabs fill the central chrome, so derive the preview width from the
-                            // live window and tab count instead of rendering a compact chip.
-                            let window_width: f32 = window.bounds().size.width.into();
-                            let width =
-                                (window_width * (0.52 / drag.tab_count as f32)).clamp(160.0, 420.0);
-                            cx.new(|_| TabDragView {
-                                title: drag.title.clone(),
-                                selected: drag.selected,
-                                shortcut: drag.shortcut.clone(),
-                                width,
-                            })
-                        })
-                        .can_drop(move |value, _, _| {
-                            value
-                                .downcast_ref::<TabDrag>()
-                                .is_some_and(|drag| drag.tab_id != tab_id)
-                        })
-                        .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
-                            let dragged_from_left = tab_order
-                                .iter()
-                                .position(|id| *id == drag.tab_id)
-                                .is_some_and(|source_index| source_index < index);
-                            let before_tab_id = if dragged_from_left {
-                                after_tab_id
-                            } else {
-                                Some(tab_id)
-                            };
-                            this.reorder_tab(drag.tab_id, before_tab_id, window, cx);
-                        }))
-                        .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().hover))
-                    })
-                    .when_some(agent_color, |tab, color| {
-                        tab.child(
-                            div()
-                                .absolute()
-                                .left(px(12.0))
-                                .size(px(6.0))
-                                .rounded_full()
-                                .bg(color),
-                        )
-                    })
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .text_center()
-                                    .text_size(px(12.0))
-                                    .font_weight(if selected {
-                                        gpui::FontWeight::MEDIUM
-                                    } else {
-                                        gpui::FontWeight::NORMAL
-                                    })
-                                    .child(title),
-                            )
-                            .when(pane_count > 1, |label| {
-                                label.child(
-                                    div()
-                                        .flex_none()
-                                        .px(px(5.0))
-                                        .py(px(1.0))
-                                        .rounded(px(4.0))
-                                        .bg(colors().elevated)
-                                        .font_family("JetBrains Mono")
-                                        .text_size(px(8.5))
-                                        .text_color(colors().subtle)
-                                        .child(format!("{pane_count} panes")),
-                                )
-                            }),
-                    )
-                    .when_some(shortcut, |tab, shortcut| {
-                        tab.child(
-                            div()
-                                .absolute()
-                                .right(px(10.0))
-                                .font_family("JetBrains Mono")
-                                .text_size(px(9.5))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(if selected {
-                                    colors().muted
-                                } else {
-                                    colors().subtle
-                                })
-                                .child(shortcut),
-                        )
-                    })
-            }))
-            .when(can_reorder, |list| {
-                list.child(
-                    div()
-                        .id("tab-drop-end")
-                        .h_full()
-                        .w(px(24.0))
-                        .flex_none()
-                        .can_drop(|value, _, _| value.downcast_ref::<TabDrag>().is_some())
-                        .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().hover))
-                        .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
-                            this.reorder_tab(drag.tab_id, None, window, cx);
-                        })),
-                )
-            });
-
-        div()
-            .h_full()
-            .w_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .px(px(12.0))
-            .bg(colors().terminal)
-            .window_control_area(WindowControlArea::Drag)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                crate::infrastructure::window::start_drag();
-                cx.stop_propagation();
-            })
-            .child(tab_list)
-    }
-
-    fn render_pane_layout(
-        &mut self,
-        layout: &PaneLayoutSnapshot,
-        path: Vec<PaneBranch>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        match layout {
-            PaneLayoutSnapshot::Terminal { id } => {
-                let session_id = *id;
-                let terminal = self.terminals.get(&session_id).cloned();
-                let drag_preview = terminal
-                    .as_ref()
-                    .map(|terminal| terminal.read(cx).drag_preview())
-                    .unwrap_or_else(TerminalDragPreview::empty);
-                let pane_count = self
-                    .snapshot
-                    .selected_tab()
-                    .map_or(1, |tab| tab.sessions.len());
-                let framed = self
-                    .snapshot
-                    .selected_tab()
-                    .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none());
-                let selected = self
-                    .snapshot
-                    .selected_tab()
-                    .is_some_and(|tab| tab.selected_session_id == Some(session_id));
-                let identity = self.snapshot.selected_tab().and_then(|tab| {
-                    let index = tab
-                        .sessions
-                        .iter()
-                        .position(|session| session.id == session_id)?;
-                    tab.sessions
-                        .get(index)
-                        .map(|session| self.pane_identity(session, index, cx))
-                });
-                let can_drag = self
-                    .snapshot
-                    .selected_tab()
-                    .is_some_and(|tab| tab.zoomed_session_id.is_none() && pane_count > 1);
-                let dragging_pane = match self.reorder_drag {
-                    Some(ReorderDrag::Pane(id)) if cx.has_active_drag() => Some(id),
-                    _ => None,
-                };
-                let is_source = dragging_pane == Some(session_id);
-                let drag = PaneDrag {
-                    session_id,
-                    preview: drag_preview,
-                };
-                div()
-                    .id(SharedString::from(format!("pane-{session_id}")))
-                    .size_full()
-                    .min_w(px(80.0))
-                    .min_h(px(48.0))
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .bg(colors().terminal)
-                    .when(framed, |pane| {
-                        pane.rounded(px(PANEL_RADIUS - 2.0))
-                            .border_1()
-                            .border_color(colors().border_subtle)
-                    })
-                    .when(is_source, |pane| pane.opacity(0.55))
-                    .when(can_drag, |pane| {
-                        pane.cursor_move()
-                            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.preview.clone()))
-                    })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            if can_drag {
-                                this.reorder_drag = Some(ReorderDrag::Pane(session_id));
-                            }
-                            this.close_context_menu(cx);
-                            this.select_terminal(session_id, window, cx);
-                        }),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            this.select_terminal(session_id, window, cx);
-                            let x: f32 = event.position.x.into();
-                            let y: f32 = event.position.y.into();
-                            this.open_context_menu(ContextMenuKind::Pane { session_id }, x, y, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .when(pane_count > 1, |pane| {
-                        pane.when_some(identity, |pane, identity| {
-                            let has_agent = identity.agent_kind.is_some();
-                            pane.child(
-                                div()
-                                    .h(px(25.0))
-                                    .w_full()
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(7.0))
-                                    .px(px(8.0))
-                                    .overflow_hidden()
-                                    .bg(if selected {
-                                        colors().elevated
-                                    } else {
-                                        colors().terminal
-                                    })
-                                    .border_b_1()
-                                    .border_color(if selected {
-                                        colors().accent
-                                    } else {
-                                        colors().border_subtle
-                                    })
-                                    .child(agent_compact_badge(
-                                        identity.agent_kind.as_deref(),
-                                        identity.agent_state,
-                                        identity.agent_attention,
-                                        selected,
-                                    ))
-                                    .child(
-                                        div()
-                                            .min_w(px(0.0))
-                                            .max_w(px(220.0))
-                                            .truncate()
-                                            .font_family("JetBrains Mono")
-                                            .text_size(px(10.5))
-                                            .font_weight(if has_agent || selected {
-                                                gpui::FontWeight::MEDIUM
-                                            } else {
-                                                gpui::FontWeight::NORMAL
-                                            })
-                                            .text_color(if selected {
-                                                colors().foreground
-                                            } else {
-                                                colors().muted
-                                            })
-                                            .child(identity.title),
-                                    )
-                                    .when_some(identity.detail, |header, detail| {
-                                        header.child(
-                                            div()
-                                                .min_w(px(0.0))
-                                                .flex_1()
-                                                .truncate()
-                                                .text_right()
-                                                .font_family("JetBrains Mono")
-                                                .text_size(px(9.0))
-                                                .text_color(colors().subtle)
-                                                .child(detail),
-                                        )
-                                    }),
-                            )
-                        })
-                    })
-                    .when_some(terminal, |pane, terminal| {
-                        pane.child(
-                            div()
-                                .flex_1()
-                                .min_h(px(0.0))
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .child(terminal),
-                        )
-                    })
-                    // GPUI registers drop listeners while laying out the element. Keep this
-                    // transparent target mounted before a drag begins; mounting it only once a
-                    // drag is active means it never receives the drop that started that drag.
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("pane-drop-{session_id}")))
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            .can_drop(move |value, _, _| {
-                                value
-                                    .downcast_ref::<PaneDrag>()
-                                    .is_some_and(|drag| drag.session_id != session_id)
-                            })
-                            .drag_over::<PaneDrag>(|style, _, _, _| {
-                                style
-                                    .border_2()
-                                    .border_color(colors().accent)
-                                    .bg(colors().selection)
-                            })
-                            .on_drop(cx.listener(move |this, drag: &PaneDrag, window, cx| {
-                                this.swap_panes(drag.session_id, session_id, window, cx);
-                            })),
-                    )
-                    .into_any_element()
-            }
-            PaneLayoutSnapshot::Split {
-                axis,
-                ratio,
-                first,
-                second,
-            } => {
-                let axis = *axis;
-                let fraction = f32::from(*ratio) / 10_000.0;
-                let mut first_path = path.clone();
-                first_path.push(PaneBranch::First);
-                let mut second_path = path.clone();
-                second_path.push(PaneBranch::Second);
-                let first = self.render_pane_layout(first, first_path, cx);
-                let second = self.render_pane_layout(second, second_path, cx);
-                let divider_id = format!(
-                    "pane-divider-{}",
-                    path.iter()
-                        .map(|branch| match branch {
-                            PaneBranch::First => '0',
-                            PaneBranch::Second => '1',
-                        })
-                        .collect::<String>()
-                );
-                let drag = PaneDividerDrag {
-                    path: path.clone(),
-                    axis,
-                };
-                let divider = div()
-                    .id(SharedString::from(divider_id))
-                    .flex_none()
-                    .bg(colors().background)
-                    .hover(|divider| divider.bg(colors().muted))
-                    .when(axis == WorkspaceSplitAxis::Horizontal, |divider| {
-                        divider.w(px(PANEL_GAP)).h_full().cursor_ew_resize()
-                    })
-                    .when(axis == WorkspaceSplitAxis::Vertical, |divider| {
-                        divider.h(px(PANEL_GAP)).w_full().cursor_ns_resize()
-                    })
-                    .on_drag(drag, move |drag, _, _, cx| {
-                        cx.new(|_| PaneDividerDragView { axis: drag.axis })
-                    });
-                let listener_path = path;
-                div()
-                    .size_full()
-                    .min_w(px(0.0))
-                    .min_h(px(0.0))
-                    .flex()
-                    .when(axis == WorkspaceSplitAxis::Horizontal, |split| {
-                        split.flex_row()
-                    })
-                    .when(axis == WorkspaceSplitAxis::Vertical, |split| {
-                        split.flex_col()
-                    })
-                    .on_drag_move(cx.listener(
-                        move |this, event: &DragMoveEvent<PaneDividerDrag>, _, cx| {
-                            let drag = event.drag(cx).clone();
-                            if drag.path != listener_path || drag.axis != axis {
-                                return;
-                            }
-                            let (offset, length): (f32, f32) = match axis {
-                                WorkspaceSplitAxis::Horizontal => (
-                                    (event.event.position.x - event.bounds.left()).into(),
-                                    event.bounds.size.width.into(),
-                                ),
-                                WorkspaceSplitAxis::Vertical => (
-                                    (event.event.position.y - event.bounds.top()).into(),
-                                    event.bounds.size.height.into(),
-                                ),
-                            };
-                            if length <= 0.0 {
-                                return;
-                            }
-                            let ratio = ((offset / length) * 10_000.0).round() as u16;
-                            if this.snapshot.set_selected_split_ratio(&drag.path, ratio) {
-                                this.pane_resize_dirty = true;
-                                cx.notify();
-                            }
-                        },
-                    ))
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .min_h(px(0.0))
-                            .flex_none()
-                            .when(axis == WorkspaceSplitAxis::Horizontal, |pane| {
-                                pane.w(relative(fraction)).h_full()
-                            })
-                            .when(axis == WorkspaceSplitAxis::Vertical, |pane| {
-                                pane.h(relative(fraction)).w_full()
-                            })
-                            .child(first),
-                    )
-                    .child(divider)
-                    .child(div().min_w(px(0.0)).min_h(px(0.0)).flex_1().child(second))
-                    .into_any_element()
-            }
-        }
-    }
-
-    fn terminal_canvas(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tab = self.snapshot.selected_tab().cloned();
-        let panes = tab.as_ref().map(|tab| {
-            if let Some(zoomed_id) = tab.zoomed_session_id {
-                self.render_pane_layout(&PaneLayoutSnapshot::terminal(zoomed_id), Vec::new(), cx)
-            } else {
-                self.render_pane_layout(&tab.layout, Vec::new(), cx)
-            }
-        });
-        let is_empty = panes.is_none();
-        let zoomed = tab.as_ref().and_then(|tab| tab.zoomed_session_id).is_some();
-        let framed_panes = tab
-            .as_ref()
-            .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none());
-
-        // Full-bleed: no padding. Agent TUIs paint pure black; any inset against
-        // chrome makes the background look “cut off”.
-        div()
-            .flex_1()
-            .min_h(px(0.0))
-            .relative()
-            .overflow_hidden()
-            .bg(colors().terminal)
-            .when(framed_panes, |canvas| {
-                canvas.p(px(PANEL_GAP)).bg(colors().background)
-            })
-            .when_some(panes, |canvas, panes| canvas.child(panes))
-            .when(zoomed, |canvas| {
-                canvas.child(
-                    div()
-                        .absolute()
-                        .left_3()
-                        .bottom_3()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(colors().elevated)
-                        .text_xs()
-                        .text_color(colors().muted)
-                        .child("Pane ampliado · ⇧⌘↵ restaurar"),
-                )
-            })
-            .when(is_empty, |canvas| {
-                canvas.child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .size(px(32.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(13.0))
-                                .text_color(colors().muted)
-                                .child(">_"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(colors().muted)
-                                .child("Ninguna terminal seleccionada"),
-                        ),
-                )
-            })
-    }
-
-    fn utility_mode_tabs(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let mode = self.right_sidebar_mode;
-        let modes = [
-            (RightSidebarMode::Files, "Files", "chrome-icons/files.svg"),
-            (RightSidebarMode::Diff, "Git", "chrome-icons/git-branch.svg"),
-        ];
-
-        div()
-            .h_full()
-            .flex_1()
-            .min_w(px(0.0))
-            .flex()
-            .items_center()
-            .pl_3()
-            .child(div().flex().items_center().children(modes.into_iter().map(
-                |(item_mode, label, icon)| {
-                    let selected = item_mode == mode;
-                    div()
-                        .id(SharedString::from(format!("utility-mode-{label}")))
-                        .h(px(26.0))
-                        .relative()
-                        .w(px(32.0))
-                        .mr_2()
-                        .rounded(px(7.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .bg(if selected {
-                            colors().selection
-                        } else {
-                            gpui::rgba(0x00000000)
-                        })
-                        .text_color(if selected {
-                            colors().foreground
-                        } else {
-                            colors().subtle
-                        })
-                        .hover(|tab| tab.bg(colors().hover).text_color(colors().foreground))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.right_sidebar_mode = item_mode;
-                            match item_mode {
-                                RightSidebarMode::Files => this.refresh_project_files(cx),
-                                RightSidebarMode::Diff => {
-                                    this.sync_diff_root(cx);
-                                    this.diff_view.update(cx, |diff_view, cx| {
-                                        diff_view.refresh_now(cx);
-                                    });
-                                }
-                            }
-                            cx.notify();
-                        }))
-                        .child(svg().path(icon).size(px(15.0)).text_color(if selected {
-                            colors().foreground
-                        } else {
-                            colors().subtle
-                        }))
-                },
-            )))
-            .child(self.ide_button(cx))
-            .child(
-                div()
-                    .h_full()
-                    .flex_1()
-                    .window_control_area(WindowControlArea::Drag)
-                    .on_mouse_down(MouseButton::Left, |_, _, _| {
-                        crate::infrastructure::window::start_drag();
-                    }),
-            )
-            .into_any_element()
-    }
-
     fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.right_sidebar_mode;
         let full_width = self.right_sidebar_width();
@@ -4319,191 +2890,15 @@ impl WorkspaceView {
             RightSidebarMode::Diff => self.diff_view.clone().into_any_element(),
         };
 
-        // Outer clips to animated width; inner keeps the full panel layout.
-        div()
-            .w(px(width))
-            .h_full()
-            .flex_none()
-            .relative()
-            .overflow_hidden()
-            .rounded(px(PANEL_RADIUS))
-            .bg(colors().panel)
-            .border_1()
-            .border_color(colors().border_subtle)
-            .child(
-                div()
-                    .w(px(full_width))
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(content),
-            )
-            .when(show_handle, |sidebar| {
+        clipped_width_panel(width, full_width, colors().panel, content).when(
+            show_handle,
+            |sidebar| {
                 sidebar.child(self.sidebar_resize_handle(
                     "resize-right-sidebar",
                     SidebarResizeEdge::Right,
                     cx,
                 ))
-            })
-    }
-
-    fn palette_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let mode = self.palette_mode?;
-        let items = self.palette_items();
-        let selected = self.palette_selected.min(items.len().saturating_sub(1));
-        let query = self.palette_query.clone();
-        let placeholder = match mode {
-            PaletteMode::Commands => "Buscar comandos…",
-            PaletteMode::Files => "Abrir archivo…",
-        };
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_start()
-                .justify_center()
-                .pt(px(86.0))
-                .bg(colors().overlay())
-                .child(
-                    div()
-                        .w(px(560.0))
-                        .max_w_full()
-                        .max_h(px(460.0))
-                        .mx_4()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(colors().elevated)
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .h(px(48.0))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .px_4()
-                                .border_b_1()
-                                .border_color(colors().border_subtle)
-                                .child(
-                                    div()
-                                        .font_family("JetBrains Mono")
-                                        .text_color(colors().subtle)
-                                        .child(">"),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .font_family("JetBrains Mono")
-                                        .text_size(px(12.0))
-                                        .text_color(if query.is_empty() {
-                                            colors().subtle
-                                        } else {
-                                            colors().foreground
-                                        })
-                                        .child(if query.is_empty() {
-                                            placeholder.to_owned()
-                                        } else {
-                                            query
-                                        }),
-                                )
-                                .child(div().text_xs().text_color(colors().subtle).child("esc")),
-                        )
-                        .child(
-                            div()
-                                .id("palette-results")
-                                .flex_1()
-                                .min_h(px(0.0))
-                                .overflow_y_scroll()
-                                .py_2()
-                                .children(items.into_iter().enumerate().map(|(index, item)| {
-                                    let active = index == selected;
-                                    let action = item.action.clone();
-                                    div()
-                                        .id(SharedString::from(format!("palette-item-{index}")))
-                                        .h(px(38.0))
-                                        .mx_2()
-                                        .px_3()
-                                        .rounded(px(6.0))
-                                        .flex()
-                                        .items_center()
-                                        .gap_3()
-                                        .cursor_pointer()
-                                        .bg(if active {
-                                            colors().selection
-                                        } else {
-                                            colors().elevated
-                                        })
-                                        .hover(|row| row.bg(colors().hover))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.execute_palette_action(action.clone(), window, cx);
-                                        }))
-                                        .child(
-                                            div()
-                                                .w(px(18.0))
-                                                .text_center()
-                                                .font_family("JetBrains Mono")
-                                                .text_color(if active {
-                                                    colors().muted
-                                                } else {
-                                                    colors().subtle
-                                                })
-                                                .child(if active { "›" } else { "·" }),
-                                        )
-                                        .child(
-                                            div()
-                                                .min_w(px(0.0))
-                                                .flex_1()
-                                                .truncate()
-                                                .text_size(px(11.0))
-                                                .text_color(if active {
-                                                    colors().foreground
-                                                } else {
-                                                    colors().muted
-                                                })
-                                                .child(item.label),
-                                        )
-                                        .child(
-                                            div()
-                                                .font_family("JetBrains Mono")
-                                                .text_size(px(8.5))
-                                                .text_color(colors().subtle)
-                                                .child(item.detail),
-                                        )
-                                })),
-                        )
-                        .when(self.palette_items().is_empty(), |palette| {
-                            palette.child(
-                                div()
-                                    .h(px(80.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_sm()
-                                    .text_color(colors().subtle)
-                                    .child("Sin resultados"),
-                            )
-                        })
-                        .child(
-                            div()
-                                .h(px(28.0))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_end()
-                                .px_3()
-                                .border_t_1()
-                                .border_color(colors().border_subtle)
-                                .text_xs()
-                                .text_color(colors().subtle)
-                                .child("↑↓ navegar · ↵ ejecutar"),
-                        ),
-                )
-                .into_any_element(),
+            },
         )
     }
 
@@ -4770,173 +3165,6 @@ impl WorkspaceView {
                 .text_color(colors().danger)
                 .child(div().size(px(5.0)).rounded_full().bg(colors().danger))
                 .child(error.clone())
-        })
-    }
-
-    fn sidebar_close_button(
-        &self,
-        id: &'static str,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .size(px(18.0))
-            .flex_none()
-            .rounded(px(4.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .text_size(px(13.0))
-            .text_color(colors().subtle)
-            .hover(|close| close.bg(colors().hover).text_color(colors().foreground))
-            .active(|close| close.opacity(0.72))
-            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
-            .child("×")
-    }
-
-    fn sidebar_icon(left: bool) -> Div {
-        let panel = div()
-            .w(px(4.0))
-            .h_full()
-            .flex_none()
-            .bg(colors().foreground);
-        let content = div().h_full().flex_1();
-        let icon = div()
-            .w(px(14.0))
-            .h(px(12.0))
-            .flex()
-            .overflow_hidden()
-            .rounded(px(2.0))
-            .border_1()
-            .border_color(colors().muted);
-
-        if left {
-            icon.child(panel).child(content)
-        } else {
-            icon.child(content).child(panel)
-        }
-    }
-
-    fn sidebar_button(
-        &self,
-        id: &'static str,
-        left: bool,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .size(px(24.0))
-            .flex_none()
-            .rounded(px(5.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .bg(colors().titlebar)
-            .hover(|button| button.bg(colors().hover))
-            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-            .child(Self::sidebar_icon(left))
-    }
-
-    fn ide_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        div()
-            .id("open-ide")
-            .h(px(26.0))
-            .relative()
-            .w(px(32.0))
-            .mr_2()
-            .rounded(px(7.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .bg(gpui::rgba(0x00000000))
-            .text_color(colors().subtle)
-            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.open_ide(&OpenIde, window, cx);
-            }))
-            .child(
-                svg()
-                    .path("chrome-icons/open-external.svg")
-                    .size(px(15.0))
-                    .text_color(colors().subtle),
-            )
-    }
-
-    fn ide_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.ide_menu_open.then(|| {
-            let right = (self.right_sidebar_width() - 164.0).max(8.0);
-            div()
-                .absolute()
-                .inset_0()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.ide_menu_open = false;
-                        cx.notify();
-                    }),
-                )
-                .child(
-                    div()
-                        .id("ide-menu")
-                        .absolute()
-                        .top(px(34.0))
-                        .right(px(right))
-                        .min_w(px(190.0))
-                        .py_1()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(colors().elevated)
-                        .shadow_lg()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .text_size(px(9.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(colors().subtle)
-                                .child("ABRIR CARPETA EN"),
-                        )
-                        .children(self.installed_editors.clone().into_iter().enumerate().map(
-                            |(index, editor)| {
-                                let label = editor.name;
-                                let icon = self.ide_icons.get(editor.bundle_identifier).cloned();
-                                let icon = match icon {
-                                    Some(icon) => gpui::img(icon).size(px(16.0)).into_any_element(),
-                                    None => svg()
-                                        .path("chrome-icons/open-external.svg")
-                                        .size(px(16.0))
-                                        .text_color(colors().subtle)
-                                        .into_any_element(),
-                                };
-                                div()
-                                    .id(SharedString::from(format!("ide-menu-item-{index}")))
-                                    .h(px(32.0))
-                                    .mx_1()
-                                    .px_3()
-                                    .rounded(px(5.0))
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .cursor_pointer()
-                                    .text_size(px(11.0))
-                                    .text_color(colors().foreground)
-                                    .hover(|item| item.bg(colors().hover))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.open_with_editor(editor.clone(), cx);
-                                    }))
-                                    .child(div().size(px(16.0)).flex_none().child(icon))
-                                    .child(label)
-                            },
-                        )),
-                )
-                .into_any_element()
         })
     }
 }
@@ -5330,7 +3558,7 @@ mod tests {
                                 settings_repository,
                                 terminal_port: Arc::new(SilentTerminalPort),
                                 file_port: Arc::new(LocalFileSystemPort),
-                                git_port: Arc::new(GitCliPort),
+                                git_port: Arc::new(GitCliPort::default()),
                             },
                             root.clone(),
                             focus_handle,
@@ -5400,27 +3628,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn sidebar_agent_line_includes_model_only_when_reported() {
-        assert_eq!(
-            sidebar_agent_line(Some("Codex"), None, Some(AgentRuntimeState::Working), None),
-            "Codex · working"
-        );
-        assert_eq!(
-            sidebar_agent_line(
-                Some("Codex"),
-                Some("gpt-5"),
-                Some(AgentRuntimeState::Working),
-                None
-            ),
-            "Codex · gpt-5 · working"
-        );
-        assert_eq!(
-            sidebar_location_line(Some("main"), "~/Dev/Vibra"),
-            "main  ·  ~/Dev/Vibra"
-        );
-    }
-
     #[gpui::test]
     fn toggling_dev_terminal_keeps_a_hidden_pty_without_changing_panes(
         cx: &mut gpui::TestAppContext,
@@ -5456,7 +3663,7 @@ mod tests {
                                 settings_repository,
                                 terminal_port: Arc::new(SilentTerminalPort),
                                 file_port: Arc::new(LocalFileSystemPort),
-                                git_port: Arc::new(GitCliPort),
+                                git_port: Arc::new(GitCliPort::default()),
                             },
                             root.clone(),
                             focus_handle,
@@ -5565,7 +3772,7 @@ mod tests {
                                 settings_repository,
                                 terminal_port: Arc::new(SilentTerminalPort),
                                 file_port: Arc::new(LocalFileSystemPort),
-                                git_port: Arc::new(GitCliPort),
+                                git_port: Arc::new(GitCliPort::default()),
                             },
                             root.clone(),
                             focus_handle,

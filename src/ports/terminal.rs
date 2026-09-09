@@ -6,6 +6,8 @@ use anyhow::Result;
 use async_channel::Receiver;
 use uuid::Uuid;
 
+use crate::domain::agents::AgentRuntimeState;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerminalSize {
     pub columns: u16,
@@ -143,6 +145,16 @@ mod tests {
         assert_eq!(glyph.text(), "A");
         assert!(glyph.glyph_is_heap_allocated());
     }
+
+    #[test]
+    fn hyperlink_opening_is_limited_to_expected_schemes() {
+        assert!(is_safe_hyperlink("https://example.com"));
+        assert!(is_safe_hyperlink("http://example.com"));
+        assert!(is_safe_hyperlink("mailto:hello@example.com"));
+        assert!(is_safe_hyperlink("file:///tmp/notes.md"));
+        assert!(!is_safe_hyperlink("javascript:alert(1)"));
+        assert!(!is_safe_hyperlink("data:text/html,hi"));
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -246,13 +258,6 @@ pub enum TerminalSearchDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalAgentState {
-    Idle,
-    Working,
-    Waiting,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalAgentKindSource {
     Process,
     Title,
@@ -263,7 +268,7 @@ pub enum TerminalAgentKindSource {
 pub struct TerminalAgentPresence {
     pub kind: String,
     pub kind_source: TerminalAgentKindSource,
-    pub state: TerminalAgentState,
+    pub state: AgentRuntimeState,
     /// Foreground process group owning the TTY. This pins aliases and waits to
     /// the live agent process instead of to the pane that happens to contain it.
     pub process_id: Option<u32>,
@@ -329,4 +334,10 @@ pub trait TerminalHandle: Send + Sync {
     fn hyperlink_at(&self, point: TerminalPoint) -> Option<String>;
     fn acknowledge_wakeup(&self);
     fn shutdown(&self);
+}
+
+pub fn is_safe_hyperlink(uri: &str) -> bool {
+    ["https://", "http://", "mailto:", "file://"]
+        .iter()
+        .any(|scheme| uri.starts_with(scheme))
 }

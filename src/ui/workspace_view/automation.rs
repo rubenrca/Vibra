@@ -10,7 +10,7 @@ use crate::infrastructure::automation::{
 use crate::infrastructure::notifications::{
     AgentActivitySnapshot, AgentNotificationDelivery, agent_notification_copy, should_notify_agent,
 };
-use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentState};
+use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
 
 use super::WorkspaceView;
 
@@ -45,15 +45,6 @@ fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
     }
 }
 
-/// Maps the terminal heuristic state to the shared agent activity state.
-fn terminal_agent_state_to_runtime_state(state: TerminalAgentState) -> AgentRuntimeState {
-    match state {
-        TerminalAgentState::Idle => AgentRuntimeState::Idle,
-        TerminalAgentState::Working => AgentRuntimeState::Working,
-        TerminalAgentState::Waiting => AgentRuntimeState::Waiting,
-    }
-}
-
 /// Process identity wins over hooks; matching, unexpired hooks supply activity.
 fn resolve_agent_presence(
     detected: Option<&TerminalAgentPresence>,
@@ -81,11 +72,7 @@ fn resolve_agent_presence(
     let (state, state_source, attention) = if let Some(hook) = hook {
         (hook.state, "hook", hook.attention)
     } else {
-        (
-            terminal_agent_state_to_runtime_state(detected?.state),
-            "heuristic",
-            None,
-        )
+        (detected?.state, "heuristic", None)
     };
     Some(ResolvedAgentPresence {
         kind,
@@ -305,7 +292,7 @@ mod tests {
         TerminalAgentPresence {
             kind: kind.into(),
             kind_source,
-            state: TerminalAgentState::Working,
+            state: AgentRuntimeState::Working,
             process_id: Some(42),
         }
     }

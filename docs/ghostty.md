@@ -1,6 +1,6 @@
 # Motor Ghostty de Vibra
 
-Rama: `feat/ghostty-terminal`. Ghostty es el motor único de la aplicación. Se retiraron el adaptador Alacritty y su dependencia del workspace principal; el harness histórico de evaluación sigue aislado en `tools/terminal-eval`.
+Ghostty es el motor único de la aplicación. Se retiraron el adaptador Alacritty y su dependencia del workspace principal; el harness histórico de evaluación sigue aislado en `tools/terminal-eval`.
 
 ## Compilar y ejecutar
 

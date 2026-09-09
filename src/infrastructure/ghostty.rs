@@ -909,12 +909,8 @@ fn plain_hyperlink(line: &[TerminalCell], column: usize) -> Option<String> {
     let leading = raw.len() - trimmed.len();
     let uri =
         trimmed.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '>', '\'', '"']);
-    (cursor_byte >= leading
-        && cursor_byte < leading + uri.len()
-        && ["http://", "https://", "mailto:", "file://"]
-            .iter()
-            .any(|s| uri.starts_with(s)))
-    .then(|| uri.to_owned())
+    (cursor_byte >= leading && cursor_byte < leading + uri.len() && is_safe_hyperlink(uri))
+        .then(|| uri.to_owned())
 }
 
 #[cfg(test)]

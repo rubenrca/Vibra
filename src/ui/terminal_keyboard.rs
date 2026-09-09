@@ -1,5 +1,7 @@
 //! Mode-aware keyboard encoder for terminal input.
-use super::terminal::TerminalInputMode;
+
+use crate::ports::terminal::TerminalInputMode;
+
 #[derive(Clone, Copy, Default)]
 pub struct TerminalModifiers {
     pub shift: bool,
@@ -7,16 +9,19 @@ pub struct TerminalModifiers {
     pub control: bool,
     pub platform: bool,
 }
+
 impl TerminalModifiers {
     fn modified(self) -> bool {
         self.shift || self.alt || self.control || self.platform
     }
 }
+
 pub struct TerminalKeystroke {
     pub key: String,
     pub key_char: Option<String>,
     pub modifiers: TerminalModifiers,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalKeyEventType {
     Press,

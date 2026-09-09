@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
 
@@ -12,9 +14,44 @@ use crate::ports::git::{
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
+const BRANCH_SUMMARY_TTL: Duration = Duration::from_millis(1_500);
+
+#[derive(Clone)]
+struct CachedBranchSummary {
+    summary: GitBranchSummary,
+    fetched_at: Instant,
+}
 
 #[derive(Default)]
-pub struct GitCliPort;
+pub struct GitCliPort {
+    branch_cache: Mutex<HashMap<PathBuf, CachedBranchSummary>>,
+}
+
+impl GitCliPort {
+    fn cached_branch_summary(&self, root: &Path) -> Option<GitBranchSummary> {
+        let cache = self
+            .branch_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let entry = cache.get(root)?;
+        (entry.fetched_at.elapsed() < BRANCH_SUMMARY_TTL).then(|| entry.summary.clone())
+    }
+
+    fn remember_branch_summary(&self, root: PathBuf, summary: GitBranchSummary) {
+        let mut cache = self
+            .branch_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cache.retain(|_, entry| entry.fetched_at.elapsed() < BRANCH_SUMMARY_TTL * 4);
+        cache.insert(
+            root,
+            CachedBranchSummary {
+                summary,
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+}
 
 impl GitPort for GitCliPort {
     fn snapshot(&self, root: &Path) -> Result<Option<GitRepositorySnapshot>> {
@@ -34,6 +71,8 @@ impl GitPort for GitCliPort {
         ensure_success(&output, "git status")?;
         let mut records = output.stdout.split(|byte| *byte == 0).peekable();
         let mut branch = "HEAD".to_owned();
+        let mut ahead = 0;
+        let mut behind = 0;
         let mut changes = Vec::new();
 
         while let Some(record) = records.next() {
@@ -42,7 +81,7 @@ impl GitPort for GitCliPort {
             }
             let record = String::from_utf8_lossy(record);
             if let Some(header) = record.strip_prefix("## ") {
-                (branch, _, _) = parse_branch_header(header);
+                (branch, ahead, behind) = parse_branch_header(header);
                 continue;
             }
             if record.len() < 3 {
@@ -90,6 +129,15 @@ impl GitPort for GitCliPort {
         });
         let additions = changes.iter().filter_map(|change| change.additions).sum();
         let deletions = changes.iter().filter_map(|change| change.deletions).sum();
+        self.remember_branch_summary(
+            root.clone(),
+            GitBranchSummary {
+                branch: branch.clone(),
+                ahead,
+                behind,
+                dirty: !changes.is_empty(),
+            },
+        );
         Ok(Some(GitRepositorySnapshot {
             root,
             branch,
@@ -103,6 +151,9 @@ impl GitPort for GitCliPort {
         let Some(root) = repository_root(root)? else {
             return Ok(None);
         };
+        if let Some(cached) = self.cached_branch_summary(&root) {
+            return Ok(Some(cached));
+        }
         // Porcelain without numstat/diff: enough for branch, tracking counts, and dirty.
         let output = run_git(
             &root,
@@ -146,12 +197,14 @@ impl GitPort for GitCliPort {
             }
         }
 
-        Ok(Some(GitBranchSummary {
+        let summary = GitBranchSummary {
             branch,
             ahead,
             behind,
             dirty,
-        }))
+        };
+        self.remember_branch_summary(root, summary.clone());
+        Ok(Some(summary))
     }
 
     fn diff(&self, repository: &Path, change: &GitFileChange) -> Result<GitDiff> {
@@ -1120,7 +1173,7 @@ mod tests {
         fs::write(root.join("staged.txt"), "prepared\n").unwrap();
         git(&root, &["add", "staged.txt"]);
         fs::write(root.join("new file.txt"), "new\nfile\n").unwrap();
-        let port = GitCliPort;
+        let port = GitCliPort::default();
 
         let snapshot = port.snapshot(&root).unwrap().unwrap();
 
@@ -1152,7 +1205,7 @@ mod tests {
         let nested = root.join("src/deep");
         fs::create_dir_all(&nested).unwrap();
 
-        let snapshot = GitCliPort.snapshot(&nested).unwrap().unwrap();
+        let snapshot = GitCliPort::default().snapshot(&nested).unwrap().unwrap();
 
         assert_eq!(snapshot.root, root.canonicalize().unwrap());
         fs::remove_dir_all(root).unwrap();
@@ -1161,14 +1214,37 @@ mod tests {
     #[test]
     fn branch_summary_reports_dirty_and_tracking_without_full_snapshot() {
         let root = repository();
-        let port = GitCliPort;
-        let clean = port.branch_summary(&root).unwrap().unwrap();
+        let clean = GitCliPort::default()
+            .branch_summary(&root)
+            .unwrap()
+            .unwrap();
         assert!(!clean.dirty);
         assert!(clean.branch == "main" || clean.branch == "master");
 
         fs::write(root.join("tracked.txt"), "one\nchanged\n").unwrap();
-        let dirty = port.branch_summary(&root).unwrap().unwrap();
+        let dirty = GitCliPort::default()
+            .branch_summary(&root)
+            .unwrap()
+            .unwrap();
         assert!(dirty.dirty);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_seeds_the_branch_summary_cache() {
+        let root = repository();
+        let port = GitCliPort::default();
+        let snapshot = port.snapshot(&root).unwrap().unwrap();
+        assert!(snapshot.changes.is_empty());
+
+        fs::write(root.join("tracked.txt"), "one\nchanged\n").unwrap();
+        let cached = port.branch_summary(&root).unwrap().unwrap();
+        assert_eq!(cached.branch, snapshot.branch);
+        assert!(
+            !cached.dirty,
+            "branch_summary should reuse the snapshot cache within the TTL"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -1201,7 +1277,7 @@ mod tests {
         fs::write(root.join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
         git(&root, &["add", "tracked.txt"]);
         git(&root, &["commit", "-qm", "second"]);
-        let history = GitCliPort.history(&root, 20).unwrap().unwrap();
+        let history = GitCliPort::default().history(&root, 20).unwrap().unwrap();
 
         assert_eq!(history.total, 2);
         assert_eq!(history.commits.len(), 2);
@@ -1224,7 +1300,7 @@ mod tests {
         git(&root, &["commit", "-qm", "add feature"]);
         fs::write(root.join("tracked.txt"), "one\nchanged\n").unwrap();
 
-        let changes = GitCliPort
+        let changes = GitCliPort::default()
             .branch_changes(&root, None, None)
             .unwrap()
             .unwrap();
@@ -1258,7 +1334,7 @@ mod tests {
         );
         git(&root, &["branch", "origin/main"]);
         git(&root, &["tag", "main"]);
-        let branches = GitCliPort.branches(&root).unwrap();
+        let branches = GitCliPort::default().branches(&root).unwrap();
         assert_eq!(branches.len(), 3);
         assert!(
             branches
@@ -1275,7 +1351,7 @@ mod tests {
                 .iter()
                 .any(|branch| branch.reference == "refs/remotes/origin/main" && branch.remote)
         );
-        let changes = GitCliPort
+        let changes = GitCliPort::default()
             .branch_changes(
                 &root,
                 Some("refs/remotes/origin/main"),
@@ -1304,7 +1380,7 @@ mod tests {
         git(&root, &["add", "."]);
         fs::write(root.join("local.txt"), "unsaved local version\n").unwrap();
         fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
-        let port = GitCliPort;
+        let port = GitCliPort::default();
         let before = port.snapshot(&root).unwrap();
         let changes = port
             .branch_changes(
@@ -1429,7 +1505,7 @@ mod tests {
         let root = repository();
         let path = root.join("large.txt");
         fs::write(&path, vec![b'x'; MAX_DIFF_BYTES + 1024]).unwrap();
-        let port = GitCliPort;
+        let port = GitCliPort::default();
         let snapshot = port.snapshot(&root).unwrap().unwrap();
         let change = snapshot
             .changes

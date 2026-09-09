@@ -1,9 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
-use gpui::{AnyElement, Div, div, prelude::*, px, svg};
+use gpui::{AnyElement, Context, Div, Task, Timer, div, prelude::*, px, svg};
+use notify::{EventKind, RecursiveMode, Watcher};
 
-use super::ProjectFileRow;
+use super::{ProjectFileRow, RightSidebarMode};
 use crate::ports::files::{FileEntryKind, FileSystemPort};
 use crate::ports::git::GitFileStatus;
 use crate::ui::theme::colors;
@@ -244,4 +248,121 @@ pub(crate) fn git_status_trailing(status: GitFileStatus) -> Div {
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(git_status_color(status))
         .child(label)
+}
+
+const FILES_WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
+
+pub(super) struct FilesWatch {
+    pub root: PathBuf,
+    stop: mpsc::Sender<()>,
+    _thread: thread::JoinHandle<()>,
+    _task: Task<()>,
+}
+
+impl Drop for FilesWatch {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+    }
+}
+
+fn event_should_refresh(event: &notify::Event) -> bool {
+    if matches!(event.kind, EventKind::Access(_) | EventKind::Other) {
+        return false;
+    }
+    event.paths.iter().any(|path| {
+        !path
+            .components()
+            .any(|component| component.as_os_str() == ".git")
+    })
+}
+
+fn run_files_watcher(root: PathBuf, events: async_channel::Sender<()>, stop: mpsc::Receiver<()>) {
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = match notify::recommended_watcher(tx) {
+        Ok(watcher) => watcher,
+        Err(_) => return,
+    };
+    if watcher.watch(&root, RecursiveMode::Recursive).is_err() {
+        return;
+    }
+    loop {
+        match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(Ok(event)) => {
+                if event_should_refresh(&event) {
+                    let _ = events.try_send(());
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if stop.try_recv().is_ok() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+impl super::WorkspaceView {
+    fn files_sidebar_active(&self) -> bool {
+        self.right_sidebar_visible && self.right_sidebar_mode == RightSidebarMode::Files
+    }
+
+    pub(super) fn sync_files_watcher(&mut self, cx: &mut Context<Self>) {
+        if !self.files_sidebar_active() {
+            self.files_watch = None;
+            return;
+        }
+        let root = self.project_root();
+        if !root.exists() {
+            self.files_watch = None;
+            return;
+        }
+        if self
+            .files_watch
+            .as_ref()
+            .is_some_and(|watch| watch.root == root)
+        {
+            return;
+        }
+        self.start_files_watcher(root, cx);
+    }
+
+    fn start_files_watcher(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (event_tx, event_rx) = async_channel::bounded::<()>(8);
+        let watch_root = root.clone();
+        let thread = match thread::Builder::new()
+            .name("vibra-files-watch".into())
+            .spawn(move || run_files_watcher(watch_root, event_tx, stop_rx))
+        {
+            Ok(thread) => thread,
+            Err(_) => {
+                self.files_watch = None;
+                return;
+            }
+        };
+        let task = cx.spawn(async move |this, cx| {
+            while let Ok(()) = event_rx.recv().await {
+                Timer::after(FILES_WATCH_DEBOUNCE).await;
+                while event_rx.try_recv().is_ok() {}
+                if this
+                    .update(cx, |this, cx| {
+                        if this.files_sidebar_active() {
+                            this.refresh_project_files(cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.files_watch = Some(FilesWatch {
+            root,
+            stop: stop_tx,
+            _thread: thread,
+            _task: task,
+        });
+    }
 }

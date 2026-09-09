@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::infrastructure::paths::{
     application_support_directory, atomic_write, gpui_preview_support_directory,
 };
+use crate::ui::theme::{AppearanceMode, is_known_theme_id};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
@@ -24,8 +25,8 @@ pub struct AppSettings {
     pub show_hidden_files: bool,
     #[serde(default = "default_true")]
     pub left_sidebar_visible: bool,
-    #[serde(default)]
-    pub git_panel_visible: bool,
+    #[serde(default, alias = "gitPanelVisible")]
+    pub right_sidebar_visible: bool,
     #[serde(default = "default_left_sidebar_width")]
     pub left_sidebar_width: f32,
     #[serde(default = "default_right_sidebar_width")]
@@ -34,8 +35,8 @@ pub struct AppSettings {
     #[serde(default = "default_theme_id")]
     pub theme_id: String,
     /// `light`, `dark`, or `system`.
-    #[serde(default = "default_appearance_mode")]
-    pub appearance_mode: String,
+    #[serde(default)]
+    pub appearance_mode: AppearanceMode,
     /// Notify when an agent finishes or needs attention off-screen.
     #[serde(default = "default_true")]
     pub agent_notifications: bool,
@@ -85,10 +86,6 @@ fn default_theme_id() -> String {
     "midnight".to_string()
 }
 
-fn default_appearance_mode() -> String {
-    "system".to_string()
-}
-
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -96,11 +93,11 @@ impl Default for AppSettings {
             terminal_font_size: default_terminal_font_size(),
             show_hidden_files: false,
             left_sidebar_visible: true,
-            git_panel_visible: false,
+            right_sidebar_visible: false,
             left_sidebar_width: DEFAULT_LEFT_SIDEBAR_WIDTH,
             right_sidebar_width: DEFAULT_RIGHT_SIDEBAR_WIDTH,
             theme_id: default_theme_id(),
-            appearance_mode: default_appearance_mode(),
+            appearance_mode: AppearanceMode::System,
             agent_notifications: true,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
@@ -138,14 +135,9 @@ impl AppSettings {
         self.window_height = self
             .window_height
             .clamp(MIN_WINDOW_HEIGHT, MAX_WINDOW_DIMENSION);
-        if !crate::ui::theme::is_known_theme_id(&self.theme_id) {
+        if !is_known_theme_id(&self.theme_id) {
             self.theme_id = default_theme_id();
         }
-        self.appearance_mode = match self.appearance_mode.as_str() {
-            "light" => "light".to_string(),
-            "dark" => "dark".to_string(),
-            _ => "system".to_string(),
-        };
         self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
     }
 
@@ -295,7 +287,7 @@ mod tests {
         assert_eq!(settings.terminal_font_size, 14.0);
         assert!(settings.show_hidden_files);
         assert!(!settings.left_sidebar_visible);
-        assert!(settings.git_panel_visible);
+        assert!(settings.right_sidebar_visible);
         assert!((settings.left_sidebar_width - DEFAULT_LEFT_SIDEBAR_WIDTH).abs() < f32::EPSILON);
         assert!((settings.right_sidebar_width - DEFAULT_RIGHT_SIDEBAR_WIDTH).abs() < f32::EPSILON);
         assert_eq!(settings.window_width, DEFAULT_WINDOW_WIDTH);

@@ -4,7 +4,8 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
-use super::*;
+use super::hooks::run_agent_setup_cli;
+use super::types::*;
 
 /// Handles hook setup as well as the small internal bridge used by agent hooks.
 ///
