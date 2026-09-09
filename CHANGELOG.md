@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.21 — 2026-09-09
+
+- Lay out split terminals and the ⌘J console as a bento grid: each pane is its own rounded card, selected by click, with the accent on the focused surface only.
+- Restyle persistent-console tabs as titlebar-style pills and keep the add-tab control as a plain plus.
+- Compare local and remote branches from Git review without a separate refresh button.
+- Reorganize workspace modules and share cheaper Git and file updates.
+
 ## 0.3.20 — 2026-09-07
 
 - Name sidebar tabs from Claude and Codex prompts using installed hooks; persist short task titles, preserve manual names, and keep the previous title for brief acknowledgements.

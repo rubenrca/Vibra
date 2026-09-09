@@ -149,11 +149,11 @@ misma versión, más Sparkle descargado con `./Scripts/fetch_sparkle.sh`
 (clave EdDSA en el llavero):
 
 ```bash
-./Scripts/release.sh 0.3.20 --dry-run
-./Scripts/release.sh 0.3.20
-./Scripts/release.sh 0.3.20-beta.1 --prerelease
-./Scripts/release.sh 0.3.20 --no-notarize   # solo si hace falta omitir notarización
-./Scripts/release.sh 0.3.20 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
+./Scripts/release.sh 0.3.21 --dry-run
+./Scripts/release.sh 0.3.21
+./Scripts/release.sh 0.3.21-beta.1 --prerelease
+./Scripts/release.sh 0.3.21 --no-notarize   # solo si hace falta omitir notarización
+./Scripts/release.sh 0.3.21 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
 ```
 
 Un release **estable** crea el DMG universal, firma con Developer ID, notariza
