@@ -956,7 +956,6 @@ impl DiffView {
             .gap_2()
             .px_3()
             .py_2()
-            .bg(colors().panel)
             .border_b_1()
             .border_color(colors().border_subtle)
             .child(
@@ -2040,7 +2039,6 @@ impl Render for DiffView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(colors().panel)
             .child(self.header(cx))
             .when(self.mode == GitPanelMode::Branch, |view| {
                 view.child(self.branch_controls(cx))

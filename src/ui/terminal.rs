@@ -33,6 +33,8 @@ const TERMINAL_FONT_SIZE: f32 = 12.0;
 const TERMINAL_LINE_HEIGHT: f32 = 16.0;
 /// Keeps the terminal grid from visually touching the rounded panel edges.
 const TERMINAL_VERTICAL_PADDING: f32 = 4.0;
+/// Match `PANEL_RADIUS` so the canvas fill doesn't square off card corners.
+const SURFACE_CORNER_RADIUS: f32 = 10.0;
 const MIN_TERMINAL_FONT_SIZE: f32 = 8.0;
 const MAX_TERMINAL_FONT_SIZE: f32 = 32.0;
 
@@ -61,6 +63,9 @@ pub enum TerminalViewEvent {
     },
     FontSizeChanged {
         size: f32,
+    },
+    Activated {
+        session_id: Uuid,
     },
     ContextMenuRequested {
         session_id: Uuid,
@@ -897,6 +902,9 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.focus_handle.focus(window);
+        cx.emit(TerminalViewEvent::Activated {
+            session_id: self.session_id,
+        });
         self.reset_cursor_blink();
         let Some((point, side)) = self.terminal_point(event.position, true) else {
             return;
@@ -1326,6 +1334,7 @@ impl Render for TerminalView {
             .py(px(TERMINAL_VERTICAL_PADDING))
             .relative()
             .overflow_hidden()
+            .rounded(px(SURFACE_CORNER_RADIUS))
             .track_focus(&self.focus_handle)
             .key_context("Terminal")
             .on_action(cx.listener(Self::copy_action))
@@ -1356,7 +1365,7 @@ impl Render for TerminalView {
             .border_color(if bell_active {
                 colors().danger
             } else {
-                colors().terminal
+                gpui::rgba(0x00000000)
             })
             .cursor(gpui::CursorStyle::IBeam)
             .when(hyperlink_hovered, |terminal| terminal.cursor_pointer())
@@ -1484,7 +1493,9 @@ impl Render for TerminalView {
                         );
                         // 1) Full-pane underlay from live surface color (matches TUI canvas,
                         //    not a forced theme black — normal shells keep their bg).
-                        window.paint_quad(fill(bounds, state.surface));
+                        window.paint_quad(
+                            fill(bounds, state.surface).corner_radii(px(SURFACE_CORNER_RADIUS)),
+                        );
                         // 2) Exact per-cell backgrounds so the grid covers every pixel.
                         let columns = state.grid_size.0.max(1);
                         for (index, background) in state.cell_backgrounds.iter().enumerate() {
@@ -1677,6 +1688,7 @@ impl Render for TerminalDragPreview {
             .h(px(self.height))
             .relative()
             .overflow_hidden()
+            .rounded(px(SURFACE_CORNER_RADIUS))
             .font_family(MONO_FONT)
             .font_weight(gpui::FontWeight::LIGHT)
             .text_size(px(font_size))
@@ -1739,7 +1751,9 @@ impl Render for TerminalDragPreview {
                     move |bounds, state, window, cx| {
                         // Match the terminal canvas paint order, but keep this copy
                         // read-only so dragging never affects the live pane.
-                        window.paint_quad(fill(bounds, state.surface));
+                        window.paint_quad(
+                            fill(bounds, state.surface).corner_radii(px(SURFACE_CORNER_RADIUS)),
+                        );
                         let columns = state.grid_size.0.max(1);
                         for (index, background) in state.cell_backgrounds.iter().enumerate() {
                             let row = index / columns;

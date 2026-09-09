@@ -1,8 +1,8 @@
 //! Split pane layout, tab strip, and pane keyboard/mouse actions.
 
 use gpui::{
-    AnyElement, Context, DragMoveEvent, MouseButton, MouseDownEvent, MouseUpEvent, SharedString,
-    Window, WindowControlArea, div, prelude::*, px, relative,
+    AnyElement, Context, DragMoveEvent, Focusable, MouseButton, MouseDownEvent, MouseUpEvent,
+    SharedString, Window, WindowControlArea, div, prelude::*, px, relative,
 };
 use uuid::Uuid;
 
@@ -10,7 +10,7 @@ use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
     TabSnapshot, WorkspaceSplitAxis,
 };
-use crate::ui::agent_marks::{TERMINAL_GLYPH, agent_compact_badge, agent_status_color};
+use crate::ui::agent_marks::{TERMINAL_GLYPH, agent_status_color};
 use crate::ui::terminal::TerminalDragPreview;
 use crate::ui::theme::{MONO_FONT, colors};
 use crate::{
@@ -20,15 +20,29 @@ use crate::{
 };
 
 use super::{
-    ContextMenuKind, PANEL_GAP, PANEL_RADIUS, PaneDividerDrag, PaneDividerDragView, PaneDrag,
-    ReorderDrag, TabDrag, TabDragView,
+    ContextMenuKind, PANEL_RADIUS, PaneDividerDrag, PaneDividerDragView, PaneDrag, ReorderDrag,
+    TabDrag, TabDragView, split_gutter,
 };
 
 impl super::WorkspaceView {
-    pub(super) fn center_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let canvas = self.terminal_canvas(cx).into_any_element();
-        let drawer = self.dev_terminal_drawer(cx);
+    fn center_is_bento(&self) -> bool {
+        let split_tiles = self
+            .snapshot
+            .selected_tab()
+            .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none());
+        split_tiles || self.is_dev_terminal_visible()
+    }
+
+    pub(super) fn center_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let canvas = self.terminal_canvas(window, cx).into_any_element();
+        let drawer = self.dev_terminal_drawer(window, cx);
+        let bento = self.center_is_bento();
         div()
+            .id("center-panel")
             .flex_1()
             .min_w(px(360.0))
             .h_full()
@@ -36,10 +50,15 @@ impl super::WorkspaceView {
             .flex_col()
             .min_h(px(0.0))
             .overflow_hidden()
-            .rounded(px(PANEL_RADIUS))
-            .border_1()
-            .border_color(colors().border_subtle)
-            .bg(colors().terminal)
+            .when(bento, |panel| panel.bg(colors().background))
+            .when(!bento, |panel| {
+                panel
+                    .rounded(px(PANEL_RADIUS))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .bg(colors().terminal)
+            })
+            .on_drag_move(cx.listener(Self::on_dev_terminal_resize_move))
             .child(canvas)
             .children(drawer)
     }
@@ -304,6 +323,7 @@ impl super::WorkspaceView {
         &mut self,
         layout: &PaneLayoutSnapshot,
         path: Vec<PaneBranch>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match layout {
@@ -318,23 +338,10 @@ impl super::WorkspaceView {
                     .snapshot
                     .selected_tab()
                     .map_or(1, |tab| tab.sessions.len());
-                let framed = self
-                    .snapshot
-                    .selected_tab()
-                    .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none());
-                let selected = self
-                    .snapshot
-                    .selected_tab()
-                    .is_some_and(|tab| tab.selected_session_id == Some(session_id));
-                let identity = self.snapshot.selected_tab().and_then(|tab| {
-                    let index = tab
-                        .sessions
-                        .iter()
-                        .position(|session| session.id == session_id)?;
-                    tab.sessions
-                        .get(index)
-                        .map(|session| self.pane_identity(session, index, cx))
-                });
+                let framed = self.center_is_bento();
+                let highlighted = terminal
+                    .as_ref()
+                    .is_some_and(|terminal| terminal.read(cx).focus_handle(cx).is_focused(window));
                 let can_drag = self
                     .snapshot
                     .selected_tab()
@@ -359,9 +366,13 @@ impl super::WorkspaceView {
                     .overflow_hidden()
                     .bg(colors().terminal)
                     .when(framed, |pane| {
-                        pane.rounded(px(PANEL_RADIUS - 2.0))
+                        pane.rounded(px(PANEL_RADIUS))
                             .border_1()
-                            .border_color(colors().border_subtle)
+                            .border_color(if highlighted {
+                                colors().accent
+                            } else {
+                                colors().border_subtle
+                            })
                     })
                     .when(is_source, |pane| pane.opacity(0.55))
                     .when(can_drag, |pane| {
@@ -388,71 +399,6 @@ impl super::WorkspaceView {
                             cx.stop_propagation();
                         }),
                     )
-                    .when(pane_count > 1, |pane| {
-                        pane.when_some(identity, |pane, identity| {
-                            let has_agent = identity.agent_kind.is_some();
-                            pane.child(
-                                div()
-                                    .h(px(25.0))
-                                    .w_full()
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(7.0))
-                                    .px(px(8.0))
-                                    .overflow_hidden()
-                                    .bg(if selected {
-                                        colors().elevated
-                                    } else {
-                                        colors().terminal
-                                    })
-                                    .border_b_1()
-                                    .border_color(if selected {
-                                        colors().accent
-                                    } else {
-                                        colors().border_subtle
-                                    })
-                                    .child(agent_compact_badge(
-                                        identity.agent_kind.as_deref(),
-                                        identity.agent_state,
-                                        identity.agent_attention,
-                                        selected,
-                                    ))
-                                    .child(
-                                        div()
-                                            .min_w(px(0.0))
-                                            .max_w(px(220.0))
-                                            .truncate()
-                                            .font_family(MONO_FONT)
-                                            .text_size(px(10.5))
-                                            .font_weight(if has_agent || selected {
-                                                gpui::FontWeight::MEDIUM
-                                            } else {
-                                                gpui::FontWeight::NORMAL
-                                            })
-                                            .text_color(if selected {
-                                                colors().foreground
-                                            } else {
-                                                colors().muted
-                                            })
-                                            .child(identity.title),
-                                    )
-                                    .when_some(identity.detail, |header, detail| {
-                                        header.child(
-                                            div()
-                                                .min_w(px(0.0))
-                                                .flex_1()
-                                                .truncate()
-                                                .text_right()
-                                                .font_family(MONO_FONT)
-                                                .text_size(px(9.0))
-                                                .text_color(colors().subtle)
-                                                .child(detail),
-                                        )
-                                    }),
-                            )
-                        })
-                    })
                     .when_some(terminal, |pane, terminal| {
                         pane.child(
                             div()
@@ -503,8 +449,8 @@ impl super::WorkspaceView {
                 first_path.push(PaneBranch::First);
                 let mut second_path = path.clone();
                 second_path.push(PaneBranch::Second);
-                let first = self.render_pane_layout(first, first_path, cx);
-                let second = self.render_pane_layout(second, second_path, cx);
+                let first = self.render_pane_layout(first, first_path, window, cx);
+                let second = self.render_pane_layout(second, second_path, window, cx);
                 let divider_id = format!(
                     "pane-divider-{}",
                     path.iter()
@@ -518,17 +464,7 @@ impl super::WorkspaceView {
                     path: path.clone(),
                     axis,
                 };
-                let divider = div()
-                    .id(SharedString::from(divider_id))
-                    .flex_none()
-                    .bg(colors().background)
-                    .hover(|divider| divider.bg(colors().muted))
-                    .when(axis == WorkspaceSplitAxis::Horizontal, |divider| {
-                        divider.w(px(PANEL_GAP)).h_full().cursor_ew_resize()
-                    })
-                    .when(axis == WorkspaceSplitAxis::Vertical, |divider| {
-                        divider.h(px(PANEL_GAP)).w_full().cursor_ns_resize()
-                    })
+                let divider = split_gutter(divider_id, axis)
                     .on_drag(drag, move |drag, _, _, cx| {
                         cx.new(|_| PaneDividerDragView { axis: drag.axis })
                     });
@@ -590,31 +526,39 @@ impl super::WorkspaceView {
         }
     }
 
-    pub(super) fn terminal_canvas(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn terminal_canvas(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let tab = self.snapshot.selected_tab().cloned();
         let panes = tab.as_ref().map(|tab| {
             if let Some(zoomed_id) = tab.zoomed_session_id {
-                self.render_pane_layout(&PaneLayoutSnapshot::terminal(zoomed_id), Vec::new(), cx)
+                self.render_pane_layout(
+                    &PaneLayoutSnapshot::terminal(zoomed_id),
+                    Vec::new(),
+                    window,
+                    cx,
+                )
             } else {
-                self.render_pane_layout(&tab.layout, Vec::new(), cx)
+                self.render_pane_layout(&tab.layout, Vec::new(), window, cx)
             }
         });
         let is_empty = panes.is_none();
         let zoomed = tab.as_ref().and_then(|tab| tab.zoomed_session_id).is_some();
-        let framed_panes = tab
-            .as_ref()
-            .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none());
+        let bento = self.center_is_bento();
 
-        // Full-bleed: no padding. Agent TUIs paint pure black; any inset against
-        // chrome makes the background look “cut off”.
+        // One terminal fills the center card. Several tiles (splits or ⌘J) drop
+        // that outer frame and each pane paints its own bento border.
         div()
             .flex_1()
             .min_h(px(0.0))
             .relative()
             .overflow_hidden()
-            .bg(colors().terminal)
-            .when(framed_panes, |canvas| {
-                canvas.p(px(PANEL_GAP)).bg(colors().background)
+            .bg(if bento {
+                colors().background
+            } else {
+                colors().terminal
             })
             .when_some(panes, |canvas, panes| canvas.child(panes))
             .when(zoomed, |canvas| {

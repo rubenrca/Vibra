@@ -1,7 +1,8 @@
 use std::path::Path;
 
-use gpui::{Div, div, prelude::*, px};
+use gpui::{Div, SharedString, Stateful, div, prelude::*, px};
 
+use crate::domain::workspace::WorkspaceSplitAxis;
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
 use crate::ui::theme::{MONO_FONT, colors};
 
@@ -9,6 +10,21 @@ use super::SidebarWorkspaceMeta;
 
 pub(crate) const PANEL_GAP: f32 = 4.0;
 pub(crate) const PANEL_RADIUS: f32 = 10.0;
+pub(crate) const PANE_HEADER_HEIGHT: f32 = 28.0;
+
+/// Gutter between bento tiles. Tiles own the borders; this is only the gap and resize hit.
+pub(crate) fn split_gutter(id: impl Into<SharedString>, axis: WorkspaceSplitAxis) -> Stateful<Div> {
+    div()
+        .id(id.into())
+        .flex_none()
+        .hover(|divider| divider.bg(colors().hover))
+        .when(axis == WorkspaceSplitAxis::Horizontal, |divider| {
+            divider.w(px(PANEL_GAP)).h_full().cursor_ew_resize()
+        })
+        .when(axis == WorkspaceSplitAxis::Vertical, |divider| {
+            divider.h(px(PANEL_GAP)).w_full().cursor_ns_resize()
+        })
+}
 
 pub(crate) fn sidebar_tab_line(
     text: &str,
@@ -242,6 +258,8 @@ pub(crate) fn clipped_width_panel(
                 .h_full()
                 .flex()
                 .flex_col()
+                .overflow_hidden()
+                .rounded(px(PANEL_RADIUS))
                 .child(content),
         )
 }

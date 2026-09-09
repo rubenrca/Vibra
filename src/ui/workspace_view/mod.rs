@@ -81,6 +81,10 @@ const SIDEBAR_GIT_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// IDE-style utility console height. It is intentionally compact so the main
 /// terminal remains the primary surface.
 const DEV_TERMINAL_HEIGHT: f32 = 260.0;
+const MIN_DEV_TERMINAL_HEIGHT: f32 = 120.0;
+const MAX_DEV_TERMINAL_HEIGHT: f32 = 720.0;
+/// Leave room for the primary terminal while dragging the ⌘J split.
+const DEV_TERMINAL_PRIMARY_RESERVE: f32 = 96.0;
 
 /// Cached git metadata for a workspace sidebar tab (cmux-style).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,6 +236,7 @@ pub struct WorkspaceView {
     dev_terminals: HashMap<Uuid, DevTerminalDrawer>,
     dev_terminal_subscriptions: HashMap<Uuid, Subscription>,
     pending_focus_dev_terminal: bool,
+    dev_terminal_height: f32,
     terminal_subscriptions: HashMap<Uuid, Subscription>,
     automation_tokens: HashMap<Uuid, Uuid>,
     automation_socket: Option<PathBuf>,
@@ -464,6 +469,7 @@ impl WorkspaceView {
             dev_terminals: HashMap::new(),
             dev_terminal_subscriptions: HashMap::new(),
             pending_focus_dev_terminal: false,
+            dev_terminal_height: DEV_TERMINAL_HEIGHT,
             terminal_subscriptions: HashMap::new(),
             automation_tokens: HashMap::new(),
             automation_socket,
@@ -1328,6 +1334,20 @@ impl WorkspaceView {
                 let _ = self.snapshot.select_terminal_global(session_id);
                 self.open_context_menu(ContextMenuKind::Pane { session_id }, *x, *y, cx);
             }
+            TerminalViewEvent::Activated { session_id } => {
+                if self.is_dev_terminal(*session_id, cx) {
+                    cx.notify();
+                    return;
+                }
+                if self.snapshot.select_terminal(*session_id) {
+                    self.sync_terminal_surface_visibility(cx);
+                    self.sync_diff_root(cx);
+                    self.refresh_project_files(cx);
+                    self.refresh_sidebar_workspace_meta(cx);
+                    self.persist(cx);
+                }
+                cx.notify();
+            }
             TerminalViewEvent::AgentPresenceChanged {
                 session_id,
                 presence,
@@ -1835,7 +1855,6 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(colors().sidebar)
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -2292,7 +2311,6 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(colors().panel)
             // File tree
             .child(
                 div()
@@ -2977,6 +2995,7 @@ impl Render for WorkspaceView {
                     .rounded(px(PANEL_RADIUS))
                     .border_1()
                     .border_color(colors().border_subtle)
+                    .bg(colors().panel)
                     .child(self.diff_view.clone()),
             );
         } else {
@@ -2984,7 +3003,7 @@ impl Render for WorkspaceView {
             if self.left_sidebar_progress > 0.001 {
                 layout = layout.child(self.sidebar(cx));
             }
-            layout = layout.child(self.center_panel(cx));
+            layout = layout.child(self.center_panel(window, cx));
             if self.right_sidebar_progress > 0.001 {
                 layout = layout.child(self.right_sidebar(cx));
             }

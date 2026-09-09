@@ -3,16 +3,22 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AnyElement, Context, Entity, Focusable, MouseButton, MouseDownEvent, SharedString, Window, div,
-    prelude::*, px,
+    AnyElement, Context, DragMoveEvent, Entity, Focusable, MouseButton, MouseDownEvent,
+    SharedString, Window, div, prelude::*, px,
 };
 use uuid::Uuid;
 
 use crate::ToggleDevTerminal;
+use crate::domain::workspace::WorkspaceSplitAxis;
+use crate::ui::agent_marks::agent_compact_badge;
 use crate::ui::terminal::{TerminalView, TerminalViewEvent};
+use crate::ui::theme::{MONO_FONT, colors};
 
-use super::{ContextMenuKind, DEV_TERMINAL_HEIGHT, WorkspaceView, directory_basename};
-use crate::ui::theme::colors;
+use super::{
+    ContextMenuKind, DEV_TERMINAL_PRIMARY_RESERVE, DevTerminalResize, MAX_DEV_TERMINAL_HEIGHT,
+    MIN_DEV_TERMINAL_HEIGHT, PANE_HEADER_HEIGHT, PANEL_GAP, PANEL_RADIUS, PaneDividerDragView,
+    WorkspaceView, directory_basename, format_sidebar_path, split_gutter,
+};
 
 pub(super) struct DevTerminalDrawer {
     pub(super) terminals: Vec<Entity<TerminalView>>,
@@ -271,13 +277,38 @@ impl WorkspaceView {
         }
     }
 
-    pub(super) fn dev_terminal_drawer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn on_dev_terminal_resize_move(
+        &mut self,
+        event: &DragMoveEvent<DevTerminalResize>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let y: f32 = event.event.position.y.into();
+        let top: f32 = event.bounds.top().into();
+        let bottom: f32 = event.bounds.bottom().into();
+        let available = (bottom - top).max(MIN_DEV_TERMINAL_HEIGHT + DEV_TERMINAL_PRIMARY_RESERVE);
+        let max_height = (available - DEV_TERMINAL_PRIMARY_RESERVE).min(MAX_DEV_TERMINAL_HEIGHT);
+        let height = (bottom - y - PANEL_GAP).clamp(MIN_DEV_TERMINAL_HEIGHT, max_height);
+        if (self.dev_terminal_height - height).abs() < 0.5 {
+            return;
+        }
+        self.dev_terminal_height = height;
+        cx.notify();
+    }
+
+    pub(super) fn dev_terminal_drawer(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.is_dev_terminal_visible() {
             return None;
         }
         let workspace_id = self.current_workspace_id()?;
         let drawer = self.dev_terminals.get(&workspace_id)?;
         let selected_id = drawer.selected_id;
+        let tab_count = drawer.terminals.len();
+        let can_close = tab_count > 1;
         let tabs: Vec<(Uuid, String, Entity<TerminalView>)> = drawer
             .terminals
             .iter()
@@ -299,155 +330,272 @@ impl WorkspaceView {
             .find(|(session_id, _, _)| *session_id == selected_id)
             .or(tabs.first())
             .map(|(_, _, terminal)| terminal.clone())?;
+        let focused = selected_terminal
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let presence = self.resolved_agent_presence(selected_id);
+        let selected_cwd = selected_terminal
+            .read(cx)
+            .current_working_directory()
+            .to_string_lossy()
+            .into_owned();
+        let detail = (tab_count == 1)
+            .then(|| format_sidebar_path(&selected_cwd, self.home_directory.as_deref()))
+            .filter(|path| path != "—");
+        let tabs_grow = detail.is_none();
         Some(
             div()
-                .id("dev-terminal-drawer")
-                .h(px(DEV_TERMINAL_HEIGHT))
-                .min_h(px(120.0))
+                .id("dev-terminal-pane")
                 .flex_none()
                 .flex()
                 .flex_col()
-                .overflow_hidden()
-                .border_t_1()
-                .border_color(colors().border_subtle)
-                .bg(colors().terminal)
                 .child(
-                    div()
-                        .h(px(28.0))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .px(px(8.0))
-                        .bg(colors().panel)
-                        .border_b_1()
-                        .border_color(colors().border_subtle)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(4.0))
-                                .overflow_x_hidden()
-                                .children(tabs.into_iter().map(|(session_id, title, _)| {
-                                    let selected = session_id == selected_id;
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "dev-terminal-tab-{session_id}"
-                                        )))
-                                        .h(px(22.0))
-                                        .flex_none()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(6.0))
-                                        .px(px(8.0))
-                                        .rounded(px(5.0))
-                                        .cursor_pointer()
-                                        .bg(if selected {
-                                            colors().selection
-                                        } else {
-                                            gpui::rgba(0x00000000)
-                                        })
-                                        .text_color(if selected {
-                                            colors().foreground
-                                        } else {
-                                            colors().muted
-                                        })
-                                        .hover(|tab| {
-                                            tab.bg(colors().hover).text_color(colors().foreground)
-                                        })
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.select_dev_terminal_tab(session_id, window, cx);
-                                        }))
-                                        .on_mouse_down(
-                                            MouseButton::Right,
-                                            cx.listener(
-                                                move |this, event: &MouseDownEvent, _, cx| {
-                                                    this.open_context_menu(
-                                                        ContextMenuKind::Pane { session_id },
-                                                        f32::from(event.position.x),
-                                                        f32::from(event.position.y),
-                                                        cx,
-                                                    );
-                                                    cx.stop_propagation();
-                                                },
-                                            ),
-                                        )
-                                        .child(
-                                            div()
-                                                .max_w(px(140.0))
-                                                .truncate()
-                                                .text_size(px(10.5))
-                                                .font_weight(if selected {
-                                                    gpui::FontWeight::MEDIUM
-                                                } else {
-                                                    gpui::FontWeight::NORMAL
-                                                })
-                                                .child(title),
-                                        )
-                                        .child(
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "dev-terminal-close-{session_id}"
-                                                )))
-                                                .size(px(14.0))
-                                                .rounded(px(3.0))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .text_size(px(11.0))
-                                                .text_color(colors().subtle)
-                                                .hover(|button| {
-                                                    button
-                                                        .bg(colors().hover)
-                                                        .text_color(colors().foreground)
-                                                })
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener(move |_, _, _, cx| {
-                                                        cx.stop_propagation();
-                                                    }),
-                                                )
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        cx.stop_propagation();
-                                                        this.close_dev_terminal(
-                                                            session_id, window, cx,
-                                                        );
-                                                    },
-                                                ))
-                                                .child("×"),
-                                        )
-                                })),
-                        )
-                        .child(
-                            div()
-                                .id("dev-terminal-add")
-                                .size(px(22.0))
-                                .flex_none()
-                                .rounded(px(5.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .text_size(px(14.0))
-                                .text_color(colors().muted)
-                                .hover(|button| {
-                                    button.bg(colors().hover).text_color(colors().foreground)
-                                })
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.add_dev_terminal(window, cx);
-                                }))
-                                .child("+"),
-                        ),
+                    split_gutter("dev-terminal-divider", WorkspaceSplitAxis::Vertical).on_drag(
+                        DevTerminalResize,
+                        |_, _, _, cx| {
+                            cx.new(|_| PaneDividerDragView {
+                                axis: WorkspaceSplitAxis::Vertical,
+                            })
+                        },
+                    ),
                 )
                 .child(
                     div()
-                        .flex_1()
-                        .min_h(px(0.0))
+                        .id("dev-terminal-drawer")
+                        .h(px(self.dev_terminal_height))
+                        .min_h(px(MIN_DEV_TERMINAL_HEIGHT))
+                        .flex_none()
+                        .flex()
+                        .flex_col()
                         .overflow_hidden()
-                        .child(selected_terminal),
+                        .rounded(px(PANEL_RADIUS))
+                        .border_1()
+                        .border_color(if focused {
+                            colors().accent
+                        } else {
+                            colors().border_subtle
+                        })
+                        .bg(colors().terminal)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                this.select_dev_terminal_tab(selected_id, window, cx);
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                this.select_dev_terminal_tab(selected_id, window, cx);
+                                this.open_context_menu(
+                                    ContextMenuKind::Pane {
+                                        session_id: selected_id,
+                                    },
+                                    f32::from(event.position.x),
+                                    f32::from(event.position.y),
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .h(px(PANE_HEADER_HEIGHT))
+                                .w_full()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .px(px(8.0))
+                                .overflow_hidden()
+                                .bg(if focused {
+                                    colors().elevated
+                                } else {
+                                    colors().terminal
+                                })
+                                .border_b_1()
+                                .border_color(colors().border_subtle)
+                                .child(agent_compact_badge(
+                                    presence.as_ref().map(|presence| presence.kind.as_str()),
+                                    presence.as_ref().map(|presence| presence.state),
+                                    presence.as_ref().and_then(|presence| presence.attention),
+                                    focused,
+                                ))
+                                .child(
+                                    div()
+                                        .min_w(px(0.0))
+                                        .when(tabs_grow, |row| row.flex_1())
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.0))
+                                        .overflow_x_hidden()
+                                        .children(tabs.into_iter().map(
+                                            |(session_id, title, _)| {
+                                                let selected = session_id == selected_id;
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "dev-terminal-tab-{session_id}"
+                                                    )))
+                                                    .h(px(20.0))
+                                                    .flex_none()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(4.0))
+                                                    .px(px(8.0))
+                                                    .rounded_full()
+                                                    .cursor_pointer()
+                                                    .bg(if selected {
+                                                        colors().selection
+                                                    } else {
+                                                        gpui::rgba(0x00000000)
+                                                    })
+                                                    .border_1()
+                                                    .border_color(if selected {
+                                                        colors().muted
+                                                    } else {
+                                                        colors().border_subtle
+                                                    })
+                                                    .text_color(if selected {
+                                                        colors().foreground
+                                                    } else {
+                                                        colors().muted
+                                                    })
+                                                    .hover(|tab| {
+                                                        if selected {
+                                                            tab
+                                                        } else {
+                                                            tab.bg(colors().hover)
+                                                                .text_color(colors().foreground)
+                                                        }
+                                                    })
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.select_dev_terminal_tab(
+                                                                session_id, window, cx,
+                                                            );
+                                                        },
+                                                    ))
+                                                    .on_mouse_down(
+                                                        MouseButton::Right,
+                                                        cx.listener(
+                                                            move |this,
+                                                                  event: &MouseDownEvent,
+                                                                  window,
+                                                                  cx| {
+                                                                this.select_dev_terminal_tab(
+                                                                    session_id, window, cx,
+                                                                );
+                                                                this.open_context_menu(
+                                                                    ContextMenuKind::Pane {
+                                                                        session_id,
+                                                                    },
+                                                                    f32::from(event.position.x),
+                                                                    f32::from(event.position.y),
+                                                                    cx,
+                                                                );
+                                                                cx.stop_propagation();
+                                                            },
+                                                        ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .max_w(px(160.0))
+                                                            .truncate()
+                                                            .font_family(MONO_FONT)
+                                                            .text_size(px(10.5))
+                                                            .font_weight(if selected {
+                                                                gpui::FontWeight::MEDIUM
+                                                            } else {
+                                                                gpui::FontWeight::NORMAL
+                                                            })
+                                                            .child(title),
+                                                    )
+                                                    .when(can_close, |tab| {
+                                                        tab.child(
+                                                            div()
+                                                                .id(SharedString::from(format!(
+                                                                    "dev-terminal-close-{session_id}"
+                                                                )))
+                                                                .size(px(14.0))
+                                                                .rounded_full()
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .text_size(px(11.0))
+                                                                .text_color(colors().subtle)
+                                                                .hover(|button| {
+                                                                    button
+                                                                        .bg(colors().hover)
+                                                                        .text_color(
+                                                                            colors().foreground,
+                                                                        )
+                                                                })
+                                                                .on_mouse_down(
+                                                                    MouseButton::Left,
+                                                                    cx.listener(
+                                                                        move |_, _, _, cx| {
+                                                                            cx.stop_propagation();
+                                                                        },
+                                                                    ),
+                                                                )
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, window, cx| {
+                                                                        cx.stop_propagation();
+                                                                        this.close_dev_terminal(
+                                                                            session_id, window, cx,
+                                                                        );
+                                                                    },
+                                                                ))
+                                                                .child("×"),
+                                                        )
+                                                    })
+                                            },
+                                        )),
+                                )
+                                .when_some(detail, |header, path| {
+                                    header.child(
+                                        div()
+                                            .min_w(px(0.0))
+                                            .flex_1()
+                                            .truncate()
+                                            .text_right()
+                                            .font_family(MONO_FONT)
+                                            .text_size(px(9.0))
+                                            .text_color(colors().subtle)
+                                            .child(path),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .id("dev-terminal-add")
+                                        .size(px(20.0))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .text_size(px(14.0))
+                                        .text_color(colors().muted)
+                                        .hover(|button| button.text_color(colors().foreground))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|_, _, _, cx| {
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.add_dev_terminal(window, cx);
+                                        }))
+                                        .child("+"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h(px(0.0))
+                                .overflow_hidden()
+                                .child(selected_terminal),
+                        ),
                 )
                 .into_any_element(),
         )

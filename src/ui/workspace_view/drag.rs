@@ -25,6 +25,9 @@ pub(crate) struct PaneDividerDragView {
     pub axis: WorkspaceSplitAxis,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct DevTerminalResize;
+
 #[derive(Clone)]
 pub(crate) struct TabDrag {
     pub tab_id: Uuid,
