@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use super::cli::shell_quote;
-use super::*;
+use super::types::AgentKind;
 
 const CLAUDE_HOOK_SCRIPT: &str = r#"#!/bin/sh
 # Managed by Vibra. This is deliberately a no-op outside a Vibra pane.

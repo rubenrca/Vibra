@@ -32,11 +32,11 @@ impl Clone for WorkspaceRepository {
 }
 
 /// Compact JSON used for durable workspace writes (not pretty-printed).
-pub fn encode_workspace(snapshot: &WorkspaceSnapshot) -> Result<Vec<u8>> {
+fn encode_workspace(snapshot: &WorkspaceSnapshot) -> Result<Vec<u8>> {
     serde_json::to_vec(snapshot).context("no se pudo serializar el workspace")
 }
 
-pub fn workspace_bytes_hash(bytes: &[u8]) -> u64 {
+fn workspace_bytes_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes {
         hash ^= u64::from(*byte);

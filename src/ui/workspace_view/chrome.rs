@@ -3,7 +3,7 @@ use std::path::Path;
 use gpui::{Div, div, prelude::*, px};
 
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
-use crate::ui::theme::colors;
+use crate::ui::theme::{MONO_FONT, colors};
 
 use super::SidebarWorkspaceMeta;
 
@@ -29,7 +29,7 @@ pub(crate) fn sidebar_tab_line(
         row = row.font_weight(gpui::FontWeight::MEDIUM);
     }
     if mono {
-        row = row.font_family("JetBrains Mono");
+        row = row.font_family(MONO_FONT);
     }
     row
 }
@@ -290,6 +290,83 @@ pub(crate) fn sidebar_location_line(branch: Option<&str>, path: &str) -> String 
         Some(branch) => format!("{branch}  ·  {path}"),
         None => path.to_owned(),
     }
+}
+
+pub(crate) struct SidebarWorkspaceAppearance {
+    pub title: gpui::Rgba,
+    pub path: gpui::Rgba,
+    pub branch: gpui::Rgba,
+    pub agent_fallback: gpui::Rgba,
+    pub background: gpui::Rgba,
+    pub border: gpui::Rgba,
+}
+
+pub(crate) fn sidebar_workspace_appearance(
+    selected: bool,
+    dirty: bool,
+    behind: usize,
+) -> SidebarWorkspaceAppearance {
+    SidebarWorkspaceAppearance {
+        title: if selected {
+            colors().foreground
+        } else {
+            colors().muted
+        },
+        path: if selected {
+            colors().muted
+        } else {
+            colors().subtle
+        },
+        branch: match (dirty, behind > 0) {
+            (true, _) => colors().warning,
+            (_, true) => colors().accent,
+            _ if selected => colors().muted,
+            _ => colors().subtle,
+        },
+        agent_fallback: if selected {
+            colors().muted
+        } else {
+            colors().subtle
+        },
+        background: if selected {
+            colors().elevated
+        } else {
+            colors().sidebar
+        },
+        border: if selected {
+            colors().border_subtle
+        } else {
+            gpui::rgba(0x00000000)
+        },
+    }
+}
+
+pub(crate) fn sidebar_workspace_text_column(
+    text_width: f32,
+    title: &str,
+    title_color: gpui::Rgba,
+    agent_line: &str,
+    agent_color: gpui::Rgba,
+    location_line: &str,
+    location_color: gpui::Rgba,
+) -> Div {
+    div()
+        .w(px(text_width))
+        .flex_none()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .justify_center()
+        .gap(px(1.0))
+        .child(sidebar_tab_line(title, title_color, 11.5, true, false))
+        .child(sidebar_tab_line(agent_line, agent_color, 9.5, true, false))
+        .child(sidebar_tab_line(
+            location_line,
+            location_color,
+            8.5,
+            false,
+            true,
+        ))
 }
 
 #[cfg(test)]

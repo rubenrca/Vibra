@@ -130,15 +130,7 @@ impl super::WorkspaceSnapshot {
                     workspace_id: *workspace_id,
                 }),
         );
-        self.workspace_order = self
-            .sidebar_items
-            .iter()
-            .flat_map(|item| match item {
-                SidebarItemSnapshot::Workspace { workspace_id } => vec![*workspace_id],
-                SidebarItemSnapshot::Space { workspace_ids, .. } => workspace_ids.clone(),
-                SidebarItemSnapshot::Spacer { .. } => Vec::new(),
-            })
-            .collect();
+        self.workspace_order = super::sidebar::sidebar_workspace_ids(&self.sidebar_items);
 
         // Normalization performs the legacy-to-canonical conversions above, so a
         // successfully normalized snapshot is safe to persist as the current schema.

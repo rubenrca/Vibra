@@ -59,8 +59,8 @@ impl AgentKind {
         Self::Cursor,
     ];
 
-    /// Screen/title scan order. Distinctive phrases are preferred over short
-    /// tokens that appear in unrelated output.
+    /// Screen/title scan order. Distinctive phrases live in `text_markers`;
+    /// the walk order matches process scanning so wrappers stay consistent.
     const TEXT_SCAN_ORDER: [Self; 10] = Self::PROCESS_SCAN_ORDER;
 
     pub const fn display_name(self) -> &'static str {

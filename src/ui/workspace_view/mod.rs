@@ -5,6 +5,7 @@
 mod automation;
 mod chrome;
 mod dev_terminal;
+mod drag;
 mod files;
 mod input;
 mod palette;
@@ -15,6 +16,7 @@ mod titlebar;
 use automation::HookAgentPresence;
 use chrome::*;
 use dev_terminal::DevTerminalDrawer;
+pub(crate) use drag::*;
 use files::*;
 use settings::SettingsPage;
 
@@ -31,8 +33,7 @@ use gpui::{
 use uuid::Uuid;
 
 use crate::domain::workspace::{
-    PaneBranch, PaneSplitDirection, SessionSnapshot, SidebarEntry, WorkspaceSnapshot,
-    WorkspaceSplitAxis,
+    PaneSplitDirection, SessionSnapshot, SidebarEntry, WorkspaceSnapshot,
 };
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentRuntimeState, AutomationServer, agent_hook_status,
@@ -48,10 +49,12 @@ use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 use crate::ports::git::{GitBranchSummary, GitPort};
 use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
-use crate::ui::agent_marks::{agent_compact_badge, agent_sidebar_badge, agent_status_color};
+use crate::ui::agent_marks::{
+    TERMINAL_GLYPH, agent_compact_badge, agent_sidebar_badge, agent_status_color,
+};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
-use crate::ui::terminal::{TerminalDragPreview, TerminalView, TerminalViewEvent};
-use crate::ui::theme::colors;
+use crate::ui::terminal::{TerminalView, TerminalViewEvent};
+use crate::ui::theme::{MONO_FONT, colors};
 use crate::{
     CloseTerminal, GoToTab, NewTerminalTab, NewWorkspace, NextWorkspace, PreviousWorkspace,
     ShowSettings, ToggleLeftSidebar, ToggleRightSidebar,
@@ -98,84 +101,6 @@ struct PaneIdentity {
     agent_attention: Option<AgentAttention>,
     agent_model: Option<String>,
 }
-
-#[derive(Clone)]
-struct PaneDividerDrag {
-    path: Vec<PaneBranch>,
-    axis: WorkspaceSplitAxis,
-}
-
-struct PaneDividerDragView {
-    axis: WorkspaceSplitAxis,
-}
-
-#[derive(Clone)]
-struct TabDrag {
-    tab_id: Uuid,
-    title: String,
-    selected: bool,
-    shortcut: Option<String>,
-    tab_count: usize,
-}
-
-struct TabDragView {
-    title: String,
-    selected: bool,
-    shortcut: Option<String>,
-    width: f32,
-}
-
-#[derive(Clone)]
-struct PaneDrag {
-    session_id: Uuid,
-    preview: TerminalDragPreview,
-}
-
-#[derive(Clone)]
-struct SidebarWorkspaceDrag {
-    workspace_id: Uuid,
-    source_space_id: Option<Uuid>,
-    title: String,
-    branch: Option<String>,
-    path: String,
-    selected: bool,
-    dirty: bool,
-    behind: usize,
-    agent_kind: Option<String>,
-    agent_state: Option<AgentRuntimeState>,
-    agent_attention: Option<AgentAttention>,
-    agent_model: Option<String>,
-    width: f32,
-}
-
-struct SidebarWorkspaceDragView {
-    title: String,
-    branch: Option<String>,
-    path: String,
-    selected: bool,
-    dirty: bool,
-    behind: usize,
-    agent_kind: Option<String>,
-    agent_state: Option<AgentRuntimeState>,
-    agent_attention: Option<AgentAttention>,
-    agent_model: Option<String>,
-    width: f32,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ReorderDrag {
-    Tab(Uuid),
-    Pane(Uuid),
-    SidebarWorkspace(Uuid),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SidebarResizeEdge {
-    Left,
-    Right,
-}
-
-struct SidebarResizeDragView;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LeftSidebarMode {
@@ -286,173 +211,6 @@ enum ContextMenuAction {
     SplitRight,
     SplitDown,
     ToggleZoom,
-}
-
-impl Render for PaneDividerDragView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .when(self.axis == WorkspaceSplitAxis::Horizontal, |line| {
-                line.w(px(2.0)).h(px(40.0))
-            })
-            .when(self.axis == WorkspaceSplitAxis::Vertical, |line| {
-                line.w(px(40.0)).h(px(2.0))
-            })
-            .rounded_full()
-            .bg(colors().border_subtle)
-    }
-}
-
-impl Render for SidebarResizeDragView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // Keep sidebar resizing available without a floating bar during the drag.
-        div()
-    }
-}
-
-impl Render for TabDragView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.selected;
-        div()
-            .h(px(26.0))
-            .w(px(self.width))
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .px(px(10.0))
-            .rounded_full()
-            .bg(if selected {
-                colors().selection
-            } else {
-                gpui::rgba(0x00000000)
-            })
-            .border_1()
-            .border_color(if selected {
-                colors().muted
-            } else {
-                colors().border_subtle
-            })
-            .text_color(colors().foreground)
-            .shadow_sm()
-            .opacity(0.96)
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .text_center()
-                    .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(self.title.clone()),
-            )
-            .when_some(self.shortcut.clone(), |tab, shortcut| {
-                tab.child(
-                    div()
-                        .absolute()
-                        .right(px(10.0))
-                        .flex_none()
-                        .font_family("JetBrains Mono")
-                        .text_size(px(9.5))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(if selected {
-                            colors().muted
-                        } else {
-                            colors().subtle
-                        })
-                        .child(shortcut),
-                )
-            })
-    }
-}
-
-impl Render for SidebarWorkspaceDragView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let branch_color = match (self.dirty, self.behind > 0) {
-            (true, _) => colors().warning,
-            (_, true) => colors().accent,
-            _ if self.selected => colors().muted,
-            _ => colors().subtle,
-        };
-        let path_color = if self.selected {
-            colors().muted
-        } else {
-            colors().subtle
-        };
-        let title_color = if self.selected {
-            colors().foreground
-        } else {
-            colors().muted
-        };
-        let agent_line = sidebar_agent_line(
-            self.agent_kind.as_deref(),
-            self.agent_model.as_deref(),
-            self.agent_state,
-            self.agent_attention,
-        );
-        let agent_color = agent_status_color(self.agent_state, self.agent_attention).unwrap_or(
-            if self.selected {
-                colors().muted
-            } else {
-                colors().subtle
-            },
-        );
-        let location_line = sidebar_location_line(self.branch.as_deref(), &self.path);
-        let location_color = if self.branch.is_some() {
-            branch_color
-        } else {
-            path_color
-        };
-
-        div()
-            .h(px(SIDEBAR_WORKSPACE_HEIGHT))
-            .w(px(self.width))
-            .px(px(10.0))
-            .rounded(px(7.0))
-            .flex()
-            .items_center()
-            .gap_2()
-            .bg(if self.selected {
-                colors().elevated
-            } else {
-                colors().sidebar
-            })
-            .border_1()
-            .border_color(if self.selected {
-                colors().border_subtle
-            } else {
-                gpui::rgba(0x00000000)
-            })
-            .child(agent_sidebar_badge(
-                self.agent_kind.as_deref(),
-                self.agent_state,
-                self.agent_attention,
-                self.selected,
-            ))
-            .child(
-                div()
-                    .w(px(self.width - SIDEBAR_WORKSPACE_CARD_CHROME))
-                    .flex_none()
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .gap(px(1.0))
-                    .child(sidebar_tab_line(
-                        &self.title,
-                        title_color,
-                        11.5,
-                        true,
-                        false,
-                    ))
-                    .child(sidebar_tab_line(&agent_line, agent_color, 9.5, true, false))
-                    .child(sidebar_tab_line(
-                        &location_line,
-                        location_color,
-                        8.5,
-                        false,
-                        true,
-                    )),
-            )
-    }
 }
 
 pub struct WorkspaceView {
@@ -2106,10 +1864,10 @@ impl WorkspaceView {
                             .justify_center()
                             .rounded(px(10.0))
                             .bg(colors().elevated)
-                            .font_family("JetBrains Mono")
+                            .font_family(MONO_FONT)
                             .text_size(px(11.0))
                             .text_color(colors().muted)
-                            .child(">_"),
+                            .child(TERMINAL_GLYPH),
                     )
                     .child(
                         div()
@@ -2235,7 +1993,7 @@ impl WorkspaceView {
                                     .child(
                                         div()
                                             .flex_none()
-                                            .font_family("JetBrains Mono")
+                                            .font_family(MONO_FONT)
                                             .text_size(px(8.5))
                                             .text_color(colors().subtle)
                                             .child(workspace_count.to_string()),
@@ -2273,25 +2031,11 @@ impl WorkspaceView {
                         // Keep the workspace name first; the following rows summarize the
                         // active agent and repository location without hiding branch state.
                         let branch_label = meta.and_then(format_sidebar_branch);
-                        let branch_color = match (
+                        let appearance = sidebar_workspace_appearance(
+                            selected,
                             meta.map(|m| m.dirty).unwrap_or(false),
-                            meta.map(|m| m.behind > 0).unwrap_or(false),
-                        ) {
-                            (true, _) => colors().warning,
-                            (_, true) => colors().accent,
-                            _ if selected => colors().muted,
-                            _ => colors().subtle,
-                        };
-                        let path_color = if selected {
-                            colors().muted
-                        } else {
-                            colors().subtle
-                        };
-                        let title_color = if selected {
-                            colors().foreground
-                        } else {
-                            colors().muted
-                        };
+                            meta.map(|m| m.behind).unwrap_or_default(),
+                        );
                         let agent_color = agent_status_color(
                             agent_identity
                                 .as_ref()
@@ -2300,11 +2044,7 @@ impl WorkspaceView {
                                 .as_ref()
                                 .and_then(|identity| identity.agent_attention),
                         )
-                        .unwrap_or(if selected {
-                            colors().muted
-                        } else {
-                            colors().subtle
-                        });
+                        .unwrap_or(appearance.agent_fallback);
                         let agent_label = sidebar_agent_line(
                             agent_identity
                                 .as_ref()
@@ -2322,9 +2062,9 @@ impl WorkspaceView {
                         let location_label =
                             sidebar_location_line(branch_label.as_deref(), &path_label);
                         let location_color = if branch_label.is_some() {
-                            branch_color
+                            appearance.branch
                         } else {
-                            path_color
+                            appearance.path
                         };
                         let drag = SidebarWorkspaceDrag {
                             workspace_id,
@@ -2366,17 +2106,9 @@ impl WorkspaceView {
                             .rounded(px(7.0))
                             .when(can_reorder, |item| item.cursor_move())
                             .when(!can_reorder, |item| item.cursor_pointer())
-                            .bg(if selected {
-                                colors().elevated
-                            } else {
-                                colors().sidebar
-                            })
+                            .bg(appearance.background)
                             .border_1()
-                            .border_color(if selected {
-                                colors().border_subtle
-                            } else {
-                                gpui::rgba(0x00000000)
-                            })
+                            .border_color(appearance.border)
                             .hover(|item| item.bg(colors().hover))
                             .active(|item| item.opacity(0.82))
                             .when(is_source, |item| item.opacity(0.65))
@@ -2437,38 +2169,15 @@ impl WorkspaceView {
                                     .and_then(|identity| identity.agent_attention),
                                 selected,
                             ))
-                            .child(
-                                div()
-                                    .w(px((self.left_sidebar_tab_text_width() - group_inset)
-                                        .max(80.0)))
-                                    .flex_none()
-                                    .overflow_hidden()
-                                    .flex()
-                                    .flex_col()
-                                    .justify_center()
-                                    .gap(px(1.0))
-                                    .child(sidebar_tab_line(
-                                        &title_label,
-                                        title_color,
-                                        11.5,
-                                        true,
-                                        false,
-                                    ))
-                                    .child(sidebar_tab_line(
-                                        &agent_label,
-                                        agent_color,
-                                        9.5,
-                                        true,
-                                        false,
-                                    ))
-                                    .child(sidebar_tab_line(
-                                        &location_label,
-                                        location_color,
-                                        8.5,
-                                        false,
-                                        true,
-                                    )),
-                            )
+                            .child(sidebar_workspace_text_column(
+                                (self.left_sidebar_tab_text_width() - group_inset).max(80.0),
+                                &title_label,
+                                appearance.title,
+                                &agent_label,
+                                agent_color,
+                                &location_label,
+                                location_color,
+                            ))
                             .when(can_reorder, |item| {
                                 item.child(
                                     div()
@@ -2821,7 +2530,7 @@ impl WorkspaceView {
                     .p_2()
                     .rounded(px(6.0))
                     .bg(colors().elevated)
-                    .font_family("JetBrains Mono")
+                    .font_family(MONO_FONT)
                     .text_size(px(9.0))
                     .text_color(colors().foreground)
                     .child(root.display().to_string()),
@@ -2870,7 +2579,7 @@ impl WorkspaceView {
                             )
                             .child(
                                 div()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(MONO_FONT)
                                     .text_size(px(8.5))
                                     .text_color(colors().subtle)
                                     .child(path),
@@ -2994,7 +2703,7 @@ impl WorkspaceView {
                                             .child(
                                                 div()
                                                     .truncate()
-                                                    .font_family("JetBrains Mono")
+                                                    .font_family(MONO_FONT)
                                                     .text_size(px(10.5))
                                                     .font_weight(gpui::FontWeight::MEDIUM)
                                                     .text_color(colors().foreground)
@@ -3004,7 +2713,7 @@ impl WorkspaceView {
                                                 column.child(
                                                     div()
                                                         .truncate()
-                                                        .font_family("JetBrains Mono")
+                                                        .font_family(MONO_FONT)
                                                         .text_size(px(9.0))
                                                         .text_color(colors().subtle)
                                                         .child(detail),
@@ -3105,7 +2814,7 @@ impl WorkspaceView {
                                 .bg(colors().terminal)
                                 .flex()
                                 .items_center()
-                                .font_family("JetBrains Mono")
+                                .font_family(MONO_FONT)
                                 .text_size(px(11.0))
                                 .text_color(if value == "Escribe un nombre…" {
                                     colors().subtle

@@ -814,12 +814,18 @@ pub fn expand_tabs(text: &str) -> String {
 }
 
 /// Highlight every text row of a diff in order (preserves multi-line comment/string state).
-pub fn highlight_diff_rows(path: &str, rows: &[GitDiffRow]) -> Vec<Vec<SyntaxSpan>> {
+/// `texts` must already be tab-expanded so span offsets match the painted lines.
+pub fn highlight_diff_rows(
+    path: &str,
+    rows: &[GitDiffRow],
+    texts: &[&str],
+) -> Vec<Vec<SyntaxSpan>> {
     let mut highlighter = Highlighter::for_path(path);
     rows.iter()
-        .map(|row| match row.kind {
+        .zip(texts)
+        .map(|(row, text)| match row.kind {
             GitDiffRowKind::Context | GitDiffRowKind::Addition | GitDiffRowKind::Deletion => {
-                highlighter.highlight_line(&expand_tabs(&row.text))
+                highlighter.highlight_line(text)
             }
             _ => Vec::new(),
         })
@@ -892,7 +898,9 @@ mod tests {
                 text: "let ok => true; // café".into(),
             },
         ];
-        let spans = highlight_diff_rows("src/main.rs", &rows);
+        let texts: Vec<_> = rows.iter().map(|row| expand_tabs(&row.text)).collect();
+        let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let spans = highlight_diff_rows("src/main.rs", &rows, &text_refs);
         assert_eq!(spans.len(), 2);
         assert!(
             spans[1]

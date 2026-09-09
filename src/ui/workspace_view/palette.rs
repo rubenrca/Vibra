@@ -3,7 +3,7 @@
 use gpui::{AnyElement, Context, SharedString, Window, div, prelude::*, px};
 
 use crate::domain::workspace::PaneSplitDirection;
-use crate::ui::theme::colors;
+use crate::ui::theme::{MONO_FONT, colors};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette, ToggleDevTerminal};
 
 use super::{
@@ -272,6 +272,7 @@ impl super::WorkspaceView {
     pub(super) fn palette_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let mode = self.palette_mode?;
         let items = self.palette_items();
+        let empty = items.is_empty();
         let selected = self.palette_selected.min(items.len().saturating_sub(1));
         let query = self.palette_query.clone();
         let placeholder = match mode {
@@ -313,14 +314,14 @@ impl super::WorkspaceView {
                                 .border_color(colors().border_subtle)
                                 .child(
                                     div()
-                                        .font_family("JetBrains Mono")
+                                        .font_family(MONO_FONT)
                                         .text_color(colors().subtle)
                                         .child(">"),
                                 )
                                 .child(
                                     div()
                                         .flex_1()
-                                        .font_family("JetBrains Mono")
+                                        .font_family(MONO_FONT)
                                         .text_size(px(12.0))
                                         .text_color(if query.is_empty() {
                                             colors().subtle
@@ -368,7 +369,7 @@ impl super::WorkspaceView {
                                             div()
                                                 .w(px(18.0))
                                                 .text_center()
-                                                .font_family("JetBrains Mono")
+                                                .font_family(MONO_FONT)
                                                 .text_color(if active {
                                                     colors().muted
                                                 } else {
@@ -391,14 +392,14 @@ impl super::WorkspaceView {
                                         )
                                         .child(
                                             div()
-                                                .font_family("JetBrains Mono")
+                                                .font_family(MONO_FONT)
                                                 .text_size(px(8.5))
                                                 .text_color(colors().subtle)
                                                 .child(item.detail),
                                         )
                                 })),
                         )
-                        .when(self.palette_items().is_empty(), |palette| {
+                        .when(empty, |palette| {
                             palette.child(
                                 div()
                                     .h(px(80.0))

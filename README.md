@@ -145,15 +145,15 @@ si Apple demora más, conserva la solicitud y el ID queda en
 ## Releases
 
 Requiere un árbol limpio, `Cargo.toml` y una sección en `CHANGELOG.md` con la
-misma versión, más las herramientas Sparkle en `.build/artifacts/sparkle`
+misma versión, más Sparkle descargado con `./Scripts/fetch_sparkle.sh`
 (clave EdDSA en el llavero):
 
 ```bash
-./Scripts/release.sh 0.3.6 --dry-run
-./Scripts/release.sh 0.3.6
-./Scripts/release.sh 0.3.6-beta.1 --prerelease
-./Scripts/release.sh 0.3.6 --no-notarize   # solo si hace falta omitir notarización
-./Scripts/release.sh 0.3.6 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
+./Scripts/release.sh 0.3.20 --dry-run
+./Scripts/release.sh 0.3.20
+./Scripts/release.sh 0.3.20-beta.1 --prerelease
+./Scripts/release.sh 0.3.20 --no-notarize   # solo si hace falta omitir notarización
+./Scripts/release.sh 0.3.20 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
 ```
 
 Un release **estable** crea el DMG universal, firma con Developer ID, notariza
@@ -220,6 +220,11 @@ WorkspaceSnapshot + acciones de dominio
 La vista principal se organiza en `src/ui/workspace_view/`:
 
 - `mod.rs`: coordinación del workspace, eventos y composición de la ventana.
+- `titlebar.rs`: barra de título, pestañas de utilidad y menú de IDE.
+- `panes.rs`: layout de panes, tab bar y atajos de división.
+- `palette.rs`: paleta de comandos y apertura rápida de archivos.
+- `input.rs`: atajos globales y overlays de entrada.
+- `drag.rs`: payloads y previews de arrastre.
 - `settings.rs`: páginas de configuración y aplicación de preferencias.
 - `dev_terminal.rs`: ciclo de vida y renderizado de las consolas inferiores.
 - `files.rs`: recorrido del árbol de archivos, iconos e indicadores Git.

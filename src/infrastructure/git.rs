@@ -69,42 +69,21 @@ impl GitPort for GitCliPort {
             ],
         )?;
         ensure_success(&output, "git status")?;
-        let mut records = output.stdout.split(|byte| *byte == 0).peekable();
-        let mut branch = "HEAD".to_owned();
-        let mut ahead = 0;
-        let mut behind = 0;
-        let mut changes = Vec::new();
-
-        while let Some(record) = records.next() {
-            if record.is_empty() {
-                continue;
-            }
-            let record = String::from_utf8_lossy(record);
-            if let Some(header) = record.strip_prefix("## ") {
-                (branch, ahead, behind) = parse_branch_header(header);
-                continue;
-            }
-            if record.len() < 3 {
-                continue;
-            }
-            let bytes = record.as_bytes();
-            let index = bytes[0] as char;
-            let worktree = bytes[1] as char;
-            if index == '!' && worktree == '!' {
-                continue;
-            }
-            let path = record[3..].to_owned();
-            let renamed_or_copied = matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C');
-            if renamed_or_copied {
-                let _ = records.next();
-            }
-            let untracked = index == '?' && worktree == '?';
+        let PorcelainStatus {
+            branch,
+            ahead,
+            behind,
+            files,
+        } = parse_porcelain_status(&output.stdout);
+        let mut changes = Vec::with_capacity(files.len());
+        for file in files {
+            let untracked = file.untracked();
             changes.push(GitFileChange {
-                status: file_status(index, worktree),
-                staged: !untracked && index != ' ',
-                unstaged: !untracked && worktree != ' ',
+                status: file_status(file.index, file.worktree),
+                staged: !untracked && file.index != ' ',
+                unstaged: !untracked && file.worktree != ' ',
                 untracked,
-                path,
+                path: file.path,
                 additions: None,
                 deletions: None,
             });
@@ -166,42 +145,12 @@ impl GitPort for GitCliPort {
             ],
         )?;
         ensure_success(&output, "git status")?;
-        let mut records = output.stdout.split(|byte| *byte == 0).peekable();
-        let mut branch = "HEAD".to_owned();
-        let mut ahead = 0;
-        let mut behind = 0;
-        let mut dirty = false;
-
-        while let Some(record) = records.next() {
-            if record.is_empty() {
-                continue;
-            }
-            let record = String::from_utf8_lossy(record);
-            if let Some(header) = record.strip_prefix("## ") {
-                (branch, ahead, behind) = parse_branch_header(header);
-                continue;
-            }
-            if record.len() < 3 {
-                continue;
-            }
-            let bytes = record.as_bytes();
-            let index = bytes[0] as char;
-            let worktree = bytes[1] as char;
-            if index == '!' && worktree == '!' {
-                continue;
-            }
-            dirty = true;
-            // Renamed/copied records consume the next path entry.
-            if matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C') {
-                let _ = records.next();
-            }
-        }
-
+        let porcelain = parse_porcelain_status(&output.stdout);
         let summary = GitBranchSummary {
-            branch,
-            ahead,
-            behind,
-            dirty,
+            branch: porcelain.branch,
+            ahead: porcelain.ahead,
+            behind: porcelain.behind,
+            dirty: !porcelain.files.is_empty(),
         };
         self.remember_branch_summary(root, summary.clone());
         Ok(Some(summary))
@@ -297,16 +246,7 @@ impl GitPort for GitCliPort {
         }
 
         if rows.is_empty() {
-            rows.push(GitDiffRow {
-                old_line: None,
-                new_line: None,
-                kind: GitDiffRowKind::Notice,
-                text: if binary {
-                    "El archivo contiene datos binarios y no tiene vista textual.".into()
-                } else {
-                    "Git no devolvió cambios textuales para este archivo.".into()
-                },
-            });
+            rows.push(empty_diff_notice(binary));
         }
 
         Ok(GitDiff {
@@ -545,16 +485,7 @@ impl GitPort for GitCliPort {
             &mut truncated,
         );
         if rows.is_empty() {
-            rows.push(GitDiffRow {
-                old_line: None,
-                new_line: None,
-                kind: GitDiffRowKind::Notice,
-                text: if binary {
-                    "El archivo contiene datos binarios y no tiene vista textual.".into()
-                } else {
-                    "Git no devolvió cambios textuales para este archivo.".into()
-                },
-            });
+            rows.push(empty_diff_notice(binary));
         }
         Ok(GitDiff {
             path: change.path.clone(),
@@ -661,6 +592,84 @@ fn ensure_success(output: &Output, operation: &str) -> Result<()> {
     bail!("{operation} falló: {message}")
 }
 
+fn parse_porcelain_status(stdout: &[u8]) -> PorcelainStatus {
+    let mut records = stdout.split(|byte| *byte == 0).peekable();
+    let mut status = PorcelainStatus::default();
+    while let Some(record) = records.next() {
+        if record.is_empty() {
+            continue;
+        }
+        let record = String::from_utf8_lossy(record);
+        if let Some(header) = record.strip_prefix("## ") {
+            (status.branch, status.ahead, status.behind) = parse_branch_header(header);
+            continue;
+        }
+        if record.len() < 3 {
+            continue;
+        }
+        let bytes = record.as_bytes();
+        let index = bytes[0] as char;
+        let worktree = bytes[1] as char;
+        if index == '!' && worktree == '!' {
+            continue;
+        }
+        if matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C') {
+            let _ = records.next();
+        }
+        status.files.push(PorcelainFile {
+            index,
+            worktree,
+            path: record[3..].to_owned(),
+        });
+    }
+    status
+}
+
+#[derive(Debug)]
+struct PorcelainStatus {
+    branch: String,
+    ahead: usize,
+    behind: usize,
+    files: Vec<PorcelainFile>,
+}
+
+impl Default for PorcelainStatus {
+    fn default() -> Self {
+        Self {
+            branch: "HEAD".to_owned(),
+            ahead: 0,
+            behind: 0,
+            files: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PorcelainFile {
+    index: char,
+    worktree: char,
+    path: String,
+}
+
+impl PorcelainFile {
+    fn untracked(&self) -> bool {
+        self.index == '?' && self.worktree == '?'
+    }
+}
+
+fn empty_diff_notice(binary: bool) -> GitDiffRow {
+    GitDiffRow {
+        old_line: None,
+        new_line: None,
+        kind: GitDiffRowKind::Notice,
+        text: if binary {
+            "El archivo contiene datos binarios y no tiene vista textual.".into()
+        } else {
+            "Git no devolvió cambios textuales para este archivo.".into()
+        },
+    }
+}
+
 fn parse_branch_header(header: &str) -> (String, usize, usize) {
     let (relation, tracking) = header
         .rsplit_once(" [")
@@ -757,22 +766,7 @@ fn collect_numstat(
     arguments.extend(["--no-ext-diff", "--numstat"]);
     let output = run_git(root, arguments)?;
     ensure_success(&output, "git diff --numstat")?;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut fields = line.splitn(3, '\t');
-        let (Some(additions), Some(deletions), Some(path)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        let (Ok(additions), Ok(deletions)) =
-            (additions.parse::<usize>(), deletions.parse::<usize>())
-        else {
-            continue;
-        };
-        let entry = stats.entry(path.to_owned()).or_default();
-        entry.0 += additions;
-        entry.1 += deletions;
-    }
+    apply_numstat(&output.stdout, stats);
     Ok(())
 }
 
@@ -799,10 +793,10 @@ fn display_branch_ref(reference: &str) -> &str {
 fn resolve_commit(root: &Path, reference: &str) -> Result<String> {
     validate_revision(reference)?;
     if reference.is_empty() {
-        bail!("Select a branch to compare");
+        bail!("Selecciona una rama para comparar");
     }
     rev_parse(root, &format!("{reference}^{{commit}}"))?
-        .with_context(|| format!("Branch not found: {reference}"))
+        .with_context(|| format!("No se encontró la rama: {reference}"))
 }
 
 fn current_branch(root: &Path) -> Result<String> {
@@ -977,7 +971,12 @@ fn collect_numstat_against(
     args.push("--");
     let output = run_git(root, args)?;
     ensure_success(&output, "git diff --numstat")?;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    apply_numstat(&output.stdout, stats);
+    Ok(())
+}
+
+fn apply_numstat(stdout: &[u8], stats: &mut HashMap<String, (usize, usize)>) {
+    for line in String::from_utf8_lossy(stdout).lines() {
         let mut fields = line.splitn(3, '\t');
         let (Some(additions), Some(deletions), Some(path)) =
             (fields.next(), fields.next(), fields.next())
@@ -993,7 +992,6 @@ fn collect_numstat_against(
         entry.0 += additions;
         entry.1 += deletions;
     }
-    Ok(())
 }
 
 fn parse_history(output: &str) -> Vec<GitCommit> {

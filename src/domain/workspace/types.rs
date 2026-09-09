@@ -70,7 +70,7 @@ pub struct ProjectSnapshot {
     pub id: Uuid,
     pub name: String,
     pub root_path: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<SessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_session_id: Option<Uuid>,

@@ -10,7 +10,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use super::{ProjectFileRow, RightSidebarMode};
 use crate::ports::files::{FileEntryKind, FileSystemPort};
 use crate::ports::git::GitFileStatus;
-use crate::ui::theme::colors;
+use crate::ui::theme::{MONO_FONT, colors};
 
 pub(crate) fn collect_project_files(
     port: &dyn FileSystemPort,
@@ -153,7 +153,7 @@ pub(crate) fn file_tree_icon(
                 .into_any_element()
         }
         FileEntryKind::Symlink => div()
-            .font_family("JetBrains Mono")
+            .font_family(MONO_FONT)
             .text_size(px(11.0))
             .text_color(color)
             .child("↗")
@@ -167,7 +167,7 @@ pub(crate) fn file_tree_icon(
                     .into_any_element();
             };
             div()
-                .font_family("JetBrains Mono")
+                .font_family(MONO_FONT)
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_size(px(8.5))
                 .text_color(color)
@@ -243,7 +243,7 @@ pub(crate) fn git_status_trailing(status: GitFileStatus) -> Div {
     };
     div()
         .flex_none()
-        .font_family("JetBrains Mono")
+        .font_family(MONO_FONT)
         .text_size(px(10.0))
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(git_status_color(status))

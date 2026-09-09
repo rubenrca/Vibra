@@ -3,18 +3,17 @@ use std::path::Path;
 
 use uuid::Uuid;
 
+use super::sidebar::{
+    detach_workspace_from_sidebar, sidebar_contains_workspace, sidebar_space_for,
+    sidebar_workspace_ids,
+};
 use super::types::*;
 
 impl super::WorkspaceSnapshot {
     pub fn create_workspace(&mut self, root: &Path) {
         let selected_workspace_id = self.selected_workspace().map(|workspace| workspace.id);
         let inherited_space_id = selected_workspace_id.and_then(|selected_workspace_id| {
-            self.sidebar_items.iter().find_map(|item| match item {
-                SidebarItemSnapshot::Space {
-                    id, workspace_ids, ..
-                } if workspace_ids.contains(&selected_workspace_id) => Some(*id),
-                _ => None,
-            })
+            sidebar_space_for(&self.sidebar_items, selected_workspace_id)
         });
         let root_path = root.to_string_lossy().into_owned();
         let directory_name = root
@@ -531,14 +530,7 @@ impl super::WorkspaceSnapshot {
             }
             None => self.workspace_order.len(),
         };
-        let space_for = |workspace_id: Uuid| {
-            self.sidebar_items.iter().find_map(|item| match item {
-                SidebarItemSnapshot::Space {
-                    id, workspace_ids, ..
-                } if workspace_ids.contains(&workspace_id) => Some(*id),
-                _ => None,
-            })
-        };
+        let space_for = |workspace_id: Uuid| sidebar_space_for(&self.sidebar_items, workspace_id);
         let source_space = space_for(workspace_id);
         let target_space = before_workspace_id.and_then(space_for);
         if from_order == to_order
@@ -549,25 +541,10 @@ impl super::WorkspaceSnapshot {
         {
             return false;
         }
-        let Some(source_item_index) = self.sidebar_items.iter().position(|item| match item {
-            SidebarItemSnapshot::Workspace { workspace_id: id } => *id == workspace_id,
-            SidebarItemSnapshot::Space { workspace_ids, .. } => {
-                workspace_ids.contains(&workspace_id)
-            }
-            SidebarItemSnapshot::Spacer { .. } => false,
-        }) else {
+        if !sidebar_contains_workspace(&self.sidebar_items, workspace_id) {
             return false;
-        };
-
-        match &mut self.sidebar_items[source_item_index] {
-            SidebarItemSnapshot::Workspace { .. } => {
-                self.sidebar_items.remove(source_item_index);
-            }
-            SidebarItemSnapshot::Space { workspace_ids, .. } => {
-                workspace_ids.retain(|id| *id != workspace_id);
-            }
-            SidebarItemSnapshot::Spacer { .. } => unreachable!(),
         }
+        detach_workspace_from_sidebar(&mut self.sidebar_items, workspace_id);
 
         let mut inserted = false;
         if let Some(target_id) = before_workspace_id {
@@ -603,15 +580,8 @@ impl super::WorkspaceSnapshot {
         self.sidebar_items.retain(|item| {
             !matches!(item, SidebarItemSnapshot::Space { workspace_ids, .. } if workspace_ids.is_empty())
         });
-        self.workspace_order = self
-            .sidebar_items
-            .iter()
-            .flat_map(|item| match item {
-                SidebarItemSnapshot::Workspace { workspace_id } => vec![*workspace_id],
-                SidebarItemSnapshot::Space { workspace_ids, .. } => workspace_ids.clone(),
-                SidebarItemSnapshot::Spacer { .. } => Vec::new(),
-            })
-            .collect();
+        self.workspace_order = sidebar_workspace_ids(&self.sidebar_items);
+        self.normalize();
         true
     }
 
@@ -627,33 +597,13 @@ impl super::WorkspaceSnapshot {
             return false;
         }
         let original = self.sidebar_items.clone();
-        let source_exists = self.sidebar_items.iter().any(|item| match item {
-            SidebarItemSnapshot::Workspace { workspace_id: id } => *id == workspace_id,
-            SidebarItemSnapshot::Space { workspace_ids, .. } => {
-                workspace_ids.contains(&workspace_id)
-            }
-            SidebarItemSnapshot::Spacer { .. } => false,
-        });
-        let target_exists = self.sidebar_items.iter().any(|item| match item {
-            SidebarItemSnapshot::Workspace { workspace_id: id } => *id == target_id,
-            SidebarItemSnapshot::Space { workspace_ids, .. } => workspace_ids.contains(&target_id),
-            SidebarItemSnapshot::Spacer { .. } => false,
-        });
-        if !source_exists || !target_exists {
+        if !sidebar_contains_workspace(&self.sidebar_items, workspace_id)
+            || !sidebar_contains_workspace(&self.sidebar_items, target_id)
+        {
             return false;
         }
 
-        if let Some(index) = self.sidebar_items.iter().position(
-            |item| matches!(item, SidebarItemSnapshot::Workspace { workspace_id: id } if *id == workspace_id),
-        ) {
-            self.sidebar_items.remove(index);
-        } else {
-            for item in &mut self.sidebar_items {
-                if let SidebarItemSnapshot::Space { workspace_ids, .. } = item {
-                    workspace_ids.retain(|id| *id != workspace_id);
-                }
-            }
-        }
+        detach_workspace_from_sidebar(&mut self.sidebar_items, workspace_id);
 
         if let Some(index) = self.sidebar_items.iter().position(
             |item| matches!(item, SidebarItemSnapshot::Workspace { workspace_id: id } if *id == target_id),
@@ -692,17 +642,12 @@ impl super::WorkspaceSnapshot {
             }
             SidebarItemSnapshot::Spacer { .. } => false,
         })?;
-        let insert_at = match &mut self.sidebar_items[item_index] {
-            SidebarItemSnapshot::Workspace { .. } => {
-                self.sidebar_items.remove(item_index);
-                item_index
-            }
-            SidebarItemSnapshot::Space { workspace_ids, .. } => {
-                workspace_ids.retain(|id| *id != workspace_id);
-                item_index + 1
-            }
+        let insert_at = match &self.sidebar_items[item_index] {
+            SidebarItemSnapshot::Workspace { .. } => item_index,
+            SidebarItemSnapshot::Space { .. } => item_index + 1,
             SidebarItemSnapshot::Spacer { .. } => unreachable!(),
         };
+        detach_workspace_from_sidebar(&mut self.sidebar_items, workspace_id);
         let id = Uuid::new_v4();
         self.sidebar_items.insert(
             insert_at,
@@ -730,22 +675,11 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn move_workspace_to_space(&mut self, workspace_id: Uuid, space_id: Uuid) -> bool {
-        let source_space_id = self.sidebar_items.iter().find_map(|item| match item {
-            SidebarItemSnapshot::Space {
-                id, workspace_ids, ..
-            } if workspace_ids.contains(&workspace_id) => Some(*id),
-            _ => None,
-        });
+        let source_space_id = sidebar_space_for(&self.sidebar_items, workspace_id);
         if source_space_id == Some(space_id) {
             return false;
         }
-        let workspace_exists = self.sidebar_items.iter().any(|item| match item {
-            SidebarItemSnapshot::Workspace { workspace_id: id } => *id == workspace_id,
-            SidebarItemSnapshot::Space { workspace_ids, .. } => {
-                workspace_ids.contains(&workspace_id)
-            }
-            SidebarItemSnapshot::Spacer { .. } => false,
-        });
+        let workspace_exists = sidebar_contains_workspace(&self.sidebar_items, workspace_id);
         let target_exists = self
             .sidebar_items
             .iter()
@@ -753,16 +687,7 @@ impl super::WorkspaceSnapshot {
         if !workspace_exists || !target_exists {
             return false;
         }
-        if let Some(index) = self.sidebar_items.iter().position(
-            |item| matches!(item, SidebarItemSnapshot::Workspace { workspace_id: id } if *id == workspace_id),
-        ) {
-            self.sidebar_items.remove(index);
-        }
-        for item in &mut self.sidebar_items {
-            if let SidebarItemSnapshot::Space { workspace_ids, .. } = item {
-                workspace_ids.retain(|id| *id != workspace_id);
-            }
-        }
+        detach_workspace_from_sidebar(&mut self.sidebar_items, workspace_id);
         let Some(SidebarItemSnapshot::Space {
             workspace_ids,
             collapsed,
@@ -1183,27 +1108,22 @@ impl super::WorkspaceSnapshot {
 }
 
 impl TerminalWorkspaceSnapshot {
-    /// Working directory of the selected tab's selected session (or first available).
-    pub fn primary_working_directory(&self) -> Option<String> {
-        let tab = self
-            .tabs
+    fn primary_tab(&self) -> Option<&TabSnapshot> {
+        self.tabs
             .iter()
             .find(|tab| Some(tab.id) == self.selected_tab_id)
-            .or_else(|| self.tabs.first())?;
-        tab.sessions
-            .iter()
-            .find(|session| Some(session.id) == tab.selected_session_id)
-            .or_else(|| tab.sessions.first())
+            .or_else(|| self.tabs.first())
+    }
+
+    /// Working directory of the selected tab's selected session (or first available).
+    pub fn primary_working_directory(&self) -> Option<String> {
+        self.primary_session()
             .map(|session| session.working_directory.clone())
     }
 
     /// Session that drives sidebar path/branch metadata for this workspace.
     pub fn primary_session(&self) -> Option<&SessionSnapshot> {
-        let tab = self
-            .tabs
-            .iter()
-            .find(|tab| Some(tab.id) == self.selected_tab_id)
-            .or_else(|| self.tabs.first())?;
+        let tab = self.primary_tab()?;
         tab.sessions
             .iter()
             .find(|session| Some(session.id) == tab.selected_session_id)

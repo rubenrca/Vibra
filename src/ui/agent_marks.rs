@@ -6,120 +6,59 @@ use gpui::{
 };
 
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
-use crate::ui::theme::colors;
+use crate::ui::theme::{MONO_FONT, colors};
+
+/// Glyph used when a pane has no detected agent mark.
+pub const TERMINAL_GLYPH: &str = ">_";
+
+macro_rules! bundled_assets {
+    ($(($key:literal, $rel:literal)),+ $(,)?) => {
+        impl AssetSource for VibraAssets {
+            fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+                Ok(match path {
+                    $($key => Some(Cow::Borrowed(include_bytes!(concat!("../../Resources/", $rel)))),)+
+                    _ => None,
+                })
+            }
+
+            fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+                const ASSETS: &[&str] = &[$($key),+];
+                let prefix = path.trim_matches('/');
+                Ok(ASSETS
+                    .iter()
+                    .copied()
+                    .filter(|asset| prefix.is_empty() || asset.starts_with(prefix))
+                    .map(SharedString::from)
+                    .collect())
+            }
+        }
+    };
+}
 
 /// Bundled agent brand marks served through GPUI's asset source.
 pub struct VibraAssets;
 
-impl AssetSource for VibraAssets {
-    fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
-        Ok(match path {
-            "agent-marks/aider.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/aider.svg"
-            ))),
-            "agent-marks/amp.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/amp.svg"
-            ))),
-            "agent-marks/claude.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/claude.svg"
-            ))),
-            "agent-marks/codex.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/codex.svg"
-            ))),
-            "agent-marks/cursor.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/cursor.svg"
-            ))),
-            "agent-marks/gemini.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/gemini.svg"
-            ))),
-            "agent-marks/goose.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/goose.svg"
-            ))),
-            "agent-marks/grok.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/grok.svg"
-            ))),
-            "agent-marks/opencode.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/opencode.svg"
-            ))),
-            "agent-marks/pi.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/AgentMarks/pi.svg"
-            ))),
-            "file-icons/folder.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/FileIcons/folder.svg"
-            ))),
-            "file-icons/folder-open.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/FileIcons/folder-open.svg"
-            ))),
-            "file-icons/file.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/FileIcons/file.svg"
-            ))),
-            "chrome-icons/files.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/files.svg"
-            ))),
-            "chrome-icons/git-branch.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/git-branch.svg"
-            ))),
-            "chrome-icons/open-external.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/open-external.svg"
-            ))),
-            "chrome-icons/collapse.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/collapse.svg"
-            ))),
-            "chrome-icons/expand.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/expand.svg"
-            ))),
-            "chrome-icons/chevron-left.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/chevron-left.svg"
-            ))),
-            "chrome-icons/chevron-down.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/chevron-down.svg"
-            ))),
-            "chrome-icons/chevrons-left.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/chevrons-left.svg"
-            ))),
-            "chrome-icons/chevrons-right.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/chevrons-right.svg"
-            ))),
-            "chrome-icons/chevron-right.svg" => Some(Cow::Borrowed(include_bytes!(
-                "../../Resources/ChromeIcons/chevron-right.svg"
-            ))),
-            _ => None,
-        })
-    }
-
-    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
-        let prefix = path.trim_matches('/');
-        let assets = [
-            "agent-marks/aider.svg",
-            "agent-marks/amp.svg",
-            "agent-marks/claude.svg",
-            "agent-marks/codex.svg",
-            "agent-marks/cursor.svg",
-            "agent-marks/gemini.svg",
-            "agent-marks/goose.svg",
-            "agent-marks/grok.svg",
-            "agent-marks/opencode.svg",
-            "agent-marks/pi.svg",
-            "file-icons/folder.svg",
-            "file-icons/folder-open.svg",
-            "file-icons/file.svg",
-            "chrome-icons/files.svg",
-            "chrome-icons/git-branch.svg",
-            "chrome-icons/open-external.svg",
-            "chrome-icons/chevron-right.svg",
-            "chrome-icons/chevrons-right.svg",
-            "chrome-icons/chevrons-left.svg",
-            "chrome-icons/chevron-down.svg",
-            "chrome-icons/chevron-left.svg",
-            "chrome-icons/expand.svg",
-            "chrome-icons/collapse.svg",
-        ];
-        Ok(assets
-            .into_iter()
-            .filter(|asset| prefix.is_empty() || asset.starts_with(prefix))
-            .map(SharedString::from)
-            .collect())
-    }
+bundled_assets! {
+    ("agent-marks/aider.svg", "AgentMarks/aider.svg"),
+    ("agent-marks/amp.svg", "AgentMarks/amp.svg"),
+    ("agent-marks/claude.svg", "AgentMarks/claude.svg"),
+    ("agent-marks/codex.svg", "AgentMarks/codex.svg"),
+    ("agent-marks/cursor.svg", "AgentMarks/cursor.svg"),
+    ("agent-marks/gemini.svg", "AgentMarks/gemini.svg"),
+    ("agent-marks/goose.svg", "AgentMarks/goose.svg"),
+    ("agent-marks/grok.svg", "AgentMarks/grok.svg"),
+    ("agent-marks/opencode.svg", "AgentMarks/opencode.svg"),
+    ("agent-marks/pi.svg", "AgentMarks/pi.svg"),
+    ("file-icons/folder.svg", "FileIcons/folder.svg"),
+    ("file-icons/folder-open.svg", "FileIcons/folder-open.svg"),
+    ("file-icons/file.svg", "FileIcons/file.svg"),
+    ("chrome-icons/files.svg", "ChromeIcons/files.svg"),
+    ("chrome-icons/git-branch.svg", "ChromeIcons/git-branch.svg"),
+    ("chrome-icons/open-external.svg", "ChromeIcons/open-external.svg"),
+    ("chrome-icons/chevron-down.svg", "ChromeIcons/chevron-down.svg"),
+    ("chrome-icons/chevrons-left.svg", "ChromeIcons/chevrons-left.svg"),
+    ("chrome-icons/chevrons-right.svg", "ChromeIcons/chevrons-right.svg"),
+    ("chrome-icons/chevron-right.svg", "ChromeIcons/chevron-right.svg"),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,12 +111,20 @@ fn brand_mark(kind: Option<&str>, mark_color: Rgba) -> AnyElement {
             .into_any_element(),
         Some((path, AgentMarkStyle::Original)) => img(path).size(px(16.0)).into_any_element(),
         None => div()
-            .font_family("JetBrains Mono")
+            .font_family(MONO_FONT)
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_size(px(9.5))
             .text_color(mark_color)
-            .child(">_")
+            .child(TERMINAL_GLYPH)
             .into_any_element(),
+    }
+}
+
+fn badge_mark_color(selected: bool) -> Rgba {
+    if selected {
+        colors().foreground
+    } else {
+        colors().muted
     }
 }
 
@@ -188,11 +135,7 @@ pub fn agent_compact_badge(
     attention: Option<AgentAttention>,
     selected: bool,
 ) -> AnyElement {
-    let mark_color = if selected {
-        colors().foreground
-    } else {
-        colors().muted
-    };
+    let mark_color = badge_mark_color(selected);
     let status = agent_status_color(state, attention);
 
     div()
@@ -222,11 +165,7 @@ pub fn agent_sidebar_badge(
     attention: Option<AgentAttention>,
     selected: bool,
 ) -> AnyElement {
-    let mark_color = if selected {
-        colors().foreground
-    } else {
-        colors().muted
-    };
+    let mark_color = badge_mark_color(selected);
     let status =
         agent_status_color(state, attention).or_else(|| selected.then_some(colors().accent));
     let needs_permission =

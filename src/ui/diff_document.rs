@@ -18,12 +18,13 @@ pub struct DiffDocument {
 
 impl DiffDocument {
     pub fn prepare(diff: GitDiff) -> Self {
-        let highlights = highlight_diff_rows(&diff.path, &diff.rows);
         let display_lines: Vec<SharedString> = diff
             .rows
             .iter()
             .map(|row| expand_tabs(&row.text).into())
             .collect();
+        let texts: Vec<&str> = display_lines.iter().map(SharedString::as_ref).collect();
+        let highlights = highlight_diff_rows(&diff.path, &diff.rows, &texts);
         let widest_row_index = display_lines
             .iter()
             .enumerate()

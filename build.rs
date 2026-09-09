@@ -20,23 +20,24 @@ fn main() {
     }
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    cc::Build::new()
-        .file(manifest_dir.join("native/notification_bridge.m"))
-        .include(manifest_dir.join("native"))
-        .flag("-fobjc-arc")
-        .flag("-fobjc-exceptions")
-        .compile("vibra_notification_bridge");
-    cc::Build::new()
-        .file(manifest_dir.join("native/window_bridge.m"))
-        .include(manifest_dir.join("native"))
-        .flag("-fobjc-arc")
-        .compile("vibra_window_bridge");
-    cc::Build::new()
-        .file(manifest_dir.join("native/editor_bridge.m"))
-        .include(manifest_dir.join("native"))
-        .flag("-fobjc-arc")
-        .flag("-fobjc-exceptions")
-        .compile("vibra_editor_bridge");
+    compile_objc(
+        &manifest_dir,
+        "native/notification_bridge.m",
+        "vibra_notification_bridge",
+        &["-fobjc-exceptions"],
+    );
+    compile_objc(
+        &manifest_dir,
+        "native/window_bridge.m",
+        "vibra_window_bridge",
+        &[],
+    );
+    compile_objc(
+        &manifest_dir,
+        "native/editor_bridge.m",
+        "vibra_editor_bridge",
+        &["-fobjc-exceptions"],
+    );
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=UserNotifications");
@@ -45,22 +46,17 @@ fn main() {
             .parent()
             .expect("Sparkle.framework must live inside a Frameworks directory")
             .to_path_buf();
-        println!("cargo:rustc-cfg=vibra_has_sparkle");
         println!(
             "cargo:warning=linking Sparkle from {}",
             framework_dir.display()
         );
 
-        cc::Build::new()
-            .file(manifest_dir.join("native/sparkle_bridge.m"))
-            .include(manifest_dir.join("native"))
-            .flag("-fobjc-arc")
-            .flag(format!("-F{}", parent.display()))
-            .compile("vibra_sparkle_bridge");
+        let mut sparkle = objc_build(&manifest_dir, "native/sparkle_bridge.m");
+        sparkle.flag(format!("-F{}", parent.display()));
+        sparkle.compile("vibra_sparkle_bridge");
 
         println!("cargo:rustc-link-search=framework={}", parent.display());
         println!("cargo:rustc-link-lib=framework=Sparkle");
-        println!("cargo:rustc-link-lib=framework=Foundation");
         // Packaged app layout.
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
         // Local `cargo run` against the same framework directory.
@@ -74,6 +70,23 @@ fn main() {
             .include(manifest_dir.join("native"))
             .compile("vibra_sparkle_bridge");
     }
+}
+
+fn objc_build(manifest_dir: &Path, file: &str) -> cc::Build {
+    let mut build = cc::Build::new();
+    build
+        .file(manifest_dir.join(file))
+        .include(manifest_dir.join("native"))
+        .flag("-fobjc-arc");
+    build
+}
+
+fn compile_objc(manifest_dir: &Path, file: &str, name: &str, extra_flags: &[&str]) {
+    let mut build = objc_build(manifest_dir, file);
+    for flag in extra_flags {
+        build.flag(flag);
+    }
+    build.compile(name);
 }
 
 fn build_ghostty() {
@@ -124,15 +137,16 @@ fn find_sparkle_framework(manifest_dir: &Path) -> Option<PathBuf> {
     }
 
     let candidates = [
+        manifest_dir.join("third_party/Sparkle.framework"),
+        manifest_dir.join("third_party/sparkle-2.9.4/Sparkle.framework"),
+        manifest_dir.join("dist/Vibra.app/Contents/Frameworks/Sparkle.framework"),
+        // Legacy Swift Package Manager layouts, still checked for local caches.
         manifest_dir.join(
             ".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework",
         ),
         manifest_dir.join(
             ".build/checkouts/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework",
         ),
-        manifest_dir.join("third_party/Sparkle.framework"),
-        manifest_dir.join("third_party/sparkle-2.9.4/Sparkle.framework"),
-        manifest_dir.join("dist/Vibra.app/Contents/Frameworks/Sparkle.framework"),
     ];
     if let Some(path) = candidates.into_iter().find(|path| path.is_dir()) {
         return Some(path);

@@ -17,7 +17,7 @@ use crate::ports::git::{
 };
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::syntax::SyntaxSpan;
-use crate::ui::theme::{Theme, colors};
+use crate::ui::theme::{MONO_FONT, Theme, colors};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
 const DIFF_ROW_HEIGHT: f32 = 22.0;
@@ -1390,7 +1390,7 @@ impl DiffView {
                             .items_center()
                             .justify_center()
                             .bg(colors().selection)
-                            .font_family("JetBrains Mono")
+                            .font_family(MONO_FONT)
                             .text_size(px(9.0))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(color)
@@ -1444,7 +1444,7 @@ impl DiffView {
                                 .py_0()
                                 .rounded(px(4.0))
                                 .bg(colors().selection)
-                                .font_family("JetBrains Mono")
+                                .font_family(MONO_FONT)
                                 .text_size(px(10.0))
                                 .when(additions > 0, |stats| {
                                     stats.child(
@@ -1601,7 +1601,7 @@ impl DiffView {
             .flex()
             .items_center()
             .bg(background)
-            .font_family("JetBrains Mono")
+            .font_family(MONO_FONT)
             .text_size(px(DIFF_FONT_SIZE))
             .line_height(px(DIFF_ROW_HEIGHT))
             .child(Self::diff_gutter(&old_line, gutter_bg))
@@ -1630,7 +1630,7 @@ impl DiffView {
             .bg(background)
             .border_r_1()
             .border_color(colors().border_subtle)
-            .font_family("JetBrains Mono")
+            .font_family(MONO_FONT)
             .text_size(px(10.5))
             .text_color(colors().muted)
             .child(number.to_owned())
@@ -1794,7 +1794,7 @@ impl DiffView {
             .text_color(color)
             .child(text.into());
         if mono {
-            cell = cell.font_family("JetBrains Mono");
+            cell = cell.font_family(MONO_FONT);
         }
         cell
     }
@@ -1974,7 +1974,7 @@ impl DiffView {
         };
         let default_style = TextStyle {
             color: default_color.into(),
-            font_family: "JetBrains Mono".into(),
+            font_family: MONO_FONT.into(),
             font_size: px(DIFF_FONT_SIZE).into(),
             line_height: px(DIFF_ROW_HEIGHT).into(),
             white_space: WhiteSpace::Nowrap,

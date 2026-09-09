@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::ports::terminal::TerminalRgb;
 
+/// Family name of the bundled JetBrains Mono Variable font.
+pub const MONO_FONT: &str = "JetBrains Mono";
+
 /// Product color roles used across chrome, terminal shell, diffs, and editors.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {

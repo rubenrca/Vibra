@@ -22,7 +22,7 @@ use crate::ports::terminal::{
     TerminalSnapshot, TerminalUnderline, is_safe_hyperlink,
 };
 use crate::ui::terminal_keyboard::{TerminalKeyEventType, TerminalKeystroke, TerminalModifiers};
-use crate::ui::theme::{self, colors};
+use crate::ui::theme::{self, MONO_FONT, colors};
 use crate::{
     ClearTerminalScrollback, CopyTerminal, DecreaseTerminalFontSize, IncreaseTerminalFontSize,
     PasteTerminal, ResetTerminalFontSize, SearchTerminal, SearchTerminalNext,
@@ -1347,7 +1347,7 @@ impl Render for TerminalView {
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .font_family("JetBrains Mono")
+            .font_family(MONO_FONT)
             .font_weight(gpui::FontWeight::LIGHT)
             .text_size(px(font_size))
             .line_height(px(line_height))
@@ -1639,7 +1639,7 @@ impl Render for TerminalView {
                         .absolute()
                         .inset_0()
                         .p_5()
-                        .font_family("JetBrains Mono")
+                        .font_family(MONO_FONT)
                         .text_sm()
                         .text_color(colors().danger)
                         .child(error),
@@ -1677,7 +1677,7 @@ impl Render for TerminalDragPreview {
             .h(px(self.height))
             .relative()
             .overflow_hidden()
-            .font_family("JetBrains Mono")
+            .font_family(MONO_FONT)
             .font_weight(gpui::FontWeight::LIGHT)
             .text_size(px(font_size))
             .line_height(px(line_height))

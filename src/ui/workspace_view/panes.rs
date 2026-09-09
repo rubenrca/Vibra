@@ -10,9 +10,9 @@ use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
     TabSnapshot, WorkspaceSplitAxis,
 };
-use crate::ui::agent_marks::{agent_compact_badge, agent_status_color};
+use crate::ui::agent_marks::{TERMINAL_GLYPH, agent_compact_badge, agent_status_color};
 use crate::ui::terminal::TerminalDragPreview;
-use crate::ui::theme::colors;
+use crate::ui::theme::{MONO_FONT, colors};
 use crate::{
     EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NextPane,
     PreviousPane, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, SplitPaneDown,
@@ -245,7 +245,7 @@ impl super::WorkspaceView {
                                         .py(px(1.0))
                                         .rounded(px(4.0))
                                         .bg(colors().elevated)
-                                        .font_family("JetBrains Mono")
+                                        .font_family(MONO_FONT)
                                         .text_size(px(8.5))
                                         .text_color(colors().subtle)
                                         .child(format!("{pane_count} panes")),
@@ -257,7 +257,7 @@ impl super::WorkspaceView {
                             div()
                                 .absolute()
                                 .right(px(10.0))
-                                .font_family("JetBrains Mono")
+                                .font_family(MONO_FONT)
                                 .text_size(px(9.5))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(if selected {
@@ -423,7 +423,7 @@ impl super::WorkspaceView {
                                             .min_w(px(0.0))
                                             .max_w(px(220.0))
                                             .truncate()
-                                            .font_family("JetBrains Mono")
+                                            .font_family(MONO_FONT)
                                             .text_size(px(10.5))
                                             .font_weight(if has_agent || selected {
                                                 gpui::FontWeight::MEDIUM
@@ -444,7 +444,7 @@ impl super::WorkspaceView {
                                                 .flex_1()
                                                 .truncate()
                                                 .text_right()
-                                                .font_family("JetBrains Mono")
+                                                .font_family(MONO_FONT)
                                                 .text_size(px(9.0))
                                                 .text_color(colors().subtle)
                                                 .child(detail),
@@ -649,7 +649,7 @@ impl super::WorkspaceView {
                                 .justify_center()
                                 .text_size(px(13.0))
                                 .text_color(colors().muted)
-                                .child(">_"),
+                                .child(TERMINAL_GLYPH),
                         )
                         .child(
                             div()

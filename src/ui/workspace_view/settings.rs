@@ -4,7 +4,7 @@ use gpui::{
     AnyElement, Context, Div, MouseButton, SharedString, Stateful, Window, div, prelude::*, px,
 };
 
-use crate::ui::theme::{self, AppearanceMode, ThemeTone, colors};
+use crate::ui::theme::{self, AppearanceMode, MONO_FONT, ThemeTone, colors};
 
 use super::WorkspaceView;
 use crate::infrastructure::automation::{
@@ -680,7 +680,7 @@ impl WorkspaceView {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .font_family("JetBrains Mono")
+                                    .font_family(MONO_FONT)
                                     .text_size(px(9.0))
                                     .text_color(colors().foreground)
                                     .child(format!("{font_size:.0} px")),
