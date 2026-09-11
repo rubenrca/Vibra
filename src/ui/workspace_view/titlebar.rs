@@ -135,11 +135,7 @@ impl super::WorkspaceView {
     pub(super) fn utility_mode_tabs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.right_sidebar_mode;
         let modes = [
-            (
-                RightSidebarMode::Files,
-                "Archivos",
-                "chrome-icons/files.svg",
-            ),
+            (RightSidebarMode::Files, "Files", "chrome-icons/files.svg"),
             (RightSidebarMode::Diff, "Git", "chrome-icons/git-branch.svg"),
         ];
 
@@ -396,7 +392,7 @@ impl super::WorkspaceView {
         }
         if self.installed_editors.is_empty() {
             self.persistence_error = Some(
-                "No se encontró un IDE compatible. Instala Cursor, VS Code, Windsurf, Zed, Xcode, Sublime Text o VSCodium"
+                "No compatible IDE found. Install Cursor, VS Code, Windsurf, Zed, Xcode, Sublime Text, or VSCodium"
                     .into(),
             );
         } else {

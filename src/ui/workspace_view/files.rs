@@ -309,7 +309,7 @@ impl super::WorkspaceView {
     }
 
     pub(super) fn sync_files_watcher(&mut self, cx: &mut Context<Self>) {
-        if !self.files_sidebar_active() {
+        if !self.right_sidebar_visible {
             self.files_watch = None;
             return;
         }
@@ -348,9 +348,15 @@ impl super::WorkspaceView {
                 while event_rx.try_recv().is_ok() {}
                 if this
                     .update(cx, |this, cx| {
+                        if !this.right_sidebar_visible {
+                            return;
+                        }
                         if this.files_sidebar_active() {
                             this.refresh_project_files(cx);
                         }
+                        this.diff_view.update(cx, |diff_view, cx| {
+                            diff_view.refresh_from_fs_event(cx);
+                        });
                     })
                     .is_err()
                 {

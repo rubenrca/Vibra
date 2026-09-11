@@ -70,77 +70,77 @@ impl super::WorkspaceView {
         let mut items = match mode {
             PaletteMode::Commands => vec![
                 PaletteItem {
-                    label: "Terminal: Nueva pestaña".into(),
+                    label: "Terminal: New tab".into(),
                     detail: "⌘T".into(),
                     action: PaletteAction::NewTerminalTab,
                 },
                 PaletteItem {
-                    label: "Terminal: Terminal de desarrollo".into(),
+                    label: "Terminal: Toggle Dev Terminal".into(),
                     detail: "⌘J".into(),
                     action: PaletteAction::ToggleDevTerminal,
                 },
                 PaletteItem {
-                    label: "Workspace: Abrir carpeta actual en el IDE".into(),
+                    label: "Workspace: Open current folder in IDE".into(),
                     detail: "⇧⌘E".into(),
                     action: PaletteAction::OpenIde,
                 },
                 PaletteItem {
-                    label: "Workspace: Nuevo".into(),
+                    label: "Workspace: New".into(),
                     detail: "⌘N".into(),
                     action: PaletteAction::NewWorkspace,
                 },
                 PaletteItem {
-                    label: "Panel: Dividir a la derecha".into(),
+                    label: "Pane: Split right".into(),
                     detail: "⌘D".into(),
                     action: PaletteAction::Split(PaneSplitDirection::Right),
                 },
                 PaletteItem {
-                    label: "Panel: Dividir abajo".into(),
+                    label: "Pane: Split down".into(),
                     detail: "⇧⌘D".into(),
                     action: PaletteAction::Split(PaneSplitDirection::Down),
                 },
                 PaletteItem {
-                    label: "Panel: Dividir a la izquierda".into(),
+                    label: "Pane: Split left".into(),
                     detail: String::new(),
                     action: PaletteAction::Split(PaneSplitDirection::Left),
                 },
                 PaletteItem {
-                    label: "Panel: Dividir arriba".into(),
+                    label: "Pane: Split up".into(),
                     detail: String::new(),
                     action: PaletteAction::Split(PaneSplitDirection::Up),
                 },
                 PaletteItem {
-                    label: "Panel: Igualar".into(),
+                    label: "Pane: Equalize".into(),
                     detail: "⌃⌥E".into(),
                     action: PaletteAction::EqualizePanes,
                 },
                 PaletteItem {
-                    label: "Panel: Alternar zoom".into(),
+                    label: "Pane: Toggle zoom".into(),
                     detail: "⇧⌘↵".into(),
                     action: PaletteAction::TogglePaneZoom,
                 },
                 PaletteItem {
-                    label: "Barra: Alternar sesiones".into(),
+                    label: "Sidebar: Toggle Sessions".into(),
                     detail: "⌘B".into(),
                     action: PaletteAction::ShowSessions,
                 },
                 PaletteItem {
-                    label: "Barra: Alternar Archivos / Git".into(),
+                    label: "Sidebar: Toggle Files / Git".into(),
                     detail: "⌥⌘B".into(),
                     action: PaletteAction::ToggleGit,
                 },
                 PaletteItem {
-                    label: "Barra: Archivos".into(),
+                    label: "Sidebar: Files".into(),
                     detail: String::new(),
                     action: PaletteAction::ShowFiles,
                 },
                 PaletteItem {
-                    label: "Barra: Info".into(),
+                    label: "Sidebar: Info".into(),
                     detail: String::new(),
                     action: PaletteAction::ShowInfo,
                 },
                 PaletteItem {
-                    label: "Ajustes: Abrir".into(),
+                    label: "Settings: Open".into(),
                     detail: "⌘,".into(),
                     action: PaletteAction::ShowSettings,
                 },
@@ -276,8 +276,8 @@ impl super::WorkspaceView {
         let selected = self.palette_selected.min(items.len().saturating_sub(1));
         let query = self.palette_query.clone();
         let placeholder = match mode {
-            PaletteMode::Commands => "Buscar comandos…",
-            PaletteMode::Files => "Abrir archivo…",
+            PaletteMode::Commands => "Search commands…",
+            PaletteMode::Files => "Open file…",
         };
         Some(
             div()
@@ -408,7 +408,7 @@ impl super::WorkspaceView {
                                     .justify_center()
                                     .text_sm()
                                     .text_color(colors().subtle)
-                                    .child("Sin resultados"),
+                                    .child("No results"),
                             )
                         })
                         .child(
@@ -423,7 +423,7 @@ impl super::WorkspaceView {
                                 .border_color(colors().border_subtle)
                                 .text_xs()
                                 .text_color(colors().subtle)
-                                .child("↑↓ navegar · ↵ ejecutar"),
+                                .child("↑↓ navigate · ↵ run"),
                         ),
                 )
                 .into_any_element(),

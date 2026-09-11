@@ -158,8 +158,7 @@ impl GitPort for GitCliPort {
 
     fn diff(&self, repository: &Path, change: &GitFileChange) -> Result<GitDiff> {
         validate_relative_path(&change.path)?;
-        let root =
-            repository_root(repository)?.context("el repositorio dejó de estar disponible")?;
+        let root = repository_root(repository)?.context("the repository is no longer available")?;
         let multiple_sections = change.staged && (change.unstaged || change.untracked);
         let mut rows = Vec::new();
         let mut additions = 0;
@@ -184,7 +183,7 @@ impl GitPort for GitCliPort {
             )?;
             append_patch(
                 &patch,
-                multiple_sections.then_some("CAMBIOS PREPARADOS"),
+                multiple_sections.then_some("STAGED CHANGES"),
                 &mut rows,
                 &mut additions,
                 &mut deletions,
@@ -209,7 +208,7 @@ impl GitPort for GitCliPort {
             )?;
             append_patch(
                 &patch,
-                multiple_sections.then_some("DIRECTORIO DE TRABAJO"),
+                multiple_sections.then_some("WORKING TREE"),
                 &mut rows,
                 &mut additions,
                 &mut deletions,
@@ -219,30 +218,49 @@ impl GitPort for GitCliPort {
         }
 
         if change.untracked {
-            let patch = run_git_diff(
-                &root,
-                [
-                    "diff",
-                    "--no-index",
-                    "--no-ext-diff",
-                    "--no-color",
-                    "--unified=3",
-                    "--",
-                    "/dev/null",
-                    &change.path,
-                ],
-                "git diff --no-index",
-                true,
-            )?;
-            append_patch(
-                &patch,
-                multiple_sections.then_some("ARCHIVO SIN SEGUIMIENTO"),
-                &mut rows,
-                &mut additions,
-                &mut deletions,
-                &mut binary,
-                &mut truncated,
-            );
+            let untracked_path = root.join(&change.path);
+            if untracked_path.is_dir() {
+                if multiple_sections {
+                    rows.push(GitDiffRow {
+                        old_line: None,
+                        new_line: None,
+                        kind: GitDiffRowKind::Section,
+                        text: "UNTRACKED".into(),
+                    });
+                }
+                rows.push(GitDiffRow {
+                    old_line: None,
+                    new_line: None,
+                    kind: GitDiffRowKind::Notice,
+                    text: "Untracked directory — no text diff.".into(),
+                });
+            } else {
+                let patch = run_git_diff(
+                    &root,
+                    [
+                        "--literal-pathspecs",
+                        "diff",
+                        "--no-index",
+                        "--no-ext-diff",
+                        "--no-color",
+                        "--unified=3",
+                        "--",
+                        "/dev/null",
+                        &change.path,
+                    ],
+                    "git diff --no-index",
+                    true,
+                )?;
+                append_patch(
+                    &patch,
+                    multiple_sections.then_some("UNTRACKED"),
+                    &mut rows,
+                    &mut additions,
+                    &mut deletions,
+                    &mut binary,
+                    &mut truncated,
+                );
+            }
         }
 
         if rows.is_empty() {
@@ -456,8 +474,7 @@ impl GitPort for GitCliPort {
         if head.is_none() && (change.untracked || revision.is_empty()) {
             return self.diff(repository, change);
         }
-        let root =
-            repository_root(repository)?.context("el repositorio dejó de estar disponible")?;
+        let root = repository_root(repository)?.context("the repository is no longer available")?;
         let mut rows = Vec::new();
         let mut additions = 0;
         let mut deletions = 0;
@@ -524,7 +541,7 @@ where
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("LC_ALL", "C")
         .output()
-        .with_context(|| format!("no se pudo ejecutar Git en {}", root.display()))
+        .with_context(|| format!("failed to run Git in {}", root.display()))
 }
 
 fn run_git_diff<I, S>(
@@ -548,9 +565,9 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("no se pudo ejecutar Git en {}", root.display()))?;
-    let stdout = child.stdout.take().context("Git no abrió stdout")?;
-    let mut stderr = child.stderr.take().context("Git no abrió stderr")?;
+        .with_context(|| format!("failed to run Git in {}", root.display()))?;
+    let stdout = child.stdout.take().context("Git did not open stdout")?;
+    let mut stderr = child.stderr.take().context("Git did not open stderr")?;
     let stderr_reader = thread::spawn(move || {
         let mut bytes = Vec::new();
         stderr.read_to_end(&mut bytes)?;
@@ -568,7 +585,7 @@ where
     let status = child.wait()?;
     let stderr = stderr_reader
         .join()
-        .map_err(|_| anyhow::anyhow!("falló el lector de stderr de Git"))??;
+        .map_err(|_| anyhow::anyhow!("Git stderr reader failed"))??;
     read_result?;
 
     if !(reached_limit || status.success() || allow_difference && status.code() == Some(1)) {
@@ -589,7 +606,7 @@ fn ensure_success(output: &Output, operation: &str) -> Result<()> {
         return Ok(());
     }
     let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    bail!("{operation} falló: {message}")
+    bail!("{operation} failed: {message}")
 }
 
 fn parse_porcelain_status(stdout: &[u8]) -> PorcelainStatus {
@@ -616,10 +633,14 @@ fn parse_porcelain_status(stdout: &[u8]) -> PorcelainStatus {
         if matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C') {
             let _ = records.next();
         }
+        let path = record[3..].trim_end_matches('/').to_owned();
+        if path.is_empty() {
+            continue;
+        }
         status.files.push(PorcelainFile {
             index,
             worktree,
-            path: record[3..].to_owned(),
+            path,
         });
     }
     status
@@ -663,9 +684,9 @@ fn empty_diff_notice(binary: bool) -> GitDiffRow {
         new_line: None,
         kind: GitDiffRowKind::Notice,
         text: if binary {
-            "El archivo contiene datos binarios y no tiene vista textual.".into()
+            "Binary file — no text diff.".into()
         } else {
-            "Git no devolvió cambios textuales para este archivo.".into()
+            "Git returned no textual changes for this file.".into()
         },
     }
 }
@@ -735,22 +756,19 @@ fn change_priority(change: &GitFileChange) -> u8 {
 }
 
 fn untracked_paths(root: &Path) -> Result<Vec<String>> {
+    // Match worktree snapshot: list files inside untracked directories, not the
+    // directory itself. `ls-files --directory` collapsed new folders to `dir/`,
+    // which then failed `git diff --no-index`.
     let output = run_git(
         root,
-        [
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "--directory",
-            "-z",
-        ],
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )?;
-    ensure_success(&output, "git ls-files --others")?;
-    Ok(output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-        .map(|path| String::from_utf8_lossy(path).into_owned())
+    ensure_success(&output, "git status")?;
+    Ok(parse_porcelain_status(&output.stdout)
+        .files
+        .into_iter()
+        .filter(PorcelainFile::untracked)
+        .map(|file| file.path)
         .collect())
 }
 
@@ -778,7 +796,7 @@ fn validate_revision(revision: &str) -> Result<()> {
         || revision.contains('\0')
         || revision.contains(char::is_whitespace)
     {
-        bail!("Git devolvió una revisión no segura");
+        bail!("Git returned an unsafe revision");
     }
     Ok(())
 }
@@ -793,10 +811,10 @@ fn display_branch_ref(reference: &str) -> &str {
 fn resolve_commit(root: &Path, reference: &str) -> Result<String> {
     validate_revision(reference)?;
     if reference.is_empty() {
-        bail!("Selecciona una rama para comparar");
+        bail!("Select a branch to compare");
     }
     rev_parse(root, &format!("{reference}^{{commit}}"))?
-        .with_context(|| format!("No se encontró la rama: {reference}"))
+        .with_context(|| format!("Branch not found: {reference}"))
 }
 
 fn current_branch(root: &Path) -> Result<String> {
@@ -839,7 +857,7 @@ fn merge_base(root: &Path, other: &str) -> Result<String> {
     ensure_success(&output, "git merge-base")?;
     let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if value.is_empty() {
-        bail!("Git no encontró un ancestro común con {other}");
+        bail!("Git found no common ancestor with {other}");
     }
     Ok(value)
 }
@@ -1030,7 +1048,7 @@ fn validate_relative_path(path: &str) -> Result<()> {
             .components()
             .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
     {
-        bail!("Git devolvió una ruta no segura")
+        bail!("Git returned an unsafe path")
     }
     Ok(())
 }
@@ -1116,7 +1134,7 @@ fn append_patch(
             old_line: None,
             new_line: None,
             kind: GitDiffRowKind::Notice,
-            text: "Diff truncado a 4 MiB para mantener la interfaz fluida.".into(),
+            text: "Diff truncated to 4 MiB to keep the UI responsive.".into(),
         });
     }
 }
@@ -1194,6 +1212,108 @@ mod tests {
         let diff = port.diff(&root, untracked).unwrap();
         assert_eq!(diff.additions, 2);
         assert!(diff.rows.iter().any(|row| row.text == "new"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn untracked_files_inside_new_directories_are_listed() {
+        let root = repository();
+        fs::create_dir_all(root.join("new_module/src")).unwrap();
+        fs::write(root.join("new_module/src/lib.rs"), "pub fn n() {}\n").unwrap();
+        fs::write(root.join("new_module/README.md"), "new\n").unwrap();
+        let port = GitCliPort::default();
+
+        let snapshot = port.snapshot(&root).unwrap().unwrap();
+        assert!(
+            snapshot
+                .changes
+                .iter()
+                .any(|change| { change.path == "new_module/src/lib.rs" && change.untracked }),
+            "worktree snapshot should list files inside untracked directories, got {:?}",
+            snapshot
+                .changes
+                .iter()
+                .map(|change| change.path.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            snapshot
+                .changes
+                .iter()
+                .any(|change| change.path == "new_module/README.md" && change.untracked)
+        );
+        assert!(
+            !snapshot
+                .changes
+                .iter()
+                .any(|change| change.path == "new_module" || change.path == "new_module/")
+        );
+
+        let lib = snapshot
+            .changes
+            .iter()
+            .find(|change| change.path == "new_module/src/lib.rs")
+            .unwrap();
+        let diff = port.diff(&root, lib).unwrap();
+        assert!(diff.rows.iter().any(|row| row.text.contains("pub fn n()")));
+
+        let changes = port.branch_changes(&root, None, None).unwrap().unwrap();
+        assert!(
+            changes
+                .snapshot
+                .changes
+                .iter()
+                .any(|change| { change.path == "new_module/src/lib.rs" && change.untracked }),
+            "branch changes should list untracked files inside new directories, got {:?}",
+            changes
+                .snapshot
+                .changes
+                .iter()
+                .map(|change| change.path.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn untracked_nested_repository_diff_does_not_fail() {
+        let root = repository();
+        let nested = root.join("vendor/other");
+        fs::create_dir_all(&nested).unwrap();
+        git(&nested, &["init", "-q"]);
+        git(&nested, &["config", "user.name", "Vibra Test"]);
+        git(&nested, &["config", "user.email", "vibra@example.invalid"]);
+        fs::write(nested.join("x.txt"), "x\n").unwrap();
+        git(&nested, &["add", "x.txt"]);
+        git(&nested, &["commit", "-qm", "nested"]);
+        let port = GitCliPort::default();
+
+        let snapshot = port.snapshot(&root).unwrap().unwrap();
+        let nested_change = snapshot
+            .changes
+            .iter()
+            .find(|change| {
+                change.path == "vendor/other" || change.path.starts_with("vendor/other/")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected nested untracked repo, got {:?}",
+                    snapshot
+                        .changes
+                        .iter()
+                        .map(|change| change.path.as_str())
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert!(nested_change.untracked);
+        let diff = port.diff(&root, nested_change).unwrap();
+        assert!(
+            diff.rows
+                .iter()
+                .any(|row| row.kind == GitDiffRowKind::Notice)
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1515,7 +1635,7 @@ mod tests {
 
         assert!(diff.truncated);
         assert!(diff.rows.iter().any(|row| {
-            row.kind == GitDiffRowKind::Notice && row.text.contains("truncado a 4 MiB")
+            row.kind == GitDiffRowKind::Notice && row.text.contains("truncated to 4 MiB")
         }));
         fs::remove_dir_all(root).unwrap();
     }
