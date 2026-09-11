@@ -4,7 +4,7 @@ use gpui::{
     AnyElement, Context, Div, MouseButton, SharedString, Stateful, Window, div, prelude::*, px,
 };
 
-use crate::ui::theme::{self, AppearanceMode, MONO_FONT, ThemeTone, colors};
+use crate::ui::theme::{self, AppearanceMode, MONO_FONT, ThemeFamily, ThemeTone, colors};
 
 use super::WorkspaceView;
 use crate::infrastructure::automation::{
@@ -45,6 +45,14 @@ struct SettingsToggleRow {
     enabled: bool,
     divider: bool,
     id: &'static str,
+}
+
+fn theme_matches(family: &ThemeFamily, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    family.label.to_ascii_lowercase().contains(query)
+        || family.id.to_ascii_lowercase().contains(query)
 }
 
 fn settings_button_base(label: &'static str, id: &'static str) -> Stateful<Div> {
@@ -193,16 +201,17 @@ impl WorkspaceView {
 
     fn settings_theme_grid(
         &self,
+        families: &[ThemeFamily],
         active_theme_id: &str,
         preview_tone: ThemeTone,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut grid = div().flex().flex_col().gap_2();
-        for families in theme::built_in_themes().chunks(2) {
+        for families in families.chunks(2) {
             let mut row = div().flex().gap_2();
             for family in families {
                 let selected = family.id == active_theme_id;
-                let theme_id = family.id;
+                let theme_id = family.id.clone();
                 let [sidebar, panel, accent] = family.preview(preview_tone);
                 let card = div()
                     .id(SharedString::from(format!("settings-theme-{theme_id}")))
@@ -225,7 +234,7 @@ impl WorkspaceView {
                     })
                     .hover(|card| card.bg(colors().hover))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_theme_id(theme_id, window, cx);
+                        this.set_theme_id(&theme_id, window, cx);
                     }))
                     .child(
                         div()
@@ -246,7 +255,7 @@ impl WorkspaceView {
                                     .text_size(px(10.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(colors().foreground)
-                                    .child(family.label),
+                                    .child(family.label.clone()),
                             ),
                     );
                 row = row.child(card);
@@ -257,6 +266,36 @@ impl WorkspaceView {
             grid = grid.child(row);
         }
         grid.into_any_element()
+    }
+
+    fn settings_theme_search(&self) -> AnyElement {
+        let query = self.theme_query.clone();
+        let empty = query.is_empty();
+        div()
+            .h(px(28.0))
+            .px_2()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(colors().border_subtle)
+            .bg(colors().panel)
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .font_family(MONO_FONT)
+                    .text_color(if empty {
+                        colors().subtle
+                    } else {
+                        colors().foreground
+                    })
+                    .child(if empty {
+                        "Filtrar temas…".to_string()
+                    } else {
+                        query
+                    }),
+            )
+            .into_any_element()
     }
 
     fn settings_toggle_row(
@@ -323,6 +362,8 @@ impl WorkspaceView {
         self.context_menu = None;
         self.ide_menu_open = false;
         self.rename_prompt = None;
+        self.theme_query.clear();
+        theme::refresh_user_themes();
         cx.notify();
     }
 
@@ -487,6 +528,9 @@ impl WorkspaceView {
                     .child(page.label())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.settings_page = page;
+                        if page == SettingsPage::Appearance {
+                            theme::refresh_user_themes();
+                        }
                         cx.notify();
                     })),
             );
@@ -620,18 +664,74 @@ impl WorkspaceView {
                                 "La paleta también se aplica al terminal y al resaltado de código.",
                             )),
                     )
-                    .child(
-                        div()
+                    .child(self.settings_theme_search())
+                    .child({
+                        let query = self.theme_query.to_ascii_lowercase();
+                        let bundled: Vec<ThemeFamily> = theme::built_in_themes()
+                            .iter()
+                            .filter(|family| theme_matches(family, &query))
+                            .cloned()
+                            .collect();
+                        let user: Vec<ThemeFamily> = theme::user_themes()
+                            .into_iter()
+                            .filter(|family| theme_matches(family, &query))
+                            .collect();
+                        let empty = bundled.is_empty() && user.is_empty();
+                        let mut list = div()
                             .id("settings-theme-list")
-                            .max_h(px(220.0))
+                            .max_h(px(280.0))
                             .pr_1()
                             .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
                             // Keep the outer settings pane still while scrolling themes.
-                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                            .child(self.settings_theme_grid(
-                                &self.settings.theme_id,
-                                preview_tone,
-                                cx,
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
+                        if empty {
+                            list = list.child(
+                                div()
+                                    .text_size(px(9.0))
+                                    .text_color(colors().subtle)
+                                    .child("Ningún tema coincide."),
+                            );
+                        } else {
+                            if !bundled.is_empty() {
+                                list = list.child(self.settings_theme_grid(
+                                    &bundled,
+                                    &self.settings.theme_id,
+                                    preview_tone,
+                                    cx,
+                                ));
+                            }
+                            if !user.is_empty() {
+                                list = list
+                                    .child(
+                                        div()
+                                            .pt_1()
+                                            .text_size(px(9.0))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(colors().muted)
+                                            .child("Tus temas"),
+                                    )
+                                    .child(self.settings_theme_grid(
+                                        &user,
+                                        &self.settings.theme_id,
+                                        preview_tone,
+                                        cx,
+                                    ));
+                            }
+                        }
+                        list
+                    })
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(colors().subtle)
+                            .child(format!(
+                                "Añade YAML de Warp o temas Ghostty en {}.",
+                                theme::user_themes_directory()
+                                    .map(|path| path.display().to_string())
+                                    .unwrap_or_else(|| "~/.vibra/themes".to_string())
                             )),
                     ),
             )
@@ -1052,7 +1152,7 @@ impl WorkspaceView {
         if self.settings.theme_id == theme_id {
             return;
         }
-        self.settings.theme_id = theme_id.to_string();
+        self.settings.theme_id = theme_id;
         let system_dark = ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
         self.apply_theme_preference(system_dark, cx);
         self.persist_settings(cx);

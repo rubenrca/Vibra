@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Paint popular terminal palettes with their authentic ANSI colors instead of synthesizing them from chrome accents.
+- Expand the bundled picker with Catppuccin Frappé/Macchiato, Tokyo Night Storm/Moon, Flexoki, Horizon, Oxocarbon, Kanagawa Dragon, Rosé Pine Moon, Gruvbox Hard, Palenight, Vesper, and Ayu Mirage.
+- Load Warp YAML and Ghostty themes from `~/.vibra/themes`, pair light/dark files when possible, and filter the picker by typing.
+
 ## 0.3.21 — 2026-09-09
 
 - Lay out split terminals and the ⌘J console as a bento grid: each pane is its own rounded card, selected by click, with the accent on the focused surface only.

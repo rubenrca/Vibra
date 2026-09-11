@@ -31,7 +31,7 @@ pub struct AppSettings {
     pub left_sidebar_width: f32,
     #[serde(default = "default_right_sidebar_width")]
     pub right_sidebar_width: f32,
-    /// Built-in palette id (e.g. `midnight`, `moss`).
+    /// Palette id (`midnight`, `nord`, or `user:stem` from ~/.vibra/themes).
     #[serde(default = "default_theme_id")]
     pub theme_id: String,
     /// `light`, `dark`, or `system`.
@@ -189,6 +189,7 @@ impl SettingsRepository {
     }
 
     pub fn load(&self) -> Result<AppSettings> {
+        crate::ui::theme::refresh_user_themes();
         self.import_preview_settings()?;
         if !self.path.exists() {
             return Ok(AppSettings::default());

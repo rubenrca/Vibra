@@ -12,7 +12,31 @@ impl super::WorkspaceView {
         let key = event.keystroke.key.to_ascii_lowercase();
         if self.settings_open {
             if matches!(key.as_str(), "escape" | "esc") {
-                self.close_settings(cx);
+                if self.settings_page == super::SettingsPage::Appearance
+                    && !self.theme_query.is_empty()
+                {
+                    self.theme_query.clear();
+                    cx.notify();
+                } else {
+                    self.close_settings(cx);
+                }
+            } else if self.settings_page == super::SettingsPage::Appearance
+                && !event.keystroke.modifiers.platform
+                && !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.alt
+            {
+                match key.as_str() {
+                    "backspace" => {
+                        self.theme_query.pop();
+                        cx.notify();
+                    }
+                    _ => {
+                        if let Some(text) = event.keystroke.key_char.as_ref() {
+                            self.theme_query.push_str(text);
+                            cx.notify();
+                        }
+                    }
+                }
             }
             cx.stop_propagation();
             return;

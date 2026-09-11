@@ -17,11 +17,11 @@ Dependency copyright and license notices remain with their respective projects
 and versions recorded in `Cargo.lock`.
 
 Several bundled palettes (Nord, Gruvbox, Solarized, Dracula, Catppuccin,
-Tokyo Night, One, GitHub, Ayu, Everforest, Kanagawa, Rosé Pine, Monokai, and
-Warp) use color values published in
-[warpdotdev/themes](https://github.com/warpdotdev/themes) (Apache-2.0) and
-their upstream schemes. Palette names remain trademarks of their respective
-authors.
+Tokyo Night, One, GitHub, Ayu, Everforest, Kanagawa, Rosé Pine, Monokai,
+Warp, Flexoki, Horizon, Oxocarbon, Palenight, and Vesper) use color values
+published in [warpdotdev/themes](https://github.com/warpdotdev/themes)
+(Apache-2.0) and their upstream schemes. Palette names remain trademarks of
+their respective authors.
 
 ## Agent marks
 

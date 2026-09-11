@@ -34,7 +34,8 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
 - sidebar de sesiones con CWD, rama Git en vivo (ahead/behind/dirty), agente activo, estado y modelo cuando el CLI lo reporta;
 - menús contextuales en sesiones y panes (renombrar, cerrar, dividir, zoom);
-- command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`).
+- command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`);
+- temas de aplicación (familias claras/oscuras y paletas de terminal) más YAML de Warp o Ghostty en `~/.vibra/themes`.
 
 ### Terminal
 
