@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.3.22 — 2026-09-11
 
 - Paint popular terminal palettes with their authentic ANSI colors instead of synthesizing them from chrome accents.
 - Expand the bundled picker with Catppuccin Frappé/Macchiato, Tokyo Night Storm/Moon, Flexoki, Horizon, Oxocarbon, Kanagawa Dragon, Rosé Pine Moon, Gruvbox Hard, Palenight, Vesper, and Ayu Mirage.
 - Load Warp YAML and Ghostty themes from `~/.vibra/themes`, pair light/dark files when possible, and filter the picker by typing.
+- List files inside untracked directories instead of collapsing them, refresh Branch changes from Git polls and file events, and restore English labels in the Git panel.
 
 ## 0.3.21 — 2026-09-09
 
