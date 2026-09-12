@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.23 — 2026-09-12
+
+- Click a commit in Git History to review its changed files and diffs, with the first file expanded and a Back to history action.
+- Keep commit diffs pinned to saved revisions so later commits and staged, unstaged, or untracked files do not affect the review.
+- Support initial and empty commits, compare merge commits with their first parent, and handle binary files and filenames with special characters.
+
 ## 0.3.22 — 2026-09-11
 
 - Paint popular terminal palettes with their authentic ANSI colors instead of synthesizing them from chrome accents.

@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
-    GitBranchChanges, GitBranchRef, GitBranchSummary, GitCommit, GitDiff, GitDiffRow,
-    GitDiffRowKind, GitFileChange, GitFileStatus, GitHistory, GitPort, GitRepositorySnapshot,
+    GitBranchChanges, GitBranchRef, GitBranchSummary, GitCommit, GitCommitChanges, GitDiff,
+    GitDiffRow, GitDiffRowKind, GitFileChange, GitFileStatus, GitHistory, GitPort,
+    GitRepositorySnapshot,
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
@@ -457,6 +458,97 @@ impl GitPort for GitCliPort {
             commits,
             truncated,
         }))
+    }
+
+    fn commit_changes(&self, root: &Path, revision: &str) -> Result<GitCommitChanges> {
+        let root = repository_root(root)?.context("the repository is no longer available")?;
+        validate_revision(revision)?;
+        let revision = rev_parse(&root, &format!("{revision}^{{commit}}"))?
+            .context("the selected commit is no longer available")?;
+        let base_revision = match rev_parse(&root, &format!("{revision}^1"))? {
+            Some(parent) => parent,
+            None => {
+                // Compute the empty tree for this repository's object format without
+                // writing an object or touching the index/worktree.
+                let output = run_git(&root, ["hash-object", "-t", "tree", "--stdin"])?;
+                ensure_success(&output, "git hash-object empty tree")?;
+                String::from_utf8_lossy(&output.stdout).trim().to_owned()
+            }
+        };
+        // Keep each path independently reviewable, including both sides of a rename.
+        let output = run_git(
+            &root,
+            [
+                "diff",
+                "--name-status",
+                "-z",
+                "--no-renames",
+                "--no-ext-diff",
+                &base_revision,
+                &revision,
+                "--",
+            ],
+        )?;
+        ensure_success(&output, "git diff commit files")?;
+        let fields: Vec<&[u8]> = output.stdout.split(|byte| *byte == 0).collect();
+        let mut changes = Vec::new();
+        for pair in fields.chunks_exact(2) {
+            let status = pair[0].first().copied().unwrap_or(b'M') as char;
+            changes.push(GitFileChange {
+                path: String::from_utf8_lossy(pair[1]).into_owned(),
+                status: file_status(status, ' '),
+                staged: false,
+                unstaged: false,
+                untracked: false,
+                additions: None,
+                deletions: None,
+            });
+        }
+        let output = run_git(
+            &root,
+            [
+                "diff",
+                "--numstat",
+                "-z",
+                "--no-renames",
+                "--no-ext-diff",
+                &base_revision,
+                &revision,
+                "--",
+            ],
+        )?;
+        ensure_success(&output, "git diff commit stats")?;
+        let stats: HashMap<String, (usize, usize)> = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter_map(|record| {
+                let text = String::from_utf8_lossy(record);
+                let mut fields = text.splitn(3, '\t');
+                let additions = fields.next()?.parse().ok()?;
+                let deletions = fields.next()?.parse().ok()?;
+                Some((fields.next()?.to_owned(), (additions, deletions)))
+            })
+            .collect();
+        for change in &mut changes {
+            if let Some(&(additions, deletions)) = stats.get(&change.path) {
+                change.additions = Some(additions);
+                change.deletions = Some(deletions);
+            }
+        }
+        changes.sort_by_key(|change| change.path.to_lowercase());
+        let additions = changes.iter().filter_map(|change| change.additions).sum();
+        let deletions = changes.iter().filter_map(|change| change.deletions).sum();
+        Ok(GitCommitChanges {
+            snapshot: GitRepositorySnapshot {
+                root,
+                branch: revision.clone(),
+                changes,
+                additions,
+                deletions,
+            },
+            base_revision,
+            revision,
+        })
     }
 
     fn diff_against(
@@ -1406,6 +1498,167 @@ mod tests {
             vec![history.commits[1].sha.clone()]
         );
         assert!(history.commits[1].parents.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn commit_changes_pin_the_selected_commit_and_leave_local_changes_alone() {
+        let root = repository();
+        let parent = rev_parse(&root, "HEAD").unwrap().unwrap();
+        fs::write(root.join("tracked.txt"), "one\ncommitted\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "selected"]);
+        let selected = rev_parse(&root, "HEAD").unwrap().unwrap();
+        fs::write(root.join("tracked.txt"), "later commit\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "later"]);
+        fs::write(root.join("tracked.txt"), "staged\n").unwrap();
+        git(&root, &["add", "."]);
+        fs::write(root.join("tracked.txt"), "unstaged\n").unwrap();
+        fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+        let port = GitCliPort::default();
+        let before = port.snapshot(&root).unwrap();
+        let head_before = rev_parse(&root, "HEAD").unwrap();
+
+        let changes = port.commit_changes(&root, &selected).unwrap();
+        assert_eq!(changes.base_revision, parent);
+        assert_eq!(changes.revision, selected);
+        assert_eq!(changes.snapshot.changes.len(), 1);
+        assert_eq!(
+            (changes.snapshot.additions, changes.snapshot.deletions),
+            (1, 1)
+        );
+        let file = &changes.snapshot.changes[0];
+        assert_eq!(file.path, "tracked.txt");
+        let diff = port
+            .diff_against(&root, &changes.base_revision, Some(&changes.revision), file)
+            .unwrap();
+        assert!(
+            diff.rows
+                .iter()
+                .any(|row| row.kind == GitDiffRowKind::Addition && row.text == "committed")
+        );
+        assert!(
+            diff.rows
+                .iter()
+                .any(|row| row.kind == GitDiffRowKind::Deletion && row.text == "two")
+        );
+        assert_eq!((diff.additions, diff.deletions), (1, 1));
+        assert_eq!(port.snapshot(&root).unwrap(), before);
+        assert_eq!(rev_parse(&root, "HEAD").unwrap(), head_before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn commit_changes_support_the_initial_and_empty_commits() {
+        let root = repository();
+        let port = GitCliPort::default();
+        let changes = port.commit_changes(&root, "HEAD").unwrap();
+        assert_eq!(changes.snapshot.changes.len(), 1);
+        let file = &changes.snapshot.changes[0];
+        assert_eq!(file.status, GitFileStatus::Added);
+        let diff = port
+            .diff_against(&root, &changes.base_revision, Some(&changes.revision), file)
+            .unwrap();
+        assert_eq!((diff.additions, diff.deletions), (2, 0));
+        assert!(
+            diff.rows
+                .iter()
+                .any(|row| row.kind == GitDiffRowKind::Addition && row.text == "one")
+        );
+
+        git(&root, &["commit", "--allow-empty", "-qm", "empty"]);
+        let empty = port.commit_changes(&root, "HEAD").unwrap();
+        assert_eq!(empty.base_revision, changes.revision);
+        assert!(empty.snapshot.changes.is_empty());
+        assert_eq!((empty.snapshot.additions, empty.snapshot.deletions), (0, 0));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn commit_changes_compare_merges_with_the_first_parent() {
+        let root = repository();
+        git(&root, &["branch", "-M", "main"]);
+        git(&root, &["checkout", "-qb", "feature"]);
+        fs::write(root.join("feature.txt"), "merged change\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "feature"]);
+        git(&root, &["checkout", "-q", "main"]);
+        fs::write(root.join("main.txt"), "already on main\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "main change"]);
+        let first_parent = rev_parse(&root, "HEAD").unwrap().unwrap();
+        git(
+            &root,
+            &["merge", "--no-ff", "-qm", "merge feature", "feature"],
+        );
+
+        let port = GitCliPort::default();
+        let changes = port.commit_changes(&root, "HEAD").unwrap();
+        assert_eq!(changes.base_revision, first_parent);
+        assert_eq!(changes.snapshot.changes.len(), 1);
+        assert_eq!(changes.snapshot.changes[0].path, "feature.txt");
+        let diff = port
+            .diff_against(
+                &root,
+                &changes.base_revision,
+                Some(&changes.revision),
+                &changes.snapshot.changes[0],
+            )
+            .unwrap();
+        assert_eq!((diff.additions, diff.deletions), (1, 0));
+        assert!(diff.rows.iter().any(|row| row.text == "merged change"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn commit_changes_cover_renames_binary_and_literal_paths() {
+        let root = repository();
+        // A rename keeps both paths reviewable; null-delimited metadata preserves
+        // whitespace, Unicode and pathspec characters in committed filenames.
+        let renamed = "renamed\tfile\nñ.txt";
+        let literal = "[literal]*.txt";
+        git(&root, &["mv", "tracked.txt", renamed]);
+        fs::write(root.join("binary.bin"), b"\0\x01\x02\x03").unwrap();
+        fs::write(root.join(literal), "literal path\n").unwrap();
+        fs::write(root.join("other.txt"), "another path\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "rename and add files"]);
+        let port = GitCliPort::default();
+        let changes = port.commit_changes(&root, "HEAD").unwrap();
+        assert_eq!(changes.snapshot.changes.len(), 5);
+        assert_eq!(
+            (changes.snapshot.additions, changes.snapshot.deletions),
+            (4, 2)
+        );
+        for file in &changes.snapshot.changes {
+            let diff = port
+                .diff_against(&root, &changes.base_revision, Some(&changes.revision), file)
+                .unwrap();
+            match file.path.as_str() {
+                "tracked.txt" => {
+                    assert_eq!(file.status, GitFileStatus::Deleted);
+                    assert_eq!((diff.additions, diff.deletions), (0, 2));
+                }
+                "binary.bin" => {
+                    assert!(diff.binary);
+                    assert_eq!(file.additions, None);
+                }
+                path if path == renamed => {
+                    assert_eq!(file.status, GitFileStatus::Added);
+                    assert_eq!(file.additions, Some(2));
+                    assert_eq!((diff.additions, diff.deletions), (2, 0));
+                }
+                path if path == literal => {
+                    assert_eq!((diff.additions, diff.deletions), (1, 0));
+                    assert!(diff.rows.iter().any(|row| row.text == "literal path"));
+                    assert!(!diff.rows.iter().any(|row| row.text == "another path"));
+                }
+                _ => assert_eq!((diff.additions, diff.deletions), (1, 0)),
+            }
+        }
+        assert!(port.commit_changes(&root, "--output=unexpected").is_err());
+        assert!(port.commit_changes(&root, "missing-commit").is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

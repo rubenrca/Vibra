@@ -53,6 +53,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos y guías de indentación;
 - árbol de archivos que conserva el terminal como superficie central y enfoca los archivos modificados directamente en Git;
 - panel Git con tres vistas: working tree, cambios de la rama frente a la base por defecto, e historial de commits con grafo de lanes;
+- en `History`, un clic en un commit abre sus archivos y diffs, con el primer archivo desplegado y `Back to history` para volver al listado; muestra solo lo guardado en ese commit y compara los merges con su primer padre;
 - `Branch changes` permite elegir `Base` y `Compare` entre ramas locales y referencias remotas del último fetch, sin cambiar de rama; dos ramas comparan sus versiones guardadas, y `Working tree` incluye cambios sin commit. `Auto` + `Working tree` conserva la comparación desde el ancestro común;
 - diffs de solo lectura con tarjetas de archivo plegables, numeración anterior/nueva, encabezados de bloques y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - las mutaciones Git se realizan desde la terminal integrada.
@@ -150,11 +151,11 @@ misma versión, más Sparkle descargado con `./Scripts/fetch_sparkle.sh`
 (clave EdDSA en el llavero):
 
 ```bash
-./Scripts/release.sh 0.3.22 --dry-run
-./Scripts/release.sh 0.3.22
-./Scripts/release.sh 0.3.22-beta.1 --prerelease
-./Scripts/release.sh 0.3.22 --no-notarize   # solo si hace falta omitir notarización
-./Scripts/release.sh 0.3.22 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
+./Scripts/release.sh 0.3.23 --dry-run
+./Scripts/release.sh 0.3.23
+./Scripts/release.sh 0.3.23-beta.1 --prerelease
+./Scripts/release.sh 0.3.23 --no-notarize   # solo si hace falta omitir notarización
+./Scripts/release.sh 0.3.23 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
 ```
 
 Un release **estable** crea el DMG universal, firma con Developer ID, notariza

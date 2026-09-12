@@ -96,6 +96,14 @@ pub struct GitCommit {
     pub parents: Vec<String>,
 }
 
+/// A saved commit compared with its first parent (or the empty tree for a root).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCommitChanges {
+    pub snapshot: GitRepositorySnapshot,
+    pub base_revision: String,
+    pub revision: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHistory {
     pub branch: String,
@@ -157,6 +165,7 @@ pub trait GitPort: Send + Sync {
         head: Option<&str>,
     ) -> Result<Option<GitBranchChanges>>;
     fn history(&self, root: &Path, limit: usize) -> Result<Option<GitHistory>>;
+    fn commit_changes(&self, root: &Path, revision: &str) -> Result<GitCommitChanges>;
     fn diff_against(
         &self,
         repository: &Path,

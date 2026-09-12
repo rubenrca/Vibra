@@ -12,8 +12,9 @@ use gpui::{
 };
 
 use crate::ports::git::{
-    GitBranchChanges, GitBranchRef, GitCommit, GitDiffRow, GitDiffRowKind, GitFileChange,
-    GitFileStatus, GitGraphRow, GitHistory, GitPort, GitRepositorySnapshot, assign_commit_lanes,
+    GitBranchChanges, GitBranchRef, GitCommit, GitCommitChanges, GitDiffRow, GitDiffRowKind,
+    GitFileChange, GitFileStatus, GitGraphRow, GitHistory, GitPort, GitRepositorySnapshot,
+    assign_commit_lanes,
 };
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::syntax::SyntaxSpan;
@@ -66,6 +67,12 @@ pub struct DiffView {
     branch_error: Option<SharedString>,
     history: Option<Arc<GitHistory>>,
     history_graph: Arc<Vec<GitGraphRow>>,
+    selected_commit: Option<GitCommit>,
+    commit_changes: Option<GitCommitChanges>,
+    commit_error: Option<SharedString>,
+    commit_refreshing: bool,
+    commit_request_id: u64,
+    _commit_task: Option<Task<()>>,
     /// Paths currently expanded; multiple files may stay open.
     expanded: HashSet<String>,
     /// Prepared diffs for expanded (and recently expanded) paths.
@@ -228,6 +235,12 @@ impl DiffView {
             branch_error: None,
             history: None,
             history_graph: Arc::new(Vec::new()),
+            selected_commit: None,
+            commit_changes: None,
+            commit_error: None,
+            commit_refreshing: false,
+            commit_request_id: 0,
+            _commit_task: None,
             expanded: HashSet::new(),
             documents: HashMap::new(),
             inline_views: HashMap::new(),
@@ -327,6 +340,7 @@ impl DiffView {
             return;
         }
         self.set_review_expanded(false, cx);
+        self.clear_commit();
         self.context_root = root;
         self.selected_base = None;
         self.selected_head = None;
@@ -340,11 +354,6 @@ impl DiffView {
         self.refreshing = false;
         self.branch_refreshing = false;
         self.history_refreshing = false;
-        self.expanded.clear();
-        self.documents.clear();
-        self.inline_views.clear();
-        self.loading.clear();
-        self.pending_loads.clear();
         self.branch_changes = None;
         self.history = None;
         self.history_graph = Arc::new(Vec::new());
@@ -371,7 +380,13 @@ impl DiffView {
         match self.mode {
             GitPanelMode::Worktree => {}
             GitPanelMode::Branch => self.refresh_branch(notify_loading, cx),
-            GitPanelMode::History => self.refresh_history(notify_loading, cx),
+            GitPanelMode::History => {
+                if self.selected_commit.is_none() {
+                    self.refresh_history(notify_loading, cx);
+                } else if notify_loading {
+                    self.refresh_commit(cx);
+                }
+            }
         }
     }
 
@@ -379,16 +394,15 @@ impl DiffView {
         self.mode_menu_open = false;
         self.branch_picker = None;
         if self.mode == mode {
+            if mode == GitPanelMode::History && self.selected_commit.is_some() {
+                self.back_to_history(cx);
+            }
             cx.notify();
             return;
         }
         self.set_review_expanded(false, cx);
+        self.clear_commit();
         self.mode = mode;
-        self.expanded.clear();
-        self.documents.clear();
-        self.inline_views.clear();
-        self.loading.clear();
-        self.pending_loads.clear();
         match mode {
             GitPanelMode::Worktree => {}
             GitPanelMode::Branch => self.refresh_branch(true, cx),
@@ -688,6 +702,77 @@ impl DiffView {
         }));
     }
 
+    fn clear_commit(&mut self) {
+        self.commit_request_id = self.commit_request_id.wrapping_add(1);
+        self._commit_task = None;
+        self.selected_commit = None;
+        self.commit_changes = None;
+        self.commit_error = None;
+        self.error = None;
+        self.commit_refreshing = false;
+        self.expanded.clear();
+        self.documents.clear();
+        self.inline_views.clear();
+        self.loading.clear();
+        self.pending_loads.clear();
+    }
+
+    fn back_to_history(&mut self, cx: &mut Context<Self>) {
+        self.clear_commit();
+        self.refresh_history(false, cx);
+        cx.notify();
+    }
+
+    fn select_commit(&mut self, commit: GitCommit, cx: &mut Context<Self>) {
+        self.clear_commit();
+        self.selected_commit = Some(commit);
+        self.refresh_commit(cx);
+    }
+
+    fn refresh_commit(&mut self, cx: &mut Context<Self>) {
+        let Some(commit) = self.selected_commit.as_ref() else {
+            return;
+        };
+        if self.commit_refreshing {
+            return;
+        }
+        let revision = commit.sha.clone();
+        self.commit_refreshing = true;
+        self.commit_error = None;
+        self.commit_request_id = self.commit_request_id.wrapping_add(1);
+        let request_id = self.commit_request_id;
+        let root = self.context_root.clone();
+        let port = self.git_port.clone();
+        let task = cx.background_spawn(async move { port.commit_changes(&root, &revision) });
+        self._commit_task = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if request_id != this.commit_request_id {
+                    return;
+                }
+                this.commit_refreshing = false;
+                match result {
+                    Ok(changes) => {
+                        let first_load = this.commit_changes.is_none();
+                        this.reconcile_documents(
+                            &changes.snapshot,
+                            Some(&changes.base_revision),
+                            Some(&changes.revision),
+                        );
+                        if first_load && let Some(first) = changes.snapshot.changes.first() {
+                            this.expanded.insert(first.path.clone());
+                        }
+                        this.commit_changes = Some(changes);
+                        this.load_missing_expanded(cx);
+                    }
+                    Err(error) => this.commit_error = Some(format!("Git: {error:#}").into()),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     /// Discard documents and in-flight work whose Git source no longer matches
     /// the latest snapshot. A path remaining present is not enough: staging or
     /// changing it must invalidate the prepared rows as well.
@@ -804,7 +889,10 @@ impl DiffView {
                 .branch_changes
                 .as_ref()
                 .map(|changes| &changes.snapshot),
-            GitPanelMode::History => None,
+            GitPanelMode::History => self
+                .commit_changes
+                .as_ref()
+                .map(|changes| &changes.snapshot),
         }
     }
 
@@ -815,22 +903,31 @@ impl DiffView {
                 .iter()
                 .find(|change| change.path == path)?
                 .clone();
-            let against = match self.mode {
+            let (against, head) = match self.mode {
                 GitPanelMode::Branch => self
                     .branch_changes
                     .as_ref()
-                    .map(|changes| changes.base_revision.clone())
-                    .filter(|base| !base.is_empty()),
-                GitPanelMode::Worktree | GitPanelMode::History => None,
-            };
-            let head = if self.mode == GitPanelMode::Branch {
-                self.branch_changes
+                    .map(|changes| {
+                        (
+                            (!changes.base_revision.is_empty())
+                                .then_some(changes.base_revision.as_str()),
+                            changes.head_revision.as_deref(),
+                        )
+                    })
+                    .unwrap_or_default(),
+                GitPanelMode::History => self
+                    .commit_changes
                     .as_ref()
-                    .and_then(|changes| changes.head_revision.as_deref())
-            } else {
-                None
+                    .map(|changes| {
+                        (
+                            Some(changes.base_revision.as_str()),
+                            Some(changes.revision.as_str()),
+                        )
+                    })
+                    .unwrap_or_default(),
+                GitPanelMode::Worktree => (None, None),
             };
-            Some(DiffSource::new(snapshot, &change, against.as_deref(), head))
+            Some(DiffSource::new(snapshot, &change, against, head))
         }) else {
             self.loading.remove(&path);
             return;
@@ -937,6 +1034,7 @@ impl DiffView {
         let loading = match self.mode {
             GitPanelMode::Worktree => self.refreshing,
             GitPanelMode::Branch => self.branch_refreshing,
+            GitPanelMode::History if self.selected_commit.is_some() => self.commit_refreshing,
             GitPanelMode::History => self.history_refreshing,
         };
         let (branch, mut meta) = self.header_meta(loading);
@@ -1024,6 +1122,10 @@ impl DiffView {
                 .branch_changes
                 .as_ref()
                 .map(|changes| changes.snapshot.branch.clone()),
+            GitPanelMode::History if self.selected_commit.is_some() => self
+                .selected_commit
+                .as_ref()
+                .map(|commit| commit.short_sha.clone()),
             GitPanelMode::History => self.history.as_ref().map(|history| {
                 format!(
                     "{} commit{}",
@@ -1079,7 +1181,16 @@ impl DiffView {
                 }
             }
             GitPanelMode::History => {
-                if let Some(history) = &self.history {
+                if let Some(changes) = &self.commit_changes {
+                    Self::push_change_meta(
+                        &mut meta,
+                        changes.snapshot.changes.len(),
+                        changes.snapshot.additions,
+                        changes.snapshot.deletions,
+                    );
+                } else if self.selected_commit.is_none()
+                    && let Some(history) = &self.history
+                {
                     meta.push(
                         div()
                             .truncate()
@@ -1645,6 +1756,78 @@ impl DiffView {
         (lanes as f32 * GRAPH_LANE_WIDTH).clamp(18.0, 48.0)
     }
 
+    fn commit_controls(&self, commit: &GitCommit, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex_none()
+            .w_full()
+            .px_3()
+            .py_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .id("git-back-to-history")
+                            .px_2()
+                            .py_1()
+                            .rounded(px(5.0))
+                            .text_size(px(11.0))
+                            .text_color(colors().muted)
+                            .cursor_pointer()
+                            .hover(|button| button.bg(colors().hover))
+                            .child("← Back to history")
+                            .on_click(cx.listener(|this, _, _, cx| this.back_to_history(cx))),
+                    )
+                    .when(self.commit_error.is_some(), |view| {
+                        view.child(
+                            div()
+                                .id("git-retry-commit")
+                                .px_2()
+                                .py_1()
+                                .rounded(px(5.0))
+                                .text_size(px(11.0))
+                                .text_color(colors().accent)
+                                .cursor_pointer()
+                                .hover(|button| button.bg(colors().hover))
+                                .child("Retry")
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh_commit(cx))),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(colors().foreground)
+                    .child(commit.subject.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(colors().subtle)
+                    .child(format!(
+                        "{} · {}",
+                        commit.author,
+                        format_short_date(&commit.date)
+                    )),
+            )
+            .when(commit.parents.len() > 1, |view| {
+                view.child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(colors().subtle)
+                        .child("Merge commit · compared with first parent"),
+                )
+            })
+    }
+
     fn history_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let history = self.history.clone();
         let graph = self.history_graph.clone();
@@ -1668,7 +1851,7 @@ impl DiffView {
                 uniform_list(
                     "git-history",
                     list_count,
-                    cx.processor(move |_this, range: std::ops::Range<usize>, _window, _cx| {
+                    cx.processor(move |_this, range: std::ops::Range<usize>, _window, cx| {
                         let Some(history) = history.as_ref() else {
                             return Vec::new();
                         };
@@ -1692,6 +1875,7 @@ impl DiffView {
                                     });
                                 }
                                 let commit = history.commits.get(index)?;
+                                let selected = commit.clone();
                                 let row = graph.get(index);
                                 Some(
                                     Self::history_row(
@@ -1700,6 +1884,10 @@ impl DiffView {
                                         graph_width,
                                         head.as_deref().is_some_and(|head| commit.sha == head),
                                     )
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.select_commit(selected.clone(), cx);
+                                    }))
                                     .into_any_element(),
                                 )
                             })
@@ -2019,16 +2207,20 @@ impl Render for DiffView {
         } else {
             MAX_INLINE_DIFF_HEIGHT
         };
-        let error = if self.mode == GitPanelMode::Branch {
-            self.branch_error.clone().or_else(|| self.error.clone())
-        } else {
-            self.error.clone()
+        let error = match self.mode {
+            GitPanelMode::Branch => self.branch_error.clone().or_else(|| self.error.clone()),
+            GitPanelMode::History => self.commit_error.clone().or_else(|| self.error.clone()),
+            GitPanelMode::Worktree => self.error.clone(),
         };
+        let selected_commit = self.selected_commit.clone();
         let menu_open = self.mode_menu_open;
         let empty_message = self.empty_message();
-        let show_history = empty_message.is_none() && self.mode == GitPanelMode::History;
+        let show_history = empty_message.is_none()
+            && self.mode == GitPanelMode::History
+            && selected_commit.is_none();
         let show_files = empty_message.is_none()
-            && matches!(self.mode, GitPanelMode::Worktree | GitPanelMode::Branch);
+            && (matches!(self.mode, GitPanelMode::Worktree | GitPanelMode::Branch)
+                || selected_commit.is_some());
         div()
             .id("git-review")
             .track_focus(&self.focus_handle)
@@ -2047,6 +2239,9 @@ impl Render for DiffView {
             .child(self.header(cx))
             .when(self.mode == GitPanelMode::Branch, |view| {
                 view.child(self.branch_controls(cx))
+            })
+            .when_some(selected_commit, |view, commit| {
+                view.child(self.commit_controls(&commit, cx))
             })
             .when_some(error, |view, error| {
                 view.child(
@@ -2111,6 +2306,21 @@ impl DiffView {
                     Some("No changes on this branch")
                 } else if self.branch_changes.is_none() {
                     Some("Comparing with the base branch…")
+                } else {
+                    None
+                }
+            }
+            GitPanelMode::History if self.selected_commit.is_some() => {
+                if self.commit_changes.is_none() && self.commit_refreshing {
+                    Some("Loading commit changes…")
+                } else if self.commit_changes.is_none() {
+                    Some("Could not load this commit. Retry or return to history.")
+                } else if self
+                    .commit_changes
+                    .as_ref()
+                    .is_some_and(|changes| changes.snapshot.changes.is_empty())
+                {
+                    Some("This commit has no file changes.")
                 } else {
                     None
                 }
@@ -2290,6 +2500,7 @@ mod tests {
             deletions: 1,
         };
         let before = DiffSource::new(&snapshot, &change, None, None);
+        let committed_before = DiffSource::new(&snapshot, &change, Some("parent"), Some("commit"));
 
         std::fs::write(
             root.join("main.rs"),
@@ -2299,6 +2510,14 @@ mod tests {
         let after = DiffSource::new(&snapshot, &change, None, None);
 
         assert_ne!(before, after);
+        assert_eq!(
+            committed_before,
+            DiffSource::new(&snapshot, &change, Some("parent"), Some("commit"))
+        );
+        assert_ne!(
+            committed_before,
+            DiffSource::new(&snapshot, &change, Some("parent"), Some("other-commit"))
+        );
         std::fs::remove_dir_all(root).expect("remove test repository directory");
     }
 }
