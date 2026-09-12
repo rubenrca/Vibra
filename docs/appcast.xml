@@ -3,20 +3,19 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.22</title>
-            <pubDate>Fri, 11 Sep 2026 22:40:10 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.22</link>
-            <sparkle:version>162</sparkle:version>
-            <sparkle:shortVersionString>0.3.22</sparkle:shortVersionString>
+            <title>0.3.23</title>
+            <pubDate>Sat, 12 Sep 2026 12:14:37 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.23</link>
+            <sparkle:version>164</sparkle:version>
+            <sparkle:shortVersionString>0.3.23</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Paint popular terminal palettes with their authentic ANSI colors instead of synthesizing them from chrome accents.</li>
-  <li>Expand the bundled picker with Catppuccin Frappé/Macchiato, Tokyo Night Storm/Moon, Flexoki, Horizon, Oxocarbon, Kanagawa Dragon, Rosé Pine Moon, Gruvbox Hard, Palenight, Vesper, and Ayu Mirage.</li>
-  <li>Load Warp YAML and Ghostty themes from `~/.vibra/themes`, pair light/dark files when possible, and filter the picker by typing.</li>
-  <li>List files inside untracked directories instead of collapsing them, refresh Branch changes from Git polls and file events, and restore English labels in the Git panel.</li>
+  <li>Click a commit in Git History to review its changed files and diffs, with the first file expanded and a Back to history action.</li>
+  <li>Keep commit diffs pinned to saved revisions so later commits and staged, unstaged, or untracked files do not affect the review.</li>
+  <li>Support initial and empty commits, compare merge commits with their first parent, and handle binary files and filenames with special characters.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.22/Vibra-0.3.22.dmg" length="12920617" type="application/octet-stream" sparkle:edSignature="F9moW7bhxubHE9LcN8KjT1S+yPRgieAiYmDZ0Gun2Tz8gg6rs6dL9FL7C33sPLm2P/ZrG3+hy7YQNucPXgQXBw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.23/Vibra-0.3.23.dmg" length="12978228" type="application/octet-stream" sparkle:edSignature="GuN0/fIvFSWjUo6Fpx12r+HJgI8JMv371e9VCIuxkdNL2oieXRmCXO/zRBRp1RQLdX8qsxOQhadNZnlFA/W2Aw=="/>
         </item>
     </channel>
 </rss>
