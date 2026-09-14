@@ -7,8 +7,8 @@ use std::time::SystemTime;
 use gpui::{
     AnyView, Context, Div, Entity, EventEmitter, FocusHandle, HighlightStyle, IntoElement,
     ListHorizontalSizingBehavior, PathBuilder, Render, Rgba, SharedString, Stateful,
-    StyleRefinement, StyledText, Task, TextStyle, Timer, WhiteSpace, Window, canvas, div, point,
-    prelude::*, px, uniform_list,
+    StyleRefinement, StyledText, Task, TextStyle, Timer, UniformListScrollHandle, WhiteSpace,
+    Window, canvas, div, point, prelude::*, px, uniform_list,
 };
 
 use crate::ports::git::{
@@ -36,6 +36,8 @@ const HISTORY_PAGE: usize = 250;
 /// Bound each file viewport; only its visible code rows are rendered.
 const MAX_INLINE_DIFF_HEIGHT: f32 = 440.0;
 const MIN_INLINE_DIFF_HEIGHT: f32 = 66.0;
+const FILE_HEADER_HEIGHT: f32 = 42.0;
+const DIFF_NOTICE_HEIGHT: f32 = 20.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitPanelMode {
@@ -82,7 +84,7 @@ pub struct DiffView {
     status_index: Arc<HashMap<String, GitFileStatus>>,
     panel_visible: bool,
     review_expanded: bool,
-    review_diff_height: f32,
+    file_list_height: Option<f32>,
     focus_handle: FocusHandle,
     /// Paths currently loading a diff.
     loading: HashSet<String>,
@@ -162,8 +164,42 @@ struct InlineDiffView {
     document: Arc<DiffDocument>,
     theme: Theme,
     height: f32,
+    scroll_handle: UniformListScrollHandle,
     #[cfg(test)]
     render_count: usize,
+}
+
+impl InlineDiffView {
+    fn on_scroll(
+        &mut self,
+        event: &gpui::ScrollWheelEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta = event.delta.pixel_delta(px(DIFF_ROW_HEIGHT));
+        let handle = &self.scroll_handle.0.borrow().base_handle;
+        let offset = handle.offset();
+        let max = handle.max_offset();
+        let mut next = offset;
+
+        // Keep trackpad gestures on their dominant axis. Horizontal gestures
+        // must never turn into vertical scrolling of the file cards.
+        let horizontal = delta.x.abs() > delta.y.abs();
+        if horizontal {
+            next.x = (offset.x + delta.x).clamp(-max.width, px(0.0));
+        } else {
+            next.y = (offset.y + delta.y).clamp(-max.height, px(0.0));
+        }
+        if next != offset {
+            handle.set_offset(next);
+            cx.notify();
+        }
+        // Once the diff reaches either vertical edge (or fits without scrolling),
+        // let the same gesture continue through the surrounding file list.
+        if horizontal || next != offset {
+            cx.stop_propagation();
+        }
+    }
 }
 
 impl Render for InlineDiffView {
@@ -196,6 +232,11 @@ impl Render for InlineDiffView {
         )
         .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
         .with_width_from_item(Some(widest_row_index))
+        .track_scroll(self.scroll_handle.clone())
+        // Handle wheel input explicitly: GPUI's default nested scrollers both
+        // move on the same event and only clamp their offsets during layout.
+        .overflow_hidden()
+        .on_scroll_wheel(cx.listener(Self::on_scroll))
         .h(px(self.height))
         .w_full()
     }
@@ -248,7 +289,7 @@ impl DiffView {
             status_index: Arc::new(HashMap::new()),
             panel_visible: false,
             review_expanded: false,
-            review_diff_height: MAX_INLINE_DIFF_HEIGHT,
+            file_list_height: None,
             focus_handle: cx.focus_handle(),
             loading: HashSet::new(),
             refreshing: false,
@@ -1401,7 +1442,30 @@ impl DiffView {
                 .child(Self::file_section_header("Staged", staged.len()))
                 .children(staged.into_iter().map(|change| self.file_card(change, cx)));
         }
-        list
+        let view = cx.entity().downgrade();
+        let previous_height = self.file_list_height;
+        div()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(list)
+            .on_children_prepainted(move |bounds, window, _| {
+                let Some(bounds) = bounds.first() else {
+                    return;
+                };
+                let height = f32::from(bounds.size.height);
+                if previous_height.is_none_or(|previous| (previous - height).abs() >= 1.0) {
+                    let view = view.clone();
+                    window.on_next_frame(move |_, cx| {
+                        let _ = view.update(cx, |view, cx| {
+                            view.file_list_height = Some(height);
+                            cx.notify();
+                        });
+                    });
+                }
+            })
     }
 
     fn file_section_header(label: &'static str, count: usize) -> Div {
@@ -1474,7 +1538,7 @@ impl DiffView {
                         "git-card-header-{}",
                         change.path
                     )))
-                    .h(px(42.0))
+                    .h(px(FILE_HEADER_HEIGHT))
                     .w_full()
                     .flex_none()
                     .flex()
@@ -1617,8 +1681,12 @@ impl DiffView {
                 .child(message);
         }
 
-        let height = ((row_count as f32) * DIFF_ROW_HEIGHT)
-            .clamp(MIN_INLINE_DIFF_HEIGHT, self.review_diff_height);
+        let height = inline_diff_height(
+            row_count,
+            self.file_list_height,
+            self.review_expanded,
+            truncated,
+        );
         let document = document.expect("nonempty diff has a prepared document");
         let theme = colors();
         let view = self.inline_views.entry(path.to_owned()).or_insert_with(|| {
@@ -1626,6 +1694,7 @@ impl DiffView {
                 document: document.clone(),
                 theme,
                 height,
+                scroll_handle: UniformListScrollHandle::new(),
                 #[cfg(test)]
                 render_count: 0,
             })
@@ -1655,16 +1724,13 @@ impl DiffView {
             .flex_none()
             .flex()
             .flex_col()
-            // The nested uniform list owns wheel input while hovered. Without
-            // stopping the bubble here, the file-card scroller moves as well.
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .border_t_1()
             .border_color(colors().border_subtle)
             .bg(colors().background)
             .when(truncated, |panel| {
                 panel.child(
                     div()
-                        .h(px(20.0))
+                        .h(px(DIFF_NOTICE_HEIGHT))
                         .flex_none()
                         .flex()
                         .items_center()
@@ -2200,13 +2266,7 @@ impl DiffView {
 }
 
 impl Render for DiffView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Leave room for workspace chrome, the Git toolbar, and the file header.
-        self.review_diff_height = if self.review_expanded {
-            (f32::from(window.viewport_size().height) - 180.0).max(MIN_INLINE_DIFF_HEIGHT)
-        } else {
-            MAX_INLINE_DIFF_HEIGHT
-        };
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let error = match self.mode {
             GitPanelMode::Branch => self.branch_error.clone().or_else(|| self.error.clone()),
             GitPanelMode::History => self.commit_error.clone().or_else(|| self.error.clone()),
@@ -2346,6 +2406,27 @@ impl DiffView {
     }
 }
 
+fn inline_diff_height(
+    row_count: usize,
+    file_list_height: Option<f32>,
+    expanded: bool,
+    truncated: bool,
+) -> f32 {
+    // Measure below the Git/commit/branch controls, and leave both the current
+    // file header and the next file's header within reach.
+    let mut maximum = file_list_height
+        .map(|height| height - 2.0 * FILE_HEADER_HEIGHT - 2.0)
+        .unwrap_or(MAX_INLINE_DIFF_HEIGHT);
+    if !expanded {
+        maximum = maximum.min(MAX_INLINE_DIFF_HEIGHT);
+    }
+    if truncated {
+        maximum -= DIFF_NOTICE_HEIGHT;
+    }
+    ((row_count as f32) * DIFF_ROW_HEIGHT)
+        .clamp(MIN_INLINE_DIFF_HEIGHT, maximum.max(MIN_INLINE_DIFF_HEIGHT))
+}
+
 fn format_short_date(iso: &str) -> String {
     let mut parts = iso.split('-');
     let Some(year) = parts.next() else {
@@ -2380,6 +2461,147 @@ fn lane_color(lane: usize) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ReviewScrollTest {
+        file: Entity<InlineDiffView>,
+        scroll: gpui::ScrollHandle,
+    }
+
+    impl Render for ReviewScrollTest {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("test-file-cards")
+                .w(px(320.0))
+                .h(px(300.0))
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .flex()
+                .flex_col()
+                .child(div().h(px(FILE_HEADER_HEIGHT)).flex_none())
+                .child(
+                    AnyView::from(self.file.clone())
+                        .cached(StyleRefinement::default().w_full().h(px(220.0)).flex_none()),
+                )
+                .child(div().h(px(220.0)).flex_none())
+        }
+    }
+
+    #[gpui::test]
+    fn diff_scroll_hands_off_at_vertical_edges(cx: &mut gpui::TestAppContext) {
+        use crate::ports::git::GitDiff;
+        use gpui::AppContext;
+
+        let document = Arc::new(DiffDocument::prepare(GitDiff {
+            path: "main.rs".into(),
+            rows: (1..=100)
+                .map(|line| GitDiffRow {
+                    old_line: Some(line),
+                    new_line: Some(line),
+                    kind: GitDiffRowKind::Context,
+                    text: "let value = 42; ".repeat(30),
+                })
+                .collect(),
+            additions: 0,
+            deletions: 0,
+            binary: false,
+            truncated: false,
+        }));
+        let inner = UniformListScrollHandle::new();
+        let outer = gpui::ScrollHandle::new();
+        let file = cx.new(|_| InlineDiffView {
+            document,
+            theme: colors(),
+            height: 220.0,
+            scroll_handle: inner.clone(),
+            render_count: 0,
+        });
+        let window = cx.add_window(|_, _| ReviewScrollTest {
+            file: file.clone(),
+            scroll: outer.clone(),
+        });
+        let draw = |cx: &mut gpui::TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+                .unwrap();
+        };
+        let scroll = |x, y, cx: &mut gpui::TestAppContext| {
+            gpui::VisualTestContext::from_window(window.into(), cx).simulate_event(
+                gpui::ScrollWheelEvent {
+                    position: point(px(100.0), px(100.0)),
+                    delta: gpui::ScrollDelta::Pixels(point(px(x), px(y))),
+                    ..Default::default()
+                },
+            );
+        };
+        draw(cx);
+        let inner = inner.0.borrow().base_handle.clone();
+        assert!(inner.max_offset().height > px(0.0));
+        assert!(inner.max_offset().width > px(0.0));
+        assert!(outer.max_offset().height > px(0.0));
+
+        // While there are more code rows, only the diff moves.
+        scroll(0.0, -44.0, cx);
+        assert_eq!(inner.offset().y, px(-44.0));
+        assert_eq!(outer.offset().y, px(0.0));
+        draw(cx);
+
+        // Clamp immediately, including when more wheel events arrive before paint.
+        scroll(0.0, -10_000.0, cx);
+        assert_eq!(inner.offset().y, -inner.max_offset().height);
+        scroll(0.0, -40.0, cx);
+        assert_eq!(outer.offset().y, px(-40.0));
+        draw(cx);
+
+        // Horizontal trackpad movement, including diagonal drift, stays in the diff.
+        scroll(-60.0, -2.0, cx);
+        assert_eq!(inner.offset().x, px(-60.0));
+        assert_eq!(inner.offset().y, -inner.max_offset().height);
+        assert_eq!(outer.offset().y, px(-40.0));
+        draw(cx);
+
+        // The top edge hands scrolling back in the other direction, too.
+        scroll(0.0, 10_000.0, cx);
+        assert_eq!(inner.offset().y, px(0.0));
+        scroll(0.0, 40.0, cx);
+        assert_eq!(outer.offset().y, px(0.0));
+        draw(cx);
+
+        // A short diff must not trap the file list at all.
+        file.update(cx, |view, cx| {
+            let mut diff = view.document.diff.clone();
+            diff.rows.truncate(3);
+            view.document = Arc::new(DiffDocument::prepare(diff));
+            cx.notify();
+        });
+        draw(cx);
+        assert_eq!(inner.max_offset().height, px(0.0));
+        scroll(0.0, -40.0, cx);
+        assert_eq!(inner.offset().y, px(0.0));
+        assert_eq!(outer.offset().y, px(-40.0));
+    }
+
+    #[test]
+    fn diff_height_reserves_room_for_file_navigation() {
+        for viewport in [220.0, 400.0, 800.0] {
+            for expanded in [false, true] {
+                for truncated in [false, true] {
+                    let height = inline_diff_height(10_000, Some(viewport), expanded, truncated);
+                    let notice = if truncated { DIFF_NOTICE_HEIGHT } else { 0.0 };
+                    assert!(height + notice + 2.0 * FILE_HEADER_HEIGHT + 2.0 <= viewport);
+                    if !expanded {
+                        assert!(height <= MAX_INLINE_DIFF_HEIGHT);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            inline_diff_height(4, Some(800.0), true, false),
+            4.0 * DIFF_ROW_HEIGHT
+        );
+        assert_eq!(
+            inline_diff_height(10_000, Some(40.0), true, true),
+            MIN_INLINE_DIFF_HEIGHT
+        );
+    }
 
     struct ReviewCacheTest {
         files: Vec<Entity<InlineDiffView>>,
@@ -2424,6 +2646,7 @@ mod tests {
                     document: document.clone(),
                     theme: colors(),
                     height: 220.0,
+                    scroll_handle: UniformListScrollHandle::new(),
                     render_count: 0,
                 })
             })
