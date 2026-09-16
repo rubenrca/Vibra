@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.24 — 2026-09-16
+
+- Detect Git from Homebrew and other common install paths when Vibra is launched from the Dock, instead of treating Apple's Xcode git stub as a missing repository.
+- Stop the Git panel from flashing "Reading repository…" on background polls after the first lookup.
+
 ## 0.3.23 — 2026-09-12
 
 - Click a commit in Git History to review its changed files and diffs, with the first file expanded and a Back to history action.

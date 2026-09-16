@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -612,11 +613,128 @@ fn repository_root(root: &Path) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     let output = run_git(root, ["rev-parse", "--show-toplevel"])?;
-    if !output.status.success() {
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        return Ok((!path.is_empty()).then(|| PathBuf::from(path)));
+    }
+    if is_not_a_repository(&output.stderr) {
         return Ok(None);
     }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    Ok((!path.is_empty()).then(|| PathBuf::from(path)))
+    let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    bail!("git rev-parse failed: {message}")
+}
+
+/// Dock-launched macOS apps only get `/usr/bin:/bin:/usr/sbin:/sbin`. Apple's
+/// `/usr/bin/git` is an Xcode stub that fails (license, missing CLT) even when
+/// Homebrew Git is installed. Prefer a Git that can actually run.
+fn git_program() -> &'static Path {
+    static GIT: OnceLock<PathBuf> = OnceLock::new();
+    GIT.get_or_init(discover_git)
+}
+
+fn discover_git() -> PathBuf {
+    discover_git_with(
+        std::env::var_os("VIBRA_GIT").map(PathBuf::from),
+        std::env::var_os("PATH"),
+        extra_git_candidates(),
+    )
+}
+
+fn extra_git_candidates() -> Vec<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from("/opt/homebrew/bin/git"),
+        PathBuf::from("/usr/local/bin/git"),
+        PathBuf::from("/usr/local/git/bin/git"),
+        PathBuf::from("/opt/local/bin/git"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".local/bin/git"));
+        candidates.push(home.join("bin/git"));
+    }
+    candidates
+}
+
+fn discover_git_with(
+    override_path: Option<PathBuf>,
+    path: Option<OsString>,
+    extras: Vec<PathBuf>,
+) -> PathBuf {
+    if let Some(path) = override_path
+        && git_is_usable(&path)
+    {
+        return path;
+    }
+
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+    if let Some(path) = path {
+        for directory in std::env::split_paths(&path) {
+            candidates.push(directory.join("git"));
+        }
+    }
+    candidates.extend(extras);
+
+    for candidate in &candidates {
+        if !seen.insert(candidate.clone()) || is_deferred_system_git(candidate) {
+            continue;
+        }
+        if git_is_usable(candidate) {
+            return candidate.clone();
+        }
+    }
+    seen.clear();
+    for candidate in &candidates {
+        if !seen.insert(candidate.clone()) {
+            continue;
+        }
+        if git_is_usable(candidate) {
+            return candidate.clone();
+        }
+    }
+    PathBuf::from("git")
+}
+
+/// Apple's `/usr/bin/git` is often a license/CLT shim. Try it last so a
+/// Homebrew or `/usr/local` Git is used when the GUI PATH hides it.
+#[cfg(target_os = "macos")]
+fn is_deferred_system_git(path: &Path) -> bool {
+    path == Path::new("/usr/bin/git")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_deferred_system_git(_: &Path) -> bool {
+    false
+}
+
+fn git_is_usable(path: &Path) -> bool {
+    if path.components().count() > 1 && !path.is_file() {
+        return false;
+    }
+    Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn git_command() -> Command {
+    let mut command = Command::new(git_program());
+    command
+        .arg("-c")
+        .arg("core.quotepath=false")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("LC_ALL", "C");
+    command
+}
+
+fn is_not_a_repository(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr)
+        .to_ascii_lowercase()
+        .contains("not a git repository")
 }
 
 fn run_git<I, S>(root: &Path, arguments: I) -> Result<Output>
@@ -624,14 +742,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    Command::new("git")
-        .arg("-c")
-        .arg("core.quotepath=false")
+    git_command()
         .arg("-C")
         .arg(root)
         .args(arguments)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("LC_ALL", "C")
         .output()
         .with_context(|| format!("failed to run Git in {}", root.display()))
 }
@@ -646,14 +760,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let mut child = Command::new("git")
-        .arg("-c")
-        .arg("core.quotepath=false")
+    let mut child = git_command()
         .arg("-C")
         .arg(root)
         .args(arguments)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("LC_ALL", "C")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1407,6 +1517,55 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_program_can_run_version() {
+        assert!(
+            git_is_usable(git_program()),
+            "resolved Git should be executable: {}",
+            git_program().display()
+        );
+    }
+
+    #[test]
+    fn discover_skips_unusable_binaries_and_finds_a_working_git() {
+        let found = discover_git_with(
+            Some(PathBuf::from("/definitely/missing/vibra-git")),
+            Some("/usr/bin:/bin:/usr/sbin:/sbin".into()),
+            extra_git_candidates(),
+        );
+        assert!(
+            git_is_usable(&found),
+            "should resolve Homebrew or PATH Git, got {}",
+            found.display()
+        );
+        if !git_is_usable(Path::new("/usr/bin/git")) {
+            assert_ne!(
+                found,
+                PathBuf::from("/usr/bin/git"),
+                "must not use the broken Xcode git stub"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_repository_is_none_not_an_error() {
+        let root = std::env::temp_dir().join(format!("vibra-not-git-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let snapshot = GitCliPort::default().snapshot(&root).unwrap();
+        assert!(snapshot.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn not_a_repository_message_is_detected() {
+        assert!(is_not_a_repository(
+            b"fatal: not a git repository (or any of the parent directories): .git\n"
+        ));
+        assert!(!is_not_a_repository(
+            b"You have not agreed to the Xcode license agreements."
+        ));
     }
 
     #[test]

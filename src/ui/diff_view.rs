@@ -89,6 +89,8 @@ pub struct DiffView {
     /// Paths currently loading a diff.
     loading: HashSet<String>,
     refreshing: bool,
+    /// First snapshot for the current root has finished (success, none, or error).
+    snapshot_settled: bool,
     branch_refreshing: bool,
     history_refreshing: bool,
     error: Option<SharedString>,
@@ -293,6 +295,7 @@ impl DiffView {
             focus_handle: cx.focus_handle(),
             loading: HashSet::new(),
             refreshing: false,
+            snapshot_settled: false,
             branch_refreshing: false,
             history_refreshing: false,
             error: None,
@@ -393,6 +396,7 @@ impl DiffView {
         self.history_request_id = self.history_request_id.wrapping_add(1);
         self.diff_request_id = self.diff_request_id.wrapping_add(1);
         self.refreshing = false;
+        self.snapshot_settled = false;
         self.branch_refreshing = false;
         self.history_refreshing = false;
         self.branch_changes = None;
@@ -473,15 +477,20 @@ impl DiffView {
                     return;
                 }
                 this.refreshing = false;
-                let mut changed = true;
+                let mut changed = !this.snapshot_settled;
+                this.snapshot_settled = true;
                 match result {
                     Ok(Some(snapshot)) => {
-                        if this.snapshot.as_ref() == Some(&snapshot) {
-                            changed = false;
-                        }
+                        changed = this.snapshot.as_ref() != Some(&snapshot);
                         this.apply_snapshot(snapshot, cx);
                     }
                     Ok(None) => {
+                        if this.snapshot.is_some()
+                            || this.status_root.is_some()
+                            || this.error.is_some()
+                        {
+                            changed = true;
+                        }
                         this.snapshot = None;
                         this.status_root = None;
                         this.status_index = Arc::new(HashMap::new());
@@ -496,6 +505,7 @@ impl DiffView {
                     }
                     Err(error) => {
                         this.error = Some(format!("Git: {error:#}").into());
+                        changed = true;
                     }
                 }
                 if changed {
@@ -1073,10 +1083,12 @@ impl DiffView {
 
     fn header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let loading = match self.mode {
-            GitPanelMode::Worktree => self.refreshing,
+            GitPanelMode::Worktree => self.refreshing && !self.snapshot_settled,
             GitPanelMode::Branch => self.branch_refreshing,
             GitPanelMode::History if self.selected_commit.is_some() => self.commit_refreshing,
-            GitPanelMode::History => self.history_refreshing,
+            GitPanelMode::History => {
+                self.history_refreshing || (self.refreshing && !self.snapshot_settled)
+            }
         };
         let (branch, mut meta) = self.header_meta(loading);
         if self.mode == GitPanelMode::History {
@@ -2329,7 +2341,7 @@ impl DiffView {
     fn empty_message(&self) -> Option<&'static str> {
         match self.mode {
             GitPanelMode::Worktree => {
-                if self.snapshot.is_none() && self.refreshing {
+                if self.snapshot.is_none() && self.refreshing && !self.snapshot_settled {
                     Some("Reading repository…")
                 } else if self.snapshot.is_none() {
                     Some("No Git repository in this project.")
@@ -2347,7 +2359,7 @@ impl DiffView {
                 if self.branch_error.is_some() && self.branch_changes.is_none() {
                     Some("Select available branches and try again.")
                 } else if self.branch_changes.is_none()
-                    && (self.branch_refreshing || self.refreshing)
+                    && (self.branch_refreshing || (self.refreshing && !self.snapshot_settled))
                 {
                     Some("Comparing with the base branch…")
                 } else if self.snapshot.is_none() && self.branch_changes.is_none() {
@@ -2386,7 +2398,9 @@ impl DiffView {
                 }
             }
             GitPanelMode::History => {
-                if self.history.is_none() && (self.history_refreshing || self.refreshing) {
+                if self.history.is_none()
+                    && (self.history_refreshing || (self.refreshing && !self.snapshot_settled))
+                {
                     Some("Loading history…")
                 } else if self.history.is_none() && self.snapshot.is_none() {
                     Some("No Git repository in this project.")
