@@ -25,6 +25,11 @@ raw-window-handle = "0.6"
 [dev-dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["test-support"] }
 
+# GPUI 0.2.2 adds alpha values in its Metal renderer, making layered surfaces
+# opaque. Keep the source-over correction reproducible in builds and releases.
+[patch.crates-io]
+gpui = { path = "third_party/gpui" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
