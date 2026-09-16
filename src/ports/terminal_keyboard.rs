@@ -29,6 +29,35 @@ pub enum TerminalKeyEventType {
     Release,
 }
 
+/// Keep key events unencoded until pending terminal output has been parsed.
+/// A TUI can restore the shell's keyboard mode while this input is in flight.
+pub struct TerminalKeyInput {
+    pub keystroke: TerminalKeystroke,
+    pub event_type: TerminalKeyEventType,
+}
+
+impl TerminalKeyInput {
+    pub fn bytes(&self, mode: TerminalInputMode) -> Vec<u8> {
+        key_event_bytes(&self.keystroke, mode, self.event_type)
+            .or_else(|| {
+                // The UI may have consumed printable text in report-all mode
+                // before the application disabled that mode. Preserve the text.
+                (self.event_type != TerminalKeyEventType::Release
+                    && !self.keystroke.modifiers.control
+                    && !self.keystroke.modifiers.alt
+                    && !self.keystroke.modifiers.platform)
+                    .then(|| {
+                        self.keystroke
+                            .key_char
+                            .as_ref()
+                            .map(|s| s.as_bytes().to_vec())
+                    })
+                    .flatten()
+            })
+            .unwrap_or_default()
+    }
+}
+
 pub fn key_event_bytes(
     keystroke: &TerminalKeystroke,
     mode: TerminalInputMode,
@@ -265,4 +294,36 @@ fn key_event_code(event_type: TerminalKeyEventType) -> char {
 
 fn prefixed_control_byte(byte: u8, alt: bool) -> Vec<u8> {
     if alt { vec![0x1b, byte] } else { vec![byte] }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_printable_text_survives_report_all_reset() {
+        let mut input = TerminalKeyInput {
+            keystroke: TerminalKeystroke {
+                key: "ñ".into(),
+                key_char: Some("Ñ".into()),
+                modifiers: TerminalModifiers {
+                    shift: true,
+                    ..TerminalModifiers::default()
+                },
+            },
+            event_type: TerminalKeyEventType::Press,
+        };
+        let active = TerminalInputMode {
+            report_all_keys_as_escape_codes: true,
+            report_event_types: true,
+            ..TerminalInputMode::default()
+        };
+        assert!(input.bytes(active).starts_with(b"\x1b["));
+        for event_type in [TerminalKeyEventType::Press, TerminalKeyEventType::Repeat] {
+            input.event_type = event_type;
+            assert_eq!(input.bytes(TerminalInputMode::default()), "Ñ".as_bytes());
+        }
+        input.event_type = TerminalKeyEventType::Release;
+        assert!(input.bytes(TerminalInputMode::default()).is_empty());
+    }
 }

@@ -6,6 +6,7 @@ use anyhow::Result;
 use async_channel::Receiver;
 use uuid::Uuid;
 
+use super::terminal_keyboard::TerminalKeyInput;
 use crate::domain::agents::AgentRuntimeState;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -299,6 +300,11 @@ pub trait TerminalPort: Send + Sync {
 pub trait TerminalHandle: Send + Sync {
     fn events(&self) -> Receiver<TerminalEvent>;
     fn send_input(&self, input: Vec<u8>) -> Result<()>;
+    /// Backends that queue writes must encode the key after parsing pending
+    /// output, since it may restore the shell's keyboard mode.
+    fn send_key_input(&self, input: TerminalKeyInput) -> Result<()> {
+        self.send_input(input.bytes(self.input_mode()))
+    }
     fn resize(&self, size: TerminalSize) -> Result<()>;
     fn scroll(&self, lines: i32);
     fn clear_scrollback(&self);

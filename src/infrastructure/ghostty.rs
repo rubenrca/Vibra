@@ -5,6 +5,7 @@ use super::terminal_support::{
     COLOR_SUPPRESSING_ENV, indexed_color_with, process_invoked_name, process_working_directory,
     terminal_child_environment,
 };
+use crate::ports::terminal_keyboard::TerminalKeyInput;
 use crate::{ports::terminal::*, ui::theme};
 use anyhow::{Context, Result, bail};
 use async_channel::{Receiver, Sender};
@@ -440,9 +441,21 @@ impl TerminalPort for GhosttyTerminalPort {
     }
 }
 enum PtyCommand {
-    Input(Vec<u8>),
+    Input(PtyInput),
     Resize(TerminalSize),
     Shutdown,
+}
+enum PtyInput {
+    Bytes(Vec<u8>),
+    Key(TerminalKeyInput),
+}
+
+fn enqueue_replies(writes: &mut VecDeque<PtyInput>, engine: &mut Engine) {
+    if !engine.callbacks.replies.is_empty() {
+        writes.push_back(PtyInput::Bytes(
+            engine.callbacks.replies.drain(..).collect(),
+        ));
+    }
 }
 struct GhosttyTerminal {
     engine: Arc<Mutex<Engine>>,
@@ -624,13 +637,14 @@ fn pty_worker(
     let (commands, mut signal) = control;
     let mut output = [0u8; 65536];
     let mut writes = VecDeque::new();
+    let mut write_offset = 0;
     let mut shutdown = None;
     let mut exit = None;
     let mut read_closed = false;
     loop {
         loop {
             match commands.try_recv() {
-                Ok(PtyCommand::Input(data)) => writes.extend(data),
+                Ok(PtyCommand::Input(input)) => writes.push_back(input),
                 Ok(PtyCommand::Resize(size)) => {
                     let ws = window_size(size);
                     if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &ws) } == 0 {
@@ -664,7 +678,7 @@ fn pty_worker(
         }
         // Resize can emit in-band reports even when the child is waiting and
         // produces no further output. Flush every callback batch, not just feed.
-        writes.append(&mut engine.lock().unwrap().callbacks.replies);
+        enqueue_replies(&mut writes, &mut engine.lock().unwrap());
         let mut changed = false;
         // Bound each batch so continuous output cannot starve shutdown/input.
         for _ in 0..16 {
@@ -676,7 +690,7 @@ fn pty_worker(
                 Ok(n) => {
                     let mut e = engine.lock().unwrap();
                     e.feed(&output[..n]);
-                    writes.append(&mut e.callbacks.replies);
+                    enqueue_replies(&mut writes, &mut e);
                     changed = true;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -691,18 +705,44 @@ fn pty_worker(
             wake(&events, &pending);
         }
         for _ in 0..16 {
-            if writes.is_empty() {
+            let Some(input) = writes.front_mut() else {
                 break;
+            };
+            let encoded = if let PtyInput::Key(key) = input {
+                // Output can include the TUI's keyboard-mode cleanup. Encode
+                // only after reading it, immediately before the PTY write.
+                Some(key.bytes(engine.lock().unwrap().mode()))
+            } else {
+                None
+            };
+            let data = match (encoded.as_ref(), &*input) {
+                (Some(data), _) | (_, PtyInput::Bytes(data)) => data,
+                _ => unreachable!(),
+            };
+            let len = data.len();
+            if write_offset == len {
+                writes.pop_front();
+                write_offset = 0;
+                continue;
             }
-            match master.write(writes.as_slices().0) {
+            match master.write(&data[write_offset..]) {
                 Ok(0) => break,
                 Ok(n) => {
-                    writes.drain(..n);
+                    write_offset += n;
+                    if write_offset == len {
+                        writes.pop_front();
+                        write_offset = 0;
+                    } else if let Some(data) = encoded {
+                        // Preserve a partially written sequence, but retain
+                        // unencoded keys on WouldBlock so modes can change.
+                        *input = PtyInput::Bytes(data);
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => {
                     writes.clear();
+                    write_offset = 0;
                     break;
                 }
             }
@@ -773,7 +813,13 @@ impl TerminalHandle for GhosttyTerminal {
         if !self.alive.load(Ordering::Acquire) {
             bail!("la terminal ya terminó")
         }
-        self.dispatch(PtyCommand::Input(input))
+        self.dispatch(PtyCommand::Input(PtyInput::Bytes(input)))
+    }
+    fn send_key_input(&self, input: TerminalKeyInput) -> Result<()> {
+        if !self.alive.load(Ordering::Acquire) {
+            bail!("la terminal ya terminó")
+        }
+        self.dispatch(PtyCommand::Input(PtyInput::Key(input)))
     }
     fn resize(&self, size: TerminalSize) -> Result<()> {
         self.dispatch(PtyCommand::Resize(size))
@@ -916,6 +962,9 @@ fn plain_hyperlink(line: &[TerminalCell], column: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ports::terminal_keyboard::{
+        TerminalKeyEventType, TerminalKeyInput, TerminalKeystroke, TerminalModifiers,
+    };
     fn engine() -> Engine {
         let (tx, _) = async_channel::unbounded();
         Engine::new(TerminalSize::default(), tx).unwrap()
@@ -1058,6 +1107,56 @@ mod tests {
         assert_eq!(
             reply.split_whitespace().collect::<Vec<_>>(),
             ["1b", "5b", "31", "3b", "31", "52"]
+        );
+    }
+
+    #[test]
+    fn queued_ctrl_c_events_use_restored_shell_mode() {
+        let t = GhosttyTerminal::spawn(
+            Uuid::new_v4(),
+            Path::new("/tmp"),
+            &HashMap::new(),
+            Some(("/bin/sh", &["-c", "stty raw -echo; printf '\\033[>3uREADY\\r\\n'; dd bs=1 count=3 2>/dev/null | od -An -tx1; printf '\\r\\nDONE'"])),
+        )
+        .unwrap();
+        wait_for(&t, "READY");
+        let input = |event_type| TerminalKeyInput {
+            keystroke: TerminalKeystroke {
+                key: "c".into(),
+                key_char: Some("c".into()),
+                modifiers: TerminalModifiers {
+                    control: true,
+                    ..TerminalModifiers::default()
+                },
+            },
+            event_type,
+        };
+        assert_eq!(
+            input(TerminalKeyEventType::Release).bytes(t.input_mode()),
+            b"\x1b[99;5:3u"
+        );
+        {
+            // Hold the worker before it can write input. This is the same
+            // ordering as a TUI's pending cleanup being read before a queued key.
+            let mut e = t.engine.lock().unwrap();
+            for event_type in [
+                TerminalKeyEventType::Release,
+                TerminalKeyEventType::Press,
+                TerminalKeyEventType::Repeat,
+                TerminalKeyEventType::Release,
+            ] {
+                t.send_key_input(input(event_type)).unwrap();
+            }
+            e.feed(b"\x1b[<u");
+            assert!(!e.mode().kitty_keyboard());
+            t.send_input(b"A".to_vec()).unwrap();
+        }
+        wait_for(&t, "DONE");
+        let text = t.engine.lock().unwrap().text(false).unwrap();
+        assert_eq!(
+            text.split_whitespace().collect::<Vec<_>>(),
+            ["READY", "03", "03", "41", "DONE"],
+            "Kitty sequences leaked into shell input: {text:?}"
         );
     }
 

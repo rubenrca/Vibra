@@ -21,7 +21,9 @@ use crate::ports::terminal::{
     TerminalPort, TerminalRgb, TerminalSearchDirection, TerminalSelectionType, TerminalSize,
     TerminalSnapshot, TerminalUnderline, is_safe_hyperlink,
 };
-use crate::ui::terminal_keyboard::{TerminalKeyEventType, TerminalKeystroke, TerminalModifiers};
+use crate::ports::terminal_keyboard::{
+    TerminalKeyEventType, TerminalKeyInput, TerminalKeystroke, TerminalModifiers,
+};
 use crate::ui::theme::{self, MONO_FONT, colors};
 use crate::{
     ClearTerminalScrollback, CopyTerminal, DecreaseTerminalFontSize, IncreaseTerminalFontSize,
@@ -489,6 +491,17 @@ impl TerminalView {
         }
     }
 
+    fn send_key(&self, key: &Keystroke, event_type: TerminalKeyEventType) {
+        if let Some(handle) = &self.handle {
+            handle.clear_selection();
+            handle.scroll(i32::MIN);
+            let _ = handle.send_key_input(TerminalKeyInput {
+                keystroke: terminal_keystroke(key),
+                event_type,
+            });
+        }
+    }
+
     fn paste(&self, text: &str) {
         let mode = self
             .handle
@@ -823,8 +836,8 @@ impl TerminalView {
         } else {
             TerminalKeyEventType::Press
         };
-        if let Some(input) = key_event_bytes(keystroke, mode, event_type) {
-            self.send(input);
+        if key_event_bytes(keystroke, mode, event_type).is_some() {
+            self.send_key(keystroke, event_type);
             self.reset_cursor_blink();
             cx.stop_propagation();
         }
@@ -839,9 +852,8 @@ impl TerminalView {
             .as_ref()
             .map(|handle| handle.input_mode())
             .unwrap_or_default();
-        if let Some(input) = key_event_bytes(&event.keystroke, mode, TerminalKeyEventType::Release)
-        {
-            self.send(input);
+        if key_event_bytes(&event.keystroke, mode, TerminalKeyEventType::Release).is_some() {
+            self.send_key(&event.keystroke, TerminalKeyEventType::Release);
             cx.stop_propagation();
         }
     }
@@ -2052,20 +2064,20 @@ fn key_event_bytes(
     mode: TerminalInputMode,
     event: TerminalKeyEventType,
 ) -> Option<Vec<u8>> {
-    crate::ui::terminal_keyboard::key_event_bytes(
-        &TerminalKeystroke {
-            key: key.key.clone(),
-            key_char: key.key_char.clone(),
-            modifiers: TerminalModifiers {
-                shift: key.modifiers.shift,
-                alt: key.modifiers.alt,
-                control: key.modifiers.control,
-                platform: key.modifiers.platform,
-            },
+    crate::ports::terminal_keyboard::key_event_bytes(&terminal_keystroke(key), mode, event)
+}
+
+fn terminal_keystroke(key: &Keystroke) -> TerminalKeystroke {
+    TerminalKeystroke {
+        key: key.key.clone(),
+        key_char: key.key_char.clone(),
+        modifiers: TerminalModifiers {
+            shift: key.modifiers.shift,
+            alt: key.modifiers.alt,
+            control: key.modifiers.control,
+            platform: key.modifiers.platform,
         },
-        mode,
-        event,
-    )
+    }
 }
 
 fn is_terminal_special_key(key: &str) -> bool {
