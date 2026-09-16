@@ -3,19 +3,18 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.23</title>
-            <pubDate>Sat, 12 Sep 2026 12:14:37 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.23</link>
-            <sparkle:version>164</sparkle:version>
-            <sparkle:shortVersionString>0.3.23</sparkle:shortVersionString>
+            <title>0.3.24</title>
+            <pubDate>Wed, 16 Sep 2026 12:25:01 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.24</link>
+            <sparkle:version>167</sparkle:version>
+            <sparkle:shortVersionString>0.3.24</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Click a commit in Git History to review its changed files and diffs, with the first file expanded and a Back to history action.</li>
-  <li>Keep commit diffs pinned to saved revisions so later commits and staged, unstaged, or untracked files do not affect the review.</li>
-  <li>Support initial and empty commits, compare merge commits with their first parent, and handle binary files and filenames with special characters.</li>
+  <li>Detect Git from Homebrew and other common install paths when Vibra is launched from the Dock, instead of treating Apple's Xcode git stub as a missing repository.</li>
+  <li>Stop the Git panel from flashing "Reading repository…" on background polls after the first lookup.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.23/Vibra-0.3.23.dmg" length="12978228" type="application/octet-stream" sparkle:edSignature="GuN0/fIvFSWjUo6Fpx12r+HJgI8JMv371e9VCIuxkdNL2oieXRmCXO/zRBRp1RQLdX8qsxOQhadNZnlFA/W2Aw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.24/Vibra-0.3.24.dmg" length="12994493" type="application/octet-stream" sparkle:edSignature="kIl/s8nyjtI5c5hIEVa+FFlS4jZlWnlsb+zv6rr6Tr6adsGxQE6oDyT84wBNBgrkhMCa+0iWkixPzEsvsCHZBA=="/>
         </item>
     </channel>
 </rss>
