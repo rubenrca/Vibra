@@ -4,16 +4,14 @@ use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, pre
 use uuid::Uuid;
 
 use crate::domain::workspace::{PaneBranch, WorkspaceSplitAxis};
-use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
-use crate::ui::agent_marks::{agent_sidebar_badge, agent_status_color};
 use crate::ui::terminal::TerminalDragPreview;
 use crate::ui::theme::{MONO_FONT, colors};
 
+use super::SIDEBAR_WORKSPACE_HEIGHT;
 use super::chrome::{
-    sidebar_agent_line, sidebar_location_line, sidebar_workspace_appearance,
-    sidebar_workspace_text_column,
+    SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarSessionCard, sidebar_workspace_appearance,
+    sidebar_workspace_content,
 };
-use super::{SIDEBAR_WORKSPACE_CARD_CHROME, SIDEBAR_WORKSPACE_HEIGHT};
 
 #[derive(Clone)]
 pub(crate) struct PaneDividerDrag {
@@ -24,9 +22,6 @@ pub(crate) struct PaneDividerDrag {
 pub(crate) struct PaneDividerDragView {
     pub axis: WorkspaceSplitAxis,
 }
-
-#[derive(Clone, Copy)]
-pub(crate) struct DevTerminalResize;
 
 #[derive(Clone)]
 pub(crate) struct TabDrag {
@@ -53,32 +48,12 @@ pub(crate) struct PaneDrag {
 #[derive(Clone)]
 pub(crate) struct SidebarWorkspaceDrag {
     pub workspace_id: Uuid,
-    pub source_space_id: Option<Uuid>,
-    pub title: String,
-    pub branch: Option<String>,
-    pub path: String,
-    pub selected: bool,
-    pub dirty: bool,
-    pub behind: usize,
-    pub agent_kind: Option<String>,
-    pub agent_state: Option<AgentRuntimeState>,
-    pub agent_attention: Option<AgentAttention>,
-    pub agent_model: Option<String>,
-    pub width: f32,
+    pub project_id: Uuid,
+    pub card: SidebarSessionCard,
 }
 
 pub(crate) struct SidebarWorkspaceDragView {
-    pub title: String,
-    pub branch: Option<String>,
-    pub path: String,
-    pub selected: bool,
-    pub dirty: bool,
-    pub behind: usize,
-    pub agent_kind: Option<String>,
-    pub agent_state: Option<AgentRuntimeState>,
-    pub agent_attention: Option<AgentAttention>,
-    pub agent_model: Option<String>,
-    pub width: f32,
+    pub card: SidebarSessionCard,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -174,47 +149,40 @@ impl Render for TabDragView {
 
 impl Render for SidebarWorkspaceDragView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let appearance = sidebar_workspace_appearance(self.selected, self.dirty, self.behind);
-        let agent_line = sidebar_agent_line(
-            self.agent_kind.as_deref(),
-            self.agent_model.as_deref(),
-            self.agent_state,
-            self.agent_attention,
-        );
-        let agent_color = agent_status_color(self.agent_state, self.agent_attention)
-            .unwrap_or(appearance.agent_fallback);
-        let location_line = sidebar_location_line(self.branch.as_deref(), &self.path);
-        let location_color = if self.branch.is_some() {
-            appearance.branch
-        } else {
-            appearance.path
-        };
-
+        let card = &self.card;
+        let appearance = sidebar_workspace_appearance(card.selected, card.dirty, card.behind);
         div()
             .h(px(SIDEBAR_WORKSPACE_HEIGHT))
-            .w(px(self.width))
-            .px(px(10.0))
-            .rounded(px(7.0))
+            .w(px(card.width))
+            .px(px(SIDEBAR_ROW_PADDING))
+            .rounded(px(SIDEBAR_ROW_RADIUS))
             .flex()
             .items_center()
-            .gap_2()
-            .bg(appearance.background)
-            .border_1()
-            .border_color(appearance.border)
-            .child(agent_sidebar_badge(
-                self.agent_kind.as_deref(),
-                self.agent_state,
-                self.agent_attention,
-                self.selected,
-            ))
-            .child(sidebar_workspace_text_column(
-                (self.width - SIDEBAR_WORKSPACE_CARD_CHROME).max(80.0),
-                &self.title,
-                appearance.title,
-                &agent_line,
-                agent_color,
-                &location_line,
-                location_color,
-            ))
+            .bg(if card.selected {
+                appearance.background
+            } else {
+                colors().sidebar
+            })
+            .shadow_sm()
+            .child(sidebar_workspace_content(card))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ProjectDrag {
+    pub project_id: Uuid,
+    pub name: String,
+}
+
+impl Render for ProjectDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .bg(colors().elevated)
+            .text_size(px(12.0))
+            .text_color(colors().foreground)
+            .child(self.name.clone())
     }
 }

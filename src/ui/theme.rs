@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, OnceLock, RwLock};
 
-use gpui::{Rgba, WindowAppearance, rgb, rgba};
+use gpui::{Hsla, Rgba, WindowAppearance, rgb, rgba};
 use serde::{Deserialize, Serialize};
 
 use crate::ports::terminal::TerminalRgb;
@@ -15,6 +15,62 @@ use crate::ui::theme_import::{self, ImportedScheme};
 
 /// Family name of the bundled JetBrains Mono Variable font.
 pub const MONO_FONT: &str = "JetBrains Mono";
+
+/// A continuous base covers the window, including gaps and rounded cutouts.
+/// Black/white lets panels add their palette tint without an opaque second fill.
+fn surface_base() -> Rgba {
+    if colors().is_dark() {
+        rgb(0x000000)
+    } else {
+        rgb(0xffffff)
+    }
+}
+
+pub fn window_surface() -> Hsla {
+    floating_surface(surface_base())
+}
+
+/// Main panels tint the continuous window base. Never paint another 94% layer
+/// here: stacking those layers would hide the native backdrop.
+pub fn surface(color: impl Into<Hsla>) -> Hsla {
+    surface_tint(color.into().into(), surface_base()).into()
+}
+
+/// Floating content needs its own fill to remain readable above other content.
+/// Keep the 6% transparency at paint time; palette and foreground stay opaque.
+pub fn floating_surface(color: impl Into<Hsla>) -> Hsla {
+    let mut color = color.into();
+    if cfg!(target_os = "macos") {
+        color.a *= 0.94;
+    }
+    color
+}
+
+/// Reproduce a nested surface as a tint over its parent instead of covering the
+/// backdrop with another opaque fill. Equal colors need no additional paint.
+pub fn surface_tint(color: Rgba, base: Rgba) -> Rgba {
+    let channels = [(color.r, base.r), (color.g, base.g), (color.b, base.b)];
+    let alpha = channels.iter().fold(0.0_f32, |alpha, &(target, base)| {
+        alpha.max(if target > base {
+            (target - base) / (1.0 - base)
+        } else if target < base {
+            (base - target) / base
+        } else {
+            0.0
+        })
+    });
+    if alpha == 0.0 {
+        return rgba(0x00000000);
+    }
+    let channel =
+        |target: f32, base: f32| ((target - base * (1.0 - alpha)) / alpha).clamp(0.0, 1.0);
+    Rgba {
+        r: channel(color.r, base.r),
+        g: channel(color.g, base.g),
+        b: channel(color.b, base.b),
+        a: alpha * color.a,
+    }
+}
 
 /// Product color roles used across chrome, terminal shell, diffs, and editors.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1476,6 +1532,32 @@ pub fn apply_preference(theme_id: &str, mode: AppearanceMode, system_dark: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_tints_preserve_colors_when_composited() {
+        for theme in [midnight_dark(), midnight_light()] {
+            for base in [
+                theme.background,
+                theme.panel,
+                theme.sidebar,
+                rgb(0),
+                rgb(0xffffff),
+            ] {
+                for target in [base, theme.elevated, theme.selection, theme.diff_added_bg] {
+                    let tint = surface_tint(target, base);
+                    assert!((0.0..=1.0).contains(&tint.a));
+                    for (channel, base, target) in [
+                        (tint.r, base.r, target.r),
+                        (tint.g, base.g, target.g),
+                        (tint.b, base.b, target.b),
+                    ] {
+                        let composited = channel * tint.a + base * (1.0 - tint.a);
+                        assert!((composited - target).abs() < 0.00001);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn catalog_ids_are_unique_and_default_resolves() {

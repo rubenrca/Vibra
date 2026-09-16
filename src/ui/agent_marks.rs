@@ -10,6 +10,7 @@ use crate::ui::theme::{MONO_FONT, colors};
 
 /// Glyph used when a pane has no detected agent mark.
 pub const TERMINAL_GLYPH: &str = ">_";
+pub(crate) const SIDEBAR_AGENT_MARK_SIZE: f32 = 12.0;
 
 macro_rules! bundled_assets {
     ($(($key:literal, $rel:literal)),+ $(,)?) => {
@@ -53,6 +54,9 @@ bundled_assets! {
     ("file-icons/folder-open.svg", "FileIcons/folder-open.svg"),
     ("file-icons/file.svg", "FileIcons/file.svg"),
     ("chrome-icons/files.svg", "ChromeIcons/files.svg"),
+    ("chrome-icons/folder.svg", "ChromeIcons/folder.svg"),
+    ("chrome-icons/plus.svg", "ChromeIcons/plus.svg"),
+    ("chrome-icons/ellipsis.svg", "ChromeIcons/ellipsis.svg"),
     ("chrome-icons/git-branch.svg", "ChromeIcons/git-branch.svg"),
     ("chrome-icons/open-external.svg", "ChromeIcons/open-external.svg"),
     ("chrome-icons/chevron-down.svg", "ChromeIcons/chevron-down.svg"),
@@ -102,18 +106,18 @@ pub fn agent_status_color(
     }
 }
 
-fn brand_mark(kind: Option<&str>, mark_color: Rgba) -> AnyElement {
+fn brand_mark(kind: Option<&str>, mark_color: Rgba, size: f32) -> AnyElement {
     match kind.and_then(agent_mark) {
         Some((path, AgentMarkStyle::Template)) => svg()
             .path(path)
-            .size(px(16.0))
+            .size(px(size))
             .text_color(mark_color)
             .into_any_element(),
-        Some((path, AgentMarkStyle::Original)) => img(path).size(px(16.0)).into_any_element(),
+        Some((path, AgentMarkStyle::Original)) => img(path).size(px(size)).into_any_element(),
         None => div()
             .font_family(MONO_FONT)
             .font_weight(gpui::FontWeight::MEDIUM)
-            .text_size(px(9.5))
+            .text_size(px((size * 9.5 / 16.0).max(8.0)))
             .text_color(mark_color)
             .child(TERMINAL_GLYPH)
             .into_any_element(),
@@ -150,7 +154,7 @@ pub fn agent_compact_badge(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(brand_mark(kind, mark_color)),
+                .child(brand_mark(kind, mark_color, 16.0)),
         )
         .when_some(status, |badge, color| {
             badge.child(div().size(px(5.0)).rounded_full().bg(color))
@@ -158,52 +162,16 @@ pub fn agent_compact_badge(
         .into_any_element()
 }
 
-/// Sidebar badge: agent brand mark (or terminal glyph) plus optional status dot.
-pub fn agent_sidebar_badge(
-    kind: Option<&str>,
-    state: Option<AgentRuntimeState>,
-    attention: Option<AgentAttention>,
-    selected: bool,
-) -> AnyElement {
+/// Unboxed agent identity for the metadata row; activity has its own label above.
+pub fn agent_sidebar_badge(kind: Option<&str>, selected: bool) -> AnyElement {
     let mark_color = badge_mark_color(selected);
-    let status =
-        agent_status_color(state, attention).or_else(|| selected.then_some(colors().accent));
-    let needs_permission =
-        attention == Some(AgentAttention::Permission) && state == Some(AgentRuntimeState::Waiting);
-
     div()
-        .size(px(28.0))
+        .size(px(SIDEBAR_AGENT_MARK_SIZE))
         .flex_none()
-        .relative()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.0))
-        .bg(colors().elevated)
-        .when(needs_permission, |badge| {
-            badge.border_1().border_color(colors().danger)
-        })
-        .child(
-            div()
-                .size(px(16.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(brand_mark(kind, mark_color)),
-        )
-        .when_some(status, |badge, color| {
-            badge.child(
-                div()
-                    .absolute()
-                    .right_0()
-                    .bottom_0()
-                    .size(px(6.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(colors().elevated)
-                    .bg(color),
-            )
-        })
+        .child(brand_mark(kind, mark_color, SIDEBAR_AGENT_MARK_SIZE))
         .into_any_element()
 }
 

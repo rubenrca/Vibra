@@ -24,7 +24,7 @@ use crate::ports::terminal::{
 use crate::ports::terminal_keyboard::{
     TerminalKeyEventType, TerminalKeyInput, TerminalKeystroke, TerminalModifiers,
 };
-use crate::ui::theme::{self, MONO_FONT, colors};
+use crate::ui::theme::{self, MONO_FONT, colors, floating_surface, surface, surface_tint};
 use crate::{
     ClearTerminalScrollback, CopyTerminal, DecreaseTerminalFontSize, IncreaseTerminalFontSize,
     PasteTerminal, ResetTerminalFontSize, SearchTerminal, SearchTerminalNext,
@@ -299,10 +299,6 @@ impl TerminalView {
         if let Some(handle) = &self.handle {
             handle.shutdown();
         }
-    }
-
-    pub fn session_id(&self) -> Uuid {
-        self.session_id
     }
 
     pub fn set_surface_visible(&mut self, visible: bool) {
@@ -1284,11 +1280,10 @@ impl EntityInputHandler for TerminalView {
 
 struct TerminalPaintState {
     lines: Vec<ShapedLine>,
-    /// Per-cell backgrounds in row-major order (`rows * columns`).
-    /// Painted as quads so the grid always fills the pane (ShapedLine
-    /// backgrounds can leave a gap; Warp-style emulators paint cells directly).
-    cell_backgrounds: Vec<Hsla>,
-    /// Full-pane underlay from the live surface color (not a forced theme black).
+    /// Adjacent cells share a tint quad, including selections and TUI fills.
+    backgrounds: Vec<TerminalBackgroundRun>,
+    grid_bounds: Bounds<Pixels>,
+    /// Live surface color for the canvas, including padding outside the grid.
     surface: Hsla,
     cursor: Option<PaintQuad>,
     cursor_bounds: Option<Bounds<Pixels>>,
@@ -1297,6 +1292,52 @@ struct TerminalPaintState {
     cell_width: Pixels,
     line_height: Pixels,
     grid_size: (usize, usize),
+}
+
+#[derive(Debug)]
+struct TerminalBackgroundRun {
+    row: usize,
+    columns: Range<usize>,
+    color: Hsla,
+}
+
+impl TerminalPaintState {
+    fn paint_backgrounds(&self, bounds: Bounds<Pixels>, floating: bool, window: &mut Window) {
+        let grid = self.grid_bounds;
+        let background = if floating {
+            floating_surface(self.surface)
+        } else {
+            surface(self.surface)
+        };
+        window.paint_quad(fill(bounds, background).corner_radii(px(SURFACE_CORNER_RADIUS)));
+        let scale = window.scale_factor();
+        // Shared edges land on the same physical pixel, preventing translucent
+        // seams when pane dimensions are not divisible by the terminal grid.
+        let snap = |value: Pixels| (value * scale).round() / scale;
+        for run in &self.backgrounds {
+            if run.color == self.surface {
+                continue;
+            }
+            let left = snap(grid.left() + self.cell_width * run.columns.start);
+            let top = snap(grid.top() + self.line_height * run.row);
+            let width = snap(grid.left() + self.cell_width * run.columns.end) - left;
+            let height = snap(grid.top() + self.line_height * (run.row + 1)) - top;
+            if width > px(0.0) && height > px(0.0) {
+                window.paint_quad(fill(
+                    Bounds::new(point(left, top), size(width, height)),
+                    surface_tint(run.color.into(), self.surface.into()),
+                ));
+            }
+        }
+    }
+}
+
+fn terminal_grid_bounds(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+    let padding = px(TERMINAL_VERTICAL_PADDING).min(bounds.size.height / 2.0);
+    Bounds::new(
+        point(bounds.left(), bounds.top() + padding),
+        size(bounds.size.width, bounds.size.height - padding * 2.0),
+    )
 }
 
 #[derive(Default)]
@@ -1343,7 +1384,6 @@ impl Render for TerminalView {
             .id(SharedString::from(format!("terminal-{}", self.session_id)))
             .size_full()
             .min_h(px(0.0))
-            .py(px(TERMINAL_VERTICAL_PADDING))
             .relative()
             .overflow_hidden()
             .rounded(px(SURFACE_CORNER_RADIUS))
@@ -1372,7 +1412,6 @@ impl Render for TerminalView {
             .font_weight(gpui::FontWeight::LIGHT)
             .text_size(px(font_size))
             .line_height(px(line_height))
-            .bg(colors().terminal)
             .border_1()
             .border_color(if bell_active {
                 colors().danger
@@ -1386,6 +1425,7 @@ impl Render for TerminalView {
                     {
                         let entity = entity.clone();
                         move |bounds, window, cx| {
+                            let bounds = terminal_grid_bounds(bounds);
                             let style = window.text_style();
                             let rem_size = window.rem_size();
                             let font_size = style.font_size.to_pixels(rem_size);
@@ -1451,7 +1491,7 @@ impl Render for TerminalView {
                                 snapshot.clone(),
                                 &shape_context,
                             );
-                            let cell_backgrounds = collect_cell_backgrounds(&snapshot);
+                            let backgrounds = collect_background_runs(&snapshot);
                             let surface = snapshot_surface_color(&snapshot);
                             let cursor_bounds = snapshot.cursor.map(|cursor| {
                                 cursor_bounds(bounds, cursor, cell_width, line_height)
@@ -1483,7 +1523,8 @@ impl Render for TerminalView {
                                 });
                             TerminalPaintState {
                                 lines,
-                                cell_backgrounds,
+                                backgrounds,
+                                grid_bounds: bounds,
                                 surface,
                                 cursor,
                                 cursor_bounds,
@@ -1498,32 +1539,13 @@ impl Render for TerminalView {
                         }
                     },
                     move |bounds, state, window, cx| {
+                        state.paint_backgrounds(bounds, false, window);
+                        let bounds = state.grid_bounds;
                         window.handle_input(
                             &entity.read(cx).focus_handle,
                             ElementInputHandler::new(bounds, entity.clone()),
                             cx,
                         );
-                        // 1) Full-pane underlay from live surface color (matches TUI canvas,
-                        //    not a forced theme black — normal shells keep their bg).
-                        window.paint_quad(
-                            fill(bounds, state.surface).corner_radii(px(SURFACE_CORNER_RADIUS)),
-                        );
-                        // 2) Exact per-cell backgrounds so the grid covers every pixel.
-                        let columns = state.grid_size.0.max(1);
-                        for (index, background) in state.cell_backgrounds.iter().enumerate() {
-                            let row = index / columns;
-                            let column = index % columns;
-                            let cell_bounds = Bounds::new(
-                                point(
-                                    bounds.left() + state.cell_width * column,
-                                    bounds.top() + state.line_height * row,
-                                ),
-                                size(state.cell_width, state.line_height),
-                            );
-                            if *background != state.surface {
-                                window.paint_quad(fill(cell_bounds, *background));
-                            }
-                        }
                         if let Some(cursor) = state.cursor {
                             window.paint_quad(cursor);
                         }
@@ -1705,7 +1727,6 @@ impl Render for TerminalDragPreview {
             .font_weight(gpui::FontWeight::LIGHT)
             .text_size(px(font_size))
             .line_height(px(line_height))
-            .bg(colors().terminal)
             .child(
                 canvas(
                     move |bounds, window, _| {
@@ -1735,7 +1756,7 @@ impl Render for TerminalDragPreview {
                             snapshot.clone(),
                             &shape_context,
                         );
-                        let cell_backgrounds = collect_cell_backgrounds(&snapshot);
+                        let backgrounds = collect_background_runs(&snapshot);
                         let surface = snapshot_surface_color(&snapshot);
                         let cursor_bounds = snapshot
                             .cursor
@@ -1749,7 +1770,8 @@ impl Render for TerminalDragPreview {
                         });
                         TerminalPaintState {
                             lines,
-                            cell_backgrounds,
+                            backgrounds,
+                            grid_bounds: bounds,
                             surface,
                             cursor,
                             cursor_bounds,
@@ -1763,24 +1785,7 @@ impl Render for TerminalDragPreview {
                     move |bounds, state, window, cx| {
                         // Match the terminal canvas paint order, but keep this copy
                         // read-only so dragging never affects the live pane.
-                        window.paint_quad(
-                            fill(bounds, state.surface).corner_radii(px(SURFACE_CORNER_RADIUS)),
-                        );
-                        let columns = state.grid_size.0.max(1);
-                        for (index, background) in state.cell_backgrounds.iter().enumerate() {
-                            let row = index / columns;
-                            let column = index % columns;
-                            let cell_bounds = Bounds::new(
-                                point(
-                                    bounds.left() + state.cell_width * column,
-                                    bounds.top() + state.line_height * row,
-                                ),
-                                size(state.cell_width, state.line_height),
-                            );
-                            if *background != state.surface {
-                                window.paint_quad(fill(cell_bounds, *background));
-                            }
-                        }
+                        state.paint_backgrounds(bounds, true, window);
                         if let Some(cursor) = state.cursor {
                             window.paint_quad(cursor);
                         }
@@ -1923,23 +1928,41 @@ fn shape_snapshot_line(
     )
 }
 
-fn collect_cell_backgrounds(snapshot: &TerminalSnapshot) -> Vec<Hsla> {
-    let mut backgrounds = Vec::with_capacity(snapshot.rows.saturating_mul(snapshot.columns));
-    for line in &snapshot.lines {
-        for cell in line.iter() {
-            let background = if cell.selected {
-                colors().selection.into()
+fn collect_background_runs(snapshot: &TerminalSnapshot) -> Vec<TerminalBackgroundRun> {
+    let fallback = snapshot_surface_color(snapshot);
+    let selection = colors().selection.into();
+    let columns = snapshot.columns.max(1);
+    let mut backgrounds: Vec<TerminalBackgroundRun> = Vec::new();
+    for row in 0..snapshot.rows.max(1) {
+        let line = snapshot.lines.get(row);
+        for column in 0..columns {
+            let color = line
+                .and_then(|line| line.get(column))
+                .map_or(fallback, |cell| {
+                    if cell.selected {
+                        selection
+                    } else {
+                        to_hsla(cell.background)
+                    }
+                });
+            if let Some(previous) = backgrounds.last_mut()
+                && previous.row == row
+                && previous.color == color
+            {
+                previous.columns.end = column + 1;
             } else {
-                to_hsla(cell.background)
-            };
-            backgrounds.push(background);
+                backgrounds.push(TerminalBackgroundRun {
+                    row,
+                    columns: column..column + 1,
+                    color,
+                });
+            }
         }
     }
     backgrounds
 }
 
-/// Live canvas color for full-pane underlay. Taken from the TUI itself so Grok’s
-/// black fills the pane without forcing the shell theme to pure black.
+/// Match padding and missing cells to the live TUI without changing shell colors.
 fn snapshot_surface_color(snapshot: &TerminalSnapshot) -> Hsla {
     let sample = snapshot
         .lines
@@ -2552,6 +2575,57 @@ mod tests {
             TerminalInputMode::default(),
         );
         assert_eq!(bytes, Some(vec![3]));
+    }
+
+    #[test]
+    fn background_runs_preserve_tui_colors_and_selection_during_resize() {
+        let black = TerminalRgb::new(0, 0, 0);
+        let blue = TerminalRgb::new(20, 40, 80);
+        let cell = |row, column, background| {
+            TerminalCell::with_text(
+                row,
+                column,
+                " ",
+                TerminalRgb::new(255, 255, 255),
+                background,
+            )
+        };
+        let mut selected = cell(0, 2, blue);
+        selected.selected = true;
+        let snapshot = TerminalSnapshot {
+            columns: 3,
+            rows: 2,
+            // A shorter row may arrive while the terminal is resizing.
+            lines: vec![
+                Arc::from([cell(0, 0, black), cell(0, 1, blue), selected]),
+                Arc::from([cell(1, 0, black)]),
+            ],
+            cursor: None,
+            display_offset: 0,
+            history_size: 0,
+        };
+        let mut coverage = [0; 6];
+        let mut backgrounds = [to_hsla(black); 6];
+        for run in collect_background_runs(&snapshot) {
+            assert!(run.row < 2 && run.columns.end <= 3);
+            for column in run.columns {
+                let index = run.row * 3 + column;
+                coverage[index] += 1;
+                backgrounds[index] = run.color;
+            }
+        }
+        assert_eq!(coverage, [1; 6], "background tints must never overlap");
+        assert_eq!(
+            backgrounds,
+            [
+                to_hsla(black),
+                to_hsla(blue),
+                colors().selection.into(),
+                to_hsla(black),
+                to_hsla(black),
+                to_hsla(black),
+            ]
+        );
     }
 
     #[test]

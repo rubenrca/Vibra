@@ -10,9 +10,9 @@ use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
     TabSnapshot, WorkspaceSplitAxis,
 };
-use crate::ui::agent_marks::{TERMINAL_GLYPH, agent_status_color};
+use crate::ui::agent_marks::agent_status_color;
 use crate::ui::terminal::TerminalDragPreview;
-use crate::ui::theme::{MONO_FONT, colors};
+use crate::ui::theme::{MONO_FONT, colors, surface, surface_tint};
 use crate::{
     EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NextPane,
     PreviousPane, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, SplitPaneDown,
@@ -26,11 +26,9 @@ use super::{
 
 impl super::WorkspaceView {
     fn center_is_bento(&self) -> bool {
-        let split_tiles = self
-            .snapshot
+        self.snapshot
             .selected_tab()
-            .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none());
-        split_tiles || self.is_dev_terminal_visible()
+            .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none())
     }
 
     pub(super) fn center_panel(
@@ -39,7 +37,6 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let canvas = self.terminal_canvas(window, cx).into_any_element();
-        let drawer = self.dev_terminal_drawer(window, cx);
         let bento = self.center_is_bento();
         div()
             .id("center-panel")
@@ -50,17 +47,13 @@ impl super::WorkspaceView {
             .flex_col()
             .min_h(px(0.0))
             .overflow_hidden()
-            .when(bento, |panel| panel.bg(colors().background))
             .when(!bento, |panel| {
                 panel
                     .rounded(px(PANEL_RADIUS))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(colors().terminal)
             })
-            .on_drag_move(cx.listener(Self::on_dev_terminal_resize_move))
             .child(canvas)
-            .children(drawer)
     }
 
     pub(super) fn tab_bar(
@@ -310,7 +303,7 @@ impl super::WorkspaceView {
             .flex()
             .items_center()
             .px(px(12.0))
-            .bg(colors().terminal)
+            .bg(surface_tint(colors().terminal, colors().titlebar))
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 crate::infrastructure::window::start_drag();
@@ -364,7 +357,9 @@ impl super::WorkspaceView {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .bg(colors().terminal)
+                    .when(terminal.is_none(), |pane| {
+                        pane.bg(surface(colors().terminal))
+                    })
                     .when(framed, |pane| {
                         pane.rounded(px(PANEL_RADIUS))
                             .border_1()
@@ -546,20 +541,14 @@ impl super::WorkspaceView {
         });
         let is_empty = panes.is_none();
         let zoomed = tab.as_ref().and_then(|tab| tab.zoomed_session_id).is_some();
-        let bento = self.center_is_bento();
-
-        // One terminal fills the center card. Several tiles (splits or ⌘J) drop
+        // One terminal fills the center card. Split panes drop
         // that outer frame and each pane paints its own bento border.
         div()
             .flex_1()
             .min_h(px(0.0))
             .relative()
             .overflow_hidden()
-            .bg(if bento {
-                colors().background
-            } else {
-                colors().terminal
-            })
+            .when(is_empty, |canvas| canvas.bg(surface(colors().terminal)))
             .when_some(panes, |canvas, panes| canvas.child(panes))
             .when(zoomed, |canvas| {
                 canvas.child(
@@ -577,31 +566,7 @@ impl super::WorkspaceView {
                 )
             })
             .when(is_empty, |canvas| {
-                canvas.child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .size(px(32.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(13.0))
-                                .text_color(colors().muted)
-                                .child(TERMINAL_GLYPH),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(colors().muted)
-                                .child("Ninguna terminal seleccionada"),
-                        ),
-                )
+                canvas.child(self.empty_project_content(cx))
             })
     }
 

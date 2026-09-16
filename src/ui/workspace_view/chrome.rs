@@ -1,23 +1,88 @@
 use std::path::Path;
 
-use gpui::{Div, SharedString, Stateful, div, prelude::*, px};
+use gpui::{Div, SharedString, Stateful, div, prelude::*, px, svg};
 
 use crate::domain::workspace::WorkspaceSplitAxis;
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
-use crate::ui::theme::{MONO_FONT, colors};
+use crate::ui::agent_marks::{SIDEBAR_AGENT_MARK_SIZE, agent_sidebar_badge, agent_status_color};
+use crate::ui::theme::{MONO_FONT, colors, floating_surface, mix, surface, surface_tint};
 
 use super::SidebarWorkspaceMeta;
 
 pub(crate) const PANEL_GAP: f32 = 4.0;
 pub(crate) const PANEL_RADIUS: f32 = 10.0;
-pub(crate) const PANE_HEADER_HEIGHT: f32 = 28.0;
+// Projects and sessions share the same horizontal bounds and leading edge.
+pub(crate) const SIDEBAR_ROW_INSET: f32 = 8.0;
+pub(crate) const SIDEBAR_ROW_PADDING: f32 = 6.0;
+pub(crate) const SIDEBAR_ROW_END_PADDING: f32 = 2.0;
+pub(crate) const SIDEBAR_ROW_RADIUS: f32 = 6.0;
+pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
+pub(crate) const SIDEBAR_SESSION_MENU_SPACE: f32 = SIDEBAR_CONTROL_SIZE + 4.0;
+
+/// Tint the gaps separately from panels. The root's continuous window surface
+/// also covers rounded cutouts and border insets, so no fully clear seams remain.
+pub(crate) fn workspace_backdrop(left_width: f32, right_width: f32) -> Div {
+    let background = surface(colors().background);
+    div()
+        .absolute()
+        .inset_0()
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .bottom(px(PANEL_GAP))
+                .w(px(PANEL_GAP))
+                .bg(background),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom(px(PANEL_GAP))
+                .w(px(PANEL_GAP))
+                .bg(background),
+        )
+        .child(
+            div()
+                .absolute()
+                .bottom_0()
+                .w_full()
+                .h(px(PANEL_GAP))
+                .bg(background),
+        )
+        .when(left_width > 0.0, |backdrop| {
+            backdrop.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom(px(PANEL_GAP))
+                    .left(px(PANEL_GAP + left_width))
+                    .w(px(PANEL_GAP))
+                    .bg(background),
+            )
+        })
+        .when(right_width > 0.0, |backdrop| {
+            backdrop.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom(px(PANEL_GAP))
+                    .right(px(PANEL_GAP + right_width))
+                    .w(px(PANEL_GAP))
+                    .bg(background),
+            )
+        })
+}
 
 /// Gutter between bento tiles. Tiles own the borders; this is only the gap and resize hit.
 pub(crate) fn split_gutter(id: impl Into<SharedString>, axis: WorkspaceSplitAxis) -> Stateful<Div> {
     div()
         .id(id.into())
         .flex_none()
-        .hover(|divider| divider.bg(colors().hover))
+        .bg(surface(colors().background))
+        .hover(|divider| divider.bg(surface(colors().hover)))
         .when(axis == WorkspaceSplitAxis::Horizontal, |divider| {
             divider.w(px(PANEL_GAP)).h_full().cursor_ew_resize()
         })
@@ -249,7 +314,7 @@ pub(crate) fn clipped_width_panel(
         .relative()
         .overflow_hidden()
         .rounded(px(PANEL_RADIUS))
-        .bg(background)
+        .bg(surface(background))
         .border_1()
         .border_color(colors().border_subtle)
         .child(
@@ -287,7 +352,18 @@ pub(crate) fn sidebar_agent_line(
     attention: Option<AgentAttention>,
 ) -> String {
     let kind = kind.unwrap_or("Terminal");
-    let activity = match (state, attention) {
+    let activity = sidebar_agent_activity(state, attention);
+    match model.map(str::trim).filter(|model| !model.is_empty()) {
+        Some(model) => format!("{kind} · {model} · {activity}"),
+        None => format!("{kind} · {activity}"),
+    }
+}
+
+fn sidebar_agent_activity(
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+) -> &'static str {
+    match (state, attention) {
         (_, Some(AgentAttention::Permission)) => "pide permiso",
         (_, Some(AgentAttention::Question)) => "tiene una pregunta",
         (_, Some(AgentAttention::Plan)) => "tiene un plan",
@@ -296,10 +372,6 @@ pub(crate) fn sidebar_agent_line(
         (Some(AgentRuntimeState::Waiting), _) => "esperando",
         (Some(AgentRuntimeState::Idle), _) => "listo",
         (None, _) => "shell",
-    };
-    match model.map(str::trim).filter(|model| !model.is_empty()) {
-        Some(model) => format!("{kind} · {} · {activity}", compact_chrome_label(model, 20)),
-        None => format!("{kind} · {activity}"),
     }
 }
 
@@ -312,11 +384,9 @@ pub(crate) fn sidebar_location_line(branch: Option<&str>, path: &str) -> String 
 
 pub(crate) struct SidebarWorkspaceAppearance {
     pub title: gpui::Rgba,
-    pub path: gpui::Rgba,
     pub branch: gpui::Rgba,
-    pub agent_fallback: gpui::Rgba,
     pub background: gpui::Rgba,
-    pub border: gpui::Rgba,
+    pub hover: gpui::Rgba,
 }
 
 pub(crate) fn sidebar_workspace_appearance(
@@ -324,67 +394,200 @@ pub(crate) fn sidebar_workspace_appearance(
     dirty: bool,
     behind: usize,
 ) -> SidebarWorkspaceAppearance {
+    let theme = colors();
+    let selected_surface = mix(theme.sidebar, theme.foreground, 0.115);
     SidebarWorkspaceAppearance {
         title: if selected {
-            colors().foreground
+            theme.foreground
         } else {
-            colors().muted
-        },
-        path: if selected {
-            colors().muted
-        } else {
-            colors().subtle
+            mix(theme.foreground, theme.muted, 0.35)
         },
         branch: match (dirty, behind > 0) {
-            (true, _) => colors().warning,
-            (_, true) => colors().accent,
-            _ if selected => colors().muted,
-            _ => colors().subtle,
-        },
-        agent_fallback: if selected {
-            colors().muted
-        } else {
-            colors().subtle
+            (true, _) => theme.warning,
+            (_, true) => theme.accent,
+            _ if selected => theme.muted,
+            _ => mix(theme.muted, theme.subtle, 0.6),
         },
         background: if selected {
-            colors().elevated
-        } else {
-            colors().sidebar
-        },
-        border: if selected {
-            colors().border_subtle
+            surface_tint(selected_surface, theme.sidebar)
         } else {
             gpui::rgba(0x00000000)
+        },
+        hover: if selected {
+            surface_tint(
+                mix(selected_surface, theme.foreground, 0.025),
+                theme.sidebar,
+            )
+        } else {
+            surface_tint(mix(theme.sidebar, theme.foreground, 0.045), theme.sidebar)
         },
     }
 }
 
-pub(crate) fn sidebar_workspace_text_column(
-    text_width: f32,
-    title: &str,
-    title_color: gpui::Rgba,
-    agent_line: &str,
-    agent_color: gpui::Rgba,
-    location_line: &str,
-    location_color: gpui::Rgba,
-) -> Div {
+/// The session row and its drag preview share the same typography and content.
+#[derive(Clone)]
+pub(crate) struct SidebarSessionCard {
+    pub context: String,
+    pub title: String,
+    pub branch: Option<String>,
+    pub path: String,
+    pub selected: bool,
+    pub dirty: bool,
+    pub behind: usize,
+    pub agent_kind: Option<String>,
+    pub agent_state: Option<AgentRuntimeState>,
+    pub agent_attention: Option<AgentAttention>,
+    pub agent_model: Option<String>,
+    pub width: f32,
+}
+
+struct SidebarTooltip(SharedString);
+
+impl gpui::Render for SidebarTooltip {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(420.0))
+            .px_3()
+            .py_2()
+            .rounded(px(7.0))
+            .bg(floating_surface(colors().elevated))
+            .border_1()
+            .border_color(colors().border_subtle)
+            .shadow_sm()
+            .text_size(px(11.0))
+            .text_color(colors().foreground)
+            .child(self.0.clone())
+    }
+}
+
+pub(crate) fn sidebar_tooltip(label: impl Into<SharedString>, cx: &mut gpui::App) -> gpui::AnyView {
+    cx.new(|_| SidebarTooltip(label.into())).into()
+}
+
+pub(crate) fn sidebar_session_detail(card: &SidebarSessionCard, full_path: &str) -> String {
+    format!(
+        "{}\n{}\n{}",
+        card.title,
+        sidebar_agent_line(
+            card.agent_kind.as_deref(),
+            card.agent_model.as_deref(),
+            card.agent_state,
+            card.agent_attention,
+        ),
+        sidebar_location_line(card.branch.as_deref(), full_path),
+    )
+}
+
+pub(crate) fn sidebar_workspace_content(card: &SidebarSessionCard) -> Div {
+    let appearance = sidebar_workspace_appearance(card.selected, card.dirty, card.behind);
+    // Match the row padding, including in the drag preview.
+    let width = (card.width - 2.0 * SIDEBAR_ROW_PADDING).max(80.0);
+    let activity = match (card.agent_state, card.agent_attention) {
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Permission)) => Some("Permiso"),
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Question)) => Some("Pregunta"),
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Plan)) => Some("Plan"),
+        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Notification)) => Some("Atención"),
+        (Some(AgentRuntimeState::Waiting), _) => Some("En espera"),
+        (Some(AgentRuntimeState::Working), _) => Some("Trabajando"),
+        _ => None,
+    };
+    let status_width = activity.map_or(0.0, |label| label.chars().count() as f32 * 5.0 + 6.0);
+    let status_color =
+        agent_status_color(card.agent_state, card.agent_attention).unwrap_or(colors().muted);
+    let context_width = width - status_width - if activity.is_some() { 6.0 } else { 0.0 };
+    let location = card.branch.as_deref().unwrap_or(&card.path);
+    let metadata_chrome = SIDEBAR_AGENT_MARK_SIZE + 10.0 + 6.0;
     div()
-        .w(px(text_width))
+        .w(px(width))
         .flex_none()
-        .overflow_hidden()
         .flex()
         .flex_col()
-        .justify_center()
-        .gap(px(1.0))
-        .child(sidebar_tab_line(title, title_color, 11.5, true, false))
-        .child(sidebar_tab_line(agent_line, agent_color, 9.5, true, false))
-        .child(sidebar_tab_line(
-            location_line,
-            location_color,
-            8.5,
-            false,
-            true,
-        ))
+        .gap(px(1.5))
+        .overflow_hidden()
+        .child(
+            div()
+                .h(px(13.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .w(px(context_width))
+                        .flex_none()
+                        .truncate()
+                        .text_size(px(9.5))
+                        .line_height(px(13.0))
+                        .text_color(colors().subtle)
+                        .child(card.context.clone()),
+                )
+                .when_some(activity, |row, activity| {
+                    row.child(
+                        div()
+                            .w(px(status_width))
+                            .h(px(13.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(3.0))
+                            .text_size(px(9.0))
+                            .line_height(px(13.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(status_color)
+                            .child(
+                                div()
+                                    .size(px(3.0))
+                                    .flex_none()
+                                    .rounded_full()
+                                    .bg(status_color),
+                            )
+                            .child(activity),
+                    )
+                }),
+        )
+        .child(
+            sidebar_tab_line(&card.title, appearance.title, 11.5, true, false)
+                .h(px(17.0))
+                .flex_none()
+                .line_height(px(17.0)),
+        )
+        .child(
+            div()
+                .h(px(13.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(3.0))
+                .child(agent_sidebar_badge(
+                    card.agent_kind.as_deref(),
+                    card.selected,
+                ))
+                .child(
+                    svg()
+                        .path(if card.branch.is_some() {
+                            "chrome-icons/git-branch.svg"
+                        } else {
+                            "chrome-icons/folder.svg"
+                        })
+                        .size(px(10.0))
+                        .flex_none()
+                        .text_color(colors().subtle),
+                )
+                .child(
+                    div()
+                        .w(px(width - metadata_chrome))
+                        .group_hover("sidebar-session", move |style| {
+                            style.w(px(width - metadata_chrome - SIDEBAR_SESSION_MENU_SPACE))
+                        })
+                        .flex_none()
+                        .truncate()
+                        .text_size(px(9.5))
+                        .line_height(px(13.0))
+                        .text_color(appearance.branch)
+                        .child(location.to_owned()),
+                ),
+        )
 }
 
 #[cfg(test)]

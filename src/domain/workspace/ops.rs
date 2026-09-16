@@ -1,71 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 use uuid::Uuid;
 
-use super::sidebar::{
-    detach_workspace_from_sidebar, sidebar_contains_workspace, sidebar_space_for,
-    sidebar_workspace_ids,
-};
 use super::types::*;
 
 impl super::WorkspaceSnapshot {
     pub fn create_workspace(&mut self, root: &Path) {
-        let selected_workspace_id = self.selected_workspace().map(|workspace| workspace.id);
-        let inherited_space_id = selected_workspace_id.and_then(|selected_workspace_id| {
-            sidebar_space_for(&self.sidebar_items, selected_workspace_id)
-        });
-        let root_path = root.to_string_lossy().into_owned();
-        let directory_name = root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("Terminal")
-            .to_owned();
-
-        let session = SessionSnapshot::new(root_path.clone());
-        let tab = TabSnapshot::with_session(session);
-        let workspace = TerminalWorkspaceSnapshot {
-            id: Uuid::new_v4(),
-            name: directory_name.clone(),
-            title_source: Some(WorkspaceTitleSource::Automatic),
-            selected_tab_id: Some(tab.id),
-            tabs: vec![tab],
-        };
-        let new_workspace_id = workspace.id;
-
-        if let Some(project) = self
-            .projects
-            .iter_mut()
-            .find(|project| project.root_path == root_path)
-        {
-            let workspace_id = workspace.id;
-            project.workspaces.get_or_insert_default().push(workspace);
-            project.selected_workspace_id = Some(workspace_id);
-            self.selected_project_id = Some(project.id);
-        } else {
-            let project_id = Uuid::new_v4();
-            let workspace_id = workspace.id;
-            self.projects.push(ProjectSnapshot {
-                id: project_id,
-                name: directory_name,
-                root_path,
-                sessions: Vec::new(),
-                selected_session_id: None,
-                visible_session_ids: None,
-                split_axis: None,
-                tabs: None,
-                selected_tab_id: None,
-                workspaces: Some(vec![workspace]),
-                selected_workspace_id: Some(workspace_id),
-            });
-            self.selected_project_id = Some(project_id);
-        }
-
-        self.normalize();
-        if let Some(space_id) = inherited_space_id {
-            self.move_workspace_to_space(new_workspace_id, space_id);
-        }
+        let project_id = self.add_project(root);
+        self.create_workspace_in_project(project_id);
     }
 
     /// Relocates workspaces created from an unsafe launcher fallback (typically `/`).
@@ -137,9 +80,14 @@ impl super::WorkspaceSnapshot {
     ) -> Option<(Uuid, Uuid)> {
         let (project_index, workspace_index) = self.selected_workspace_indices()?;
         let working_directory = working_directory.unwrap_or_else(|| {
-            self.selected_session()
-                .map(|session| session.working_directory.clone())
-                .unwrap_or_else(|| self.projects[project_index].root_path.clone())
+            self.projects[project_index]
+                .directory()
+                .map(str::to_owned)
+                .or_else(|| {
+                    self.selected_session()
+                        .map(|session| session.working_directory.clone())
+                })
+                .unwrap_or_default()
         });
         let project = &mut self.projects[project_index];
         let tab = TabSnapshot::with_session(SessionSnapshot::new(working_directory));
@@ -171,7 +119,11 @@ impl super::WorkspaceSnapshot {
         let tab =
             &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
         let selected_id = tab.sessions[session_index].id;
-        let working_directory = tab.sessions[session_index].working_directory.clone();
+        let working_directory = if project.root_path.is_empty() {
+            tab.sessions[session_index].working_directory.clone()
+        } else {
+            project.root_path.clone()
+        };
         let session = SessionSnapshot::new(working_directory);
         let session_id = session.id;
         let (axis, insert_first) = match direction {
@@ -232,6 +184,7 @@ impl super::WorkspaceSnapshot {
                 tab.selected_session_id = Some(session_id);
                 workspace.selected_tab_id = Some(tab.id);
                 project.selected_workspace_id = Some(workspace.id);
+                project.collapsed = false;
                 self.selected_project_id = Some(project.id);
                 project.normalize();
                 return true;
@@ -417,9 +370,6 @@ impl super::WorkspaceSnapshot {
         if workspace.tabs.is_empty() {
             workspaces.remove(workspace_index);
         }
-        if workspaces.is_empty() {
-            self.projects.remove(project_index);
-        }
         self.normalize();
         true
     }
@@ -476,9 +426,6 @@ impl super::WorkspaceSnapshot {
             .as_mut()
             .expect("checked above");
         workspaces.remove(workspace_index);
-        if workspaces.is_empty() {
-            self.projects.remove(project_index);
-        }
         self.normalize();
         true
     }
@@ -499,255 +446,8 @@ impl super::WorkspaceSnapshot {
             return false;
         }
         project.selected_workspace_id = Some(workspace_id);
+        project.collapsed = false;
         self.selected_project_id = Some(project_id);
-        true
-    }
-
-    /// Moves a workspace so it sits before `before_workspace_id`, or at the
-    /// end of the sidebar when `before_workspace_id` is `None`.
-    pub fn move_workspace(
-        &mut self,
-        workspace_id: Uuid,
-        before_workspace_id: Option<Uuid>,
-    ) -> bool {
-        if before_workspace_id == Some(workspace_id) {
-            return false;
-        }
-        let Some(from_order) = self
-            .workspace_order
-            .iter()
-            .position(|id| *id == workspace_id)
-        else {
-            return false;
-        };
-        let to_order = match before_workspace_id {
-            Some(target_id) => {
-                let Some(index) = self.workspace_order.iter().position(|id| *id == target_id)
-                else {
-                    return false;
-                };
-                index
-            }
-            None => self.workspace_order.len(),
-        };
-        let space_for = |workspace_id: Uuid| sidebar_space_for(&self.sidebar_items, workspace_id);
-        let source_space = space_for(workspace_id);
-        let target_space = before_workspace_id.and_then(space_for);
-        if from_order == to_order
-            || (from_order + 1 == to_order && source_space == target_space)
-            || (before_workspace_id.is_none()
-                && from_order + 1 == self.workspace_order.len()
-                && source_space.is_none())
-        {
-            return false;
-        }
-        if !sidebar_contains_workspace(&self.sidebar_items, workspace_id) {
-            return false;
-        }
-        detach_workspace_from_sidebar(&mut self.sidebar_items, workspace_id);
-
-        let mut inserted = false;
-        if let Some(target_id) = before_workspace_id {
-            for item in &mut self.sidebar_items {
-                match item {
-                    SidebarItemSnapshot::Workspace { workspace_id: id } if *id == target_id => {
-                        break;
-                    }
-                    SidebarItemSnapshot::Space { workspace_ids, .. } => {
-                        if let Some(index) = workspace_ids.iter().position(|id| *id == target_id) {
-                            workspace_ids.insert(index, workspace_id);
-                            inserted = true;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if !inserted {
-                let Some(index) = self.sidebar_items.iter().position(|item| {
-                    matches!(item, SidebarItemSnapshot::Workspace { workspace_id: id } if *id == target_id)
-                }) else {
-                    self.normalize();
-                    return false;
-                };
-                self.sidebar_items
-                    .insert(index, SidebarItemSnapshot::Workspace { workspace_id });
-            }
-        } else {
-            self.sidebar_items
-                .push(SidebarItemSnapshot::Workspace { workspace_id });
-        }
-        self.sidebar_items.retain(|item| {
-            !matches!(item, SidebarItemSnapshot::Space { workspace_ids, .. } if workspace_ids.is_empty())
-        });
-        self.workspace_order = sidebar_workspace_ids(&self.sidebar_items);
-        self.normalize();
-        true
-    }
-
-    /// Moves a workspace immediately before or after a target while preserving
-    /// the target's space membership. This powers directional sidebar drops.
-    pub fn move_workspace_relative(
-        &mut self,
-        workspace_id: Uuid,
-        target_id: Uuid,
-        place_after: bool,
-    ) -> bool {
-        if workspace_id == target_id {
-            return false;
-        }
-        let original = self.sidebar_items.clone();
-        if !sidebar_contains_workspace(&self.sidebar_items, workspace_id)
-            || !sidebar_contains_workspace(&self.sidebar_items, target_id)
-        {
-            return false;
-        }
-
-        detach_workspace_from_sidebar(&mut self.sidebar_items, workspace_id);
-
-        if let Some(index) = self.sidebar_items.iter().position(
-            |item| matches!(item, SidebarItemSnapshot::Workspace { workspace_id: id } if *id == target_id),
-        ) {
-            self.sidebar_items.insert(
-                index + usize::from(place_after),
-                SidebarItemSnapshot::Workspace { workspace_id },
-            );
-        } else {
-            let Some(workspace_ids) = self.sidebar_items.iter_mut().find_map(|item| match item {
-                SidebarItemSnapshot::Space { workspace_ids, .. }
-                    if workspace_ids.contains(&target_id) =>
-                {
-                    Some(workspace_ids)
-                }
-                _ => None,
-            }) else {
-                self.sidebar_items = original;
-                return false;
-            };
-            let target_index = workspace_ids
-                .iter()
-                .position(|id| *id == target_id)
-                .expect("target membership checked");
-            workspace_ids.insert(target_index + usize::from(place_after), workspace_id);
-        }
-        self.normalize();
-        self.sidebar_items != original
-    }
-
-    pub fn create_sidebar_space(&mut self, workspace_id: Uuid, name: &str) -> Option<Uuid> {
-        let item_index = self.sidebar_items.iter().position(|item| match item {
-            SidebarItemSnapshot::Workspace { workspace_id: id } => *id == workspace_id,
-            SidebarItemSnapshot::Space { workspace_ids, .. } => {
-                workspace_ids.contains(&workspace_id)
-            }
-            SidebarItemSnapshot::Spacer { .. } => false,
-        })?;
-        let insert_at = match &self.sidebar_items[item_index] {
-            SidebarItemSnapshot::Workspace { .. } => item_index,
-            SidebarItemSnapshot::Space { .. } => item_index + 1,
-            SidebarItemSnapshot::Spacer { .. } => unreachable!(),
-        };
-        detach_workspace_from_sidebar(&mut self.sidebar_items, workspace_id);
-        let id = Uuid::new_v4();
-        self.sidebar_items.insert(
-            insert_at,
-            SidebarItemSnapshot::Space {
-                id,
-                name: name.trim().to_owned(),
-                collapsed: false,
-                workspace_ids: vec![workspace_id],
-            },
-        );
-        self.normalize();
-        Some(id)
-    }
-
-    pub fn create_empty_sidebar_space(&mut self, name: &str) -> Uuid {
-        let id = Uuid::new_v4();
-        self.sidebar_items.push(SidebarItemSnapshot::Space {
-            id,
-            name: name.trim().to_owned(),
-            collapsed: false,
-            workspace_ids: Vec::new(),
-        });
-        self.normalize();
-        id
-    }
-
-    pub fn move_workspace_to_space(&mut self, workspace_id: Uuid, space_id: Uuid) -> bool {
-        let source_space_id = sidebar_space_for(&self.sidebar_items, workspace_id);
-        if source_space_id == Some(space_id) {
-            return false;
-        }
-        let workspace_exists = sidebar_contains_workspace(&self.sidebar_items, workspace_id);
-        let target_exists = self
-            .sidebar_items
-            .iter()
-            .any(|item| matches!(item, SidebarItemSnapshot::Space { id, .. } if *id == space_id));
-        if !workspace_exists || !target_exists {
-            return false;
-        }
-        detach_workspace_from_sidebar(&mut self.sidebar_items, workspace_id);
-        let Some(SidebarItemSnapshot::Space {
-            workspace_ids,
-            collapsed,
-            ..
-        }) = self
-            .sidebar_items
-            .iter_mut()
-            .find(|item| matches!(item, SidebarItemSnapshot::Space { id, .. } if *id == space_id))
-        else {
-            self.normalize();
-            return false;
-        };
-        workspace_ids.push(workspace_id);
-        *collapsed = false;
-        self.normalize();
-        true
-    }
-
-    pub fn rename_sidebar_space(&mut self, space_id: Uuid, name: &str) -> bool {
-        let Some(SidebarItemSnapshot::Space { name: current, .. }) = self
-            .sidebar_items
-            .iter_mut()
-            .find(|item| matches!(item, SidebarItemSnapshot::Space { id, .. } if *id == space_id))
-        else {
-            return false;
-        };
-        *current = name.trim().to_owned();
-        true
-    }
-
-    pub fn toggle_sidebar_space(&mut self, space_id: Uuid) -> bool {
-        let Some(SidebarItemSnapshot::Space { collapsed, .. }) = self
-            .sidebar_items
-            .iter_mut()
-            .find(|item| matches!(item, SidebarItemSnapshot::Space { id, .. } if *id == space_id))
-        else {
-            return false;
-        };
-        *collapsed = !*collapsed;
-        true
-    }
-
-    /// Removes only the group; its sessions return to the ungrouped sidebar.
-    pub fn remove_sidebar_space(&mut self, space_id: Uuid) -> bool {
-        let Some(index) = self.sidebar_items.iter().position(
-            |item| matches!(item, SidebarItemSnapshot::Space { id, .. } if *id == space_id),
-        ) else {
-            return false;
-        };
-        let SidebarItemSnapshot::Space { workspace_ids, .. } = self.sidebar_items.remove(index)
-        else {
-            unreachable!();
-        };
-        for (offset, workspace_id) in workspace_ids.into_iter().enumerate() {
-            self.sidebar_items.insert(
-                index + offset,
-                SidebarItemSnapshot::Workspace { workspace_id },
-            );
-        }
-        self.normalize();
         true
     }
 
@@ -843,15 +543,13 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn workspace_entries(&self) -> Vec<WorkspaceEntry> {
-        let mut entries: Vec<_> = self
-            .projects
+        self.projects
             .iter()
             .flat_map(|project| {
                 project
                     .workspaces
-                    .as_deref()
-                    .unwrap_or_default()
                     .iter()
+                    .flatten()
                     .map(move |workspace| WorkspaceEntry {
                         project_id: project.id,
                         workspace_id: workspace.id,
@@ -867,65 +565,32 @@ impl super::WorkspaceSnapshot {
                             && project.selected_workspace_id == Some(workspace.id),
                     })
             })
-            .collect();
-        let positions: HashMap<_, _> = self
-            .workspace_order
-            .iter()
-            .enumerate()
-            .map(|(index, id)| (*id, index))
-            .collect();
-        entries.sort_by_key(|entry| {
-            positions
-                .get(&entry.workspace_id)
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
-        entries
+            .collect()
     }
 
     pub fn sidebar_entries(&self) -> Vec<SidebarEntry> {
-        let entries: HashMap<_, _> = self
-            .workspace_entries()
-            .into_iter()
-            .map(|entry| (entry.workspace_id, entry))
-            .collect();
-        self.sidebar_items
+        let entries = self.workspace_entries();
+        self.projects
             .iter()
-            .flat_map(|item| match item {
-                SidebarItemSnapshot::Workspace { workspace_id } => entries
-                    .get(workspace_id)
-                    .cloned()
-                    .map(|entry| SidebarEntry::Workspace {
-                        entry,
-                        space_id: None,
-                    })
-                    .into_iter()
-                    .collect(),
-                SidebarItemSnapshot::Space {
-                    id,
-                    name,
-                    collapsed,
-                    workspace_ids,
-                } => {
-                    let mut result = vec![SidebarEntry::Space {
-                        id: *id,
-                        name: name.clone(),
-                        collapsed: *collapsed,
-                        workspace_count: workspace_ids.len(),
-                    }];
-                    if !collapsed {
-                        result.extend(workspace_ids.iter().filter_map(|workspace_id| {
-                            entries.get(workspace_id).cloned().map(|entry| {
-                                SidebarEntry::Workspace {
-                                    entry,
-                                    space_id: Some(*id),
-                                }
-                            })
-                        }));
-                    }
-                    result
+            .flat_map(|project| {
+                let mut rows = vec![SidebarEntry::Project {
+                    id: project.id,
+                    name: project.name.clone(),
+                    root_path: project.root_path.clone(),
+                    collapsed: project.collapsed,
+                    workspace_count: project.workspaces.as_ref().map_or(0, Vec::len),
+                    is_selected: self.selected_project_id == Some(project.id),
+                }];
+                if !project.collapsed {
+                    rows.extend(
+                        entries
+                            .iter()
+                            .filter(|entry| entry.project_id == project.id)
+                            .cloned()
+                            .map(|entry| SidebarEntry::Workspace { entry }),
+                    );
                 }
-                SidebarItemSnapshot::Spacer { .. } => Vec::new(),
+                rows
             })
             .collect()
     }

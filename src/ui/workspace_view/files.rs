@@ -309,7 +309,7 @@ impl super::WorkspaceView {
     }
 
     pub(super) fn sync_files_watcher(&mut self, cx: &mut Context<Self>) {
-        if !self.right_sidebar_visible {
+        if !self.right_sidebar_visible || !self.has_project_context() {
             self.files_watch = None;
             return;
         }

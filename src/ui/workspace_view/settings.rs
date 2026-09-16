@@ -4,7 +4,9 @@ use gpui::{
     AnyElement, Context, Div, MouseButton, SharedString, Stateful, Window, div, prelude::*, px,
 };
 
-use crate::ui::theme::{self, AppearanceMode, MONO_FONT, ThemeFamily, ThemeTone, colors};
+use crate::ui::theme::{
+    self, AppearanceMode, MONO_FONT, ThemeFamily, ThemeTone, colors, floating_surface, surface_tint,
+};
 
 use super::WorkspaceView;
 use crate::infrastructure::automation::{
@@ -277,7 +279,6 @@ impl WorkspaceView {
             .rounded(px(6.0))
             .border_1()
             .border_color(colors().border_subtle)
-            .bg(colors().panel)
             .flex()
             .items_center()
             .child(
@@ -407,7 +408,7 @@ impl WorkspaceView {
                         .rounded(px(12.0))
                         .border_1()
                         .border_color(colors().border_subtle)
-                        .bg(colors().panel)
+                        .bg(floating_surface(colors().panel))
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -583,7 +584,7 @@ impl WorkspaceView {
                     .rounded(px(9.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(colors().elevated)
+                    .bg(surface_tint(colors().elevated, colors().panel))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -741,7 +742,7 @@ impl WorkspaceView {
                     .rounded(px(9.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(colors().elevated)
+                    .bg(surface_tint(colors().elevated, colors().panel))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -831,7 +832,7 @@ impl WorkspaceView {
                     .overflow_hidden()
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(colors().elevated)
+                    .bg(surface_tint(colors().elevated, colors().panel))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
                             label: "Archivos ocultos",
@@ -902,7 +903,7 @@ impl WorkspaceView {
                     .rounded(px(9.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(colors().elevated)
+                    .bg(surface_tint(colors().elevated, colors().panel))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -1007,7 +1008,7 @@ impl WorkspaceView {
                     .overflow_hidden()
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(colors().elevated)
+                    .bg(surface_tint(colors().elevated, colors().panel))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
                             label: "Notificaciones de actividad",
@@ -1040,7 +1041,7 @@ impl WorkspaceView {
                     .rounded(px(9.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(colors().elevated)
+                    .bg(surface_tint(colors().elevated, colors().panel))
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -1104,11 +1105,6 @@ impl WorkspaceView {
         for terminal in self.terminals.values() {
             terminal.update(cx, |terminal, cx| terminal.apply_font_size(size, cx));
         }
-        for drawer in self.dev_terminals.values() {
-            for terminal in &drawer.terminals {
-                terminal.update(cx, |terminal, cx| terminal.apply_font_size(size, cx));
-            }
-        }
         self.persist_settings(cx);
     }
 
@@ -1120,11 +1116,6 @@ impl WorkspaceView {
         theme::apply_preference(&self.settings.theme_id, self.appearance_mode(), system_dark);
         for terminal in self.terminals.values() {
             terminal.update(cx, |_, cx| cx.notify());
-        }
-        for drawer in self.dev_terminals.values() {
-            for terminal in &drawer.terminals {
-                terminal.update(cx, |_, cx| cx.notify());
-            }
         }
         cx.notify();
     }

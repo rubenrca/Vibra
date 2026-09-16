@@ -9,7 +9,7 @@ use gpui::{
 
 use crate::OpenIde;
 use crate::infrastructure::editor::InstalledEditor;
-use crate::ui::theme::colors;
+use crate::ui::theme::{colors, floating_surface, surface, surface_tint};
 
 use super::{
     LeftSidebarMode, RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT,
@@ -57,13 +57,7 @@ impl super::WorkspaceView {
                 .into_any_element()
         };
 
-        let mut center_chrome = div()
-            .h_full()
-            .flex_1()
-            .min_w(px(0.0))
-            .flex()
-            .items_center()
-            .bg(colors().titlebar);
+        let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
         } else {
@@ -80,7 +74,7 @@ impl super::WorkspaceView {
             .flex_none()
             .flex()
             .items_center()
-            .bg(colors().titlebar)
+            .bg(surface(colors().titlebar))
             .child(
                 div()
                     .w(px(left_chrome_width))
@@ -90,7 +84,6 @@ impl super::WorkspaceView {
                     .items_center()
                     .pl(px(86.0))
                     .gap_1()
-                    .bg(colors().titlebar)
                     .child(
                         self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
                             if !this.left_sidebar_visible {
@@ -119,7 +112,6 @@ impl super::WorkspaceView {
                     .items_center()
                     .pr_2()
                     .overflow_hidden()
-                    .bg(colors().titlebar)
                     .child(right_chrome_content)
                     .child(self.sidebar_button(
                         "toggle-right-sidebar",
@@ -161,7 +153,7 @@ impl super::WorkspaceView {
                         .justify_center()
                         .cursor_pointer()
                         .bg(if selected {
-                            colors().selection
+                            surface_tint(colors().selection, colors().titlebar)
                         } else {
                             gpui::rgba(0x00000000)
                         })
@@ -170,7 +162,10 @@ impl super::WorkspaceView {
                         } else {
                             colors().subtle
                         })
-                        .hover(|tab| tab.bg(colors().hover).text_color(colors().foreground))
+                        .hover(|tab| {
+                            tab.bg(surface_tint(colors().hover, colors().titlebar))
+                                .text_color(colors().foreground)
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.right_sidebar_mode = item_mode;
                             match item_mode {
@@ -267,8 +262,7 @@ impl super::WorkspaceView {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .bg(colors().titlebar)
-            .hover(|button| button.bg(colors().hover))
+            .hover(|button| button.bg(surface_tint(colors().hover, colors().titlebar)))
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
             .child(Self::sidebar_icon(left))
     }
@@ -323,7 +317,7 @@ impl super::WorkspaceView {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(colors().border_subtle)
-                        .bg(colors().elevated)
+                        .bg(floating_surface(colors().elevated))
                         .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(

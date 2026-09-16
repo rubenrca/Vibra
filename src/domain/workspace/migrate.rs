@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 
@@ -6,135 +6,166 @@ use super::types::*;
 
 impl super::WorkspaceSnapshot {
     pub fn normalize(&mut self) {
+        if self.schema_version < 7 {
+            for project in &mut self.projects {
+                project.normalize();
+            }
+            self.migrate_sidebar_projects();
+        }
         for project in &mut self.projects {
             project.normalize();
         }
-        self.projects.retain(|project| {
-            project
-                .workspaces
-                .as_ref()
-                .is_some_and(|workspaces| !workspaces.is_empty())
-        });
-
-        if self.projects.is_empty() {
-            self.selected_project_id = None;
-        } else if !self
+        if !self
             .projects
             .iter()
-            .any(|project| Some(project.id) == self.selected_project_id)
+            .any(|p| Some(p.id) == self.selected_project_id)
         {
-            self.selected_project_id = Some(self.projects[0].id);
+            self.selected_project_id = self.projects.first().map(|p| p.id);
         }
-
-        let workspace_ids: Vec<_> = self
+        self.workspace_order = self
             .projects
             .iter()
-            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-            .map(|workspace| workspace.id)
+            .flat_map(|p| p.workspaces.iter().flatten().map(|w| w.id))
             .collect();
-        let valid_ids: HashSet<_> = workspace_ids.iter().copied().collect();
-        let mut seen_ids = HashSet::new();
-        self.workspace_order
-            .retain(|id| valid_ids.contains(id) && seen_ids.insert(*id));
-        let ordered_ids: HashSet<_> = self.workspace_order.iter().copied().collect();
-        self.workspace_order.extend(
-            workspace_ids
-                .iter()
-                .copied()
-                .filter(|id| !ordered_ids.contains(id)),
-        );
+        self.sidebar_items.clear();
+        self.schema_version = CURRENT_WORKSPACE_SCHEMA_VERSION;
+    }
 
-        if self.sidebar_items.is_empty() {
-            self.sidebar_items = self
-                .workspace_order
-                .iter()
-                .copied()
-                .map(|workspace_id| SidebarItemSnapshot::Workspace { workspace_id })
-                .collect();
+    /// Keep named spaces intact. A mixed-folder or empty space requires an explicit
+    /// folder association; we must not guess from a terminal's changing cwd.
+    fn migrate_sidebar_projects(&mut self) {
+        let selected_workspace = self.selected_workspace().map(|w| w.id);
+        let original = std::mem::take(&mut self.projects);
+        let mut pending = HashMap::new();
+        let mut owners = HashMap::new();
+        let mut order = self.workspace_order.clone();
+        let mut originally_empty = Vec::new();
+        for mut project in original {
+            let workspaces = project.workspaces.take().unwrap_or_default();
+            if workspaces.is_empty() {
+                originally_empty.push(project.id);
+            }
+            for workspace in workspaces {
+                order.push(workspace.id);
+                pending.insert(workspace.id, (project.id, workspace));
+            }
+            project.workspaces = Some(Vec::new());
+            owners.insert(project.id, project);
         }
-
-        // Schema 5 stored bare separators. Treat the first workspace following
-        // one as the initial member of a named space so preview data still loads.
-        if self
-            .sidebar_items
-            .iter()
-            .any(|item| matches!(item, SidebarItemSnapshot::Spacer { .. }))
-        {
-            let previous = std::mem::take(&mut self.sidebar_items);
-            let mut items = Vec::with_capacity(previous.len());
-            let mut iter = previous.into_iter().peekable();
-            while let Some(item) = iter.next() {
-                match item {
-                    SidebarItemSnapshot::Spacer { id } => {
-                        let workspace_ids = match iter.peek() {
-                            Some(SidebarItemSnapshot::Workspace { .. }) => match iter.next() {
-                                Some(SidebarItemSnapshot::Workspace { workspace_id }) => {
+        let mut items = std::mem::take(&mut self.sidebar_items)
+            .into_iter()
+            .peekable();
+        let mut migrated = Vec::new();
+        while let Some(item) = items.next() {
+            let item = match item {
+                SidebarItemSnapshot::Spacer { id } => {
+                    let workspace_ids =
+                        if matches!(items.peek(), Some(SidebarItemSnapshot::Workspace { .. })) {
+                            match items.next().unwrap() {
+                                SidebarItemSnapshot::Workspace { workspace_id } => {
                                     vec![workspace_id]
                                 }
                                 _ => unreachable!(),
-                            },
-                            _ => Vec::new(),
+                            }
+                        } else {
+                            Vec::new()
                         };
-                        items.push(SidebarItemSnapshot::Space {
-                            id,
-                            name: "Espacio".into(),
-                            collapsed: false,
-                            workspace_ids,
-                        });
+                    SidebarItemSnapshot::Space {
+                        id,
+                        name: "Espacio".into(),
+                        collapsed: false,
+                        workspace_ids,
                     }
-                    item => items.push(item),
                 }
-            }
-            self.sidebar_items = items;
+                item => item,
+            };
+            migrated.push(item);
         }
-        let mut seen_workspaces = HashSet::new();
+        // Includes sessions missing from legacy ordering; duplicates are consumed once.
+        migrated.extend(
+            order
+                .into_iter()
+                .map(|workspace_id| SidebarItemSnapshot::Workspace { workspace_id }),
+        );
         let mut seen_spaces = HashSet::new();
-        let previous = std::mem::take(&mut self.sidebar_items);
-        self.sidebar_items = previous
-            .into_iter()
-            .filter_map(|item| match item {
+        for item in migrated {
+            match item {
                 SidebarItemSnapshot::Workspace { workspace_id } => {
-                    (valid_ids.contains(&workspace_id) && seen_workspaces.insert(workspace_id))
-                        .then_some(SidebarItemSnapshot::Workspace { workspace_id })
+                    let Some((owner, workspace)) = pending.remove(&workspace_id) else {
+                        continue;
+                    };
+                    let index =
+                        if let Some(index) = self.projects.iter().position(|p| p.id == owner) {
+                            index
+                        } else {
+                            self.projects.push(owners[&owner].clone());
+                            self.projects.len() - 1
+                        };
+                    self.projects[index]
+                        .workspaces
+                        .as_mut()
+                        .unwrap()
+                        .push(workspace);
                 }
                 SidebarItemSnapshot::Space {
                     id,
-                    mut name,
+                    name,
                     collapsed,
-                    mut workspace_ids,
+                    workspace_ids,
                 } => {
-                    name = name.trim().to_owned();
-                    if name.is_empty() {
-                        name = "Espacio".into();
+                    if !seen_spaces.insert(id) {
+                        continue;
                     }
-                    workspace_ids.retain(|workspace_id| {
-                        valid_ids.contains(workspace_id) && seen_workspaces.insert(*workspace_id)
-                    });
-                    seen_spaces
-                        .insert(id)
-                        .then_some(SidebarItemSnapshot::Space {
-                            id,
-                            name,
-                            collapsed,
-                            workspace_ids,
-                        })
+                    let workspaces: Vec<_> = workspace_ids
+                        .into_iter()
+                        .filter_map(|id| pending.remove(&id))
+                        .collect();
+                    let roots: HashSet<_> = workspaces
+                        .iter()
+                        .map(|(owner, _)| owners[owner].root_path.clone())
+                        .collect();
+                    let root = if roots.len() == 1 {
+                        roots.into_iter().next().unwrap()
+                    } else {
+                        String::new()
+                    };
+                    let id = if owners.contains_key(&id) {
+                        Uuid::new_v4()
+                    } else {
+                        id
+                    };
+                    let name = if name.trim().is_empty() {
+                        "Espacio".into()
+                    } else {
+                        name.trim().to_owned()
+                    };
+                    let mut project = ProjectSnapshot::new(id, name, root);
+                    project.collapsed = collapsed;
+                    project.workspaces = Some(
+                        workspaces
+                            .into_iter()
+                            .map(|(_, workspace)| workspace)
+                            .collect(),
+                    );
+                    self.projects.push(project);
                 }
-                SidebarItemSnapshot::Spacer { .. } => None,
-            })
-            .collect();
-        self.sidebar_items.extend(
-            workspace_ids
-                .iter()
-                .filter(|id| !seen_workspaces.contains(id))
-                .map(|workspace_id| SidebarItemSnapshot::Workspace {
-                    workspace_id: *workspace_id,
-                }),
-        );
-        self.workspace_order = super::sidebar::sidebar_workspace_ids(&self.sidebar_items);
-
-        // Normalization performs the legacy-to-canonical conversions above, so a
-        // successfully normalized snapshot is safe to persist as the current schema.
-        self.schema_version = CURRENT_WORKSPACE_SCHEMA_VERSION;
+                SidebarItemSnapshot::Spacer { .. } => unreachable!(),
+            }
+        }
+        for id in originally_empty {
+            if !self.projects.iter().any(|p| p.id == id) {
+                self.projects.push(owners[&id].clone());
+            }
+        }
+        if let Some(workspace_id) = selected_workspace
+            && let Some(project) = self
+                .projects
+                .iter_mut()
+                .find(|p| p.workspaces.iter().flatten().any(|w| w.id == workspace_id))
+        {
+            project.selected_workspace_id = Some(workspace_id);
+            self.selected_project_id = Some(project.id);
+        }
     }
 }
 impl ProjectSnapshot {
@@ -179,11 +210,11 @@ impl ProjectSnapshot {
 
         if workspaces.is_empty() {
             self.selected_workspace_id = None;
-            self.tabs = Some(Vec::new());
+            self.tabs = None;
             self.selected_tab_id = None;
             self.sessions.clear();
             self.selected_session_id = None;
-            self.visible_session_ids = Some(Vec::new());
+            self.visible_session_ids = None;
             self.split_axis = None;
             return;
         }

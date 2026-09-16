@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 
 const WORKSPACE_FILE_NAME: &str = "workspace.json";
 const SWIFT_BACKUP_FILE_NAME: &str = "workspace.swift-v0.2.7.backup.json";
+const PROJECTS_BACKUP_FILE_NAME: &str = "workspace.pre-projects.backup.json";
 const MAX_WORKSPACE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -96,6 +97,13 @@ impl WorkspaceRepository {
                 snapshot.schema_version,
                 CURRENT_WORKSPACE_SCHEMA_VERSION
             );
+        }
+        if snapshot.schema_version < 7 {
+            let backup = self.path.with_file_name(PROJECTS_BACKUP_FILE_NAME);
+            if !backup.exists() {
+                fs::copy(&self.path, &backup)
+                    .with_context(|| format!("no se pudo respaldar {}", self.path.display()))?;
+            }
         }
         snapshot.normalize();
         Ok(Some(snapshot))
@@ -201,6 +209,30 @@ mod tests {
             "workspace.json should be compact, not pretty-printed"
         );
         assert!(!repository.save(&expected).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_migration_backs_up_original_json_once_and_persists_empty_projects() {
+        let root = std::env::temp_dir().join(format!("vibra-project-migration-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("workspace.json");
+        let repository = WorkspaceRepository::at(&path);
+        let mut legacy = WorkspaceSnapshot::default();
+        legacy.create_workspace(Path::new("/projects/demo"));
+        legacy.schema_version = 6;
+        let original = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        let mut migrated = repository.load().unwrap().unwrap();
+        let backup = root.join(PROJECTS_BACKUP_FILE_NAME);
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(migrated.schema_version, CURRENT_WORKSPACE_SCHEMA_VERSION);
+        assert!(migrated.close_selected_terminal());
+        repository.save(&migrated).unwrap();
+        assert_eq!(repository.load().unwrap().unwrap(), migrated);
+        assert_eq!(migrated.projects.len(), 1);
+        assert_eq!(fs::read(&backup).unwrap(), original);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -3,8 +3,8 @@
 use gpui::{AnyElement, Context, SharedString, Window, div, prelude::*, px};
 
 use crate::domain::workspace::PaneSplitDirection;
-use crate::ui::theme::{MONO_FONT, colors};
-use crate::{OpenIde, QuickOpen, ToggleCommandPalette, ToggleDevTerminal};
+use crate::ui::theme::{MONO_FONT, colors, floating_surface};
+use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
 use super::{
     LeftSidebarMode, PaletteAction, PaletteItem, PaletteMode, RightSidebarMode,
@@ -20,7 +20,7 @@ impl super::WorkspaceView {
         self.context_menu = None;
         self.rename_prompt = None;
         self.palette_files.clear();
-        if mode == PaletteMode::Files {
+        if mode == PaletteMode::Files && self.has_project_context() {
             self.palette_request_id = self.palette_request_id.wrapping_add(1);
             let request_id = self.palette_request_id;
             let root = self.project_root();
@@ -70,14 +70,14 @@ impl super::WorkspaceView {
         let mut items = match mode {
             PaletteMode::Commands => vec![
                 PaletteItem {
+                    label: "Proyecto: Agregar carpeta…".into(),
+                    detail: "⇧⌘O".into(),
+                    action: PaletteAction::AddProject,
+                },
+                PaletteItem {
                     label: "Terminal: New tab".into(),
                     detail: "⌘T".into(),
                     action: PaletteAction::NewTerminalTab,
-                },
-                PaletteItem {
-                    label: "Terminal: Toggle Dev Terminal".into(),
-                    detail: "⌘J".into(),
-                    action: PaletteAction::ToggleDevTerminal,
                 },
                 PaletteItem {
                     label: "Workspace: Open current folder in IDE".into(),
@@ -85,7 +85,7 @@ impl super::WorkspaceView {
                     action: PaletteAction::OpenIde,
                 },
                 PaletteItem {
-                    label: "Workspace: New".into(),
+                    label: "Sesión: Nueva en este proyecto".into(),
                     detail: "⌘N".into(),
                     action: PaletteAction::NewWorkspace,
                 },
@@ -177,12 +177,17 @@ impl super::WorkspaceView {
             }
         };
         if mode == PaletteMode::Commands {
+            items.extend(self.snapshot.projects.iter().map(|project| PaletteItem {
+                label: format!("Proyecto: {}", project.name),
+                detail: project.root_path.clone(),
+                action: PaletteAction::SelectProject(project.id),
+            }));
             items.extend(
                 self.snapshot
                     .workspace_entries()
                     .into_iter()
                     .map(|entry| PaletteItem {
-                        label: format!("Workspace: {}", entry.workspace_name),
+                        label: format!("Sesión: {}", entry.workspace_name),
                         detail: entry.project_name,
                         action: PaletteAction::SelectWorkspace {
                             project_id: entry.project_id,
@@ -196,7 +201,7 @@ impl super::WorkspaceView {
             if !query.is_empty() {
                 let tokens: Vec<_> = query.split_whitespace().collect();
                 items.retain(|item| {
-                    let haystack = item.label.to_lowercase();
+                    let haystack = format!("{} {}", item.label, item.detail).to_lowercase();
                     tokens.iter().all(|token| haystack.contains(token))
                 });
             }
@@ -213,15 +218,14 @@ impl super::WorkspaceView {
     ) {
         self.palette_mode = None;
         match action {
+            PaletteAction::AddProject => self.choose_project_folder(None, false, window, cx),
+            PaletteAction::SelectProject(id) => self.select_project(id, window, cx),
             PaletteAction::NewTerminalTab => {
-                self.open_terminal_tab_in_current_directory(window, cx);
-            }
-            PaletteAction::ToggleDevTerminal => {
-                self.toggle_dev_terminal(&ToggleDevTerminal, window, cx);
+                self.open_terminal_tab_in_project(window, cx);
             }
             PaletteAction::OpenIde => self.open_ide(&OpenIde, window, cx),
             PaletteAction::NewWorkspace => {
-                self.open_workspace_in_current_directory(window, cx);
+                self.open_workspace_in_project(window, cx);
             }
             PaletteAction::Split(direction) => self.split_pane(direction, window, cx),
             PaletteAction::EqualizePanes => {
@@ -297,7 +301,7 @@ impl super::WorkspaceView {
                         .rounded_lg()
                         .border_1()
                         .border_color(colors().border_subtle)
-                        .bg(colors().elevated)
+                        .bg(floating_surface(colors().elevated))
                         .shadow_lg()
                         .flex()
                         .flex_col()

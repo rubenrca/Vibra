@@ -11,7 +11,7 @@ use anyhow::{Context as _, Result};
 use directories::BaseDirs;
 use gpui::{
     Action, App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, SystemMenuType,
-    TitlebarOptions, WindowBounds, WindowOptions, actions, px, size,
+    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, px, size,
 };
 
 use crate::infrastructure::files::LocalFileSystemPort;
@@ -25,10 +25,10 @@ use crate::ui::workspace_view::{WorkspaceDependencies, WorkspaceView};
 actions!(
     vibra,
     [
+        AddProject,
         NewWorkspace,
         NewTerminalTab,
         CloseTerminal,
-        ToggleDevTerminal,
         ToggleLeftSidebar,
         ToggleRightSidebar,
         PreviousWorkspace,
@@ -127,10 +127,10 @@ fn run() -> Result<()> {
                 .expect("no se pudo cargar JetBrains Mono");
 
             cx.bind_keys([
+                KeyBinding::new("shift-cmd-o", AddProject, None),
                 KeyBinding::new("cmd-n", NewWorkspace, None),
                 KeyBinding::new("cmd-t", NewTerminalTab, None),
                 KeyBinding::new("cmd-w", CloseTerminal, None),
-                KeyBinding::new("cmd-j", ToggleDevTerminal, None),
                 KeyBinding::new("cmd-b", ToggleLeftSidebar, None),
                 KeyBinding::new("alt-cmd-b", ToggleRightSidebar, None),
                 KeyBinding::new("ctrl-cmd-[", PreviousWorkspace, None),
@@ -199,7 +199,8 @@ fn run() -> Result<()> {
                 Menu {
                     name: "File".into(),
                     items: vec![
-                        MenuItem::action("New Workspace", NewWorkspace),
+                        MenuItem::action("Add Project…", AddProject),
+                        MenuItem::action("New Session", NewWorkspace),
                         MenuItem::action("New Terminal Tab", NewTerminalTab),
                         MenuItem::separator(),
                         MenuItem::action("Open Current Folder in…", OpenIde),
@@ -219,7 +220,6 @@ fn run() -> Result<()> {
                     items: vec![
                         MenuItem::action("Toggle Sessions Sidebar", ToggleLeftSidebar),
                         MenuItem::action("Toggle Files / Git", ToggleRightSidebar),
-                        MenuItem::action("Toggle Dev Terminal", ToggleDevTerminal),
                         MenuItem::separator(),
                         MenuItem::action("Command Palette", ToggleCommandPalette),
                         MenuItem::action("Quick Open", QuickOpen),
@@ -263,6 +263,11 @@ fn run() -> Result<()> {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
+                    window_background: if cfg!(target_os = "macos") {
+                        WindowBackgroundAppearance::Blurred
+                    } else {
+                        WindowBackgroundAppearance::Opaque
+                    },
                     titlebar: Some(TitlebarOptions {
                         title: Some("Vibra".into()),
                         appears_transparent: true,

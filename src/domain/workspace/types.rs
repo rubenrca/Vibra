@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 6;
+pub const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 7;
 pub const DEFAULT_PANE_SPLIT_RATIO: u16 = 5_000;
 pub(crate) const MIN_PANE_SPLIT_RATIO: u16 = 1_000;
 pub(crate) const MAX_PANE_SPLIT_RATIO: u16 = 9_000;
@@ -20,14 +20,10 @@ pub struct WorkspaceSnapshot {
     pub projects: Vec<ProjectSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_project_id: Option<Uuid>,
-    /// Stable visual order for the workspace entries in the sessions sidebar.
-    ///
-    /// Workspaces remain grouped by project for their data model, so this is kept
-    /// separately to allow a user to reorder entries across projects as well.
+    /// Legacy order, maintained as a mirror of the project/session hierarchy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_order: Vec<Uuid>,
-    /// Complete visual order for the sessions sidebar, including user-created
-    /// spaces. `workspace_order` remains as a backwards-compatible mirror.
+    /// Pre-project sidebar groups, consumed during schema-7 migration.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sidebar_items: Vec<SidebarItemSnapshot>,
 }
@@ -69,7 +65,10 @@ pub enum SidebarItemSnapshot {
 pub struct ProjectSnapshot {
     pub id: Uuid,
     pub name: String,
+    /// Empty only for a migrated space whose folder must be chosen by the user.
     pub root_path: String,
+    #[serde(default)]
+    pub collapsed: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<SessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,12 +203,13 @@ pub struct WorkspaceEntry {
 pub enum SidebarEntry {
     Workspace {
         entry: WorkspaceEntry,
-        space_id: Option<Uuid>,
     },
-    Space {
+    Project {
         id: Uuid,
         name: String,
+        root_path: String,
         collapsed: bool,
         workspace_count: usize,
+        is_selected: bool,
     },
 }

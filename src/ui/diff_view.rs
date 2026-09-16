@@ -18,7 +18,7 @@ use crate::ports::git::{
 };
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::syntax::SyntaxSpan;
-use crate::ui::theme::{MONO_FONT, Theme, colors};
+use crate::ui::theme::{MONO_FONT, Theme, colors, floating_surface, surface_tint};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
 const DIFF_ROW_HEIGHT: f32 = 22.0;
@@ -635,7 +635,7 @@ impl DiffView {
                                 .cursor_pointer()
                                 .text_size(px(11.0))
                                 .text_color(colors().foreground)
-                                .hover(|row| row.bg(colors().hover))
+                                .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
                                 .child(label)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.change_branch_selection(is_base, reference.clone(), cx);
@@ -1363,7 +1363,7 @@ impl DiffView {
                     .rounded(px(12.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(colors().elevated)
+                    .bg(floating_surface(colors().elevated))
                     .shadow_lg()
                     .p_1()
                     .flex()
@@ -1383,7 +1383,7 @@ impl DiffView {
                             } else {
                                 gpui::rgba(0x00000000)
                             })
-                            .hover(|row| row.bg(colors().hover))
+                            .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.set_mode(mode, cx);
@@ -1489,7 +1489,6 @@ impl DiffView {
             .items_center()
             .gap(px(6.0))
             .px_3()
-            .bg(colors().panel)
             .child(
                 div()
                     .text_size(px(10.0))
@@ -1537,11 +1536,6 @@ impl DiffView {
             .flex_col()
             .border_b_1()
             .border_color(colors().border_subtle)
-            .bg(if expanded {
-                colors().elevated
-            } else {
-                colors().panel
-            })
             .overflow_hidden()
             // File header — click toggles its inline diff.
             .child(
@@ -1551,6 +1545,14 @@ impl DiffView {
                         change.path
                     )))
                     .h(px(FILE_HEADER_HEIGHT))
+                    .bg(surface_tint(
+                        if expanded {
+                            colors().elevated
+                        } else {
+                            colors().panel
+                        },
+                        colors().panel,
+                    ))
                     .w_full()
                     .flex_none()
                     .flex()
@@ -1558,7 +1560,7 @@ impl DiffView {
                     .gap(px(6.0))
                     .px_3()
                     .cursor_pointer()
-                    .hover(|row| row.bg(colors().hover))
+                    .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_path(path_for_click.clone(), cx);
                     }))
@@ -1687,7 +1689,7 @@ impl DiffView {
                 .border_color(colors().border_subtle)
                 .px_3()
                 .py_3()
-                .bg(colors().background)
+                .bg(surface_tint(colors().background, colors().panel))
                 .text_size(px(11.0))
                 .text_color(colors().subtle)
                 .child(message);
@@ -1738,7 +1740,7 @@ impl DiffView {
             .flex_col()
             .border_t_1()
             .border_color(colors().border_subtle)
-            .bg(colors().background)
+            .bg(surface_tint(colors().background, colors().panel))
             .when(truncated, |panel| {
                 panel.child(
                     div()
@@ -1793,12 +1795,18 @@ impl DiffView {
             .flex_none()
             .flex()
             .items_center()
-            .bg(background)
+            .bg(surface_tint(background, colors().background))
             .font_family(MONO_FONT)
             .text_size(px(DIFF_FONT_SIZE))
             .line_height(px(DIFF_ROW_HEIGHT))
-            .child(Self::diff_gutter(&old_line, gutter_bg))
-            .child(Self::diff_gutter(&new_line, gutter_bg))
+            .child(Self::diff_gutter(
+                &old_line,
+                surface_tint(gutter_bg, background),
+            ))
+            .child(Self::diff_gutter(
+                &new_line,
+                surface_tint(gutter_bg, background),
+            ))
             .child(
                 div()
                     .w(px(DIFF_MARKER_WIDTH))
@@ -2086,7 +2094,7 @@ impl DiffView {
             .overflow_hidden()
             .border_b_1()
             .border_color(colors().border_subtle)
-            .hover(|row| row.bg(colors().hover))
+            .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
             .child(Self::graph_column(graph, graph_width, is_head))
             .child(Self::history_flex_cell(
                 commit.subject.clone(),

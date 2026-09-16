@@ -130,7 +130,7 @@ fn split_without_focus_keeps_the_caller_selected() {
 }
 
 #[test]
-fn create_terminal_tab_inherits_the_selected_session_working_directory() {
+fn create_terminal_tab_starts_at_the_project_root_after_cd() {
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/tmp/vibra-tab-root"));
     let session_id = snapshot.selected_session().unwrap().id;
@@ -147,7 +147,7 @@ fn create_terminal_tab_inherits_the_selected_session_working_directory() {
         .into_iter()
         .find(|session| session.id == created_id)
         .unwrap();
-    assert_eq!(created.working_directory, "/tmp/vibra-tab-root/nested");
+    assert_eq!(created.working_directory, "/tmp/vibra-tab-root");
 }
 
 #[test]
@@ -166,24 +166,35 @@ fn create_workspace_opens_at_the_requested_directory() {
 }
 
 #[test]
-fn create_workspace_inherits_the_selected_workspaces_sidebar_space() {
+fn new_sessions_and_splits_stay_in_the_project_after_cd() {
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/tmp/vibra-grouped-workspace"));
-    let first = snapshot.selected_workspace().unwrap().id;
-    let space_id = snapshot.create_sidebar_space(first, "Grupo").unwrap();
-
-    snapshot.create_workspace(Path::new("/tmp/vibra-grouped-workspace/nested"));
-    let created = snapshot.selected_workspace().unwrap().id;
-
-    assert!(snapshot.sidebar_items.iter().any(|item| matches!(
-        item,
-        SidebarItemSnapshot::Space {
-            id,
-            collapsed: false,
-            workspace_ids,
-            ..
-        } if *id == space_id && workspace_ids == &vec![first, created]
-    )));
+    let project_id = snapshot.selected_project_id.unwrap();
+    let first = snapshot.selected_session().unwrap().id;
+    snapshot.update_session_working_directory(first, Path::new("/tmp/elsewhere"));
+    let split = snapshot
+        .split_selected_terminal(PaneSplitDirection::Right)
+        .unwrap();
+    assert_eq!(snapshot.selected_session().unwrap().id, split);
+    assert_eq!(
+        snapshot.selected_session().unwrap().working_directory,
+        "/tmp/vibra-grouped-workspace"
+    );
+    snapshot.create_workspace_in_project(project_id).unwrap();
+    assert_eq!(snapshot.projects.len(), 1);
+    assert_eq!(
+        snapshot.selected_session().unwrap().working_directory,
+        "/tmp/vibra-grouped-workspace"
+    );
+    assert_eq!(
+        snapshot
+            .terminal_sessions()
+            .iter()
+            .find(|s| s.id == first)
+            .unwrap()
+            .working_directory,
+        "/tmp/elsewhere"
+    );
 }
 
 #[test]
@@ -329,181 +340,6 @@ fn tabs_can_be_reordered_and_addressed_by_number() {
 }
 
 #[test]
-fn sidebar_workspaces_can_be_reordered_across_projects() {
-    let mut snapshot = WorkspaceSnapshot::default();
-    snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-a"));
-    let first = snapshot.selected_workspace().unwrap().id;
-    snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-b"));
-    let second = snapshot.selected_workspace().unwrap().id;
-    snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-a"));
-    let third = snapshot.selected_workspace().unwrap().id;
-
-    let entry_ids = |snapshot: &WorkspaceSnapshot| {
-        snapshot
-            .workspace_entries()
-            .into_iter()
-            .map(|entry| entry.workspace_id)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(entry_ids(&snapshot), vec![first, second, third]);
-
-    assert!(snapshot.move_workspace(third, Some(first)));
-    assert_eq!(entry_ids(&snapshot), vec![third, first, second]);
-    assert!(!snapshot.move_workspace(third, Some(first)));
-    assert!(snapshot.move_workspace(third, None));
-    assert_eq!(entry_ids(&snapshot), vec![first, second, third]);
-
-    let second_project = snapshot
-        .workspace_entries()
-        .into_iter()
-        .find(|entry| entry.workspace_id == second)
-        .unwrap()
-        .project_id;
-    assert!(snapshot.close_workspace(second_project, second));
-    assert_eq!(entry_ids(&snapshot), vec![first, third]);
-    assert_eq!(snapshot.workspace_order, vec![first, third]);
-}
-
-#[test]
-fn sidebar_spaces_are_created_collapsed_persisted_and_removed() {
-    let mut snapshot = WorkspaceSnapshot::default();
-    snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-a"));
-    let first = snapshot.selected_workspace().unwrap().id;
-    snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-b"));
-    let second = snapshot.selected_workspace().unwrap().id;
-
-    let space_id = snapshot.create_sidebar_space(first, "Vibra").unwrap();
-    assert!(matches!(
-        &snapshot.sidebar_entries()[0],
-        SidebarEntry::Space {
-            id,
-            name,
-            collapsed: false,
-            workspace_count: 1,
-        } if *id == space_id && name == "Vibra"
-    ));
-    assert!(matches!(
-        &snapshot.sidebar_entries()[1],
-        SidebarEntry::Workspace { entry, space_id: Some(id) }
-            if entry.workspace_id == first && *id == space_id
-    ));
-    assert!(matches!(
-        &snapshot.sidebar_entries()[2],
-        SidebarEntry::Workspace { entry, space_id: None }
-            if entry.workspace_id == second
-    ));
-
-    assert!(snapshot.toggle_sidebar_space(space_id));
-    assert_eq!(snapshot.sidebar_entries().len(), 2);
-    assert!(snapshot.rename_sidebar_space(space_id, "Trabajo"));
-
-    let json = serde_json::to_string(&snapshot).unwrap();
-    let mut restored: WorkspaceSnapshot = serde_json::from_str(&json).unwrap();
-    restored.normalize();
-    assert!(restored.sidebar_items.iter().any(|item| matches!(
-        item,
-        SidebarItemSnapshot::Space { id, name, collapsed: true, workspace_ids }
-            if *id == space_id && name == "Trabajo" && workspace_ids == &vec![first]
-    )));
-    assert_eq!(restored.workspace_order, vec![first, second]);
-
-    assert!(restored.remove_sidebar_space(space_id));
-    assert!(!restored.remove_sidebar_space(space_id));
-    assert_eq!(
-        restored
-            .sidebar_entries()
-            .into_iter()
-            .filter_map(|entry| match entry {
-                SidebarEntry::Workspace { entry, .. } => Some(entry.workspace_id),
-                SidebarEntry::Space { .. } => None,
-            })
-            .collect::<Vec<_>>(),
-        vec![first, second]
-    );
-}
-
-#[test]
-fn legacy_workspace_order_migrates_to_sidebar_items() {
-    let mut snapshot = WorkspaceSnapshot::default();
-    snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-a"));
-    let first = snapshot.selected_workspace().unwrap().id;
-    snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-b"));
-    let second = snapshot.selected_workspace().unwrap().id;
-    snapshot.workspace_order = vec![second, first];
-    snapshot.sidebar_items.clear();
-
-    snapshot.normalize();
-
-    assert_eq!(
-        snapshot.sidebar_items,
-        vec![
-            SidebarItemSnapshot::Workspace {
-                workspace_id: second
-            },
-            SidebarItemSnapshot::Workspace {
-                workspace_id: first
-            },
-        ]
-    );
-    assert_eq!(snapshot.schema_version, CURRENT_WORKSPACE_SCHEMA_VERSION);
-}
-
-#[test]
-fn empty_sidebar_spaces_accept_dragged_workspaces() {
-    let mut snapshot = WorkspaceSnapshot::default();
-    snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-a"));
-    let first = snapshot.selected_workspace().unwrap().id;
-    snapshot.create_workspace(Path::new("/tmp/vibra-sidebar-b"));
-    let second = snapshot.selected_workspace().unwrap().id;
-
-    let space_id = snapshot.create_empty_sidebar_space("Clientes");
-    assert!(matches!(
-        snapshot.sidebar_entries().last(),
-        Some(SidebarEntry::Space {
-            id,
-            workspace_count: 0,
-            ..
-        }) if *id == space_id
-    ));
-
-    assert!(snapshot.toggle_sidebar_space(space_id));
-    assert!(snapshot.move_workspace_to_space(second, space_id));
-    assert_eq!(snapshot.workspace_order, vec![first, second]);
-    assert!(matches!(
-        &snapshot.sidebar_items[1],
-        SidebarItemSnapshot::Space {
-            collapsed: false,
-            ..
-        }
-    ));
-    assert!(matches!(
-        snapshot.sidebar_entries().last(),
-        Some(SidebarEntry::Workspace {
-            entry,
-            space_id: Some(id),
-        }) if entry.workspace_id == second && *id == space_id
-    ));
-    assert!(!snapshot.move_workspace_to_space(second, space_id));
-
-    // Dropping an adjacent ungrouped row before a grouped row must still
-    // move it into the group, even though the flat order does not change.
-    assert!(snapshot.move_workspace(first, Some(second)));
-    assert_eq!(snapshot.workspace_order, vec![first, second]);
-    assert!(matches!(
-        &snapshot.sidebar_items[0],
-        SidebarItemSnapshot::Space { workspace_ids, .. }
-            if workspace_ids == &vec![first, second]
-    ));
-    assert!(!snapshot.move_workspace(first, Some(second)));
-
-    assert!(snapshot.move_workspace_relative(second, first, false));
-    assert_eq!(snapshot.workspace_order, vec![second, first]);
-    assert!(snapshot.move_workspace_relative(second, first, true));
-    assert_eq!(snapshot.workspace_order, vec![first, second]);
-    assert!(!snapshot.move_workspace_relative(second, first, true));
-}
-
-#[test]
 fn swapping_panes_exchanges_terminals_and_keeps_split_geometry() {
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/tmp/vibra-pane-swap"));
@@ -558,6 +394,7 @@ fn legacy_sessions_migrate_without_data_loss() {
             id: Uuid::new_v4(),
             name: "Legacy".into(),
             root_path: "/tmp/vibra-legacy".into(),
+            collapsed: false,
             sessions: vec![session],
             selected_session_id: Some(session_id),
             visible_session_ids: Some(vec![session_id]),
