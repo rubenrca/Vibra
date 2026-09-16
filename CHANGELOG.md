@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Organize sessions under persistent folder-backed projects, with native folder selection, collapsible headers, and drag ordering.
+- Refine the projects sidebar with single-line headers, compact session typography, soft borderless selection, and inline agent and Git metadata. Show session activity as a dot and text, with full details available in tooltips.
+- Align project and session rows to shared bounds and reveal a compact session menu on hover, keeping the current agent and Git information.
+- Remove the sidebar's bottom Add Project button; project creation remains available from the menu, command palette, and keyboard shortcut.
+- Apply a 6% base transparency over the native macOS blur across the window, sidebars, titlebar, and terminal, keeping text and icons opaque and rounded corners covered.
+- Vendor GPUI 0.2.2 with corrected Metal alpha compositing so overlapping surfaces retain their transparency.
+- Remove the persistent bottom console and its shortcut; use terminal tabs and split panes within project sessions.
+- Expand or collapse projects from the whole header, keep the chevron at the right edge, and show project names without folder paths.
+- Create sessions, tabs, and panes at the project root; keep Files, Git, and quick open scoped to that folder across terminal directory changes.
+- Preserve projects after their last session closes, and migrate existing sidebar spaces with a backup of the original workspace. Mixed-folder and empty spaces can be associated with a folder explicitly.
+
 ## 0.3.24 — 2026-09-16
 
 - Detect Git from Homebrew and other common install paths when Vibra is launched from the Dock, instead of treating Apple's Xcode git stub as a missing repository.
@@ -20,8 +33,7 @@
 
 ## 0.3.21 — 2026-09-09
 
-- Lay out split terminals and the ⌘J console as a bento grid: each pane is its own rounded card, selected by click, with the accent on the focused surface only.
-- Restyle persistent-console tabs as titlebar-style pills and keep the add-tab control as a plain plus.
+- Lay out split terminals as a bento grid: each pane is its own rounded card, selected by click, with the accent on the focused surface only.
 - Compare local and remote branches from Git review without a separate refresh button.
 - Reorganize workspace modules and share cheaper Git and file updates.
 
@@ -41,7 +53,7 @@
 
 - Expand Git review to use the workspace area, with updated navigation and roomier inline diffs.
 - Restore the native window position and fit it to the available display area when reopening Vibra.
-- Organize workspace settings, utility terminals, agent activity, and remote sessions into focused modules.
+- Organize workspace settings, agent activity, and remote sessions into focused modules.
 - Simplify file icons and Git status indicators while preserving the file tree behavior.
 
 ## 0.3.17 — 2026-09-05
@@ -78,7 +90,6 @@
 - Tint syntax highlighting, modal overlays, and the terminal scrollbar from the same palette so light and dark styles stay consistent.
 - Enrich the sessions sidebar with the highest-priority agent across every tab and split in a workspace, its live state, and its model when the CLI reports it explicitly.
 - Keep the right utility tabs icon-only and let the file tree focus changed files in Git without replacing the terminal.
-- Toggle a persistent bottom terminal with ⌘J for dev servers; hiding it keeps the process running without changing the selected pane. Each sidebar session has its own consoles, and `+` opens additional ones.
 
 ## 0.3.12 — 2026-08-24
 

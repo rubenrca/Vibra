@@ -26,14 +26,18 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 ## Funciones principales
 
-### Workspaces, tabs y panes
+### Proyectos, sesiones, tabs y panes
 
-- múltiples proyectos, workspaces y tabs persistentes;
+- proyectos asociados a carpetas, con sesiones y tabs persistentes; se agregan desde la sidebar o con `⇧⌘O`;
+- proyectos plegables, renombrables y reordenables; cerrar la última sesión conserva el proyecto;
+- `＋` en cada proyecto o `⌘N` crea una sesión en su carpeta; los nuevos tabs y panes también parten desde esa raíz;
+- las sesiones de un proyecto comparten sus archivos y rama Git; Files, Git y búsqueda conservan la raíz del proyecto aunque una terminal haga `cd`;
 - terminales divididas recursivamente en cuatro direcciones;
-- reordenar tabs, panes y sesiones de la sidebar arrastrándolos; saltar a un tab con `⌘1`–`⌘8` y al último con `⌘9`;
+- reordenar tabs, panes, proyectos y sesiones arrastrándolos; mover una sesión entre proyectos conserva sus terminales y directorios actuales; saltar a un tab con `⌘1`–`⌘8` y al último con `⌘9`;
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
 - sidebar de sesiones con CWD, rama Git en vivo (ahead/behind/dirty), agente activo, estado y modelo cuando el CLI lo reporta;
 - menús contextuales en sesiones y panes (renombrar, cerrar, dividir, zoom);
+- transparencia base del 6 % sobre el desenfoque nativo de macOS en el fondo, las sidebars, la barra superior y el terminal, manteniendo opacos el texto y los iconos;
 - command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`);
 - temas de aplicación (familias claras/oscuras y paletas de terminal) más YAML de Warp o Ghostty en `~/.vibra/themes`.
 
@@ -44,8 +48,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - teclado xterm y Kitty, mouse SGR, bracketed paste y alternate screen;
 - pegado estilo Warp (`⌘V`): texto con bracketed paste; con imagen en el clipboard y un agente CLI en foco, se envía Ctrl+V para adjuntar capturas;
 - selección, búsqueda, enlaces OSC 8 y clipboard OSC 52 protegido;
-- JetBrains Mono Variable incluida en la aplicación;
-- consola inferior persistente (`⌘J`) para servidores de desarrollo: al ocultarla el proceso sigue vivo y no cambia el pane seleccionado; cada sesión de la sidebar tiene las suyas y `+` abre terminales extra.
+- JetBrains Mono Variable incluida en la aplicación.
 
 ### Files y Git
 
@@ -99,6 +102,11 @@ desde el proceso y el texto visible.
 - macOS 14 o posterior;
 - Xcode;
 - Rust 1.96.
+
+El proyecto incluye GPUI 0.2.2 en `third_party/gpui`, con una corrección de la
+composición alfa de Metal para conservar la transparencia entre capas. Cargo
+utiliza esta copia mediante `[patch.crates-io]`; el origen y el cambio están
+documentados en [VIBRA_PATCHES.md](third_party/gpui/VIBRA_PATCHES.md).
 
 ## Ejecutar durante desarrollo
 
@@ -181,11 +189,18 @@ Si no existe un workspace de Vibra, importa automáticamente el creado durante
 el preview independiente de VibraGPUI. Las preferencias del preview también se
 importan una sola vez.
 
+El esquema de proyectos conserva las sesiones, nombres y layouts existentes. Los
+espacios anteriores se convierten en proyectos; si reunían carpetas distintas o
+estaban vacíos, muestran **Asociar carpeta…** para elegir su raíz. Las terminales
+restauradas conservan sus directorios. Antes de migrar se guarda una copia única
+en `workspace.pre-projects.backup.json`, junto a `workspace.json`.
+
 ## Atajos principales
 
 | Atajo | Acción |
 | --- | --- |
-| `⌘N` / `⌘T` / `⌘W` | Nuevo workspace / nuevo tab / cerrar terminal |
+| `⇧⌘O` | Agregar proyecto desde una carpeta |
+| `⌘N` / `⌘T` / `⌘W` | Nueva sesión en el proyecto / nuevo tab / cerrar terminal |
 | `⌘1`–`⌘8` / `⌘9` | Ir al tab 1–8 / ir al último tab |
 | `⌘D` / `⇧⌘D` | Dividir a la derecha / abajo |
 | `⌃⌥⌘` + flechas | Dividir en cualquier dirección |
@@ -198,7 +213,6 @@ importan una sola vez.
 | `⌘,` | Abrir Settings (modal centrado) |
 | `⌘B` | Mostrar u ocultar sidebar de sesiones |
 | `⌥⌘B` | Mostrar u ocultar panel Files y Git |
-| `⌘J` | Mostrar u ocultar la terminal inferior de la sesión actual |
 | `⌘U` | Buscar actualizaciones (Sparkle) |
 | `⌘V` | Pegar (bracketed paste; Ctrl+V con imagen en agentes CLI) |
 | `⌘F`, `⌘G`, `⇧⌘G` | Buscar / siguiente / anterior en terminal |
@@ -224,11 +238,11 @@ La vista principal se organiza en `src/ui/workspace_view/`:
 - `mod.rs`: coordinación del workspace, eventos y composición de la ventana.
 - `titlebar.rs`: barra de título, pestañas de utilidad y menú de IDE.
 - `panes.rs`: layout de panes, tab bar y atajos de división.
+- `projects.rs`: selector de carpetas, navegación y encabezados de proyectos.
 - `palette.rs`: paleta de comandos y apertura rápida de archivos.
 - `input.rs`: atajos globales y overlays de entrada.
 - `drag.rs`: payloads y previews de arrastre.
 - `settings.rs`: páginas de configuración y aplicación de preferencias.
-- `dev_terminal.rs`: ciclo de vida y renderizado de las consolas inferiores.
 - `files.rs`: recorrido del árbol de archivos, iconos e indicadores Git.
 - `chrome.rs`: etiquetas, layout compartido y conversión de texto de la interfaz.
 - `automation.rs`: resolución de presencia y estado de agentes.
