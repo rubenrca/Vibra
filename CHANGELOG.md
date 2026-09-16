@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.25 — 2026-09-16
+
 - Organize sessions under persistent folder-backed projects, with native folder selection, collapsible headers, and drag ordering.
 - Refine the projects sidebar with single-line headers, compact session typography, soft borderless selection, and inline agent and Git metadata. Show session activity as a dot and text, with full details available in tooltips.
 - Align project and session rows to shared bounds and reveal a compact session menu on hover, keeping the current agent and Git information.
@@ -12,6 +14,7 @@
 - Expand or collapse projects from the whole header, keep the chevron at the right edge, and show project names without folder paths.
 - Create sessions, tabs, and panes at the project root; keep Files, Git, and quick open scoped to that folder across terminal directory changes.
 - Preserve projects after their last session closes, and migrate existing sidebar spaces with a backup of the original workspace. Mixed-folder and empty spaces can be associated with a folder explicitly.
+- Encode queued terminal keyboard input after processing shell mode resets, preventing stray Kitty sequences and preserving typed text when returning from terminal applications.
 
 ## 0.3.24 — 2026-09-16
 
