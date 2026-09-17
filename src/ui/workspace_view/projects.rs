@@ -14,8 +14,7 @@ use crate::ui::theme::{colors, surface_tint};
 
 use super::{
     ContextMenuKind, LeftSidebarMode, ProjectDrag, SIDEBAR_CONTROL_SIZE, SIDEBAR_ROW_END_PADDING,
-    SIDEBAR_ROW_INSET, SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarWorkspaceDrag,
-    WorkspaceView, sidebar_tooltip,
+    SIDEBAR_ROW_INSET, SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarWorkspaceDrag, WorkspaceView,
 };
 
 impl WorkspaceView {
@@ -189,14 +188,13 @@ impl WorkspaceView {
             unreachable!()
         };
         let row_width = self.left_sidebar_width() - 2.0 * SIDEBAR_ROW_INSET;
-        let controls_width = 2.0 * SIDEBAR_CONTROL_SIZE + 2.0;
-        // Reserve the folder icon, gaps, and controls within the shared row bounds.
+        // Reserve the folder icon, gaps, and collapse control within the shared row bounds.
         let label_width = (row_width
             - SIDEBAR_ROW_PADDING
             - SIDEBAR_ROW_END_PADDING
             - 16.0
             - 12.0
-            - controls_width)
+            - SIDEBAR_CONTROL_SIZE)
             .max(48.0);
         let drag = ProjectDrag {
             project_id: id,
@@ -289,50 +287,23 @@ impl WorkspaceView {
             )
             .child(
                 div()
-                    .w(px(controls_width))
+                    .id(SharedString::from(format!("project-collapse-{id}")))
+                    .size(px(SIDEBAR_CONTROL_SIZE))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(2.0))
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .hover(|s| s.bg(colors().hover).text_color(colors().foreground))
                     .child(
-                        div()
-                            .id(SharedString::from(format!("project-new-session-{id}")))
-                            .tooltip(|_, cx| sidebar_tooltip("Nueva sesión en este proyecto", cx))
-                            .size(px(SIDEBAR_CONTROL_SIZE))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(4.0))
-                            .text_color(colors().muted)
-                            .hover(|s| s.bg(colors().hover).text_color(colors().foreground))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.create_project_session(id, window, cx);
-                                cx.stop_propagation();
-                            }))
-                            .child(svg().path("chrome-icons/plus.svg").size(px(12.0))),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("project-collapse-{id}")))
-                            .size(px(SIDEBAR_CONTROL_SIZE))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(4.0))
-                            .hover(|s| s.bg(colors().hover).text_color(colors().foreground))
-                            .child(
-                                svg()
-                                    .path(if collapsed {
-                                        "chrome-icons/chevron-right.svg"
-                                    } else {
-                                        "chrome-icons/chevron-down.svg"
-                                    })
-                                    .size(px(9.0))
-                                    .text_color(colors().subtle),
-                            ),
+                        svg()
+                            .path(if collapsed {
+                                "chrome-icons/chevron-right.svg"
+                            } else {
+                                "chrome-icons/chevron-down.svg"
+                            })
+                            .size(px(9.0))
+                            .text_color(colors().subtle),
                     ),
             )
             .into_any_element()
