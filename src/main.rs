@@ -31,6 +31,8 @@ actions!(
         CloseTerminal,
         ToggleLeftSidebar,
         ToggleRightSidebar,
+        PreviousProject,
+        NextProject,
         PreviousWorkspace,
         NextWorkspace,
         CopyTerminal,
@@ -133,6 +135,8 @@ fn run() -> Result<()> {
                 KeyBinding::new("cmd-w", CloseTerminal, None),
                 KeyBinding::new("cmd-b", ToggleLeftSidebar, None),
                 KeyBinding::new("alt-cmd-b", ToggleRightSidebar, None),
+                KeyBinding::new("ctrl-shift-cmd-[", PreviousProject, None),
+                KeyBinding::new("ctrl-shift-cmd-]", NextProject, None),
                 KeyBinding::new("ctrl-cmd-[", PreviousWorkspace, None),
                 KeyBinding::new("ctrl-cmd-]", NextWorkspace, None),
                 KeyBinding::new("cmd-c", CopyTerminal, Some("Terminal")),
@@ -228,6 +232,9 @@ fn run() -> Result<()> {
                 Menu {
                     name: "Window".into(),
                     items: vec![
+                        MenuItem::action("Previous Project", PreviousProject),
+                        MenuItem::action("Next Project", NextProject),
+                        MenuItem::separator(),
                         MenuItem::action("Previous Workspace", PreviousWorkspace),
                         MenuItem::action("Next Workspace", NextWorkspace),
                         MenuItem::separator(),

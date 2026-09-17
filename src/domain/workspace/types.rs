@@ -208,8 +208,6 @@ pub enum SidebarEntry {
         id: Uuid,
         name: String,
         root_path: String,
-        collapsed: bool,
         workspace_count: usize,
-        is_selected: bool,
     },
 }

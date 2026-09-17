@@ -10,7 +10,9 @@ use crate::ui::theme::{MONO_FONT, colors};
 
 /// Glyph used when a pane has no detected agent mark.
 pub const TERMINAL_GLYPH: &str = ">_";
-pub(crate) const SIDEBAR_AGENT_MARK_SIZE: f32 = 12.0;
+// The slot includes room for optical scaling without clipping wider marks.
+pub(crate) const SIDEBAR_AGENT_MARK_SIZE: f32 = 14.0;
+const SIDEBAR_AGENT_ARTWORK_SIZE: f32 = 12.0;
 
 macro_rules! bundled_assets {
     ($(($key:literal, $rel:literal)),+ $(,)?) => {
@@ -55,6 +57,10 @@ bundled_assets! {
     ("file-icons/file.svg", "FileIcons/file.svg"),
     ("chrome-icons/files.svg", "ChromeIcons/files.svg"),
     ("chrome-icons/folder.svg", "ChromeIcons/folder.svg"),
+    ("chrome-icons/search.svg", "ChromeIcons/search.svg"),
+    ("chrome-icons/kanban.svg", "ChromeIcons/kanban.svg"),
+    ("chrome-icons/arrow-left.svg", "ChromeIcons/arrow-left.svg"),
+    ("chrome-icons/arrow-right.svg", "ChromeIcons/arrow-right.svg"),
     ("chrome-icons/plus.svg", "ChromeIcons/plus.svg"),
     ("chrome-icons/ellipsis.svg", "ChromeIcons/ellipsis.svg"),
     ("chrome-icons/git-branch.svg", "ChromeIcons/git-branch.svg"),
@@ -73,20 +79,21 @@ enum AgentMarkStyle {
     Original,
 }
 
-/// Map a detected agent display name to its bundled SVG path and render style.
-fn agent_mark(kind: &str) -> Option<(&'static str, AgentMarkStyle)> {
+/// Bundled SVG, render style, and optical scale within the shared icon slot.
+/// Dense silhouettes need less space than thin marks to appear equally sized.
+fn agent_mark(kind: &str) -> Option<(&'static str, AgentMarkStyle, f32)> {
     match kind {
-        "Aider" => Some(("agent-marks/aider.svg", AgentMarkStyle::Template)),
-        "Amp" => Some(("agent-marks/amp.svg", AgentMarkStyle::Template)),
-        "Claude" => Some(("agent-marks/claude.svg", AgentMarkStyle::Template)),
-        "Codex" => Some(("agent-marks/codex.svg", AgentMarkStyle::Template)),
-        "Cursor" => Some(("agent-marks/cursor.svg", AgentMarkStyle::Template)),
-        "Gemini" => Some(("agent-marks/gemini.svg", AgentMarkStyle::Template)),
-        "Goose" => Some(("agent-marks/goose.svg", AgentMarkStyle::Original)),
+        "Aider" => Some(("agent-marks/aider.svg", AgentMarkStyle::Template, 0.86)),
+        "Amp" => Some(("agent-marks/amp.svg", AgentMarkStyle::Template, 0.88)),
+        "Claude" => Some(("agent-marks/claude.svg", AgentMarkStyle::Template, 1.0)),
+        "Codex" => Some(("agent-marks/codex.svg", AgentMarkStyle::Template, 1.0)),
+        "Cursor" => Some(("agent-marks/cursor.svg", AgentMarkStyle::Template, 1.0)),
+        "Gemini" => Some(("agent-marks/gemini.svg", AgentMarkStyle::Template, 1.1)),
+        "Goose" => Some(("agent-marks/goose.svg", AgentMarkStyle::Original, 0.92)),
         // Template silhouette (no black square background) so it recolors with chrome.
-        "Grok" => Some(("agent-marks/grok.svg", AgentMarkStyle::Template)),
-        "OpenCode" => Some(("agent-marks/opencode.svg", AgentMarkStyle::Template)),
-        "Pi" => Some(("agent-marks/pi.svg", AgentMarkStyle::Template)),
+        "Grok" => Some(("agent-marks/grok.svg", AgentMarkStyle::Template, 1.1)),
+        "OpenCode" => Some(("agent-marks/opencode.svg", AgentMarkStyle::Template, 0.96)),
+        "Pi" => Some(("agent-marks/pi.svg", AgentMarkStyle::Template, 1.1)),
         _ => None,
     }
 }
@@ -106,18 +113,19 @@ pub fn agent_status_color(
     }
 }
 
-// Marks have square viewBoxes fitted to their artwork; keep their layout size fixed.
+// Callers center the artwork in a fixed-size slot, keeping text and status aligned.
 fn brand_mark(kind: Option<&str>, mark_color: Rgba, size: f32) -> AnyElement {
     match kind.and_then(agent_mark) {
-        Some((path, AgentMarkStyle::Template)) => svg()
+        Some((path, AgentMarkStyle::Template, scale)) => svg()
             .path(path)
-            .size(px(size))
+            .size(px(size * scale))
             .flex_none()
             .text_color(mark_color)
             .into_any_element(),
-        Some((path, AgentMarkStyle::Original)) => {
-            img(path).size(px(size)).flex_none().into_any_element()
-        }
+        Some((path, AgentMarkStyle::Original, scale)) => img(path)
+            .size(px(size * scale))
+            .flex_none()
+            .into_any_element(),
         None => div()
             .size(px(size))
             .flex_none()
@@ -159,7 +167,7 @@ pub fn agent_compact_badge(
         .gap(px(5.0))
         .child(
             div()
-                .size(px(16.0))
+                .size(px(18.0))
                 .flex_none()
                 .flex()
                 .items_center()
@@ -181,7 +189,7 @@ pub fn agent_sidebar_badge(kind: Option<&str>, selected: bool) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
-        .child(brand_mark(kind, mark_color, SIDEBAR_AGENT_MARK_SIZE))
+        .child(brand_mark(kind, mark_color, SIDEBAR_AGENT_ARTWORK_SIZE))
         .into_any_element()
 }
 
@@ -199,7 +207,7 @@ mod tests {
         }
         assert!(agent_mark("Agent").is_none());
         assert_eq!(
-            agent_mark("Grok").map(|(_, style)| style),
+            agent_mark("Grok").map(|(_, style, _)| style),
             Some(AgentMarkStyle::Template)
         );
     }

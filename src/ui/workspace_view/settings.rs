@@ -5,7 +5,7 @@ use gpui::{
 };
 
 use crate::ui::theme::{
-    self, AppearanceMode, MONO_FONT, ThemeFamily, ThemeTone, colors, floating_surface, surface_tint,
+    self, AppearanceMode, MONO_FONT, ThemeFamily, ThemeTone, colors, popover_surface, surface_tint,
 };
 
 use super::WorkspaceView;
@@ -149,11 +149,15 @@ impl WorkspaceView {
     ) -> Stateful<Div> {
         settings_button_base(label, id)
             .h(px(24.0))
-            .bg(colors().selection)
+            .bg(surface_tint(colors().selection, colors().panel))
             .border_1()
             .border_color(colors().border_subtle)
             .text_color(colors().muted)
-            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+            .hover(|button| {
+                button
+                    .bg(surface_tint(colors().hover, colors().panel))
+                    .text_color(colors().foreground)
+            })
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
     }
 
@@ -181,10 +185,8 @@ impl WorkspaceView {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         settings_button_base(label, id)
-            .bg(if selected {
-                colors().selection
-            } else {
-                colors().elevated
+            .when(selected, |button| {
+                button.bg(surface_tint(colors().selection, colors().panel))
             })
             .border_1()
             .border_color(if selected {
@@ -197,7 +199,11 @@ impl WorkspaceView {
             } else {
                 colors().muted
             })
-            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+            .hover(|button| {
+                button
+                    .bg(surface_tint(colors().hover, colors().panel))
+                    .text_color(colors().foreground)
+            })
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
     }
 
@@ -229,12 +235,10 @@ impl WorkspaceView {
                     } else {
                         colors().border_subtle
                     })
-                    .bg(if selected {
-                        colors().selection
-                    } else {
-                        colors().elevated
+                    .when(selected, |card| {
+                        card.bg(surface_tint(colors().selection, colors().panel))
                     })
-                    .hover(|card| card.bg(colors().hover))
+                    .hover(|card| card.bg(surface_tint(colors().hover, colors().panel)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.set_theme_id(&theme_id, window, cx);
                     }))
@@ -316,7 +320,7 @@ impl WorkspaceView {
             .when(row.divider, |row| {
                 row.border_b_1().border_color(colors().border_subtle)
             })
-            .hover(|row| row.bg(colors().hover))
+            .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
             .child(
                 div()
@@ -408,7 +412,7 @@ impl WorkspaceView {
                         .rounded(px(12.0))
                         .border_1()
                         .border_color(colors().border_subtle)
-                        .bg(floating_surface(colors().panel))
+                        .bg(popover_surface())
                         .shadow_lg()
                         .flex()
                         .flex_col()
@@ -515,17 +519,15 @@ impl WorkspaceView {
                     .rounded(px(6.0))
                     .cursor_pointer()
                     .text_sm()
-                    .bg(if selected {
-                        colors().selection
-                    } else {
-                        colors().panel
+                    .when(selected, |item| {
+                        item.bg(surface_tint(colors().selection, colors().sidebar))
                     })
                     .text_color(if selected {
                         colors().foreground
                     } else {
                         colors().muted
                     })
-                    .hover(|style| style.bg(colors().selection))
+                    .hover(|style| style.bg(surface_tint(colors().selection, colors().sidebar)))
                     .child(page.label())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.settings_page = page;
@@ -584,7 +586,7 @@ impl WorkspaceView {
                     .rounded(px(9.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().panel))
+                    .bg(surface_tint(colors().panel, colors().sidebar))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -742,7 +744,7 @@ impl WorkspaceView {
                     .rounded(px(9.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().panel))
+                    .bg(surface_tint(colors().panel, colors().sidebar))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -775,7 +777,7 @@ impl WorkspaceView {
                                     .w(px(52.0))
                                     .h(px(26.0))
                                     .rounded(px(5.0))
-                                    .bg(colors().panel)
+                                    .bg(surface_tint(colors().terminal, colors().panel))
                                     .border_1()
                                     .border_color(colors().border_subtle)
                                     .flex()
@@ -832,7 +834,7 @@ impl WorkspaceView {
                     .overflow_hidden()
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().panel))
+                    .bg(surface_tint(colors().panel, colors().sidebar))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
                             label: "Archivos ocultos",
@@ -903,7 +905,7 @@ impl WorkspaceView {
                     .rounded(px(9.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().panel))
+                    .bg(surface_tint(colors().panel, colors().sidebar))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -1008,7 +1010,7 @@ impl WorkspaceView {
                     .overflow_hidden()
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().panel))
+                    .bg(surface_tint(colors().panel, colors().sidebar))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
                             label: "Notificaciones de actividad",
@@ -1041,7 +1043,7 @@ impl WorkspaceView {
                     .rounded(px(9.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().panel))
+                    .bg(surface_tint(colors().panel, colors().sidebar))
                     .flex()
                     .flex_col()
                     .gap_2()

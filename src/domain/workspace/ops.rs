@@ -569,30 +569,23 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn sidebar_entries(&self) -> Vec<SidebarEntry> {
-        let entries = self.workspace_entries();
-        self.projects
-            .iter()
-            .flat_map(|project| {
-                let mut rows = vec![SidebarEntry::Project {
-                    id: project.id,
-                    name: project.name.clone(),
-                    root_path: project.root_path.clone(),
-                    collapsed: project.collapsed,
-                    workspace_count: project.workspaces.as_ref().map_or(0, Vec::len),
-                    is_selected: self.selected_project_id == Some(project.id),
-                }];
-                if !project.collapsed {
-                    rows.extend(
-                        entries
-                            .iter()
-                            .filter(|entry| entry.project_id == project.id)
-                            .cloned()
-                            .map(|entry| SidebarEntry::Workspace { entry }),
-                    );
-                }
-                rows
-            })
-            .collect()
+        let Some(project) = self.selected_project() else {
+            return Vec::new();
+        };
+        let mut rows = vec![SidebarEntry::Project {
+            id: project.id,
+            name: project.name.clone(),
+            root_path: project.root_path.clone(),
+            workspace_count: project.workspaces.as_ref().map_or(0, Vec::len),
+        }];
+        // Legacy collapsed flags never hide the contents of the active folder.
+        rows.extend(
+            self.workspace_entries()
+                .into_iter()
+                .filter(|entry| entry.project_id == project.id)
+                .map(|entry| SidebarEntry::Workspace { entry }),
+        );
+        rows
     }
 
     pub fn selected_workspace(&self) -> Option<&TerminalWorkspaceSnapshot> {

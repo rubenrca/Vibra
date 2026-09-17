@@ -9,7 +9,7 @@ use gpui::{
 
 use crate::OpenIde;
 use crate::infrastructure::editor::InstalledEditor;
-use crate::ui::theme::{colors, floating_surface, surface, surface_tint};
+use crate::ui::theme::{colors, popover_surface, surface, surface_tint};
 
 use super::{
     LeftSidebarMode, RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT,
@@ -317,7 +317,7 @@ impl super::WorkspaceView {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(colors().border_subtle)
-                        .bg(floating_surface(colors().elevated))
+                        .bg(popover_surface())
                         .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
@@ -353,7 +353,9 @@ impl super::WorkspaceView {
                                     .cursor_pointer()
                                     .text_size(px(11.0))
                                     .text_color(colors().foreground)
-                                    .hover(|item| item.bg(colors().hover))
+                                    .hover(|item| {
+                                        item.bg(surface_tint(colors().hover, colors().sidebar))
+                                    })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.open_with_editor(editor.clone(), cx);
                                     }))

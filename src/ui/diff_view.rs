@@ -18,7 +18,7 @@ use crate::ports::git::{
 };
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::syntax::SyntaxSpan;
-use crate::ui::theme::{MONO_FONT, Theme, colors, floating_surface, surface_tint};
+use crate::ui::theme::{MONO_FONT, Theme, colors, popover_surface, surface_tint};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
 const DIFF_ROW_HEIGHT: f32 = 22.0;
@@ -1363,7 +1363,7 @@ impl DiffView {
                     .rounded(px(12.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(floating_surface(colors().elevated))
+                    .bg(popover_surface())
                     .shadow_lg()
                     .p_1()
                     .flex()
@@ -1378,12 +1378,10 @@ impl DiffView {
                             .flex()
                             .items_center()
                             .cursor_pointer()
-                            .bg(if selected {
-                                colors().selection
-                            } else {
-                                gpui::rgba(0x00000000)
+                            .when(selected, |row| {
+                                row.bg(surface_tint(colors().selection, colors().sidebar))
                             })
-                            .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
+                            .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.set_mode(mode, cx);

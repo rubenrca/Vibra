@@ -38,6 +38,16 @@ pub fn floating_surface(color: impl Into<Hsla>) -> Hsla {
     color
 }
 
+/// Shared fill for app dialogs, menus, and tooltips, matching the sidebar tone.
+/// Only the background is translucent; text and icons retain their full opacity.
+pub fn popover_surface() -> Hsla {
+    let mut color: Hsla = colors().sidebar.into();
+    if cfg!(target_os = "macos") {
+        color.a *= 0.90;
+    }
+    color
+}
+
 /// Reproduce a nested surface as a tint over its parent instead of covering the
 /// backdrop with another opaque fill. Equal colors need no additional paint.
 pub fn surface_tint(color: Rgba, base: Rgba) -> Rgba {
@@ -119,11 +129,9 @@ impl Theme {
     }
 
     pub fn overlay(self) -> Rgba {
-        if self.is_dark() {
-            rgba(0x08080acc)
-        } else {
-            rgba(0x1a1a2288)
-        }
+        let mut color = mix(self.background, rgb(0x000000), 0.4);
+        color.a = if self.is_dark() { 0.24 } else { 0.16 };
+        color
     }
 
     pub fn terminal_palette(self) -> TerminalPalette {

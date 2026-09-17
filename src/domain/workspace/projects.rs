@@ -102,12 +102,20 @@ impl WorkspaceSnapshot {
         true
     }
 
-    pub fn toggle_project(&mut self, project_id: Uuid) -> bool {
-        let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
+    /// Switch folders without changing any project's selected session, tab or panes.
+    pub fn cycle_project(&mut self, offset: isize) -> bool {
+        let count = self.projects.len();
+        if count < 2 || offset == 0 {
             return false;
-        };
-        project.collapsed = !project.collapsed;
-        true
+        }
+        let current = self
+            .projects
+            .iter()
+            .position(|project| Some(project.id) == self.selected_project_id)
+            .unwrap_or(0);
+        let next = (current as isize + offset.rem_euclid(count as isize)).rem_euclid(count as isize)
+            as usize;
+        next != current && self.select_project(self.projects[next].id)
     }
 
     /// Removes only app state; no folder or repository is deleted.

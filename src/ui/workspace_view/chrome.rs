@@ -5,7 +5,7 @@ use gpui::{Div, SharedString, Stateful, div, prelude::*, px, svg};
 use crate::domain::workspace::WorkspaceSplitAxis;
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
 use crate::ui::agent_marks::{SIDEBAR_AGENT_MARK_SIZE, agent_sidebar_badge, agent_status_color};
-use crate::ui::theme::{MONO_FONT, colors, floating_surface, mix, surface, surface_tint};
+use crate::ui::theme::{MONO_FONT, colors, mix, popover_surface, surface, surface_tint};
 
 use super::SidebarWorkspaceMeta;
 
@@ -392,7 +392,7 @@ impl gpui::Render for SidebarTooltip {
             .px_3()
             .py_2()
             .rounded(px(7.0))
-            .bg(floating_surface(colors().elevated))
+            .bg(popover_surface())
             .border_1()
             .border_color(colors().border_subtle)
             .shadow_sm()
@@ -452,7 +452,7 @@ pub(crate) fn sidebar_workspace_content(card: &SidebarSessionCard) -> Div {
         .overflow_hidden()
         .child(
             div()
-                .h(px(13.0))
+                .h(px(14.0))
                 .flex_none()
                 .flex()
                 .items_center()

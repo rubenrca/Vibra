@@ -24,7 +24,9 @@ use crate::ports::terminal::{
 use crate::ports::terminal_keyboard::{
     TerminalKeyEventType, TerminalKeyInput, TerminalKeystroke, TerminalModifiers,
 };
-use crate::ui::theme::{self, MONO_FONT, colors, floating_surface, surface, surface_tint};
+use crate::ui::theme::{
+    self, MONO_FONT, colors, floating_surface, popover_surface, surface, surface_tint,
+};
 use crate::{
     ClearTerminalScrollback, CopyTerminal, DecreaseTerminalFontSize, IncreaseTerminalFontSize,
     PasteTerminal, ResetTerminalFontSize, SearchTerminal, SearchTerminalNext,
@@ -1607,7 +1609,7 @@ impl Render for TerminalView {
                         .rounded_md()
                         .border_1()
                         .border_color(colors().border_subtle)
-                        .bg(colors().elevated)
+                        .bg(popover_surface())
                         .shadow_sm()
                         .flex()
                         .flex_col()
@@ -1652,7 +1654,7 @@ impl Render for TerminalView {
                                 .rounded_lg()
                                 .border_1()
                                 .border_color(colors().border_subtle)
-                                .bg(colors().elevated)
+                                .bg(popover_surface())
                                 .shadow_lg()
                                 .flex()
                                 .flex_col()
@@ -1668,7 +1670,7 @@ impl Render for TerminalView {
                                         .px_2()
                                         .py_2()
                                         .rounded_sm()
-                                        .bg(colors().terminal)
+                                        .bg(surface_tint(colors().terminal, colors().sidebar))
                                         .text_xs()
                                         .text_color(colors().muted)
                                         .overflow_hidden()
@@ -1699,7 +1701,7 @@ impl Render for TerminalView {
                         .px_2()
                         .py_1()
                         .rounded_sm()
-                        .bg(colors().elevated)
+                        .bg(popover_surface())
                         .text_xs()
                         .text_color(colors().muted)
                         .child("proceso finalizado"),

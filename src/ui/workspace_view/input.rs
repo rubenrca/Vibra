@@ -96,13 +96,13 @@ impl super::WorkspaceView {
                     cx.notify();
                 }
                 "down" => {
-                    let count = self.palette_items().len();
+                    let count = self.palette_items(cx).len();
                     self.palette_selected =
                         (self.palette_selected + 1).min(count.saturating_sub(1));
                     cx.notify();
                 }
                 "enter" | "return" => {
-                    let items = self.palette_items();
+                    let items = self.palette_items(cx);
                     if let Some(item) = items.get(self.palette_selected) {
                         self.execute_palette_action(item.action.clone(), window, cx);
                     }
