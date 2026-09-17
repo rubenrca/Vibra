@@ -14,7 +14,8 @@ use crate::ui::theme::{colors, surface_tint};
 
 use super::{
     ContextMenuKind, LeftSidebarMode, ProjectDrag, SIDEBAR_CONTROL_SIZE, SIDEBAR_ROW_END_PADDING,
-    SIDEBAR_ROW_INSET, SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarWorkspaceDrag, WorkspaceView,
+    SIDEBAR_ROW_INSET, SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarWorkspaceDrag,
+    WorkspaceView,
 };
 
 impl WorkspaceView {

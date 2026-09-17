@@ -106,15 +106,24 @@ pub fn agent_status_color(
     }
 }
 
+// Marks have square viewBoxes fitted to their artwork; keep their layout size fixed.
 fn brand_mark(kind: Option<&str>, mark_color: Rgba, size: f32) -> AnyElement {
     match kind.and_then(agent_mark) {
         Some((path, AgentMarkStyle::Template)) => svg()
             .path(path)
             .size(px(size))
+            .flex_none()
             .text_color(mark_color)
             .into_any_element(),
-        Some((path, AgentMarkStyle::Original)) => img(path).size(px(size)).into_any_element(),
+        Some((path, AgentMarkStyle::Original)) => {
+            img(path).size(px(size)).flex_none().into_any_element()
+        }
         None => div()
+            .size(px(size))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
             .font_family(MONO_FONT)
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_size(px((size * 9.5 / 16.0).max(8.0)))
@@ -150,7 +159,8 @@ pub fn agent_compact_badge(
         .gap(px(5.0))
         .child(
             div()
-                .size(px(14.0))
+                .size(px(16.0))
+                .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -162,7 +172,7 @@ pub fn agent_compact_badge(
         .into_any_element()
 }
 
-/// Unboxed agent identity for the metadata row; activity has its own label above.
+/// Unboxed agent identity for the context row, alongside the project and activity.
 pub fn agent_sidebar_badge(kind: Option<&str>, selected: bool) -> AnyElement {
     let mark_color = badge_mark_color(selected);
     div()

@@ -16,24 +16,16 @@ use crate::ui::theme_import::{self, ImportedScheme};
 /// Family name of the bundled JetBrains Mono Variable font.
 pub const MONO_FONT: &str = "JetBrains Mono";
 
-/// A continuous base covers the window, including gaps and rounded cutouts.
-/// Black/white lets panels add their palette tint without an opaque second fill.
-fn surface_base() -> Rgba {
-    if colors().is_dark() {
-        rgb(0x000000)
-    } else {
-        rgb(0xffffff)
-    }
-}
-
+/// Use the theme background across the window so gaps and rounded cutouts
+/// share the same translucent fill.
 pub fn window_surface() -> Hsla {
-    floating_surface(surface_base())
+    floating_surface(colors().background)
 }
 
 /// Main panels tint the continuous window base. Never paint another 94% layer
 /// here: stacking those layers would hide the native backdrop.
 pub fn surface(color: impl Into<Hsla>) -> Hsla {
-    surface_tint(color.into().into(), surface_base()).into()
+    surface_tint(color.into().into(), colors().background).into()
 }
 
 /// Floating content needs its own fill to remain readable above other content.

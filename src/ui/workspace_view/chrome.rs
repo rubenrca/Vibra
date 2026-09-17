@@ -19,69 +19,11 @@ pub(crate) const SIDEBAR_ROW_RADIUS: f32 = 6.0;
 pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
 pub(crate) const SIDEBAR_SESSION_MENU_SPACE: f32 = SIDEBAR_CONTROL_SIZE + 4.0;
 
-/// Tint the gaps separately from panels. The root's continuous window surface
-/// also covers rounded cutouts and border insets, so no fully clear seams remain.
-pub(crate) fn workspace_backdrop(left_width: f32, right_width: f32) -> Div {
-    let background = surface(colors().background);
-    div()
-        .absolute()
-        .inset_0()
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .bottom(px(PANEL_GAP))
-                .w(px(PANEL_GAP))
-                .bg(background),
-        )
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .right_0()
-                .bottom(px(PANEL_GAP))
-                .w(px(PANEL_GAP))
-                .bg(background),
-        )
-        .child(
-            div()
-                .absolute()
-                .bottom_0()
-                .w_full()
-                .h(px(PANEL_GAP))
-                .bg(background),
-        )
-        .when(left_width > 0.0, |backdrop| {
-            backdrop.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom(px(PANEL_GAP))
-                    .left(px(PANEL_GAP + left_width))
-                    .w(px(PANEL_GAP))
-                    .bg(background),
-            )
-        })
-        .when(right_width > 0.0, |backdrop| {
-            backdrop.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom(px(PANEL_GAP))
-                    .right(px(PANEL_GAP + right_width))
-                    .w(px(PANEL_GAP))
-                    .bg(background),
-            )
-        })
-}
-
-/// Gutter between bento tiles. Tiles own the borders; this is only the gap and resize hit.
+/// Gutter between bento tiles. The window supplies its background; tiles own the borders.
 pub(crate) fn split_gutter(id: impl Into<SharedString>, axis: WorkspaceSplitAxis) -> Stateful<Div> {
     div()
         .id(id.into())
         .flex_none()
-        .bg(surface(colors().background))
         .hover(|divider| divider.bg(surface(colors().hover)))
         .when(axis == WorkspaceSplitAxis::Horizontal, |divider| {
             divider.w(px(PANEL_GAP)).h_full().cursor_ew_resize()
@@ -494,9 +436,13 @@ pub(crate) fn sidebar_workspace_content(card: &SidebarSessionCard) -> Div {
     let status_width = activity.map_or(0.0, |label| label.chars().count() as f32 * 5.0 + 6.0);
     let status_color =
         agent_status_color(card.agent_state, card.agent_attention).unwrap_or(colors().muted);
-    let context_width = width - status_width - if activity.is_some() { 6.0 } else { 0.0 };
+    let context_width = width
+        - SIDEBAR_AGENT_MARK_SIZE
+        - 6.0
+        - status_width
+        - if activity.is_some() { 6.0 } else { 0.0 };
     let location = card.branch.as_deref().unwrap_or(&card.path);
-    let metadata_chrome = SIDEBAR_AGENT_MARK_SIZE + 10.0 + 6.0;
+    let metadata_chrome = 10.0 + 3.0;
     div()
         .w(px(width))
         .flex_none()
@@ -511,6 +457,10 @@ pub(crate) fn sidebar_workspace_content(card: &SidebarSessionCard) -> Div {
                 .flex()
                 .items_center()
                 .gap(px(6.0))
+                .child(agent_sidebar_badge(
+                    card.agent_kind.as_deref(),
+                    card.selected,
+                ))
                 .child(
                     div()
                         .w(px(context_width))
@@ -559,10 +509,6 @@ pub(crate) fn sidebar_workspace_content(card: &SidebarSessionCard) -> Div {
                 .flex()
                 .items_center()
                 .gap(px(3.0))
-                .child(agent_sidebar_badge(
-                    card.agent_kind.as_deref(),
-                    card.selected,
-                ))
                 .child(
                     svg()
                         .path(if card.branch.is_some() {

@@ -1904,7 +1904,7 @@ impl WorkspaceView {
                                 .map(|identity| identity.title.clone())
                                 .unwrap_or_else(|| entry.workspace_name.clone())
                         };
-                        // Project context above, task title in the middle, agent and
+                        // Agent and project context above, task title in the middle,
                         // branch below: the same hierarchy for every session.
                         let branch_label = meta.and_then(format_sidebar_branch);
                         let appearance = sidebar_workspace_appearance(
@@ -2832,16 +2832,6 @@ impl Render for WorkspaceView {
             && self.right_sidebar_visible
             && self.right_sidebar_mode == RightSidebarMode::Diff
             && self.diff_view.read(cx).review_expanded();
-        let sidebar_width = if !expanded_review && self.left_sidebar_progress > 0.001 {
-            self.left_sidebar_width() * self.left_sidebar_progress
-        } else {
-            0.0
-        };
-        let right_width = if !expanded_review && self.right_sidebar_progress > 0.001 {
-            self.right_sidebar_width() * self.right_sidebar_progress
-        } else {
-            0.0
-        };
         let mut layout = div()
             .id("workspace-columns")
             .relative()
@@ -2851,8 +2841,7 @@ impl Render for WorkspaceView {
             .gap(px(PANEL_GAP))
             .px(px(PANEL_GAP))
             .pb(px(PANEL_GAP))
-            .on_drag_move(cx.listener(Self::on_sidebar_resize_move))
-            .child(workspace_backdrop(sidebar_width, right_width));
+            .on_drag_move(cx.listener(Self::on_sidebar_resize_move));
         if expanded_review {
             layout = layout.child(
                 div()
