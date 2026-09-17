@@ -3,27 +3,21 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.25</title>
-            <pubDate>Wed, 16 Sep 2026 20:05:18 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.25</link>
-            <sparkle:version>173</sparkle:version>
-            <sparkle:shortVersionString>0.3.25</sparkle:shortVersionString>
+            <title>0.3.26</title>
+            <pubDate>Thu, 17 Sep 2026 13:00:06 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.26</link>
+            <sparkle:version>180</sparkle:version>
+            <sparkle:shortVersionString>0.3.26</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Organize sessions under persistent folder-backed projects, with native folder selection, collapsible headers, and drag ordering.</li>
-  <li>Refine the projects sidebar with single-line headers, compact session typography, soft borderless selection, and inline agent and Git metadata. Show session activity as a dot and text, with full details available in tooltips.</li>
-  <li>Align project and session rows to shared bounds and reveal a compact session menu on hover, keeping the current agent and Git information.</li>
-  <li>Remove the sidebar's bottom Add Project button; project creation remains available from the menu, command palette, and keyboard shortcut.</li>
-  <li>Apply a 6% base transparency over the native macOS blur across the window, sidebars, titlebar, and terminal, keeping text and icons opaque and rounded corners covered.</li>
-  <li>Vendor GPUI 0.2.2 with corrected Metal alpha compositing so overlapping surfaces retain their transparency.</li>
-  <li>Remove the persistent bottom console and its shortcut; use terminal tabs and split panes within project sessions.</li>
-  <li>Expand or collapse projects from the whole header, keep the chevron at the right edge, and show project names without folder paths.</li>
-  <li>Create sessions, tabs, and panes at the project root; keep Files, Git, and quick open scoped to that folder across terminal directory changes.</li>
-  <li>Preserve projects after their last session closes, and migrate existing sidebar spaces with a backup of the original workspace. Mixed-folder and empty spaces can be associated with a folder explicitly.</li>
-  <li>Encode queued terminal keyboard input after processing shell mode resets, preventing stray Kitty sequences and preserving typed text when returning from terminal applications.</li>
+  <li>Refine session metadata with compact, consistently sized agent marks alongside project context, keeping folder-based project groups and Git details.</li>
+  <li>Unify translucent window backgrounds, menus, tooltips, and dialogs with the active theme, and soften modal overlays.</li>
+  <li>Correct sidebar content widths and titlebar alignment, and keep terminal tab labels centered with room for status indicators and shortcuts.</li>
+  <li>Prevent long labels, search queries, and messages from overflowing compact panels, and keep settings controls and icons from shrinking.</li>
+  <li>Align file and Git status icons and use consistent chevrons in the file tree and diff headers.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.25/Vibra-0.3.25.dmg" length="13026754" type="application/octet-stream" sparkle:edSignature="O77OObd6OAiRJwE53HRZyOYejNCSRiEqbxVVwGGQwkZr1OY4SXpAf7P4Gh16RFZb5LNBTHIKoOOQuIZJEMS+Dw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.26/Vibra-0.3.26.dmg" length="13032307" type="application/octet-stream" sparkle:edSignature="fWLQNUGe6/EjOkPxqDd8cj/vYHSa1SSBpackzUdi3ZVMUYwGy/osMnnXhILMbU+cTmyGwjSd7gXO2jZCdAcBAA=="/>
         </item>
     </channel>
 </rss>
