@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.3.26 — 2026-09-17
+
+- Refine session metadata with compact, consistently sized agent marks alongside project context, keeping folder-based project groups and Git details.
+- Unify translucent window backgrounds, menus, tooltips, and dialogs with the active theme, and soften modal overlays.
+- Correct sidebar content widths and titlebar alignment, and keep terminal tab labels centered with room for status indicators and shortcuts.
+- Prevent long labels, search queries, and messages from overflowing compact panels, and keep settings controls and icons from shrinking.
+- Align file and Git status icons and use consistent chevrons in the file tree and diff headers.
+
 ## 0.3.25 — 2026-09-16
 
 - Organize sessions under persistent folder-backed projects, with native folder selection, collapsible headers, and drag ordering.
