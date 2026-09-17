@@ -48,13 +48,13 @@ use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 use crate::ports::git::{GitBranchSummary, GitPort};
 use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
-use crate::ui::agent_marks::agent_compact_badge;
+use crate::ui::agent_marks::{TERMINAL_GLYPH, agent_compact_badge};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
 use crate::ui::terminal::{TerminalView, TerminalViewEvent};
 use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface, surface_tint, window_surface};
 use crate::{
-    CloseTerminal, GoToTab, NewTerminalTab, NewWorkspace, NextProject, NextWorkspace,
-    PreviousProject, PreviousWorkspace, ShowSettings, ToggleLeftSidebar, ToggleRightSidebar,
+    CloseTerminal, GoToTab, NewTerminalTab, NewWorkspace, NextWorkspace, PreviousWorkspace,
+    ShowSettings, ToggleLeftSidebar, ToggleRightSidebar,
 };
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
@@ -113,15 +113,12 @@ pub(crate) struct ProjectFileRow {
 enum PaletteMode {
     Commands,
     Files,
-    Tabs,
-    Projects,
 }
 
 #[derive(Debug, Clone)]
 enum PaletteAction {
     AddProject,
     SelectProject(Uuid),
-    CycleProject(isize),
     NewTerminalTab,
     OpenIde,
     NewWorkspace,
@@ -1705,19 +1702,6 @@ impl WorkspaceView {
         self.toggle_diff_panel(cx);
     }
 
-    fn previous_project(
-        &mut self,
-        _: &PreviousProject,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.cycle_project(-1, window, cx);
-    }
-
-    fn next_project(&mut self, _: &NextProject, window: &mut Window, cx: &mut Context<Self>) {
-        self.cycle_project(1, window, cx);
-    }
-
     fn previous_workspace(
         &mut self,
         _: &PreviousWorkspace,
@@ -1785,11 +1769,8 @@ impl WorkspaceView {
     }
 
     fn sessions_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let mut sidebar_entries = self.snapshot.sidebar_entries().into_iter();
-        let project_header = sidebar_entries
-            .next()
-            .map(|entry| self.project_sidebar_header(entry, cx));
-        let workspace_count = sidebar_entries.len();
+        let sidebar_entries = self.snapshot.sidebar_entries();
+        let workspace_count = self.snapshot.workspace_entries().len();
         let can_reorder = workspace_count > 1 || self.snapshot.projects.len() > 1;
         let dragging_workspace = match self.reorder_drag {
             Some(ReorderDrag::SidebarWorkspace(id)) if cx.has_active_drag() => Some(id),
@@ -1797,8 +1778,8 @@ impl WorkspaceView {
         };
         let sidebar_identities: HashMap<Uuid, (Option<PaneIdentity>, Option<PaneIdentity>)> = self
             .snapshot
-            .selected_project()
-            .into_iter()
+            .projects
+            .iter()
             .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
             .map(|workspace| {
                 let primary = workspace
@@ -1840,40 +1821,61 @@ impl WorkspaceView {
                     this.open_context_menu(ContextMenuKind::SidebarBackground, x, y, cx);
                     cx.stop_propagation();
                 }),
-            )
-            .child(self.project_sidebar_actions(cx))
-            .when_some(project_header, |panel, header| panel.child(header));
+            );
 
         if self.snapshot.projects.is_empty() {
             panel = panel.child(
                 div()
                     .flex_1()
-                    .min_h(px(0.0))
                     .flex()
                     .flex_col()
+                    .items_center()
                     .justify_center()
-                    .px(px(SIDEBAR_ROW_INSET))
-                    .child(self.sidebar_empty_state(false, cx)),
+                    .px_4()
+                    .gap_2()
+                    .child(
+                        div()
+                            .size(px(32.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.0))
+                            .bg(colors().elevated)
+                            .font_family(MONO_FONT)
+                            .text_size(px(11.0))
+                            .text_color(colors().muted)
+                            .child(TERMINAL_GLYPH),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(colors().muted)
+                            .child("Sin proyectos"),
+                    )
+                    .child(
+                        div()
+                            .text_center()
+                            .text_size(px(10.0))
+                            .text_color(colors().subtle)
+                            .child("Agrega una carpeta para empezar"),
+                    ),
             );
         } else {
             panel = panel.child(
                 div()
-                    .id(SharedString::from(format!(
-                        "workspace-list-{}",
-                        self.snapshot.selected_project_id.unwrap()
-                    )))
+                    .id("workspace-list")
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .px(px(SIDEBAR_ROW_INSET))
-                    .pt(px(2.0))
-                    .pb_2()
-                    .when(workspace_count == 0, |list| {
-                        list.child(self.sidebar_empty_state(true, cx))
-                    })
-                    .children(sidebar_entries.map(|sidebar_entry| {
-                        let SidebarEntry::Workspace { entry } = sidebar_entry else {
-                            unreachable!()
+                    .py_2()
+                    .children(sidebar_entries.into_iter().map(|sidebar_entry| {
+                        let entry = match sidebar_entry {
+                            SidebarEntry::Workspace { entry } => entry,
+                            project @ SidebarEntry::Project { .. } => {
+                                return self.project_sidebar_header(project, cx);
+                            }
                         };
                         let item_width = self.left_sidebar_width() - 2.0 * SIDEBAR_ROW_INSET;
                         let project_id = entry.project_id;
@@ -1900,7 +1902,8 @@ impl WorkspaceView {
                                 .map(|identity| identity.title.clone())
                                 .unwrap_or_else(|| entry.workspace_name.clone())
                         };
-                        // Cards show the agent and project above the title, then the branch below.
+                        // Agent and project context above, task title in the middle,
+                        // branch below: the same hierarchy for every session.
                         let branch_label = meta.and_then(format_sidebar_branch);
                         let appearance = sidebar_workspace_appearance(
                             selected,
@@ -2109,7 +2112,16 @@ impl WorkspaceView {
                                 .w_full()
                                 .can_drop(|value, _, _| {
                                     value.downcast_ref::<SidebarWorkspaceDrag>().is_some()
+                                        || value.downcast_ref::<ProjectDrag>().is_some()
                                 })
+                                .drag_over::<ProjectDrag>(|style, _, _, _| {
+                                    style.border_t_2().border_color(colors().accent)
+                                })
+                                .on_drop(cx.listener(|this, drag: &ProjectDrag, _, cx| {
+                                    if this.snapshot.move_project(drag.project_id, None) {
+                                        this.persist(cx);
+                                    }
+                                }))
                                 .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
                                     style.border_t_2().border_color(colors().accent)
                                 })
@@ -2128,9 +2140,7 @@ impl WorkspaceView {
             );
         }
 
-        panel
-            .child(self.project_sidebar_navigation(cx))
-            .into_any_element()
+        panel.into_any_element()
     }
 
     fn files_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -2781,8 +2791,6 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::close_terminal))
             .on_action(cx.listener(Self::toggle_left_sidebar))
             .on_action(cx.listener(Self::toggle_right_sidebar))
-            .on_action(cx.listener(Self::previous_project))
-            .on_action(cx.listener(Self::next_project))
             .on_action(cx.listener(Self::previous_workspace))
             .on_action(cx.listener(Self::next_workspace))
             .on_action(cx.listener(Self::go_to_tab))

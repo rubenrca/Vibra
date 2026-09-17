@@ -28,13 +28,12 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 ### Proyectos, sesiones, tabs y panes
 
-- proyectos asociados a carpetas, con sesiones y tabs persistentes; se agregan con «Nuevo proyecto» en el selector, desde el menú contextual del fondo de la sidebar o con `⇧⌘O`;
-- sidebar enfocada en un proyecto a la vez, con buscador de tabs abiertos en todos los proyectos y Kanban reservado para una próxima iteración; las opciones del proyecto se abren con clic derecho sobre su nombre;
-- chevron junto al nombre para buscar y elegir proyectos, además de flechas y puntos inferiores para cambiar entre ellos, recuperando su sesión, tab y panes seleccionados; proyectos renombrables y reordenables arrastrando los puntos; cerrar la última sesión conserva el proyecto;
+- proyectos asociados a carpetas, con sesiones y tabs persistentes; se agregan desde la sidebar o con `⇧⌘O`;
+- proyectos plegables, renombrables y reordenables; cerrar la última sesión conserva el proyecto;
 - `＋` en cada proyecto o `⌘N` crea una sesión en su carpeta; los nuevos tabs y panes también parten desde esa raíz;
 - las sesiones de un proyecto comparten sus archivos y rama Git; Files, Git y búsqueda conservan la raíz del proyecto aunque una terminal haga `cd`;
 - terminales divididas recursivamente en cuatro direcciones;
-- reordenar tabs, panes, proyectos y sesiones arrastrándolos; mover una sesión al punto de otro proyecto conserva sus terminales y directorios actuales; saltar a un tab con `⌘1`–`⌘8` y al último con `⌘9`;
+- reordenar tabs, panes, proyectos y sesiones arrastrándolos; mover una sesión entre proyectos conserva sus terminales y directorios actuales; saltar a un tab con `⌘1`–`⌘8` y al último con `⌘9`;
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
 - sidebar de sesiones con CWD, rama Git en vivo (ahead/behind/dirty), agente activo, estado y modelo cuando el CLI lo reporta;
 - menús contextuales en sesiones y panes (renombrar, cerrar, dividir, zoom);
@@ -201,7 +200,6 @@ en `workspace.pre-projects.backup.json`, junto a `workspace.json`.
 | Atajo | Acción |
 | --- | --- |
 | `⇧⌘O` | Agregar proyecto desde una carpeta |
-| `⌃⇧⌘[` / `⌃⇧⌘]` | Proyecto anterior / siguiente |
 | `⌘N` / `⌘T` / `⌘W` | Nueva sesión en el proyecto / nuevo tab / cerrar terminal |
 | `⌘1`–`⌘8` / `⌘9` | Ir al tab 1–8 / ir al último tab |
 | `⌘D` / `⇧⌘D` | Dividir a la derecha / abajo |

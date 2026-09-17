@@ -29,18 +29,13 @@ fn projects_persist_without_sessions_and_reopening_selects_the_existing_project(
     assert_eq!(snapshot.projects.len(), 2);
     assert_eq!(snapshot.selected_project_id, Some(a));
     assert!(snapshot.rename_project(a, "Mi proyecto"));
-    snapshot
-        .projects
-        .iter_mut()
-        .find(|project| project.id == b)
-        .unwrap()
-        .collapsed = true;
+    assert!(snapshot.toggle_project(b));
     assert!(snapshot.move_project(b, Some(a)));
     assert!(!snapshot.move_project(b, Some(a)));
     assert_eq!(snapshot.projects[0].id, b);
     assert_eq!(round_trip(&snapshot), snapshot);
     assert!(
-        matches!(snapshot.sidebar_entries()[0], SidebarEntry::Project { id, workspace_count: 0, .. } if id == a)
+        matches!(snapshot.sidebar_entries()[0], SidebarEntry::Project { id, workspace_count: 0, collapsed: true, .. } if id == b)
     );
     assert!(snapshot.move_project(b, None));
     assert_eq!(snapshot.projects[1].id, b);
@@ -86,12 +81,7 @@ fn moving_sessions_preserves_terminal_state_and_updates_active_project() {
         .unwrap();
     let panes = snapshot.selected_workspace().unwrap().clone();
     let b = snapshot.add_project(Path::new("/projects/b"));
-    snapshot
-        .projects
-        .iter_mut()
-        .find(|project| project.id == b)
-        .unwrap()
-        .collapsed = true;
+    snapshot.toggle_project(b);
     snapshot.select_workspace(a, first);
     assert!(snapshot.move_workspace_to_project(first, b));
     assert_eq!(snapshot.selected_project_id, Some(b));
@@ -110,15 +100,10 @@ fn moving_sessions_preserves_terminal_state_and_updates_active_project() {
     assert!(!snapshot.move_workspace_relative(second, first, false));
     assert!(snapshot.move_workspace(second, None));
     assert_eq!(session_ids(&snapshot), [first, second]);
-    snapshot
-        .projects
-        .iter_mut()
-        .find(|project| project.id == b)
-        .unwrap()
-        .collapsed = true;
-    assert_eq!(snapshot.sidebar_entries().len(), 3);
+    assert!(snapshot.toggle_project(b));
+    assert_eq!(snapshot.sidebar_entries().len(), 2);
     assert!(snapshot.select_workspace(b, first));
-    assert_eq!(snapshot.sidebar_entries().len(), 3);
+    assert_eq!(snapshot.sidebar_entries().len(), 4);
     assert_eq!(round_trip(&snapshot), snapshot);
 }
 
@@ -256,84 +241,4 @@ fn legacy_flat_order_and_spacers_preserve_all_sessions_once() {
     assert_eq!(snapshot.projects[0].id, space);
     assert_eq!(snapshot.projects[0].name, "Espacio");
     assert_eq!(snapshot.selected_workspace().unwrap().id, second);
-}
-
-#[test]
-fn project_navigation_restores_each_sessions_tabs_and_panes_including_empty_projects() {
-    let mut snapshot = WorkspaceSnapshot::default();
-    let a = snapshot.add_project(Path::new("/projects/a"));
-    snapshot.create_workspace_in_project(a).unwrap();
-    let selected_a = snapshot.create_workspace_in_project(a).unwrap();
-    snapshot
-        .create_terminal_tab_with_options(true, None)
-        .unwrap();
-    snapshot
-        .split_selected_terminal(PaneSplitDirection::Down)
-        .unwrap();
-    let workspace_a = snapshot.selected_workspace().unwrap().clone();
-    let b = snapshot.add_project(Path::new("/projects/b"));
-    snapshot.create_workspace_in_project(b).unwrap();
-    let workspace_b = snapshot.selected_workspace().unwrap().clone();
-    let empty = snapshot.add_project(Path::new("/projects/empty"));
-    let terminals = snapshot.terminal_sessions();
-
-    assert!(snapshot.cycle_project(1));
-    assert_eq!(snapshot.selected_project_id, Some(a));
-    assert_eq!(snapshot.selected_workspace().unwrap().id, selected_a);
-    assert_eq!(snapshot.selected_workspace(), Some(&workspace_a));
-    assert!(snapshot.cycle_project(1));
-    assert_eq!(snapshot.selected_project_id, Some(b));
-    assert_eq!(snapshot.selected_workspace(), Some(&workspace_b));
-    assert!(snapshot.cycle_project(1));
-    assert_eq!(snapshot.selected_project_id, Some(empty));
-    assert!(snapshot.selected_workspace().is_none());
-    assert_eq!(snapshot.sidebar_entries().len(), 1);
-    assert!(snapshot.cycle_project(-1));
-    assert_eq!(snapshot.selected_workspace(), Some(&workspace_b));
-    assert!(snapshot.select_project(a));
-    assert!(snapshot.cycle_project(-1));
-    assert_eq!(snapshot.selected_project_id, Some(empty));
-    assert_eq!(snapshot.terminal_sessions(), terminals);
-    assert_eq!(round_trip(&snapshot), snapshot);
-}
-
-#[test]
-fn sidebar_shows_only_the_active_folder_even_with_legacy_collapsed_state() {
-    let mut snapshot = WorkspaceSnapshot::default();
-    let a = snapshot.add_project(Path::new("/projects/a"));
-    let first = snapshot.create_workspace_in_project(a).unwrap();
-    let second = snapshot.create_workspace_in_project(a).unwrap();
-    let b = snapshot.add_project(Path::new("/projects/b"));
-    snapshot.create_workspace_in_project(b).unwrap();
-    snapshot.select_project(a);
-    snapshot.projects[0].collapsed = true;
-    let entries = snapshot.sidebar_entries();
-    assert_eq!(entries.len(), 3);
-    assert!(matches!(entries[0], SidebarEntry::Project { id, workspace_count: 2, .. } if id == a));
-    let visible: Vec<_> = entries
-        .iter()
-        .filter_map(|entry| match entry {
-            SidebarEntry::Workspace { entry } => Some(entry.workspace_id),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(visible, [first, second]);
-    assert!(snapshot.remove_project(a));
-    assert_eq!(snapshot.selected_project_id, Some(b));
-    assert_eq!(snapshot.sidebar_entries().len(), 2);
-}
-
-#[test]
-fn project_navigation_is_a_noop_without_a_different_destination() {
-    let mut snapshot = WorkspaceSnapshot::default();
-    assert!(snapshot.sidebar_entries().is_empty());
-    assert!(!snapshot.cycle_project(1));
-    snapshot.add_project(Path::new("/projects/a"));
-    assert!(!snapshot.cycle_project(-1));
-    snapshot.add_project(Path::new("/projects/b"));
-    let before = snapshot.clone();
-    assert!(!snapshot.cycle_project(0));
-    assert!(!snapshot.cycle_project(2));
-    assert!(!snapshot.select_project(Uuid::new_v4()));
-    assert_eq!(snapshot, before);
 }

@@ -1,8 +1,8 @@
-//! Command palette, project picker, sidebar tab search and quick-open.
+//! Command palette and quick-open.
 
-use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px, svg};
+use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px};
 
-use crate::domain::workspace::{PaneSplitDirection, WorkspaceTitleSource};
+use crate::domain::workspace::PaneSplitDirection;
 use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface_tint};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
@@ -64,22 +64,12 @@ impl super::WorkspaceView {
         self.open_palette(PaletteMode::Files, cx);
     }
 
-    pub(super) fn palette_items(&self, cx: &Context<Self>) -> Vec<PaletteItem> {
+    pub(super) fn palette_items(&self) -> Vec<PaletteItem> {
         let Some(mode) = self.palette_mode else {
             return Vec::new();
         };
         let mut items = match mode {
             PaletteMode::Commands => vec![
-                PaletteItem {
-                    label: "Proyecto: Anterior".into(),
-                    detail: "⌃⇧⌘[".into(),
-                    action: PaletteAction::CycleProject(-1),
-                },
-                PaletteItem {
-                    label: "Proyecto: Siguiente".into(),
-                    detail: "⌃⇧⌘]".into(),
-                    action: PaletteAction::CycleProject(1),
-                },
                 PaletteItem {
                     label: "Proyecto: Agregar carpeta…".into(),
                     detail: "⇧⌘O".into(),
@@ -156,48 +146,6 @@ impl super::WorkspaceView {
                     action: PaletteAction::ShowSettings,
                 },
             ],
-            PaletteMode::Projects => self
-                .snapshot
-                .projects
-                .iter()
-                .map(|project| PaletteItem {
-                    label: project.name.clone(),
-                    detail: project.root_path.clone(),
-                    action: PaletteAction::SelectProject(project.id),
-                })
-                .collect(),
-            PaletteMode::Tabs => self
-                .snapshot
-                .projects
-                .iter()
-                .flat_map(|project| {
-                    project
-                        .workspaces
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|workspace| {
-                            // Use the same manual/task/live title shown on the sidebar tab.
-                            let label =
-                                if workspace.title_source == Some(WorkspaceTitleSource::Manual) {
-                                    workspace.name.clone()
-                                } else {
-                                    workspace
-                                        .primary_session()
-                                        .map(|session| self.pane_identity(session, 0, cx).title)
-                                        .unwrap_or_else(|| workspace.name.clone())
-                                };
-                            PaletteItem {
-                                label,
-                                detail: project.name.clone(),
-                                action: PaletteAction::SelectWorkspace {
-                                    project_id: project.id,
-                                    workspace_id: workspace.id,
-                                },
-                            }
-                        })
-                })
-                .collect(),
             PaletteMode::Files => {
                 let root = self.project_root();
                 let query = self.palette_query.to_lowercase();
@@ -249,10 +197,7 @@ impl super::WorkspaceView {
                     }),
             );
         }
-        if matches!(
-            mode,
-            PaletteMode::Commands | PaletteMode::Tabs | PaletteMode::Projects
-        ) {
+        if mode == PaletteMode::Commands {
             let query = self.palette_query.to_lowercase();
             if !query.is_empty() {
                 let tokens: Vec<_> = query.split_whitespace().collect();
@@ -261,9 +206,7 @@ impl super::WorkspaceView {
                     tokens.iter().all(|token| haystack.contains(token))
                 });
             }
-            if mode != PaletteMode::Projects {
-                items.truncate(100);
-            }
+            items.truncate(100);
         }
         items
     }
@@ -278,7 +221,6 @@ impl super::WorkspaceView {
         match action {
             PaletteAction::AddProject => self.choose_project_folder(None, false, window, cx),
             PaletteAction::SelectProject(id) => self.select_project(id, window, cx),
-            PaletteAction::CycleProject(offset) => self.cycle_project(offset, window, cx),
             PaletteAction::NewTerminalTab => {
                 self.open_terminal_tab_in_project(window, cx);
             }
@@ -334,15 +276,13 @@ impl super::WorkspaceView {
 
     pub(super) fn palette_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let mode = self.palette_mode?;
-        let items = self.palette_items(cx);
+        let items = self.palette_items();
         let empty = items.is_empty();
         let selected = self.palette_selected.min(items.len().saturating_sub(1));
         let query = self.palette_query.clone();
         let placeholder = match mode {
-            PaletteMode::Commands => "Buscar proyectos, sesiones y comandos…",
+            PaletteMode::Commands => "Search commands…",
             PaletteMode::Files => "Open file…",
-            PaletteMode::Tabs => "Buscar tabs…",
-            PaletteMode::Projects => "Buscar proyectos…",
         };
         Some(
             div()
@@ -364,11 +304,7 @@ impl super::WorkspaceView {
                 )
                 .child(
                     div()
-                        .w(px(if mode == PaletteMode::Projects {
-                            460.0
-                        } else {
-                            560.0
-                        }))
+                        .w(px(560.0))
                         .max_w_full()
                         .max_h(px(460.0))
                         .mx_4()
@@ -391,20 +327,12 @@ impl super::WorkspaceView {
                                 .px_4()
                                 .border_b_1()
                                 .border_color(colors().border_subtle)
-                                .child(if mode == PaletteMode::Projects {
-                                    svg()
-                                        .path("chrome-icons/folder.svg")
-                                        .size(px(16.0))
-                                        .flex_none()
-                                        .text_color(colors().muted)
-                                        .into_any_element()
-                                } else {
+                                .child(
                                     div()
                                         .font_family(MONO_FONT)
                                         .text_color(colors().subtle)
-                                        .child(">")
-                                        .into_any_element()
-                                })
+                                        .child(">"),
+                                )
                                 .child(
                                     div()
                                         .flex_1()
@@ -433,18 +361,9 @@ impl super::WorkspaceView {
                                 .children(items.into_iter().enumerate().map(|(index, item)| {
                                     let active = index == selected;
                                     let action = item.action.clone();
-                                    let current_project = matches!(
-                                        &item.action,
-                                        PaletteAction::SelectProject(id)
-                                            if Some(*id) == self.snapshot.selected_project_id
-                                    );
                                     div()
                                         .id(SharedString::from(format!("palette-item-{index}")))
-                                        .h(px(if mode == PaletteMode::Projects {
-                                            48.0
-                                        } else {
-                                            38.0
-                                        }))
+                                        .h(px(38.0))
                                         .mx_2()
                                         .px_3()
                                         .rounded(px(6.0))
@@ -474,52 +393,28 @@ impl super::WorkspaceView {
                                                 } else {
                                                     colors().subtle
                                                 })
-                                                .child(if mode == PaletteMode::Projects {
-                                                    if current_project { "✓" } else { "" }
-                                                } else if active {
-                                                    "›"
-                                                } else {
-                                                    "·"
-                                                }),
+                                                .child(if active { "›" } else { "·" }),
                                         )
                                         .child(
                                             div()
                                                 .min_w(px(0.0))
                                                 .flex_1()
-                                                .flex()
-                                                .flex_col()
-                                                .gap(px(2.0))
-                                                .child(
-                                                    div()
-                                                        .truncate()
-                                                        .text_size(px(11.0))
-                                                        .text_color(if active {
-                                                            colors().foreground
-                                                        } else {
-                                                            colors().muted
-                                                        })
-                                                        .child(item.label),
-                                                )
-                                                .when(mode == PaletteMode::Projects, |label| {
-                                                    label.child(
-                                                        div()
-                                                            .truncate()
-                                                            .font_family(MONO_FONT)
-                                                            .text_size(px(9.0))
-                                                            .text_color(colors().subtle)
-                                                            .child(item.detail.clone()),
-                                                    )
-                                                }),
+                                                .truncate()
+                                                .text_size(px(11.0))
+                                                .text_color(if active {
+                                                    colors().foreground
+                                                } else {
+                                                    colors().muted
+                                                })
+                                                .child(item.label),
                                         )
-                                        .when(mode != PaletteMode::Projects, |row| {
-                                            row.child(
-                                                div()
-                                                    .font_family(MONO_FONT)
-                                                    .text_size(px(8.5))
-                                                    .text_color(colors().subtle)
-                                                    .child(item.detail),
-                                            )
-                                        })
+                                        .child(
+                                            div()
+                                                .font_family(MONO_FONT)
+                                                .text_size(px(8.5))
+                                                .text_color(colors().subtle)
+                                                .child(item.detail),
+                                        )
                                 })),
                         )
                         .when(empty, |palette| {
@@ -531,77 +426,22 @@ impl super::WorkspaceView {
                                     .justify_center()
                                     .text_sm()
                                     .text_color(colors().subtle)
-                                    .child(match mode {
-                                        PaletteMode::Tabs => "No se encontraron tabs",
-                                        PaletteMode::Projects => "No se encontraron proyectos",
-                                        _ => "No results",
-                                    }),
+                                    .child("No results"),
                             )
                         })
                         .child(
                             div()
-                                .h(px(if mode == PaletteMode::Projects {
-                                    44.0
-                                } else {
-                                    28.0
-                                }))
+                                .h(px(28.0))
                                 .flex_none()
                                 .flex()
                                 .items_center()
                                 .justify_end()
-                                .gap_3()
                                 .px_3()
                                 .border_t_1()
                                 .border_color(colors().border_subtle)
                                 .text_xs()
                                 .text_color(colors().subtle)
-                                .when(mode == PaletteMode::Projects, |footer| {
-                                    footer.justify_between().child(
-                                        div()
-                                            .id("project-picker-new-project")
-                                            .h(px(28.0))
-                                            .flex_none()
-                                            .px_2()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(6.0))
-                                            .rounded(px(5.0))
-                                            .border_1()
-                                            .border_color(colors().border_subtle)
-                                            .bg(surface_tint(colors().selection, colors().sidebar))
-                                            .text_size(px(11.0))
-                                            .text_color(colors().foreground)
-                                            .cursor_pointer()
-                                            .hover(|button| {
-                                                button.bg(surface_tint(
-                                                    colors().hover,
-                                                    colors().sidebar,
-                                                ))
-                                            })
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.execute_palette_action(
-                                                    PaletteAction::AddProject,
-                                                    window,
-                                                    cx,
-                                                );
-                                                cx.stop_propagation();
-                                                cx.notify();
-                                            }))
-                                            .child(
-                                                svg()
-                                                    .path("chrome-icons/plus.svg")
-                                                    .size(px(12.0))
-                                                    .flex_none()
-                                                    .text_color(colors().foreground),
-                                            )
-                                            .child("Nuevo proyecto"),
-                                    )
-                                })
-                                .child(match mode {
-                                    PaletteMode::Tabs => "↑↓ navegar · ↵ abrir tab",
-                                    PaletteMode::Projects => "↑↓ navegar · ↵ cambiar proyecto",
-                                    _ => "↑↓ navigate · ↵ run",
-                                }),
+                                .child("↑↓ navigate · ↵ run"),
                         ),
                 )
                 .into_any_element(),
