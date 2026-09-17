@@ -12,7 +12,7 @@ use crate::infrastructure::editor::InstalledEditor;
 use crate::ui::theme::{colors, popover_surface, surface, surface_tint};
 
 use super::{
-    LeftSidebarMode, RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT,
+    LeftSidebarMode, PANEL_GAP, RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT,
     TITLEBAR_RIGHT_CHROME_COLLAPSED,
 };
 
@@ -21,17 +21,19 @@ impl super::WorkspaceView {
         let left_progress = self.left_sidebar_progress;
         let right_progress = self.right_sidebar_progress;
         // Keep titlebar controls aligned with the framed panels below.
+        let left_expanded_width = self.left_sidebar_width() + 2.0 * PANEL_GAP;
+        let right_expanded_width = self.right_sidebar_width() + PANEL_GAP;
         let left_chrome_width = if left_progress > 0.99 {
-            self.left_sidebar_width()
+            left_expanded_width
         } else {
             TITLEBAR_CHROME_COLLAPSED
-                + (self.left_sidebar_width() - TITLEBAR_CHROME_COLLAPSED) * left_progress
+                + (left_expanded_width - TITLEBAR_CHROME_COLLAPSED) * left_progress
         };
         let right_chrome_width = if right_progress > 0.99 {
-            self.right_sidebar_width()
+            right_expanded_width
         } else {
             TITLEBAR_RIGHT_CHROME_COLLAPSED
-                + (self.right_sidebar_width() - TITLEBAR_RIGHT_CHROME_COLLAPSED) * right_progress
+                + (right_expanded_width - TITLEBAR_RIGHT_CHROME_COLLAPSED) * right_progress
         };
         let right_open = right_progress > 0.5;
         let tabs = self
@@ -146,6 +148,7 @@ impl super::WorkspaceView {
                         .h(px(26.0))
                         .relative()
                         .w(px(32.0))
+                        .flex_none()
                         .mr_2()
                         .rounded(px(7.0))
                         .flex()
@@ -273,6 +276,7 @@ impl super::WorkspaceView {
             .h(px(26.0))
             .relative()
             .w(px(32.0))
+            .flex_none()
             .mr_2()
             .rounded(px(7.0))
             .flex()
@@ -359,7 +363,15 @@ impl super::WorkspaceView {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.open_with_editor(editor.clone(), cx);
                                     }))
-                                    .child(div().size(px(16.0)).flex_none().child(icon))
+                                    .child(
+                                        div()
+                                            .size(px(16.0))
+                                            .flex_none()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon),
+                                    )
                                     .child(label)
                             },
                         )),

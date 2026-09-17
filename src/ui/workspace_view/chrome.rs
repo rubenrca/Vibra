@@ -11,6 +11,9 @@ use super::SidebarWorkspaceMeta;
 
 pub(crate) const PANEL_GAP: f32 = 4.0;
 pub(crate) const PANEL_RADIUS: f32 = 10.0;
+pub(crate) const PANEL_BORDER_WIDTH: f32 = 1.0;
+// Leave equal room for the status dot and shortcut so tab labels stay centered.
+pub(crate) const TAB_LABEL_INSET: f32 = 36.0;
 // Projects and sessions share the same horizontal bounds and leading edge.
 pub(crate) const SIDEBAR_ROW_INSET: f32 = 8.0;
 pub(crate) const SIDEBAR_ROW_PADDING: f32 = 6.0;
@@ -18,6 +21,10 @@ pub(crate) const SIDEBAR_ROW_END_PADDING: f32 = 2.0;
 pub(crate) const SIDEBAR_ROW_RADIUS: f32 = 6.0;
 pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
 pub(crate) const SIDEBAR_SESSION_MENU_SPACE: f32 = SIDEBAR_CONTROL_SIZE + 4.0;
+
+pub(crate) fn sidebar_row_width(panel_width: f32) -> f32 {
+    panel_width - 2.0 * (PANEL_BORDER_WIDTH + SIDEBAR_ROW_INSET)
+}
 
 /// Gutter between bento tiles. The window supplies its background; tiles own the borders.
 pub(crate) fn split_gutter(id: impl Into<SharedString>, axis: WorkspaceSplitAxis) -> Stateful<Div> {
@@ -261,7 +268,7 @@ pub(crate) fn clipped_width_panel(
         .border_color(colors().border_subtle)
         .child(
             div()
-                .w(px(full_width))
+                .w(px(full_width - 2.0 * PANEL_BORDER_WIDTH))
                 .h_full()
                 .flex()
                 .flex_col()

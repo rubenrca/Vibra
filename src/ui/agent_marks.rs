@@ -11,8 +11,8 @@ use crate::ui::theme::{MONO_FONT, colors};
 /// Glyph used when a pane has no detected agent mark.
 pub const TERMINAL_GLYPH: &str = ">_";
 // The slot includes room for optical scaling without clipping wider marks.
-pub(crate) const SIDEBAR_AGENT_MARK_SIZE: f32 = 14.0;
-const SIDEBAR_AGENT_ARTWORK_SIZE: f32 = 12.0;
+pub(crate) const SIDEBAR_AGENT_MARK_SIZE: f32 = 12.0;
+const SIDEBAR_AGENT_ARTWORK_SIZE: f32 = 10.0;
 
 macro_rules! bundled_assets {
     ($(($key:literal, $rel:literal)),+ $(,)?) => {
@@ -171,7 +171,7 @@ pub fn agent_compact_badge(
                 .child(brand_mark(kind, mark_color, 16.0)),
         )
         .when_some(status, |badge, color| {
-            badge.child(div().size(px(5.0)).rounded_full().bg(color))
+            badge.child(div().size(px(5.0)).flex_none().rounded_full().bg(color))
         })
         .into_any_element()
 }

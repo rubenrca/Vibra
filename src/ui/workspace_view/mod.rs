@@ -1877,7 +1877,7 @@ impl WorkspaceView {
                                 return self.project_sidebar_header(project, cx);
                             }
                         };
-                        let item_width = self.left_sidebar_width() - 2.0 * SIDEBAR_ROW_INSET;
+                        let item_width = chrome::sidebar_row_width(self.left_sidebar_width());
                         let project_id = entry.project_id;
                         let workspace_id = entry.workspace_id;
                         let selected = entry.is_selected;
@@ -2064,7 +2064,8 @@ impl WorkspaceView {
                                     .id(SharedString::from(format!("session-menu-{workspace_id}")))
                                     .absolute()
                                     .right(px(SIDEBAR_ROW_END_PADDING))
-                                    .bottom(px(4.0))
+                                    // Center on the 13px metadata line at the foot of the card.
+                                    .bottom(px(3.0))
                                     .size(px(SIDEBAR_CONTROL_SIZE))
                                     .flex()
                                     .items_center()
@@ -2257,16 +2258,23 @@ impl WorkspaceView {
                             .child(
                                 div()
                                     .w(px(12.0))
+                                    .h(px(16.0))
                                     .flex_none()
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_size(px(9.0))
-                                    .text_color(colors().subtle)
-                                    .child(if is_directory {
-                                        if expanded { "▾" } else { "▸" }
-                                    } else {
-                                        ""
+                                    .when(is_directory, |slot| {
+                                        slot.child(
+                                            gpui::svg()
+                                                .path(if expanded {
+                                                    "chrome-icons/chevron-down.svg"
+                                                } else {
+                                                    "chrome-icons/chevron-right.svg"
+                                                })
+                                                .size(px(9.0))
+                                                .flex_none()
+                                                .text_color(colors().subtle),
+                                        )
                                     }),
                             )
                             // Folder / file icon.
@@ -2705,7 +2713,7 @@ impl WorkspaceView {
                                 } else {
                                     colors().foreground
                                 })
-                                .child(value),
+                                .child(div().min_w(px(0.0)).flex_1().truncate().child(value)),
                         )
                         .child(
                             div()
@@ -2759,8 +2767,20 @@ impl WorkspaceView {
                 .border_color(colors().danger)
                 .text_size(px(10.5))
                 .text_color(colors().danger)
-                .child(div().size(px(5.0)).rounded_full().bg(colors().danger))
-                .child(error.clone())
+                .child(
+                    div()
+                        .size(px(5.0))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(colors().danger),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .truncate()
+                        .child(error.clone()),
+                )
         })
     }
 }

@@ -12,10 +12,10 @@ use crate::AddProject;
 use crate::domain::workspace::SidebarEntry;
 use crate::ui::theme::{colors, surface_tint};
 
+use super::chrome::sidebar_row_width;
 use super::{
     ContextMenuKind, LeftSidebarMode, ProjectDrag, SIDEBAR_CONTROL_SIZE, SIDEBAR_ROW_END_PADDING,
-    SIDEBAR_ROW_INSET, SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarWorkspaceDrag,
-    WorkspaceView, sidebar_tooltip,
+    SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarWorkspaceDrag, WorkspaceView, sidebar_tooltip,
 };
 
 impl WorkspaceView {
@@ -188,7 +188,7 @@ impl WorkspaceView {
         else {
             unreachable!()
         };
-        let row_width = self.left_sidebar_width() - 2.0 * SIDEBAR_ROW_INSET;
+        let row_width = sidebar_row_width(self.left_sidebar_width());
         let controls_width = 2.0 * SIDEBAR_CONTROL_SIZE + 2.0;
         // Reserve the folder icon, gaps, and controls within the shared row bounds.
         let label_width = (row_width

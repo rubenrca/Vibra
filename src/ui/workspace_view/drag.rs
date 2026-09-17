@@ -9,8 +9,8 @@ use crate::ui::theme::{MONO_FONT, colors};
 
 use super::SIDEBAR_WORKSPACE_HEIGHT;
 use super::chrome::{
-    SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarSessionCard, sidebar_workspace_appearance,
-    sidebar_workspace_content,
+    SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarSessionCard, TAB_LABEL_INSET,
+    sidebar_workspace_appearance, sidebar_workspace_content,
 };
 
 #[derive(Clone)]
@@ -102,7 +102,8 @@ impl Render for TabDragView {
             .flex()
             .items_center()
             .justify_center()
-            .px(px(10.0))
+            .px(px(TAB_LABEL_INSET))
+            .overflow_hidden()
             .rounded_full()
             .bg(if selected {
                 colors().selection
@@ -121,6 +122,7 @@ impl Render for TabDragView {
             .child(
                 div()
                     .min_w(px(0.0))
+                    .flex_1()
                     .truncate()
                     .text_center()
                     .text_size(px(12.0))

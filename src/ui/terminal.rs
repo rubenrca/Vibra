@@ -1601,9 +1601,10 @@ impl Render for TerminalView {
                     div()
                         .absolute()
                         .top_3()
+                        .left_3()
                         .right_3()
-                        .min_w(px(260.0))
                         .max_w(px(420.0))
+                        .ml_auto()
                         .px_3()
                         .py_2()
                         .rounded_md()
@@ -1616,12 +1617,14 @@ impl Render for TerminalView {
                         .gap_1()
                         .child(
                             div()
+                                .truncate()
                                 .text_sm()
                                 .text_color(colors().foreground)
                                 .child(format!("Buscar  {search_query}{composition}")),
                         )
                         .child(
                             div()
+                                .truncate()
                                 .text_xs()
                                 .text_color(if search_match_found {
                                     colors().muted

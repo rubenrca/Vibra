@@ -149,12 +149,15 @@ pub(crate) fn file_tree_icon(
             svg()
                 .path(path)
                 .size(px(14.0))
+                .flex_none()
                 .text_color(color)
                 .into_any_element()
         }
         FileEntryKind::Symlink => div()
+            .flex_none()
             .font_family(MONO_FONT)
             .text_size(px(11.0))
+            .line_height(px(16.0))
             .text_color(color)
             .child("↗")
             .into_any_element(),
@@ -163,13 +166,16 @@ pub(crate) fn file_tree_icon(
                 return svg()
                     .path("file-icons/file.svg")
                     .size(px(13.0))
+                    .flex_none()
                     .text_color(color)
                     .into_any_element();
             };
             div()
+                .flex_none()
                 .font_family(MONO_FONT)
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_size(px(8.5))
+                .line_height(px(16.0))
                 .text_color(color)
                 .child(glyph)
                 .into_any_element()
@@ -228,23 +234,30 @@ pub(crate) fn aggregate_dir_status(
 
 /// Right-side indicator: letter for modified/renamed, colored dots for add/delete.
 pub(crate) fn git_status_trailing(status: GitFileStatus) -> Div {
+    let slot = div()
+        .size(px(12.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center();
     let label = match status {
         GitFileStatus::Modified | GitFileStatus::TypeChanged => "M",
         GitFileStatus::Renamed => "R",
         GitFileStatus::Copied => "C",
         GitFileStatus::Conflicted => "U",
         GitFileStatus::Added | GitFileStatus::Untracked | GitFileStatus::Deleted => {
-            return div()
-                .size(px(6.0))
-                .flex_none()
-                .rounded_full()
-                .bg(git_status_color(status));
+            return slot.child(
+                div()
+                    .size(px(6.0))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(git_status_color(status)),
+            );
         }
     };
-    div()
-        .flex_none()
-        .font_family(MONO_FONT)
+    slot.font_family(MONO_FONT)
         .text_size(px(10.0))
+        .line_height(px(12.0))
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(git_status_color(status))
         .child(label)

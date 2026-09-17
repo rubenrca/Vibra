@@ -1,6 +1,6 @@
 //! Command palette and quick-open.
 
-use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px, relative};
 
 use crate::domain::workspace::PaneSplitDirection;
 use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface_tint};
@@ -329,6 +329,7 @@ impl super::WorkspaceView {
                                 .border_color(colors().border_subtle)
                                 .child(
                                     div()
+                                        .flex_none()
                                         .font_family(MONO_FONT)
                                         .text_color(colors().subtle)
                                         .child(">"),
@@ -336,6 +337,8 @@ impl super::WorkspaceView {
                                 .child(
                                     div()
                                         .flex_1()
+                                        .min_w(px(0.0))
+                                        .truncate()
                                         .font_family(MONO_FONT)
                                         .text_size(px(12.0))
                                         .text_color(if query.is_empty() {
@@ -349,7 +352,13 @@ impl super::WorkspaceView {
                                             query
                                         }),
                                 )
-                                .child(div().text_xs().text_color(colors().subtle).child("esc")),
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(colors().subtle)
+                                        .child("esc"),
+                                ),
                         )
                         .child(
                             div()
@@ -385,8 +394,11 @@ impl super::WorkspaceView {
                                         }))
                                         .child(
                                             div()
-                                                .w(px(18.0))
-                                                .text_center()
+                                                .size(px(18.0))
+                                                .flex_none()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
                                                 .font_family(MONO_FONT)
                                                 .text_color(if active {
                                                     colors().muted
@@ -410,6 +422,9 @@ impl super::WorkspaceView {
                                         )
                                         .child(
                                             div()
+                                                .max_w(relative(0.4))
+                                                .flex_none()
+                                                .truncate()
                                                 .font_family(MONO_FONT)
                                                 .text_size(px(8.5))
                                                 .text_color(colors().subtle)

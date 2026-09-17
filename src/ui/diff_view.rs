@@ -1565,11 +1565,22 @@ impl DiffView {
                     .child(
                         div()
                             .w(px(12.0))
+                            .h(px(18.0))
                             .flex_none()
-                            .text_center()
-                            .text_size(px(10.0))
-                            .text_color(colors().subtle)
-                            .child(if expanded { "▾" } else { "▸" }),
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                gpui::svg()
+                                    .path(if expanded {
+                                        "chrome-icons/chevron-down.svg"
+                                    } else {
+                                        "chrome-icons/chevron-right.svg"
+                                    })
+                                    .size(px(9.0))
+                                    .flex_none()
+                                    .text_color(colors().subtle),
+                            ),
                     )
                     .child(
                         div()

@@ -61,6 +61,8 @@ fn settings_button_base(label: &'static str, id: &'static str) -> Stateful<Div> 
     div()
         .id(id)
         .h(px(26.0))
+        .flex_none()
+        .whitespace_nowrap()
         .px_3()
         .rounded(px(5.0))
         .cursor_pointer()
@@ -100,6 +102,8 @@ impl WorkspaceView {
 
     fn settings_status_chip(&self, label: &'static str, active: bool) -> AnyElement {
         div()
+            .flex_none()
+            .whitespace_nowrap()
             .px_2()
             .py_1()
             .rounded(px(4.0))
@@ -148,7 +152,6 @@ impl WorkspaceView {
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         settings_button_base(label, id)
-            .h(px(24.0))
             .bg(surface_tint(colors().selection, colors().panel))
             .border_1()
             .border_color(colors().border_subtle)
@@ -249,6 +252,7 @@ impl WorkspaceView {
                             .gap_2()
                             .child(
                                 div()
+                                    .flex_none()
                                     .flex()
                                     .items_center()
                                     .gap_1()
@@ -258,6 +262,9 @@ impl WorkspaceView {
                             )
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .truncate()
                                     .text_size(px(10.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(colors().foreground)
@@ -279,6 +286,7 @@ impl WorkspaceView {
         let empty = query.is_empty();
         div()
             .h(px(28.0))
+            .flex_none()
             .px_2()
             .rounded(px(6.0))
             .border_1()
@@ -287,6 +295,9 @@ impl WorkspaceView {
             .items_center()
             .child(
                 div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
                     .text_size(px(10.0))
                     .font_family(MONO_FONT)
                     .text_color(if empty {
@@ -316,6 +327,7 @@ impl WorkspaceView {
             .py_2()
             .flex()
             .items_center()
+            .gap_3()
             .cursor_pointer()
             .when(row.divider, |row| {
                 row.border_b_1().border_color(colors().border_subtle)
@@ -325,6 +337,7 @@ impl WorkspaceView {
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.0))
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -346,9 +359,11 @@ impl WorkspaceView {
                 div()
                     .w(px(30.0))
                     .h(px(16.0))
+                    .flex_none()
                     .p(px(2.0))
                     .rounded_full()
                     .flex()
+                    .items_center()
                     .justify_end()
                     .bg(if row.enabled {
                         colors().success
@@ -356,7 +371,13 @@ impl WorkspaceView {
                         colors().selection
                     })
                     .when(!row.enabled, |toggle| toggle.justify_start())
-                    .child(div().size(px(12.0)).rounded_full().bg(colors().foreground)),
+                    .child(
+                        div()
+                            .size(px(12.0))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(colors().foreground),
+                    ),
             )
     }
 
@@ -776,6 +797,7 @@ impl WorkspaceView {
                                 div()
                                     .w(px(52.0))
                                     .h(px(26.0))
+                                    .flex_none()
                                     .rounded(px(5.0))
                                     .bg(surface_tint(colors().terminal, colors().panel))
                                     .border_1()

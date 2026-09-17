@@ -19,6 +19,7 @@ use crate::{
     SplitPaneLeft, SplitPaneRight, SplitPaneUp, TogglePaneZoom,
 };
 
+use super::chrome::TAB_LABEL_INSET;
 use super::{
     ContextMenuKind, PANEL_RADIUS, PaneDividerDrag, PaneDividerDragView, PaneDrag, ReorderDrag,
     TabDrag, TabDragView, split_gutter,
@@ -127,6 +128,7 @@ impl super::WorkspaceView {
                     .items_center()
                     .justify_center()
                     .px(px(10.0))
+                    .overflow_hidden()
                     .rounded_full()
                     .when(can_reorder, |tab| tab.cursor_move())
                     .when(!can_reorder, |tab| tab.cursor_pointer())
@@ -231,7 +233,13 @@ impl super::WorkspaceView {
                     })
                     .child(
                         div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(TAB_LABEL_INSET))
+                            .right(px(TAB_LABEL_INSET))
                             .min_w(px(0.0))
+                            .overflow_hidden()
                             .flex()
                             .items_center()
                             .justify_center()
@@ -239,6 +247,7 @@ impl super::WorkspaceView {
                             .child(
                                 div()
                                     .min_w(px(0.0))
+                                    .flex_shrink()
                                     .truncate()
                                     .text_center()
                                     .text_size(px(12.0))
