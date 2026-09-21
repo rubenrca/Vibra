@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context as _, Result, bail};
 
@@ -16,6 +16,9 @@ use crate::ports::git::{
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
+/// Line counts for untracked files stay local. A full `git diff --no-index` on
+/// every sidebar poll would rebuild patches the list never shows.
+const MAX_UNTRACKED_STAT_BYTES: u64 = 8 * 1024 * 1024;
 const BRANCH_SUMMARY_TTL: Duration = Duration::from_millis(1_500);
 
 #[derive(Clone)]
@@ -24,9 +27,18 @@ struct CachedBranchSummary {
     fetched_at: Instant,
 }
 
+#[derive(Clone)]
+struct CachedUntrackedStat {
+    len: u64,
+    modified: SystemTime,
+    /// `None` for binary files and files above [`MAX_UNTRACKED_STAT_BYTES`].
+    additions: Option<usize>,
+}
+
 #[derive(Default)]
 pub struct GitCliPort {
     branch_cache: Mutex<HashMap<PathBuf, CachedBranchSummary>>,
+    untracked_stats: Mutex<HashMap<PathBuf, CachedUntrackedStat>>,
 }
 
 impl GitCliPort {
@@ -52,6 +64,30 @@ impl GitCliPort {
                 fetched_at: Instant::now(),
             },
         );
+    }
+
+    /// Fills `+N` for untracked text files so the list does not wait for the diff to open.
+    fn fill_untracked_line_counts(&self, root: &Path, changes: &mut [GitFileChange]) {
+        let mut cache = self
+            .untracked_stats
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut seen = HashSet::new();
+        for change in changes.iter_mut() {
+            if !change.untracked {
+                continue;
+            }
+            let full = root.join(&change.path);
+            if !seen.insert(full.clone()) {
+                continue;
+            }
+            let Some(additions) = cached_untracked_additions(&full, &mut cache) else {
+                continue;
+            };
+            change.additions = Some(additions);
+            change.deletions = Some(0);
+        }
+        cache.retain(|path, _| !path.starts_with(root) || seen.contains(path));
     }
 }
 
@@ -96,13 +132,14 @@ impl GitPort for GitCliPort {
         collect_numstat(&root, true, &mut stats)?;
         for change in &mut changes {
             if change.untracked {
-                // Poll path: do not slurp untracked files just to count lines.
                 continue;
-            } else if let Some((additions, deletions)) = stats.get(&change.path) {
+            }
+            if let Some((additions, deletions)) = stats.get(&change.path) {
                 change.additions = Some(*additions);
                 change.deletions = Some(*deletions);
             }
         }
+        self.fill_untracked_line_counts(&root, &mut changes);
         changes.sort_by(|left, right| {
             change_priority(left)
                 .cmp(&change_priority(right))
@@ -385,6 +422,7 @@ impl GitPort for GitCliPort {
                 });
             }
         }
+        self.fill_untracked_line_counts(&root, &mut changes);
         changes.sort_by(|left, right| {
             change_priority(left)
                 .cmp(&change_priority(right))
@@ -1195,6 +1233,64 @@ fn collect_numstat_against(
     Ok(())
 }
 
+fn cached_untracked_additions(
+    path: &Path,
+    cache: &mut HashMap<PathBuf, CachedUntrackedStat>,
+) -> Option<usize> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let len = meta.len();
+    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    if let Some(cached) = cache.get(path)
+        && cached.len == len
+        && cached.modified == modified
+    {
+        return cached.additions;
+    }
+    let additions = match read_untracked_additions(path, len) {
+        Ok(additions) => additions,
+        Err(_) => return None,
+    };
+    cache.insert(
+        path.to_path_buf(),
+        CachedUntrackedStat {
+            len,
+            modified,
+            additions,
+        },
+    );
+    additions
+}
+
+fn read_untracked_additions(path: &Path, len: u64) -> std::io::Result<Option<usize>> {
+    if len > MAX_UNTRACKED_STAT_BYTES {
+        return Ok(None);
+    }
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = vec![0u8; len as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(text_additions(&bytes))
+}
+
+/// Additions `git diff --no-index` would report for a brand-new text file.
+/// Binary files (NUL in the first 8 KiB, matching Git) stay `None`.
+fn text_additions(bytes: &[u8]) -> Option<usize> {
+    if bytes.iter().take(8_000).any(|byte| *byte == 0) {
+        return None;
+    }
+    if bytes.is_empty() {
+        return Some(0);
+    }
+    let newlines = bytes.iter().filter(|byte| **byte == b'\n').count();
+    if bytes.last() == Some(&b'\n') {
+        Some(newlines)
+    } else {
+        Some(newlines + 1)
+    }
+}
+
 fn apply_numstat(stdout: &[u8], stats: &mut HashMap<String, (usize, usize)>) {
     for line in String::from_utf8_lossy(stdout).lines() {
         let mut fields = line.splitn(3, '\t');
@@ -1407,14 +1503,75 @@ mod tests {
             .iter()
             .find(|change| change.path == "new file.txt")
             .unwrap();
-        assert!(
-            untracked.additions.is_none(),
-            "worktree poll must not slurp untracked files for line counts"
-        );
+        assert_eq!(untracked.additions, Some(2));
+        assert_eq!(untracked.deletions, Some(0));
         let diff = port.diff(&root, untracked).unwrap();
         assert_eq!(diff.additions, 2);
         assert!(diff.rows.iter().any(|row| row.text == "new"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn untracked_line_counts_show_before_the_diff_is_opened() {
+        let root = repository();
+        fs::write(root.join("plain.txt"), "one\ntwo\nthree").unwrap();
+        fs::write(root.join("empty.txt"), "").unwrap();
+        fs::write(root.join("binary.bin"), b"hi\0there\n").unwrap();
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("nested/lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        let port = GitCliPort::default();
+
+        let snapshot = port.snapshot(&root).unwrap().unwrap();
+        let additions = |path: &str| {
+            snapshot
+                .changes
+                .iter()
+                .find(|change| change.path == path)
+                .unwrap()
+                .additions
+        };
+        assert_eq!(additions("plain.txt"), Some(3));
+        assert_eq!(additions("empty.txt"), Some(0));
+        assert_eq!(additions("binary.bin"), None);
+        assert_eq!(additions("nested/lib.rs"), Some(2));
+        assert_eq!(snapshot.additions, 5);
+
+        fs::write(root.join("plain.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        let refreshed = port.snapshot(&root).unwrap().unwrap();
+        assert_eq!(
+            refreshed
+                .changes
+                .iter()
+                .find(|change| change.path == "plain.txt")
+                .unwrap()
+                .additions,
+            Some(4)
+        );
+
+        let changes = port.branch_changes(&root, None, None).unwrap().unwrap();
+        assert_eq!(
+            changes
+                .snapshot
+                .changes
+                .iter()
+                .find(|change| change.path == "nested/lib.rs")
+                .unwrap()
+                .additions,
+            Some(2)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn text_additions_match_a_new_file_diff() {
+        assert_eq!(text_additions(b""), Some(0));
+        assert_eq!(text_additions(b"one\n"), Some(1));
+        assert_eq!(text_additions(b"one\ntwo"), Some(2));
+        assert_eq!(text_additions(b"one\ntwo\n"), Some(2));
+        assert_eq!(text_additions(b"hi\0there\n"), None);
+        let mut late_nul = vec![b'a'; 8_001];
+        late_nul[8_000] = 0;
+        assert_eq!(text_additions(&late_nul), Some(1));
     }
 
     #[test]
