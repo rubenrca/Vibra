@@ -3,21 +3,19 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.26</title>
-            <pubDate>Thu, 17 Sep 2026 13:00:06 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.26</link>
-            <sparkle:version>180</sparkle:version>
-            <sparkle:shortVersionString>0.3.26</sparkle:shortVersionString>
+            <title>0.3.27</title>
+            <pubDate>Mon, 21 Sep 2026 20:51:20 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.27</link>
+            <sparkle:version>185</sparkle:version>
+            <sparkle:shortVersionString>0.3.27</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Refine session metadata with compact, consistently sized agent marks alongside project context, keeping folder-based project groups and Git details.</li>
-  <li>Unify translucent window backgrounds, menus, tooltips, and dialogs with the active theme, and soften modal overlays.</li>
-  <li>Correct sidebar content widths and titlebar alignment, and keep terminal tab labels centered with room for status indicators and shortcuts.</li>
-  <li>Prevent long labels, search queries, and messages from overflowing compact panels, and keep settings controls and icons from shrinking.</li>
-  <li>Align file and Git status icons and use consistent chevrons in the file tree and diff headers.</li>
+  <li>Add a quiet + beside each folder chevron to create a new tab in that folder.</li>
+  <li>Show added-line counts for untracked files in Git changes without opening the diff. Binaries and files larger than 8 MiB stay uncounted until the full diff is opened.</li>
+  <li>Stop treating Grok's always-approve footer as a waiting prompt, while still detecting real permission requests.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.26/Vibra-0.3.26.dmg" length="13032307" type="application/octet-stream" sparkle:edSignature="fWLQNUGe6/EjOkPxqDd8cj/vYHSa1SSBpackzUdi3ZVMUYwGy/osMnnXhILMbU+cTmyGwjSd7gXO2jZCdAcBAA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.27/Vibra-0.3.27.dmg" length="13040989" type="application/octet-stream" sparkle:edSignature="+VfKqwGPrf/9GbvrcJ5ED+SspIJra4T7hzveQ8pSpoLHkQrLkRB3op09D16Z5y52Jfz17X9EoIVcejF1Mzt4BA=="/>
         </item>
     </channel>
 </rss>
