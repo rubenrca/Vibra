@@ -2265,10 +2265,16 @@ fn agent_state_from_text(title: &str, screen: &str) -> AgentRuntimeState {
     let mut visible = title.to_lowercase();
     visible.push('\n');
     visible.push_str(screen);
+    // Grok paints the permission mode on the footer for the whole session.
+    // "always-approve" would otherwise match the "approve" waiting marker.
+    let visible = strip_permission_mode_chrome(&visible);
     let waiting_markers = [
+        "action required",
+        "allow once",
         "allow?",
         "approve",
         "do you want to continue",
+        "don't ask again",
         "press enter to confirm",
         "waiting for input",
         "(y/n)",
@@ -2283,20 +2289,39 @@ fn agent_state_from_text(title: &str, screen: &str) -> AgentRuntimeState {
         "generating response",
         "running tool",
         "running command",
+        "running:",
+        "preparing",
+        "responding",
+        "compacting",
     ];
     if waiting_markers
         .iter()
-        .any(|marker| visible.contains(marker))
+        .any(|marker| contains_marker(&visible, marker))
     {
         AgentRuntimeState::Waiting
     } else if working_markers
         .iter()
-        .any(|marker| visible.contains(marker))
+        .any(|marker| contains_marker(&visible, marker))
     {
         AgentRuntimeState::Working
     } else {
         AgentRuntimeState::Idle
     }
+}
+
+fn contains_marker(text: &str, marker: &str) -> bool {
+    text.match_indices(marker).any(|(index, _)| {
+        let before = text[..index].chars().next_back();
+        let after = text[index + marker.len()..].chars().next();
+        !before.is_some_and(|ch| ch.is_ascii_alphanumeric())
+            && !after.is_some_and(|ch| ch.is_ascii_alphanumeric())
+    })
+}
+
+fn strip_permission_mode_chrome(text: &str) -> String {
+    ["always-approve", "always approve", "auto-approve", "auto approve"]
+        .into_iter()
+        .fold(text.to_owned(), |text, badge| text.replace(badge, " "))
 }
 
 #[cfg(test)]
@@ -2659,6 +2684,92 @@ mod tests {
             detect_agent_presence("OpenAI Codex", &snapshot, None, None, None).unwrap();
         assert_eq!(title_presence.kind, "Codex");
         assert_eq!(title_presence.state, AgentRuntimeState::Waiting);
+    }
+
+    #[test]
+    fn grok_permission_mode_badge_is_not_a_waiting_prompt() {
+        let snapshot = blank_agent_snapshot();
+        let working = detect_agent_presence(
+            ".. - Preparing read_file... - Add Sidebar",
+            &snapshot,
+            Some("❯\nalways-approve   42%"),
+            Some("grok"),
+            Some(7),
+        )
+        .unwrap();
+        assert_eq!(working.kind, "Grok");
+        assert_eq!(working.state, AgentRuntimeState::Working);
+
+        let responding = detect_agent_presence(
+            "Responding - vibra",
+            &snapshot,
+            Some("always-approve"),
+            Some("grok"),
+            Some(7),
+        )
+        .unwrap();
+        assert_eq!(responding.state, AgentRuntimeState::Working);
+
+        let idle = detect_agent_presence(
+            "vibra",
+            &snapshot,
+            Some("❯\nalways-approve   12%"),
+            Some("grok"),
+            Some(7),
+        )
+        .unwrap();
+        assert_eq!(idle.state, AgentRuntimeState::Idle);
+        assert_eq!(
+            detect_agent_presence(
+                "vibra",
+                &snapshot,
+                Some("corresponding change\nalways-approve"),
+                Some("grok"),
+                Some(7),
+            )
+            .unwrap()
+            .state,
+            AgentRuntimeState::Idle
+        );
+
+        let permission = detect_agent_presence(
+            "Action Required - vibra",
+            &snapshot,
+            Some("Yes, allow once\nNo, reject\nalways-approve"),
+            Some("grok"),
+            Some(7),
+        )
+        .unwrap();
+        assert_eq!(permission.state, AgentRuntimeState::Waiting);
+        assert_eq!(
+            detect_agent_presence(
+                "Terminal",
+                &snapshot,
+                Some("approve this command?"),
+                Some("grok"),
+                Some(7),
+            )
+            .unwrap()
+            .state,
+            AgentRuntimeState::Waiting
+        );
+    }
+
+    fn blank_agent_snapshot() -> TerminalSnapshot {
+        TerminalSnapshot {
+            columns: 80,
+            rows: 1,
+            lines: vec![Arc::from([TerminalCell::with_text(
+                0,
+                0,
+                " ",
+                TerminalRgb::new(255, 255, 255),
+                TerminalRgb::new(0, 0, 0),
+            )])],
+            cursor: None,
+            display_offset: 0,
+            history_size: 0,
+        }
     }
 
     #[test]
