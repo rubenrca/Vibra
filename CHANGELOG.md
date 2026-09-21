@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.3.27 — 2026-09-21
+
+- Add a quiet + beside each folder chevron to create a new tab in that folder.
+- Show added-line counts for untracked files in Git changes without opening the diff. Binaries and files larger than 8 MiB stay uncounted until the full diff is opened.
+- Stop treating Grok's always-approve footer as a waiting prompt, while still detecting real permission requests.
+
 ## 0.3.26 — 2026-09-17
 
 - Refine session metadata with compact, consistently sized agent marks alongside project context, keeping folder-based project groups and Git details.
