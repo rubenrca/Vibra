@@ -190,7 +190,7 @@ impl WorkspaceView {
         };
         let row_width = sidebar_row_width(self.left_sidebar_width());
         let controls_width = 2.0 * SIDEBAR_CONTROL_SIZE + 2.0;
-        // Reserve the folder icon, gaps, and controls within the shared row bounds.
+        // Folder icon, the gap around the label, and the plus + chevron group.
         let label_width = (row_width
             - SIDEBAR_ROW_PADDING
             - SIDEBAR_ROW_END_PADDING
@@ -293,25 +293,31 @@ impl WorkspaceView {
                     .flex_none()
                     .flex()
                     .items_center()
+                    .justify_end()
                     .gap(px(2.0))
                     .child(
                         div()
                             .id(SharedString::from(format!("project-new-session-{id}")))
-                            .tooltip(|_, cx| sidebar_tooltip("Nueva sesión en este proyecto", cx))
+                            .tooltip(|_, cx| sidebar_tooltip("Nuevo tab en esta carpeta", cx))
                             .size(px(SIDEBAR_CONTROL_SIZE))
                             .flex_none()
                             .flex()
                             .items_center()
                             .justify_center()
                             .rounded(px(4.0))
-                            .text_color(colors().muted)
-                            .hover(|s| s.bg(colors().hover).text_color(colors().foreground))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(colors().hover))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.create_project_session(id, window, cx);
                                 cx.stop_propagation();
                             }))
-                            .child(svg().path("chrome-icons/plus.svg").size(px(12.0))),
+                            .child(
+                                svg()
+                                    .path("chrome-icons/plus.svg")
+                                    .size(px(9.0))
+                                    .text_color(colors().subtle),
+                            ),
                     )
                     .child(
                         div()
