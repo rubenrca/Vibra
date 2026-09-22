@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -155,6 +155,7 @@ pub struct TerminalView {
     search_query: String,
     search_match_found: bool,
     pending_confirmations: VecDeque<TerminalConfirmation>,
+    pressed_key_foregrounds: HashMap<String, Option<u32>>,
     cursor_visible: bool,
     cursor_blinking: bool,
     terminal_focused: bool,
@@ -282,6 +283,7 @@ impl TerminalView {
             search_query: String::new(),
             search_match_found: false,
             pending_confirmations: VecDeque::new(),
+            pressed_key_foregrounds: HashMap::new(),
             cursor_visible: true,
             cursor_blinking: false,
             terminal_focused: false,
@@ -835,6 +837,14 @@ impl TerminalView {
             TerminalKeyEventType::Press
         };
         if key_event_bytes(keystroke, mode, event_type).is_some() {
+            if event_type == TerminalKeyEventType::Press {
+                self.pressed_key_foregrounds.insert(
+                    key,
+                    self.handle
+                        .as_ref()
+                        .and_then(|handle| handle.foreground_process_id()),
+                );
+            }
             self.send_key(keystroke, event_type);
             self.reset_cursor_blink();
             cx.stop_propagation();
@@ -842,7 +852,21 @@ impl TerminalView {
     }
 
     fn on_key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let pressed_foreground = self
+            .pressed_key_foregrounds
+            .remove(&event.keystroke.key.to_ascii_lowercase());
         if self.search_active || event.keystroke.modifiers.platform {
+            return;
+        }
+        let Some(pressed_foreground) = pressed_foreground else {
+            return;
+        };
+        let current_foreground = self
+            .handle
+            .as_ref()
+            .and_then(|handle| handle.foreground_process_id());
+        if matches!((pressed_foreground, current_foreground), (Some(pressed), Some(current)) if pressed != current)
+        {
             return;
         }
         let mode = self
@@ -2319,9 +2343,14 @@ fn contains_marker(text: &str, marker: &str) -> bool {
 }
 
 fn strip_permission_mode_chrome(text: &str) -> String {
-    ["always-approve", "always approve", "auto-approve", "auto approve"]
-        .into_iter()
-        .fold(text.to_owned(), |text, badge| text.replace(badge, " "))
+    [
+        "always-approve",
+        "always approve",
+        "auto-approve",
+        "auto approve",
+    ]
+    .into_iter()
+    .fold(text.to_owned(), |text, badge| text.replace(badge, " "))
 }
 
 #[cfg(test)]
@@ -2339,6 +2368,8 @@ mod tests {
         events: Receiver<TerminalEvent>,
         _events_tx: Sender<TerminalEvent>,
         inputs: Mutex<Vec<Vec<u8>>>,
+        mode: Mutex<TerminalInputMode>,
+        foreground: Mutex<Option<u32>>,
     }
 
     impl MockTerminalPort {
@@ -2349,6 +2380,8 @@ mod tests {
                     events,
                     _events_tx: events_tx,
                     inputs: Mutex::new(Vec::new()),
+                    mode: Mutex::new(TerminalInputMode::default()),
+                    foreground: Mutex::new(None),
                 }),
             }
         }
@@ -2413,7 +2446,11 @@ mod tests {
         }
 
         fn input_mode(&self) -> TerminalInputMode {
-            TerminalInputMode::default()
+            *self.mode.lock().unwrap()
+        }
+
+        fn foreground_process_id(&self) -> Option<u32> {
+            *self.foreground.lock().unwrap()
         }
 
         fn clear_selection(&self) {}
@@ -2495,6 +2532,94 @@ mod tests {
         assert_eq!(
             mock_handle.inputs.lock().unwrap().as_slice(),
             [b"x".to_vec()]
+        );
+    }
+
+    #[gpui::test]
+    fn key_release_does_not_follow_exited_foreground_job_into_shell(cx: &mut TestAppContext) {
+        let port = Arc::new(MockTerminalPort::new());
+        let handle = port.handle.clone();
+        *handle.mode.lock().unwrap() = TerminalInputMode {
+            disambiguate_escape_codes: true,
+            report_event_types: true,
+            ..TerminalInputMode::default()
+        };
+        *handle.foreground.lock().unwrap() = Some(200);
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| {
+                    TerminalView::new_with_environment(
+                        Uuid::new_v4(),
+                        "Terminal".into(),
+                        Path::new("/"),
+                        port,
+                        HashMap::new(),
+                        cx,
+                    )
+                })
+            })
+            .unwrap()
+        });
+        let ctrl_c = key(
+            "c",
+            Modifiers {
+                control: true,
+                ..Modifiers::default()
+            },
+        );
+        window
+            .update(cx, |terminal, window, cx| {
+                terminal.on_key_down(
+                    &KeyDownEvent {
+                        keystroke: ctrl_c.clone(),
+                        is_held: false,
+                    },
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        *handle.foreground.lock().unwrap() = Some(100);
+        window
+            .update(cx, |terminal, window, cx| {
+                terminal.on_key_up(
+                    &KeyUpEvent {
+                        keystroke: ctrl_c.clone(),
+                    },
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        assert_eq!(handle.inputs.lock().unwrap().as_slice(), [b"\x1b[99;5u"]);
+
+        *handle.foreground.lock().unwrap() = Some(300);
+        window
+            .update(cx, |terminal, window, cx| {
+                terminal.on_key_down(
+                    &KeyDownEvent {
+                        keystroke: ctrl_c.clone(),
+                        is_held: false,
+                    },
+                    window,
+                    cx,
+                );
+                terminal.on_key_up(
+                    &KeyUpEvent {
+                        keystroke: ctrl_c.clone(),
+                    },
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            handle.inputs.lock().unwrap().as_slice(),
+            [
+                b"\x1b[99;5u".to_vec(),
+                b"\x1b[99;5u".to_vec(),
+                b"\x1b[99;5:3u".to_vec(),
+            ]
         );
     }
 
