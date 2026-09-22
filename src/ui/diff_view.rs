@@ -1,14 +1,32 @@
+//! The right-pane Git review.
+//!
+//! - The review is one virtualized `list()` at line granularity (see
+//!   [`crate::ui::diff_rows`]): one scroll for every file, only the visible
+//!   slice renders, and a collapsed file has no body rows at all.
+//! - The current file's header sticks to the top and is pushed away by the
+//!   next one.
+//! - Two layouts (unified / split) and optional wrapping, persisted in
+//!   settings. Without wrapping, horizontal scrolling moves only the code
+//!   plane, in sync across files and split halves, while gutters stay put.
+//! - Lines take review comments that are pasted into the agent's terminal as
+//!   one prompt.
+//! - Scopes: working tree, branch changes, the latest agent turn (the tree as
+//!   it stood when an agent started working vs. the tree now), and history.
+//! - Syntax highlighting uses both whole files when available, so state
+//!   opened outside a hunk (block comments, strings) still colors correctly.
+
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
-    AnyView, Context, Div, Entity, EventEmitter, FocusHandle, HighlightStyle, IntoElement,
-    ListHorizontalSizingBehavior, PathBuilder, Render, Rgba, SharedString, Stateful,
-    StyleRefinement, StyledText, Task, TextStyle, Timer, UniformListScrollHandle, WhiteSpace,
-    Window, canvas, div, point, prelude::*, px, uniform_list,
+    Animation, AnimationExt as _, AnyElement, Context, DispatchPhase, Div, EventEmitter,
+    FocusHandle, HighlightStyle, IntoElement, ListAlignment, ListOffset, ListState, PathBuilder,
+    Render, Rgba, ScrollWheelEvent, SharedString, Stateful, StyledText, Task, TextStyle, Timer,
+    WhiteSpace, Window, canvas, div, ease_out_quint, list, point, prelude::*, px, uniform_list,
 };
 
 use crate::ports::git::{
@@ -17,14 +35,14 @@ use crate::ports::git::{
     assign_commit_lanes,
 };
 use crate::ui::diff_document::DiffDocument;
+use crate::ui::diff_rows::{
+    BodyRow, CommentAnchor, CommentSide, DiffLayout, FlattenFile, ReviewComment, ReviewRow,
+    body_row_anchors, body_rows, flatten, review_prompt,
+};
 use crate::ui::syntax::SyntaxSpan;
-use crate::ui::theme::{MONO_FONT, Theme, colors, popover_surface, surface_tint};
+use crate::ui::theme::{MONO_FONT, colors, floating_surface, popover_surface, surface_tint};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
-const DIFF_ROW_HEIGHT: f32 = 22.0;
-const DIFF_FONT_SIZE: f32 = 12.0;
-const DIFF_GUTTER_WIDTH: f32 = 38.0;
-const DIFF_MARKER_WIDTH: f32 = 18.0;
 const HISTORY_ROW_HEIGHT: f32 = 36.0;
 const HISTORY_HEADER_HEIGHT: f32 = 24.0;
 const GRAPH_LANE_WIDTH: f32 = 12.0;
@@ -33,25 +51,107 @@ const HISTORY_DATE_WIDTH: f32 = 88.0;
 const HISTORY_SHA_WIDTH: f32 = 64.0;
 const HISTORY_PAGE: usize = 250;
 
-/// Bound each file viewport; only its visible code rows are rendered.
-const MAX_INLINE_DIFF_HEIGHT: f32 = 440.0;
-const MIN_INLINE_DIFF_HEIGHT: f32 = 66.0;
 const FILE_HEADER_HEIGHT: f32 = 42.0;
-const DIFF_NOTICE_HEIGHT: f32 = 20.0;
+const SECTION_HEIGHT: f32 = 32.0;
+/// Row height at the default code size; other sizes keep the proportion.
+const BASE_DIFF_FONT_SIZE: f32 = 12.0;
+const BASE_DIFF_ROW_HEIGHT: f32 = 22.0;
+const MARKER_WIDTH: f32 = 20.0;
+const SPLIT_DIVIDER_WIDTH: f32 = 1.0;
+const CODE_PADDING_LEFT: f32 = 8.0;
+/// Breathing room after the widest line when scrolled fully right.
+const CODE_PADDING_RIGHT: f32 = 24.0;
+const COMMENT_BUTTON_SIZE: f32 = 16.0;
+const FOLD_DURATION: Duration = Duration::from_millis(180);
+/// Rows searched below the scroll top for the header that pushes the sticky one.
+const STICKY_PUSH_SCAN: usize = 96;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum GitPanelMode {
     Worktree,
     Branch,
+    LatestTurn,
     History,
 }
 
 impl GitPanelMode {
+    const ALL: [Self; 4] = [
+        Self::Worktree,
+        Self::Branch,
+        Self::LatestTurn,
+        Self::History,
+    ];
+
     fn label(self) -> &'static str {
         match self {
             Self::Worktree => "Working tree",
             Self::Branch => "Branch changes",
+            Self::LatestTurn => "Latest turn",
             Self::History => "History",
+        }
+    }
+}
+
+/// The whole working tree frozen when an agent started its latest turn.
+#[derive(Debug, Clone)]
+struct TurnBaseline {
+    tree: String,
+    started: Instant,
+    agent: String,
+}
+
+struct FileFold {
+    expanding: bool,
+    generation: u64,
+}
+
+struct CommentDraft {
+    anchor: CommentAnchor,
+    excerpt: String,
+    body: String,
+    /// The comment being edited; restored when the edit is cancelled.
+    restore: Option<ReviewComment>,
+}
+
+/// Identity of a list row that survives a rebuild, used to keep the scroll
+/// position anchored when files load, fold, or change layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RowKey {
+    StagedSection,
+    Header(String),
+    Loading(String),
+    Body(String, usize),
+    Comment(u64),
+    Draft,
+    Folding(String),
+}
+
+/// Paint-time numbers shared by every row of one frame.
+#[derive(Debug, Clone, Copy)]
+struct RowMetrics {
+    font_size: f32,
+    line_height: f32,
+    hunk_height: f32,
+    char_width: f32,
+    wrap: bool,
+    h_offset: f32,
+}
+
+impl RowMetrics {
+    fn gutter_width(&self, max_line_number: usize) -> f32 {
+        let digits = max_line_number.max(1).to_string().len().max(3) as f32;
+        (digits * self.char_width * 0.9 + 14.0).ceil()
+    }
+
+    /// Analytic height of one body row without wrapping (drives the fold tween).
+    fn body_row_height(&self, rows: &[GitDiffRow], row: BodyRow) -> f32 {
+        match row {
+            BodyRow::Line(index) => match rows.get(index).map(|row| row.kind) {
+                Some(GitDiffRowKind::Hunk) => self.hunk_height,
+                Some(GitDiffRowKind::Section) => SECTION_HEIGHT - 4.0,
+                _ => self.line_height,
+            },
+            BodyRow::Split { .. } => self.line_height,
         }
     }
 }
@@ -75,16 +175,25 @@ pub struct DiffView {
     commit_refreshing: bool,
     commit_request_id: u64,
     _commit_task: Option<Task<()>>,
+    /// Repository root → tree captured when an agent last started working there.
+    turn_baselines: HashMap<PathBuf, TurnBaseline>,
+    /// Baseline the shown turn changes were computed against.
+    turn_baseline: Option<TurnBaseline>,
+    turn_changes: Option<GitCommitChanges>,
+    turn_error: Option<SharedString>,
+    turn_refreshing: bool,
+    turn_settled: bool,
+    turn_request_id: u64,
+    _turn_task: Option<Task<()>>,
+    _baseline_tasks: Vec<Task<()>>,
     /// Paths currently expanded; multiple files may stay open.
     expanded: HashSet<String>,
     /// Prepared diffs for expanded (and recently expanded) paths.
     documents: HashMap<String, CachedDiffDocument>,
-    inline_views: HashMap<String, Entity<InlineDiffView>>,
     status_root: Option<PathBuf>,
     status_index: Arc<HashMap<String, GitFileStatus>>,
     panel_visible: bool,
     review_expanded: bool,
-    file_list_height: Option<f32>,
     focus_handle: FocusHandle,
     /// Paths currently loading a diff.
     loading: HashSet<String>,
@@ -107,6 +216,26 @@ pub struct DiffView {
     _history_task: Option<Task<()>>,
     _diff_tasks: Vec<Task<()>>,
     _poll_task: Task<()>,
+    layout: DiffLayout,
+    wrap: bool,
+    font_size: f32,
+    /// Monospace advance at `font_size`, measured during render.
+    char_width: f32,
+    list_state: ListState,
+    rows: Arc<Vec<ReviewRow>>,
+    /// Files in display order; `ReviewRow` file indices point here.
+    row_files: Arc<Vec<GitFileChange>>,
+    rows_signature: Option<u64>,
+    /// Header to scroll to after the next row rebuild.
+    pending_reveal: Option<String>,
+    /// Shared horizontal scroll of the code plane (0 = flush left).
+    h_offset: f32,
+    h_max: f32,
+    folds: HashMap<String, FileFold>,
+    fold_generation: u64,
+    comments: Vec<ReviewComment>,
+    next_comment_id: u64,
+    draft: Option<CommentDraft>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,90 +290,14 @@ struct PendingDiffLoad {
     source: DiffSource,
 }
 
-/// Owns wheel invalidation for one file, independently from the review panel.
-struct InlineDiffView {
-    document: Arc<DiffDocument>,
-    theme: Theme,
-    height: f32,
-    scroll_handle: UniformListScrollHandle,
-    #[cfg(test)]
-    render_count: usize,
+pub enum DiffViewEvent {
+    /// Status, layout, or expansion changed; the workspace repaints.
+    Changed,
+    /// The toolbar changed a persisted preference.
+    PreferencesChanged { split: bool, wrap: bool },
+    /// Review comments to paste into the agent's terminal.
+    SendReview(String),
 }
-
-impl InlineDiffView {
-    fn on_scroll(
-        &mut self,
-        event: &gpui::ScrollWheelEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let delta = event.delta.pixel_delta(px(DIFF_ROW_HEIGHT));
-        let handle = &self.scroll_handle.0.borrow().base_handle;
-        let offset = handle.offset();
-        let max = handle.max_offset();
-        let mut next = offset;
-
-        // Keep trackpad gestures on their dominant axis. Horizontal gestures
-        // must never turn into vertical scrolling of the file cards.
-        let horizontal = delta.x.abs() > delta.y.abs();
-        if horizontal {
-            next.x = (offset.x + delta.x).clamp(-max.width, px(0.0));
-        } else {
-            next.y = (offset.y + delta.y).clamp(-max.height, px(0.0));
-        }
-        if next != offset {
-            handle.set_offset(next);
-            cx.notify();
-        }
-        // Once the diff reaches either vertical edge (or fits without scrolling),
-        // let the same gesture continue through the surrounding file list.
-        if horizontal || next != offset {
-            cx.stop_propagation();
-        }
-    }
-}
-
-impl Render for InlineDiffView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(test)]
-        {
-            self.render_count += 1;
-        }
-        let document = self.document.clone();
-        let widest_row_index = document.widest_row_index;
-        uniform_list(
-            "diff-code-rows",
-            document.diff.rows.len(),
-            cx.processor(move |_, range: std::ops::Range<usize>, _, _| {
-                range
-                    .filter_map(|index| {
-                        let row = document.diff.rows.get(index)?;
-                        let spans = document
-                            .highlights
-                            .get(index)
-                            .map_or(&[][..], Vec::as_slice);
-                        Some(DiffView::diff_row(
-                            row,
-                            &document.display_lines[index],
-                            spans,
-                        ))
-                    })
-                    .collect()
-            }),
-        )
-        .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
-        .with_width_from_item(Some(widest_row_index))
-        .track_scroll(self.scroll_handle.clone())
-        // Handle wheel input explicitly: GPUI's default nested scrollers both
-        // move on the same event and only clamp their offsets during layout.
-        .overflow_hidden()
-        .on_scroll_wheel(cx.listener(Self::on_scroll))
-        .h(px(self.height))
-        .w_full()
-    }
-}
-
-pub struct DiffViewEvent;
 
 impl EventEmitter<DiffViewEvent> for DiffView {}
 
@@ -284,14 +337,21 @@ impl DiffView {
             commit_refreshing: false,
             commit_request_id: 0,
             _commit_task: None,
+            turn_baselines: HashMap::new(),
+            turn_baseline: None,
+            turn_changes: None,
+            turn_error: None,
+            turn_refreshing: false,
+            turn_settled: false,
+            turn_request_id: 0,
+            _turn_task: None,
+            _baseline_tasks: Vec::new(),
             expanded: HashSet::new(),
             documents: HashMap::new(),
-            inline_views: HashMap::new(),
             status_root: None,
             status_index: Arc::new(HashMap::new()),
             panel_visible: false,
             review_expanded: false,
-            file_list_height: None,
             focus_handle: cx.focus_handle(),
             loading: HashSet::new(),
             refreshing: false,
@@ -310,7 +370,44 @@ impl DiffView {
             _history_task: None,
             _diff_tasks: Vec::new(),
             _poll_task: poll_task,
+            layout: DiffLayout::Unified,
+            wrap: false,
+            font_size: BASE_DIFF_FONT_SIZE,
+            char_width: BASE_DIFF_FONT_SIZE * 0.6,
+            list_state: ListState::new(0, ListAlignment::Top, px(400.0)),
+            rows: Arc::new(Vec::new()),
+            row_files: Arc::new(Vec::new()),
+            rows_signature: None,
+            pending_reveal: None,
+            h_offset: 0.0,
+            h_max: 0.0,
+            folds: HashMap::new(),
+            fold_generation: 0,
+            comments: Vec::new(),
+            next_comment_id: 1,
+            draft: None,
         }
+    }
+
+    /// Persisted review preferences, applied at startup and from Settings.
+    pub fn set_preferences(
+        &mut self,
+        split: bool,
+        wrap: bool,
+        font_size: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let layout = DiffLayout::from_split(split);
+        if self.layout == layout && self.wrap == wrap && self.font_size == font_size {
+            return;
+        }
+        self.layout = layout;
+        self.wrap = wrap;
+        self.font_size = font_size;
+        if wrap {
+            self.h_offset = 0.0;
+        }
+        cx.notify();
     }
 
     /// Repo root + relative path → status, for coloring the Files tree (Zed-style).
@@ -333,7 +430,7 @@ impl DiffView {
         }
         self.review_expanded = expanded;
         self.mode_menu_open = false;
-        cx.emit(DiffViewEvent);
+        cx.emit(DiffViewEvent::Changed);
         cx.notify();
     }
 
@@ -374,9 +471,49 @@ impl DiffView {
             return false;
         }
         self.set_mode(GitPanelMode::Worktree, cx);
+        self.pending_reveal = Some(relative_path.clone());
         self.expand_path(relative_path, cx);
         cx.notify();
         true
+    }
+
+    /// An agent in `cwd` started working: freeze the tree so the Latest turn
+    /// scope can show exactly what this turn changes.
+    pub fn mark_turn_started(&mut self, cwd: PathBuf, agent: String, cx: &mut Context<Self>) {
+        let port = self.git_port.clone();
+        let started = Instant::now();
+        let task = cx.background_spawn(async move { port.capture_worktree(&cwd) });
+        self._baseline_tasks.push(cx.spawn(async move |this, cx| {
+            let Ok(Some(capture)) = task.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                // A later turn in the same repository may already have landed.
+                if this
+                    .turn_baselines
+                    .get(&capture.root)
+                    .is_some_and(|baseline| baseline.started > started)
+                {
+                    return;
+                }
+                this.turn_baselines.insert(
+                    capture.root,
+                    TurnBaseline {
+                        tree: capture.tree,
+                        started,
+                        agent,
+                    },
+                );
+                if this.mode == GitPanelMode::LatestTurn {
+                    this.refresh_turn(false, cx);
+                }
+                cx.notify();
+            });
+        }));
+        if self._baseline_tasks.len() > 8 {
+            self._baseline_tasks
+                .drain(0..self._baseline_tasks.len() - 4);
+        }
     }
 
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
@@ -385,6 +522,8 @@ impl DiffView {
         }
         self.set_review_expanded(false, cx);
         self.clear_commit();
+        self.clear_turn();
+        self.forget_scroll();
         self.context_root = root;
         self.selected_base = None;
         self.selected_head = None;
@@ -404,6 +543,8 @@ impl DiffView {
         self.history_graph = Arc::new(Vec::new());
         self.error = None;
         self.mode_menu_open = false;
+        self.draft = None;
+        self.h_offset = 0.0;
         if self.panel_visible {
             self.refresh_visible_sources(true, cx);
         }
@@ -425,6 +566,7 @@ impl DiffView {
         match self.mode {
             GitPanelMode::Worktree => {}
             GitPanelMode::Branch => self.refresh_branch(notify_loading, cx),
+            GitPanelMode::LatestTurn => self.refresh_turn(notify_loading, cx),
             GitPanelMode::History => {
                 if self.selected_commit.is_none() {
                     self.refresh_history(notify_loading, cx);
@@ -447,10 +589,14 @@ impl DiffView {
         }
         self.set_review_expanded(false, cx);
         self.clear_commit();
+        self.clear_turn();
+        self.forget_scroll();
         self.mode = mode;
+        self.h_offset = 0.0;
         match mode {
             GitPanelMode::Worktree => {}
             GitPanelMode::Branch => self.refresh_branch(true, cx),
+            GitPanelMode::LatestTurn => self.refresh_turn(true, cx),
             GitPanelMode::History => self.refresh_history(true, cx),
         }
         cx.notify();
@@ -497,7 +643,6 @@ impl DiffView {
                         if this.mode == GitPanelMode::Worktree {
                             this.expanded.clear();
                             this.documents.clear();
-                            this.inline_views.clear();
                             this.loading.clear();
                             this.pending_loads.clear();
                         }
@@ -533,7 +678,6 @@ impl DiffView {
         self.branch_changes = None;
         self.expanded.clear();
         self.documents.clear();
-        self.inline_views.clear();
         self.pending_loads.clear();
         self.loading.clear();
         self.refresh_branch(true, cx);
@@ -706,7 +850,6 @@ impl DiffView {
                         this.branch_changes = None;
                         if this.mode == GitPanelMode::Branch {
                             this.documents.clear();
-                            this.inline_views.clear();
                             this.pending_loads.clear();
                             this.loading.clear();
                         }
@@ -753,6 +896,97 @@ impl DiffView {
         }));
     }
 
+    /// A different scope or commit starts at the top instead of anchoring to
+    /// whatever row happened to share a path.
+    fn forget_scroll(&mut self) {
+        self.rows = Arc::new(Vec::new());
+        self.rows_signature = None;
+        self.list_state.scroll_to(ListOffset::default());
+    }
+
+    fn clear_turn(&mut self) {
+        self.turn_request_id = self.turn_request_id.wrapping_add(1);
+        self._turn_task = None;
+        self.turn_refreshing = false;
+        self.turn_settled = false;
+        self.turn_changes = None;
+        self.turn_baseline = None;
+        self.turn_error = None;
+    }
+
+    /// Capture the tree as it is now and compare it with the latest baseline
+    /// recorded for this repository.
+    fn refresh_turn(&mut self, notify_loading: bool, cx: &mut Context<Self>) {
+        if self.turn_refreshing {
+            return;
+        }
+        self.turn_refreshing = true;
+        if notify_loading {
+            self.turn_error = None;
+            cx.notify();
+        }
+        self.turn_request_id = self.turn_request_id.wrapping_add(1);
+        let request_id = self.turn_request_id;
+        let root = self.context_root.clone();
+        let port = self.git_port.clone();
+        let baselines = self.turn_baselines.clone();
+        let task = cx.background_spawn(async move {
+            let Some(current) = port.capture_worktree(&root)? else {
+                return Ok::<_, anyhow::Error>(None);
+            };
+            let Some(baseline) = baselines.get(&current.root).cloned() else {
+                return Ok(Some((None, None)));
+            };
+            let changes = port.tree_changes(&current.root, &baseline.tree, &current.tree)?;
+            Ok(Some((Some(baseline), Some(changes))))
+        });
+        self._turn_task = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if request_id != this.turn_request_id {
+                    return;
+                }
+                this.turn_refreshing = false;
+                this.turn_settled = true;
+                match result {
+                    Ok(Some((baseline, changes))) => {
+                        this.turn_error = None;
+                        if let Some(changes) = &changes
+                            && this.mode == GitPanelMode::LatestTurn
+                        {
+                            this.reconcile_documents(
+                                &changes.snapshot,
+                                Some(&changes.base_revision),
+                                Some(&changes.revision),
+                            );
+                        }
+                        let first_load = this.turn_changes.is_none();
+                        this.turn_baseline = baseline;
+                        this.turn_changes = changes;
+                        if this.mode == GitPanelMode::LatestTurn {
+                            if first_load
+                                && this.expanded.is_empty()
+                                && let Some(first) = this
+                                    .turn_changes
+                                    .as_ref()
+                                    .and_then(|changes| changes.snapshot.changes.first())
+                            {
+                                this.expanded.insert(first.path.clone());
+                            }
+                            this.load_missing_expanded(cx);
+                        }
+                    }
+                    Ok(None) => {
+                        this.turn_baseline = None;
+                        this.turn_changes = None;
+                    }
+                    Err(error) => this.turn_error = Some(format!("Git: {error:#}").into()),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     fn clear_commit(&mut self) {
         self.commit_request_id = self.commit_request_id.wrapping_add(1);
         self._commit_task = None;
@@ -763,9 +997,9 @@ impl DiffView {
         self.commit_refreshing = false;
         self.expanded.clear();
         self.documents.clear();
-        self.inline_views.clear();
         self.loading.clear();
         self.pending_loads.clear();
+        self.folds.clear();
     }
 
     fn back_to_history(&mut self, cx: &mut Context<Self>) {
@@ -776,6 +1010,7 @@ impl DiffView {
 
     fn select_commit(&mut self, commit: GitCommit, cx: &mut Context<Self>) {
         self.clear_commit();
+        self.forget_scroll();
         self.selected_commit = Some(commit);
         self.refresh_commit(cx);
     }
@@ -857,8 +1092,7 @@ impl DiffView {
         });
         self.loading
             .retain(|path| self.pending_loads.contains_key(path));
-        self.inline_views
-            .retain(|path, _| self.documents.contains_key(path));
+        self.folds.retain(|path, _| sources.contains_key(path));
         self.evict_diff_caches();
     }
 
@@ -895,7 +1129,7 @@ impl DiffView {
         if self.mode == GitPanelMode::Worktree {
             self.load_missing_expanded(cx);
         }
-        cx.emit(DiffViewEvent);
+        cx.emit(DiffViewEvent::Changed);
     }
 
     fn evict_diff_caches(&mut self) {
@@ -905,14 +1139,12 @@ impl DiffView {
         }
         self.documents
             .retain(|path, _| self.expanded.contains(path));
-        self.inline_views
-            .retain(|path, _| self.documents.contains_key(path));
     }
 
     fn expand_path(&mut self, path: String, cx: &mut Context<Self>) {
         if self.expanded.insert(path.clone()) {
             self.load_diff(path, cx);
-            cx.emit(DiffViewEvent);
+            cx.emit(DiffViewEvent::Changed);
             cx.notify();
         } else if !self.documents.contains_key(&path) && !self.loading.contains(&path) {
             self.load_diff(path, cx);
@@ -921,16 +1153,50 @@ impl DiffView {
     }
 
     fn toggle_path(&mut self, path: String, cx: &mut Context<Self>) {
+        // Only a prepared, unwrapped body has the analytic height the tween needs.
+        let animate = self.documents.contains_key(&path) && !self.wrap;
         if self.expanded.contains(&path) {
             self.expanded.remove(&path);
             self.loading.remove(&path);
             self.pending_loads.remove(&path);
             // Keep cached diff so re-expand is instant.
-            cx.emit(DiffViewEvent);
+            if animate {
+                self.start_fold(path, false, cx);
+            }
+            cx.emit(DiffViewEvent::Changed);
             cx.notify();
             return;
         }
+        if animate {
+            self.start_fold(path.clone(), true, cx);
+        }
         self.expand_path(path, cx);
+    }
+
+    fn start_fold(&mut self, path: String, expanding: bool, cx: &mut Context<Self>) {
+        self.fold_generation = self.fold_generation.wrapping_add(1);
+        let generation = self.fold_generation;
+        self.folds.insert(
+            path.clone(),
+            FileFold {
+                expanding,
+                generation,
+            },
+        );
+        cx.spawn(async move |this, cx| {
+            Timer::after(FOLD_DURATION).await;
+            let _ = this.update(cx, |this, cx| {
+                if this
+                    .folds
+                    .get(&path)
+                    .is_some_and(|fold| fold.generation == generation)
+                {
+                    this.folds.remove(&path);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn active_snapshot(&self) -> Option<&GitRepositorySnapshot> {
@@ -940,10 +1206,49 @@ impl DiffView {
                 .branch_changes
                 .as_ref()
                 .map(|changes| &changes.snapshot),
+            GitPanelMode::LatestTurn => self.turn_changes.as_ref().map(|changes| &changes.snapshot),
             GitPanelMode::History => self
                 .commit_changes
                 .as_ref()
                 .map(|changes| &changes.snapshot),
+        }
+    }
+
+    /// The revisions the active scope compares: `(against, head)`.
+    fn active_revisions(&self) -> (Option<&str>, Option<&str>) {
+        match self.mode {
+            GitPanelMode::Branch => self
+                .branch_changes
+                .as_ref()
+                .map(|changes| {
+                    (
+                        (!changes.base_revision.is_empty())
+                            .then_some(changes.base_revision.as_str()),
+                        changes.head_revision.as_deref(),
+                    )
+                })
+                .unwrap_or_default(),
+            GitPanelMode::LatestTurn => self
+                .turn_changes
+                .as_ref()
+                .map(|changes| {
+                    (
+                        Some(changes.base_revision.as_str()),
+                        Some(changes.revision.as_str()),
+                    )
+                })
+                .unwrap_or_default(),
+            GitPanelMode::History => self
+                .commit_changes
+                .as_ref()
+                .map(|changes| {
+                    (
+                        Some(changes.base_revision.as_str()),
+                        Some(changes.revision.as_str()),
+                    )
+                })
+                .unwrap_or_default(),
+            GitPanelMode::Worktree => (None, None),
         }
     }
 
@@ -954,30 +1259,7 @@ impl DiffView {
                 .iter()
                 .find(|change| change.path == path)?
                 .clone();
-            let (against, head) = match self.mode {
-                GitPanelMode::Branch => self
-                    .branch_changes
-                    .as_ref()
-                    .map(|changes| {
-                        (
-                            (!changes.base_revision.is_empty())
-                                .then_some(changes.base_revision.as_str()),
-                            changes.head_revision.as_deref(),
-                        )
-                    })
-                    .unwrap_or_default(),
-                GitPanelMode::History => self
-                    .commit_changes
-                    .as_ref()
-                    .map(|changes| {
-                        (
-                            Some(changes.base_revision.as_str()),
-                            Some(changes.revision.as_str()),
-                        )
-                    })
-                    .unwrap_or_default(),
-                GitPanelMode::Worktree => (None, None),
-            };
+            let (against, head) = self.active_revisions();
             Some(DiffSource::new(snapshot, &change, against, head))
         }) else {
             self.loading.remove(&path);
@@ -1009,17 +1291,28 @@ impl DiffView {
         let port = self.git_port.clone();
         let source_for_task = source.clone();
         let task = cx.background_spawn(async move {
-            let diff = if let Some(revision) = &source_for_task.against {
+            let source = &source_for_task;
+            let diff = if let Some(revision) = &source.against {
                 port.diff_against(
-                    &source_for_task.repository,
+                    &source.repository,
                     revision,
-                    source_for_task.head.as_deref(),
-                    &source_for_task.change,
+                    source.head.as_deref(),
+                    &source.change,
                 )
             } else {
-                port.diff(&source_for_task.repository, &source_for_task.change)
+                port.diff(&source.repository, &source.change)
             }?;
-            Ok::<_, anyhow::Error>(DiffDocument::prepare(diff))
+            // Whole files are optional: without them each row is highlighted
+            // on its own, exactly as before.
+            let sources = port
+                .diff_sources(
+                    &source.repository,
+                    &source.change,
+                    source.against.as_deref(),
+                    source.head.as_deref(),
+                )
+                .ok();
+            Ok::<_, anyhow::Error>(DiffDocument::prepare_with_sources(diff, sources.as_ref()))
         });
         let path_for_task = path.clone();
         self._diff_tasks.push(cx.spawn(async move |this, cx| {
@@ -1081,10 +1374,1346 @@ impl DiffView {
         (name, parent)
     }
 
+    // -----------------------------------------------------------------------
+    // Preferences and comments
+    // -----------------------------------------------------------------------
+
+    fn set_layout(&mut self, layout: DiffLayout, cx: &mut Context<Self>) {
+        if self.layout == layout {
+            return;
+        }
+        self.layout = layout;
+        cx.emit(DiffViewEvent::PreferencesChanged {
+            split: layout.is_split(),
+            wrap: self.wrap,
+        });
+        cx.notify();
+    }
+
+    fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+        self.wrap = !self.wrap;
+        self.h_offset = 0.0;
+        cx.emit(DiffViewEvent::PreferencesChanged {
+            split: self.layout.is_split(),
+            wrap: self.wrap,
+        });
+        cx.notify();
+    }
+
+    fn open_draft(
+        &mut self,
+        anchor: CommentAnchor,
+        excerpt: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_draft();
+        self.draft = Some(CommentDraft {
+            anchor,
+            excerpt,
+            body: String::new(),
+            restore: None,
+        });
+        self.focus_handle.focus(window);
+        cx.notify();
+    }
+
+    /// Keep a non-empty draft as a comment; drop an empty one.
+    fn commit_draft(&mut self) {
+        let Some(draft) = self.draft.take() else {
+            return;
+        };
+        let body = draft.body.trim().to_owned();
+        if body.is_empty() {
+            if let Some(restore) = draft.restore {
+                self.comments.push(restore);
+            }
+            return;
+        }
+        let id = draft.restore.as_ref().map_or_else(
+            || {
+                let id = self.next_comment_id;
+                self.next_comment_id += 1;
+                id
+            },
+            |comment| comment.id,
+        );
+        self.comments.push(ReviewComment {
+            id,
+            anchor: draft.anchor,
+            excerpt: draft.excerpt,
+            body,
+        });
+        self.comments.sort_by(|left, right| {
+            (&left.anchor.path, left.anchor.line, left.id).cmp(&(
+                &right.anchor.path,
+                right.anchor.line,
+                right.id,
+            ))
+        });
+    }
+
+    fn cancel_draft(&mut self, cx: &mut Context<Self>) {
+        if let Some(restore) = self.draft.take().and_then(|draft| draft.restore) {
+            self.comments.push(restore);
+            self.comments.sort_by(|left, right| {
+                (&left.anchor.path, left.anchor.line, left.id).cmp(&(
+                    &right.anchor.path,
+                    right.anchor.line,
+                    right.id,
+                ))
+            });
+        }
+        cx.notify();
+    }
+
+    fn edit_comment(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_draft();
+        let Some(index) = self.comments.iter().position(|comment| comment.id == id) else {
+            return;
+        };
+        let comment = self.comments.remove(index);
+        self.draft = Some(CommentDraft {
+            anchor: comment.anchor.clone(),
+            excerpt: comment.excerpt.clone(),
+            body: comment.body.clone(),
+            restore: Some(comment),
+        });
+        self.focus_handle.focus(window);
+        cx.notify();
+    }
+
+    fn delete_comment(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.comments.retain(|comment| comment.id != id);
+        cx.notify();
+    }
+
+    fn send_review(&mut self, cx: &mut Context<Self>) {
+        self.commit_draft();
+        if self.comments.is_empty() {
+            return;
+        }
+        let prompt = review_prompt(&self.comments);
+        self.comments.clear();
+        cx.emit(DiffViewEvent::SendReview(prompt));
+        cx.notify();
+    }
+
+    fn on_key_down(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        let modifiers = &event.keystroke.modifiers;
+        let Some(draft) = self.draft.as_mut() else {
+            if self.review_expanded && matches!(key, "escape" | "esc") {
+                self.set_review_expanded(false, cx);
+                cx.stop_propagation();
+            }
+            return;
+        };
+        match key {
+            "escape" | "esc" => self.cancel_draft(cx),
+            "enter" | "return" if modifiers.shift || modifiers.alt => {
+                draft.body.push('\n');
+                cx.notify();
+            }
+            "enter" | "return" => {
+                self.commit_draft();
+                cx.notify();
+            }
+            "backspace" => {
+                if modifiers.platform || modifiers.alt {
+                    // Delete back to the previous word boundary.
+                    let trimmed = draft.body.trim_end().len();
+                    let start = draft.body[..trimmed]
+                        .rfind(char::is_whitespace)
+                        .map_or(0, |index| index + 1);
+                    draft
+                        .body
+                        .truncate(if modifiers.platform { 0 } else { start });
+                } else {
+                    draft.body.pop();
+                }
+                cx.notify();
+            }
+            "v" if modifiers.platform => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    draft.body.push_str(&text.replace("\r\n", "\n"));
+                    cx.notify();
+                }
+            }
+            _ if !modifiers.platform && !modifiers.control => {
+                if let Some(text) = event.keystroke.key_char.as_ref() {
+                    draft.body.push_str(text);
+                    cx.notify();
+                }
+            }
+            // Let app shortcuts (⌘W, ⌘1…) through.
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    // -----------------------------------------------------------------------
+    // Row model
+    // -----------------------------------------------------------------------
+
+    fn ordered_files(&self) -> Vec<GitFileChange> {
+        let changes = self
+            .active_snapshot()
+            .map(|snapshot| snapshot.changes.clone())
+            .unwrap_or_default();
+        let (staged, unstaged): (Vec<_>, Vec<_>) =
+            changes.into_iter().partition(|change| change.staged);
+        unstaged.into_iter().chain(staged).collect()
+    }
+
+    fn document(&self, path: &str) -> Option<&Arc<DiffDocument>> {
+        self.documents.get(path).map(|cached| &cached.document)
+    }
+
+    /// Rebuild the flat rows when anything they depend on changed, keeping the
+    /// row at the top of the viewport in place.
+    fn sync_rows(&mut self) {
+        let files = self.ordered_files();
+        let mut hasher = DefaultHasher::new();
+        (
+            self.mode,
+            self.selected_commit.is_some(),
+            self.layout,
+            self.wrap,
+        )
+            .hash(&mut hasher);
+        self.font_size.to_bits().hash(&mut hasher);
+        for change in &files {
+            (&change.path, change.staged, change.status.badge()).hash(&mut hasher);
+            self.expanded.contains(&change.path).hash(&mut hasher);
+            self.folds
+                .get(&change.path)
+                .map(|fold| fold.generation)
+                .hash(&mut hasher);
+            self.document(&change.path)
+                .map(|document| Arc::as_ptr(document) as usize)
+                .hash(&mut hasher);
+        }
+        for comment in &self.comments {
+            (comment.id, &comment.anchor).hash(&mut hasher);
+        }
+        self.draft
+            .as_ref()
+            .map(|draft| &draft.anchor)
+            .hash(&mut hasher);
+        let signature = hasher.finish();
+        if self.rows_signature == Some(signature) {
+            return;
+        }
+        self.rows_signature = Some(signature);
+
+        let worktree = self.mode == GitPanelMode::Worktree;
+        let first_staged = files.iter().position(|change| change.staged);
+        let entries: Vec<FlattenFile<'_>> = files
+            .iter()
+            .enumerate()
+            .map(|(index, change)| FlattenFile {
+                path: &change.path,
+                starts_staged_section: worktree && first_staged == Some(index),
+                expanded: self.expanded.contains(&change.path),
+                folding: self.folds.contains_key(&change.path),
+                rows: self
+                    .document(&change.path)
+                    .map(|document| document.diff.rows.as_slice()),
+            })
+            .collect();
+        let rows = flatten(
+            &entries,
+            self.layout,
+            &self.comments,
+            self.draft.as_ref().map(|draft| &draft.anchor),
+        );
+        drop(entries);
+
+        let top = self.list_state.logical_scroll_top();
+        let anchor = self
+            .rows
+            .get(top.item_ix)
+            .map(|row| self.row_key(*row, &self.row_files));
+        let reveal = self.pending_reveal.take();
+        let new_files = Arc::new(files);
+        let key_at = |row: ReviewRow| self.row_key(row, &new_files);
+        let header_of = |path: &str| {
+            rows.iter().position(|row| {
+                matches!(row, ReviewRow::FileHeader { file } if new_files[*file].path == path)
+            })
+        };
+        let target = if let Some(path) = reveal {
+            header_of(&path).map(|item_ix| ListOffset {
+                item_ix,
+                offset_in_item: px(0.0),
+            })
+        } else if let Some(key) = anchor {
+            rows.iter()
+                .position(|row| key_at(*row) == key)
+                .map(|item_ix| ListOffset {
+                    item_ix,
+                    offset_in_item: top.offset_in_item,
+                })
+                .or_else(|| {
+                    Self::key_path(&key)
+                        .and_then(header_of)
+                        .map(|item_ix| ListOffset {
+                            item_ix,
+                            offset_in_item: px(0.0),
+                        })
+                })
+        } else {
+            None
+        };
+
+        self.list_state.reset(rows.len());
+        if let Some(target) = target {
+            self.list_state.scroll_to(target);
+        }
+        self.rows = Arc::new(rows);
+        self.row_files = new_files;
+    }
+
+    fn row_key(&self, row: ReviewRow, files: &[GitFileChange]) -> RowKey {
+        let path = |file: usize| {
+            files
+                .get(file)
+                .map(|change| change.path.clone())
+                .unwrap_or_default()
+        };
+        match row {
+            ReviewRow::StagedSection => RowKey::StagedSection,
+            ReviewRow::FileHeader { file } => RowKey::Header(path(file)),
+            ReviewRow::FileLoading { file } => RowKey::Loading(path(file)),
+            ReviewRow::Folding { file } => RowKey::Folding(path(file)),
+            ReviewRow::Draft { .. } => RowKey::Draft,
+            ReviewRow::Comment { comment, .. } => {
+                RowKey::Comment(self.comments.get(comment).map_or(0, |comment| comment.id))
+            }
+            ReviewRow::Body { file, row } => {
+                let index = match row {
+                    BodyRow::Line(index) => index,
+                    BodyRow::Split { left, right } => right.or(left).unwrap_or(0),
+                };
+                RowKey::Body(path(file), index)
+            }
+        }
+    }
+
+    fn key_path(key: &RowKey) -> Option<&str> {
+        match key {
+            RowKey::Header(path)
+            | RowKey::Loading(path)
+            | RowKey::Body(path, _)
+            | RowKey::Folding(path) => Some(path),
+            _ => None,
+        }
+    }
+
+    fn metrics(&self) -> RowMetrics {
+        let line_height = (self.font_size * BASE_DIFF_ROW_HEIGHT / BASE_DIFF_FONT_SIZE).round();
+        RowMetrics {
+            font_size: self.font_size,
+            line_height,
+            hunk_height: line_height + 6.0,
+            char_width: self.char_width,
+            wrap: self.wrap,
+            h_offset: if self.wrap { 0.0 } else { self.h_offset },
+        }
+    }
+
+    /// Measure the monospace advance and clamp the shared horizontal scroll to
+    /// the widest expanded line.
+    fn sync_horizontal_metrics(&mut self, window: &mut Window) {
+        let font_id = window.text_system().resolve_font(&gpui::font(MONO_FONT));
+        if let Ok(width) = window.text_system().ch_advance(font_id, px(self.font_size)) {
+            self.char_width = f32::from(width);
+        }
+        if self.wrap {
+            self.h_offset = 0.0;
+            self.h_max = 0.0;
+            return;
+        }
+        let metrics = self.metrics();
+        let (widest, max_line) = self
+            .expanded
+            .iter()
+            .filter_map(|path| self.document(path))
+            .fold((0, 0), |(widest, max_line), document| {
+                (
+                    widest.max(document.widest_columns),
+                    max_line.max(document.max_line_number),
+                )
+            });
+        let viewport = f32::from(self.list_state.viewport_bounds().size.width);
+        let gutter = metrics.gutter_width(max_line);
+        let code_width = if self.layout.is_split() {
+            (viewport - SPLIT_DIVIDER_WIDTH) / 2.0 - gutter - MARKER_WIDTH
+        } else {
+            viewport - 2.0 * gutter - MARKER_WIDTH
+        };
+        let content = widest as f32 * self.char_width + CODE_PADDING_LEFT + CODE_PADDING_RIGHT;
+        self.h_max = if viewport > 0.0 {
+            (content - code_width).max(0.0)
+        } else {
+            0.0
+        };
+        self.h_offset = self.h_offset.clamp(0.0, self.h_max);
+    }
+
+    fn scroll_code_horizontally(&mut self, delta: f32, cx: &mut Context<Self>) -> bool {
+        if self.wrap {
+            return false;
+        }
+        let next = (self.h_offset - delta).clamp(0.0, self.h_max);
+        if next == self.h_offset {
+            return false;
+        }
+        self.h_offset = next;
+        cx.notify();
+        true
+    }
+
+    /// The file header pinned over the list and how far the next header has
+    /// pushed it up (≤ 0).
+    fn sticky_header(&self) -> Option<(usize, f32)> {
+        let top = self.list_state.logical_scroll_top();
+        let row = *self.rows.get(top.item_ix)?;
+        let file = row.file()?;
+        if matches!(row, ReviewRow::FileHeader { .. }) && top.offset_in_item <= px(0.0) {
+            return None;
+        }
+        let viewport_top = self.list_state.viewport_bounds().top();
+        let mut offset = 0.0;
+        let end = (top.item_ix + STICKY_PUSH_SCAN).min(self.rows.len());
+        for index in top.item_ix + 1..end {
+            if !matches!(
+                self.rows[index],
+                ReviewRow::FileHeader { .. } | ReviewRow::StagedSection
+            ) {
+                continue;
+            }
+            if let Some(bounds) = self.list_state.bounds_for_item(index) {
+                let distance = f32::from(bounds.top() - viewport_top);
+                if distance < FILE_HEADER_HEIGHT {
+                    offset = distance - FILE_HEADER_HEIGHT;
+                }
+            }
+            break;
+        }
+        Some((file, offset.min(0.0)))
+    }
+
+    fn render_row(&mut self, ix: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.rows.get(ix).copied() else {
+            return div().into_any_element();
+        };
+        let files = self.row_files.clone();
+        let metrics = self.metrics();
+        match row {
+            ReviewRow::StagedSection => {
+                let count = files.iter().filter(|change| change.staged).count();
+                Self::file_section_header("Staged", count).into_any_element()
+            }
+            ReviewRow::FileHeader { file } => match files.get(file) {
+                Some(change) => self.file_header(change, false, cx).into_any_element(),
+                None => div().into_any_element(),
+            },
+            ReviewRow::FileLoading { .. } => div()
+                .w_full()
+                .px_3()
+                .py_3()
+                .bg(surface_tint(colors().background, colors().panel))
+                .text_size(px(11.0))
+                .text_color(colors().subtle)
+                .child("Loading diff…")
+                .into_any_element(),
+            ReviewRow::Body { file, row } => {
+                let Some(change) = files.get(file) else {
+                    return div().into_any_element();
+                };
+                let Some(document) = self.document(&change.path).cloned() else {
+                    return div().into_any_element();
+                };
+                self.body_row(ix, &change.path, &document, row, metrics, cx)
+            }
+            ReviewRow::Comment { comment, .. } => {
+                let Some(comment) = self.comments.get(comment).cloned() else {
+                    return div().into_any_element();
+                };
+                self.comment_card(&comment, metrics, cx).into_any_element()
+            }
+            ReviewRow::Draft { .. } => self.draft_card(metrics, cx).into_any_element(),
+            ReviewRow::Folding { file } => match files.get(file) {
+                Some(change) => self.folding_body(&change.path, metrics),
+                None => div().into_any_element(),
+            },
+        }
+    }
+
+    fn file_section_header(label: &'static str, count: usize) -> Div {
+        div()
+            .h(px(SECTION_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px_3()
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .child(
+                div()
+                    .text_size(px(10.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(colors().muted)
+                    .child(label),
+            )
+            .child(
+                div()
+                    .px(px(5.0))
+                    .py(px(1.0))
+                    .rounded(px(4.0))
+                    .bg(colors().elevated)
+                    .text_size(px(9.0))
+                    .text_color(colors().subtle)
+                    .child(count.to_string()),
+            )
+    }
+
+    /// `pinned` is the sticky copy over the list: folding from it scrolls the
+    /// file back into view, since its own header sits above the viewport.
+    fn file_header(
+        &self,
+        change: &GitFileChange,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let id: gpui::ElementId = if pinned {
+            "review-sticky-header".into()
+        } else {
+            SharedString::from(format!("review-file-{}", change.path)).into()
+        };
+        let path = change.path.clone();
+        let expanded = self.expanded.contains(&path);
+        let document = self.document(&path);
+        let color = Self::status_color(change.status);
+        let (name, parent) = Self::path_parts(&change.path);
+        let additions = change
+            .additions
+            .or_else(|| document.map(|d| d.diff.additions))
+            .unwrap_or(0);
+        let deletions = change
+            .deletions
+            .or_else(|| document.map(|d| d.diff.deletions))
+            .unwrap_or(0);
+        let comments = self
+            .comments
+            .iter()
+            .filter(|comment| comment.anchor.path == path)
+            .count();
+        let path_for_click = path.clone();
+
+        div()
+            .id(id)
+            .h(px(FILE_HEADER_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px_3()
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .bg(surface_tint(
+                if expanded {
+                    colors().elevated
+                } else {
+                    colors().panel
+                },
+                colors().panel,
+            ))
+            .cursor_pointer()
+            .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if pinned {
+                    this.pending_reveal = Some(path_for_click.clone());
+                }
+                this.toggle_path(path_for_click.clone(), cx);
+            }))
+            .child(
+                div()
+                    .w(px(12.0))
+                    .h(px(18.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        gpui::svg()
+                            .path(if expanded {
+                                "chrome-icons/chevron-down.svg"
+                            } else {
+                                "chrome-icons/chevron-right.svg"
+                            })
+                            .size(px(9.0))
+                            .flex_none()
+                            .text_color(colors().subtle),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(18.0))
+                    .h(px(18.0))
+                    .flex_none()
+                    .rounded(px(4.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(colors().selection)
+                    .font_family(MONO_FONT)
+                    .text_size(px(9.0))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(color)
+                    .child(change.status.badge()),
+            )
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .gap(px(1.0))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(12.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(colors().foreground)
+                            .child(name),
+                    )
+                    .when(!parent.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_size(px(9.0))
+                                .text_color(colors().subtle)
+                                .child(parent),
+                        )
+                    }),
+            )
+            .when(comments > 0, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
+                        .px_1()
+                        .rounded(px(4.0))
+                        .bg(colors().selection)
+                        .text_size(px(10.0))
+                        .text_color(colors().accent)
+                        .child(
+                            gpui::svg()
+                                .path("chrome-icons/comment.svg")
+                                .size(px(10.0))
+                                .text_color(colors().accent),
+                        )
+                        .child(comments.to_string()),
+                )
+            })
+            .when(change.staged, |row| {
+                row.child(
+                    div()
+                        .size(px(6.0))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(colors().diff_added),
+                )
+            })
+            .when(additions > 0 || deletions > 0, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_1()
+                        .py_0()
+                        .rounded(px(4.0))
+                        .bg(colors().selection)
+                        .font_family(MONO_FONT)
+                        .text_size(px(10.0))
+                        .when(additions > 0, |stats| {
+                            stats.child(
+                                div()
+                                    .text_color(colors().diff_added)
+                                    .child(format!("+{additions}")),
+                            )
+                        })
+                        .when(deletions > 0, |stats| {
+                            stats.child(
+                                div()
+                                    .text_color(colors().diff_deleted)
+                                    .child(format!("−{deletions}")),
+                            )
+                        }),
+                )
+            })
+    }
+
+    // -----------------------------------------------------------------------
+    // Diff lines
+    // -----------------------------------------------------------------------
+
+    fn body_row(
+        &mut self,
+        ix: usize,
+        path: &str,
+        document: &Arc<DiffDocument>,
+        row: BodyRow,
+        metrics: RowMetrics,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let gutter = metrics.gutter_width(document.max_line_number);
+        let rows = &document.diff.rows;
+        let anchors = body_row_anchors(rows, row);
+        let button = |slot: usize, cx: &mut Context<Self>| -> Option<AnyElement> {
+            let (side, line) = anchors[slot]?;
+            let index = match row {
+                BodyRow::Line(index) => index,
+                BodyRow::Split { left, right } => if slot == 0 { left } else { right }?,
+            };
+            let excerpt = document.display_lines.get(index)?.to_string();
+            let anchor = CommentAnchor {
+                path: path.to_owned(),
+                side,
+                line,
+            };
+            let group = match (row, slot) {
+                (BodyRow::Line(_), _) => "diff-line",
+                (_, 0) => "diff-cell-left",
+                _ => "diff-cell-right",
+            };
+            Some(
+                Self::comment_button(ix * 2 + slot, group, metrics, anchor, excerpt, cx)
+                    .into_any_element(),
+            )
+        };
+        match row {
+            BodyRow::Line(index) => {
+                let Some(line) = rows.get(index) else {
+                    return div().into_any_element();
+                };
+                match line.kind {
+                    GitDiffRowKind::Hunk | GitDiffRowKind::Section | GitDiffRowKind::Notice => {
+                        Self::banner_row(line, &document.display_lines[index], gutter, metrics)
+                            .into_any_element()
+                    }
+                    _ => {
+                        let button = button(0, cx);
+                        Self::unified_line(document, index, gutter, metrics, button)
+                            .into_any_element()
+                    }
+                }
+            }
+            BodyRow::Split { left, right } => {
+                let left_button = button(0, cx);
+                let right_button = button(1, cx);
+                div()
+                    .w_full()
+                    .flex()
+                    .when(!metrics.wrap, |row| row.h(px(metrics.line_height)))
+                    .child(Self::split_cell(
+                        document,
+                        left,
+                        true,
+                        gutter,
+                        metrics,
+                        left_button,
+                    ))
+                    .child(
+                        div()
+                            .w(px(SPLIT_DIVIDER_WIDTH))
+                            .flex_none()
+                            .bg(colors().border_subtle),
+                    )
+                    .child(Self::split_cell(
+                        document,
+                        right,
+                        false,
+                        gutter,
+                        metrics,
+                        right_button,
+                    ))
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn line_colors(kind: GitDiffRowKind) -> (Rgba, Rgba) {
+        let background = match kind {
+            GitDiffRowKind::Addition => colors().diff_added_bg,
+            GitDiffRowKind::Deletion => colors().diff_deleted_bg,
+            _ => colors().background,
+        };
+        let gutter = match kind {
+            GitDiffRowKind::Addition | GitDiffRowKind::Deletion => background,
+            _ => colors().gutter,
+        };
+        (
+            surface_tint(background, colors().background),
+            surface_tint(gutter, background),
+        )
+    }
+
+    fn unified_line(
+        document: &DiffDocument,
+        index: usize,
+        gutter: f32,
+        metrics: RowMetrics,
+        button: Option<AnyElement>,
+    ) -> Div {
+        let row = &document.diff.rows[index];
+        let (background, gutter_background) = Self::line_colors(row.kind);
+        div()
+            .group("diff-line")
+            .w_full()
+            .flex()
+            .map(|line| {
+                if metrics.wrap {
+                    line.min_h(px(metrics.line_height))
+                } else {
+                    line.h(px(metrics.line_height))
+                }
+            })
+            .bg(background)
+            .child(Self::gutter_cell(
+                row.old_line,
+                gutter,
+                gutter_background,
+                metrics,
+            ))
+            .child(Self::gutter_cell(
+                row.new_line,
+                gutter,
+                gutter_background,
+                metrics,
+            ))
+            .child(Self::marker_cell(row.kind, metrics, button))
+            .child(Self::code_cell(
+                &document.display_lines[index],
+                document
+                    .highlights
+                    .get(index)
+                    .map_or(&[][..], Vec::as_slice),
+                row.kind,
+                metrics,
+            ))
+    }
+
+    fn split_cell(
+        document: &DiffDocument,
+        index: Option<usize>,
+        left: bool,
+        gutter: f32,
+        metrics: RowMetrics,
+        button: Option<AnyElement>,
+    ) -> Div {
+        let cell = div()
+            .group(if left {
+                "diff-cell-left"
+            } else {
+                "diff-cell-right"
+            })
+            .flex_1()
+            .min_w(px(0.0))
+            .flex()
+            .overflow_hidden();
+        let Some(row) = index.and_then(|index| document.diff.rows.get(index)) else {
+            // Blank half: the other side added or removed lines here.
+            return cell.bg(surface_tint(colors().elevated, colors().background));
+        };
+        let index = index.unwrap_or_default();
+        let kind = row.kind;
+        let (background, gutter_background) = Self::line_colors(kind);
+        let number = if left { row.old_line } else { row.new_line };
+        cell.bg(background)
+            .child(Self::gutter_cell(
+                number,
+                gutter,
+                gutter_background,
+                metrics,
+            ))
+            .child(Self::marker_cell(kind, metrics, button))
+            .child(Self::code_cell(
+                &document.display_lines[index],
+                document
+                    .highlights
+                    .get(index)
+                    .map_or(&[][..], Vec::as_slice),
+                kind,
+                metrics,
+            ))
+    }
+
+    fn gutter_cell(
+        number: Option<usize>,
+        width: f32,
+        background: Rgba,
+        metrics: RowMetrics,
+    ) -> Div {
+        div()
+            .w(px(width))
+            .flex_none()
+            .flex()
+            .justify_end()
+            .pr_2()
+            .bg(background)
+            .border_r_1()
+            .border_color(colors().border_subtle)
+            .font_family(MONO_FONT)
+            .text_size(px(metrics.font_size - 1.5))
+            .line_height(px(metrics.line_height))
+            .text_color(colors().muted)
+            .child(number.map(|line| line.to_string()).unwrap_or_default())
+    }
+
+    fn marker_cell(kind: GitDiffRowKind, metrics: RowMetrics, button: Option<AnyElement>) -> Div {
+        let (marker, color) = match kind {
+            GitDiffRowKind::Addition => ("+", colors().diff_added),
+            GitDiffRowKind::Deletion => ("−", colors().diff_deleted),
+            _ => ("", colors().subtle),
+        };
+        div()
+            .relative()
+            .w(px(MARKER_WIDTH))
+            .flex_none()
+            .text_center()
+            .font_family(MONO_FONT)
+            .text_size(px(metrics.font_size))
+            .line_height(px(metrics.line_height))
+            .text_color(color)
+            .child(marker)
+            .children(button)
+    }
+
+    /// Revealed while its row (or split half) `group` is hovered.
+    fn comment_button(
+        id: usize,
+        group: &'static str,
+        metrics: RowMetrics,
+        anchor: CommentAnchor,
+        excerpt: String,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        div()
+            .id(("diff-comment", id))
+            .absolute()
+            .top(px(
+                ((metrics.line_height - COMMENT_BUTTON_SIZE) / 2.0).max(0.0)
+            ))
+            .left(px((MARKER_WIDTH - COMMENT_BUTTON_SIZE) / 2.0))
+            .size(px(COMMENT_BUTTON_SIZE))
+            .rounded(px(4.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(colors().accent)
+            .cursor_pointer()
+            .opacity(0.0)
+            .group_hover(group, |style| style.opacity(1.0))
+            .child(
+                gpui::svg()
+                    .path("chrome-icons/plus.svg")
+                    .size(px(11.0))
+                    .text_color(colors().background),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.open_draft(anchor.clone(), excerpt.clone(), window, cx);
+            }))
+    }
+
+    fn code_cell(
+        text: &SharedString,
+        spans: &[SyntaxSpan],
+        kind: GitDiffRowKind,
+        metrics: RowMetrics,
+    ) -> Div {
+        let code = Self::styled_code_line(text, spans, kind, metrics);
+        let cell = div()
+            .flex_1()
+            .min_w(px(0.0))
+            .font_family(MONO_FONT)
+            .text_size(px(metrics.font_size))
+            .line_height(px(metrics.line_height));
+        if metrics.wrap {
+            cell.pl(px(CODE_PADDING_LEFT))
+                .pr(px(CODE_PADDING_LEFT))
+                .child(code)
+        } else {
+            // Only the code plane moves; gutters and markers stay fixed.
+            cell.h_full().overflow_hidden().child(
+                div()
+                    .relative()
+                    .left(px(-metrics.h_offset))
+                    .pl(px(CODE_PADDING_LEFT))
+                    .whitespace_nowrap()
+                    .child(code),
+            )
+        }
+    }
+
+    /// Hunk, section, and notice rows span the full width in both layouts.
+    fn banner_row(row: &GitDiffRow, text: &SharedString, gutter: f32, metrics: RowMetrics) -> Div {
+        let (height, background, color) = match row.kind {
+            GitDiffRowKind::Hunk => (metrics.hunk_height, colors().diff_hunk_bg, colors().muted),
+            GitDiffRowKind::Section => (SECTION_HEIGHT - 4.0, colors().elevated, colors().subtle),
+            _ => (metrics.line_height, colors().background, colors().warning),
+        };
+        div()
+            .w_full()
+            .h(px(height))
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .bg(surface_tint(background, colors().background))
+            .pl(px(if row.kind == GitDiffRowKind::Hunk {
+                2.0 * gutter + MARKER_WIDTH + CODE_PADDING_LEFT
+            } else {
+                12.0
+            }))
+            .pr_3()
+            .font_family(MONO_FONT)
+            .text_size(px(if row.kind == GitDiffRowKind::Section {
+                10.0
+            } else {
+                metrics.font_size - 1.0
+            }))
+            .when(row.kind == GitDiffRowKind::Section, |row| {
+                row.font_weight(gpui::FontWeight::MEDIUM)
+            })
+            .text_color(color)
+            .whitespace_nowrap()
+            .child(text.clone())
+    }
+
+    fn styled_code_line(
+        text: &SharedString,
+        spans: &[SyntaxSpan],
+        kind: GitDiffRowKind,
+        metrics: RowMetrics,
+    ) -> StyledText {
+        let default_style = TextStyle {
+            color: colors().foreground.into(),
+            font_family: MONO_FONT.into(),
+            font_size: px(metrics.font_size).into(),
+            line_height: px(metrics.line_height).into(),
+            white_space: if metrics.wrap {
+                WhiteSpace::Normal
+            } else {
+                WhiteSpace::Nowrap
+            },
+            ..Default::default()
+        };
+        if spans.is_empty()
+            || !matches!(
+                kind,
+                GitDiffRowKind::Context | GitDiffRowKind::Addition | GitDiffRowKind::Deletion
+            )
+        {
+            return StyledText::new(text.clone()).with_default_highlights(
+                &default_style,
+                std::iter::empty::<(std::ops::Range<usize>, HighlightStyle)>(),
+            );
+        }
+        let highlights = spans.iter().filter_map(|span| {
+            if span.range.start >= text.len() || span.range.end > text.len() {
+                return None;
+            }
+            if !text.is_char_boundary(span.range.start) || !text.is_char_boundary(span.range.end) {
+                return None;
+            }
+            Some((span.range.clone(), span.kind.highlight_style()))
+        });
+        StyledText::new(text.clone()).with_default_highlights(&default_style, highlights)
+    }
+
+    /// A body folding open or shut: a clipped stand-in whose height tweens,
+    /// built only from the rows the clip can reveal.
+    fn folding_body(&self, path: &str, metrics: RowMetrics) -> AnyElement {
+        let (Some(document), Some(fold)) = (self.document(path), self.folds.get(path)) else {
+            return div().into_any_element();
+        };
+        let rows = &document.diff.rows;
+        let viewport = f32::from(self.list_state.viewport_bounds().size.height).max(200.0);
+        let gutter = metrics.gutter_width(document.max_line_number);
+        let mut height = 0.0;
+        let mut children = Vec::new();
+        for row in body_rows(rows, self.layout) {
+            if height >= viewport {
+                break;
+            }
+            height += metrics.body_row_height(rows, row);
+            children.push(match row {
+                BodyRow::Line(index) => match rows[index].kind {
+                    GitDiffRowKind::Hunk | GitDiffRowKind::Section | GitDiffRowKind::Notice => {
+                        Self::banner_row(
+                            &rows[index],
+                            &document.display_lines[index],
+                            gutter,
+                            metrics,
+                        )
+                    }
+                    _ => Self::unified_line(document, index, gutter, metrics, None),
+                },
+                BodyRow::Split { left, right } => div()
+                    .w_full()
+                    .h(px(metrics.line_height))
+                    .flex()
+                    .child(Self::split_cell(
+                        document, left, true, gutter, metrics, None,
+                    ))
+                    .child(
+                        div()
+                            .w(px(SPLIT_DIVIDER_WIDTH))
+                            .flex_none()
+                            .bg(colors().border_subtle),
+                    )
+                    .child(Self::split_cell(
+                        document, right, false, gutter, metrics, None,
+                    )),
+            });
+        }
+        let height = height.min(viewport);
+        let expanding = fold.expanding;
+        div()
+            .w_full()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .children(children)
+            .with_animation(
+                ("review-fold", fold.generation as usize),
+                Animation::new(FOLD_DURATION).with_easing(ease_out_quint()),
+                move |body, delta| {
+                    let progress = if expanding { delta } else { 1.0 - delta };
+                    body.h(px(height * progress))
+                },
+            )
+            .into_any_element()
+    }
+
+    // -----------------------------------------------------------------------
+    // Comments
+    // -----------------------------------------------------------------------
+
+    fn card_indent(&self, metrics: RowMetrics) -> f32 {
+        if self.layout.is_split() {
+            12.0
+        } else {
+            2.0 * metrics.gutter_width(99) + MARKER_WIDTH
+        }
+    }
+
+    fn comment_card(
+        &self,
+        comment: &ReviewComment,
+        metrics: RowMetrics,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let id = comment.id;
+        let cite = match comment.anchor.side {
+            CommentSide::New => format!("Line {}", comment.anchor.line),
+            CommentSide::Old => format!("Removed line {}", comment.anchor.line),
+        };
+        div()
+            .w_full()
+            .py(px(6.0))
+            .pl(px(self.card_indent(metrics)))
+            .pr_3()
+            .bg(surface_tint(colors().background, colors().panel))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .bg(surface_tint(colors().elevated, colors().panel))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                gpui::svg()
+                                    .path("chrome-icons/comment.svg")
+                                    .size(px(11.0))
+                                    .text_color(colors().accent),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(10.0))
+                                    .text_color(colors().subtle)
+                                    .child(cite),
+                            )
+                            .child(Self::card_action(
+                                ("comment-edit", id as usize),
+                                "Edit",
+                                cx.listener(move |this, _, window, cx| {
+                                    this.edit_comment(id, window, cx);
+                                }),
+                            ))
+                            .child(Self::card_action(
+                                ("comment-delete", id as usize),
+                                "Delete",
+                                cx.listener(move |this, _, _, cx| this.delete_comment(id, cx)),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .line_height(px(17.0))
+                            .text_color(colors().foreground)
+                            .child(comment.body.clone()),
+                    ),
+            )
+    }
+
+    fn card_action(
+        id: impl Into<gpui::ElementId>,
+        label: &'static str,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .px(px(6.0))
+            .py(px(2.0))
+            .rounded(px(4.0))
+            .text_size(px(10.5))
+            .text_color(colors().muted)
+            .cursor_pointer()
+            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+            .child(label)
+            .on_click(on_click)
+    }
+
+    fn draft_card(&self, metrics: RowMetrics, cx: &mut Context<Self>) -> Div {
+        let Some(draft) = self.draft.as_ref() else {
+            return div();
+        };
+        let empty = draft.body.trim().is_empty();
+        let cite = match draft.anchor.side {
+            CommentSide::New => format!("Comment on line {}", draft.anchor.line),
+            CommentSide::Old => format!("Comment on removed line {}", draft.anchor.line),
+        };
+        let body = if draft.body.is_empty() {
+            div()
+                .text_color(colors().subtle)
+                .child("Tell the agent what to change here…")
+        } else {
+            div()
+                .text_color(colors().foreground)
+                .child(format!("{}▍", draft.body))
+        };
+        div()
+            .w_full()
+            .py(px(6.0))
+            .pl(px(self.card_indent(metrics)))
+            .pr_3()
+            .bg(surface_tint(colors().background, colors().panel))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(colors().accent)
+                    .bg(surface_tint(colors().elevated, colors().panel))
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(colors().subtle)
+                            .child(cite),
+                    )
+                    .child(
+                        div()
+                            .min_h(px(34.0))
+                            .text_size(px(12.0))
+                            .line_height(px(17.0))
+                            .child(body),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(9.5))
+                                    .text_color(colors().subtle)
+                                    .child("↵ save · ⇧↵ new line · esc cancel"),
+                            )
+                            .child(Self::card_action(
+                                "comment-draft-cancel",
+                                "Cancel",
+                                cx.listener(|this, _, _, cx| this.cancel_draft(cx)),
+                            ))
+                            .child(
+                                div()
+                                    .id("comment-draft-save")
+                                    .px(px(8.0))
+                                    .py(px(3.0))
+                                    .rounded(px(5.0))
+                                    .text_size(px(10.5))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .bg(if empty {
+                                        colors().selection
+                                    } else {
+                                        colors().accent
+                                    })
+                                    .text_color(if empty {
+                                        colors().subtle
+                                    } else {
+                                        colors().background
+                                    })
+                                    .when(!empty, |button| button.cursor_pointer())
+                                    .child("Comment")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.commit_draft();
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+    }
+
+    // -----------------------------------------------------------------------
+    // Chrome
+    // -----------------------------------------------------------------------
+
     fn header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let loading = match self.mode {
             GitPanelMode::Worktree => self.refreshing && !self.snapshot_settled,
             GitPanelMode::Branch => self.branch_refreshing,
+            GitPanelMode::LatestTurn => self.turn_refreshing && !self.turn_settled,
             GitPanelMode::History if self.selected_commit.is_some() => self.commit_refreshing,
             GitPanelMode::History => {
                 self.history_refreshing || (self.refreshing && !self.snapshot_settled)
@@ -1175,6 +2804,10 @@ impl DiffView {
                 .branch_changes
                 .as_ref()
                 .map(|changes| changes.snapshot.branch.clone()),
+            GitPanelMode::LatestTurn => self
+                .turn_baseline
+                .as_ref()
+                .map(|baseline| baseline.agent.clone()),
             GitPanelMode::History if self.selected_commit.is_some() => self
                 .selected_commit
                 .as_ref()
@@ -1225,6 +2858,29 @@ impl DiffView {
                                 .child(format!("+{}", changes.commits_ahead)),
                         );
                     }
+                    Self::push_change_meta(
+                        &mut meta,
+                        changes.snapshot.changes.len(),
+                        changes.snapshot.additions,
+                        changes.snapshot.deletions,
+                    );
+                }
+            }
+            GitPanelMode::LatestTurn => {
+                if let Some(baseline) = &self.turn_baseline {
+                    meta.push(
+                        div()
+                            .truncate()
+                            .text_size(px(11.0))
+                            .text_color(colors().subtle)
+                            .child(format!(
+                                "{} · {}",
+                                baseline.agent,
+                                elapsed_label(baseline.started.elapsed())
+                            )),
+                    );
+                }
+                if let Some(changes) = &self.turn_changes {
                     Self::push_change_meta(
                         &mut meta,
                         changes.snapshot.changes.len(),
@@ -1286,6 +2942,140 @@ impl DiffView {
         }
     }
 
+    /// Layout, wrap, and review controls above the file list.
+    fn review_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let comments = self.comments.len();
+        let split = self.layout.is_split();
+        div()
+            .w_full()
+            .flex_none()
+            .h(px(34.0))
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .p(px(2.0))
+                    .gap(px(2.0))
+                    .rounded(px(6.0))
+                    .bg(colors().elevated)
+                    .child(Self::segment_button(
+                        "diff-layout-unified",
+                        "chrome-icons/diff-unified.svg",
+                        "Unified",
+                        !split,
+                        cx.listener(|this, _, _, cx| this.set_layout(DiffLayout::Unified, cx)),
+                    ))
+                    .child(Self::segment_button(
+                        "diff-layout-split",
+                        "chrome-icons/diff-split.svg",
+                        "Split",
+                        split,
+                        cx.listener(|this, _, _, cx| this.set_layout(DiffLayout::Split, cx)),
+                    )),
+            )
+            .child(Self::segment_button(
+                "diff-wrap",
+                "chrome-icons/wrap.svg",
+                "Wrap",
+                self.wrap,
+                cx.listener(|this, _, _, cx| this.toggle_wrap(cx)),
+            ))
+            .child(div().flex_1())
+            .when(comments > 0, |bar| {
+                bar.child(
+                    div()
+                        .id("review-clear-comments")
+                        .flex_none()
+                        .size(px(24.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(5.0))
+                        .cursor_pointer()
+                        .hover(|button| button.bg(colors().hover))
+                        .child(
+                            gpui::svg()
+                                .path("chrome-icons/close.svg")
+                                .size(px(12.0))
+                                .text_color(colors().muted),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.comments.clear();
+                            this.draft = None;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id("review-send")
+                        .flex_none()
+                        .h(px(24.0))
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .rounded(px(6.0))
+                        .bg(colors().accent)
+                        .text_size(px(11.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(colors().background)
+                        .cursor_pointer()
+                        .child(
+                            gpui::svg()
+                                .path("chrome-icons/send.svg")
+                                .size(px(11.0))
+                                .text_color(colors().background),
+                        )
+                        .child(format!(
+                            "Send {comments} comment{} to agent",
+                            if comments == 1 { "" } else { "s" }
+                        ))
+                        .on_click(cx.listener(|this, _, _, cx| this.send_review(cx))),
+                )
+            })
+    }
+
+    fn segment_button(
+        id: &'static str,
+        icon: &'static str,
+        label: &'static str,
+        active: bool,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .flex_none()
+            .h(px(22.0))
+            .px(px(7.0))
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .rounded(px(5.0))
+            .when(active, |button| button.bg(colors().selection))
+            .cursor_pointer()
+            .hover(|button| button.bg(colors().hover))
+            .text_size(px(10.5))
+            .text_color(if active {
+                colors().foreground
+            } else {
+                colors().muted
+            })
+            .child(gpui::svg().path(icon).size(px(12.0)).text_color(if active {
+                colors().foreground
+            } else {
+                colors().muted
+            }))
+            .child(label)
+            .on_click(on_click)
+    }
+
     fn mode_trigger(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let open = self.mode_menu_open;
         div()
@@ -1332,11 +3122,6 @@ impl DiffView {
     }
 
     fn mode_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let modes = [
-            GitPanelMode::Worktree,
-            GitPanelMode::Branch,
-            GitPanelMode::History,
-        ];
         div()
             .absolute()
             .inset_0()
@@ -1368,7 +3153,7 @@ impl DiffView {
                     .p_1()
                     .flex()
                     .flex_col()
-                    .children(modes.into_iter().map(|mode| {
+                    .children(GitPanelMode::ALL.into_iter().map(|mode| {
                         let selected = mode == self.mode;
                         div()
                             .id(SharedString::from(format!("git-mode-{}", mode.label())))
@@ -1420,432 +3205,246 @@ impl DiffView {
             )
     }
 
-    fn file_cards(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let changes = self
-            .active_snapshot()
-            .map(|snapshot| snapshot.changes.clone())
-            .unwrap_or_default();
-        let (staged, unstaged): (Vec<_>, Vec<_>) =
-            changes.into_iter().partition(|change| change.staged);
-
-        let mut list = div()
-            .id("git-file-cards")
-            .flex_1()
-            .min_h(px(0.0))
-            .w_full()
-            .overflow_y_scroll()
-            .px_0()
-            .py_0()
-            .flex()
-            .flex_col()
-            .gap_0();
-
-        if !unstaged.is_empty() {
-            list = list.children(
-                unstaged
-                    .into_iter()
-                    .map(|change| self.file_card(change, cx)),
-            );
-        }
-        if !staged.is_empty() {
-            list = list
-                .child(Self::file_section_header("Staged", staged.len()))
-                .children(staged.into_iter().map(|change| self.file_card(change, cx)));
-        }
+    /// The single virtualized review list, its pinned header, and the wheel
+    /// capture that routes horizontal gestures to the code plane.
+    fn review_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_rows();
+        self.sync_horizontal_metrics(window);
+        let sticky = self.sticky_header().and_then(|(file, offset)| {
+            let change = self.row_files.get(file)?.clone();
+            Some(
+                div()
+                    .absolute()
+                    .top(px(offset))
+                    .left_0()
+                    .right_0()
+                    .bg(floating_surface(colors().panel))
+                    .shadow_sm()
+                    .child(self.file_header(&change, true, cx)),
+            )
+        });
         let view = cx.entity().downgrade();
-        let previous_height = self.file_list_height;
+        let line_height = self.metrics().line_height;
         div()
+            .relative()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
-            .flex()
-            .flex_col()
-            .child(list)
-            .on_children_prepainted(move |bounds, window, _| {
-                let Some(bounds) = bounds.first() else {
-                    return;
-                };
-                let height = f32::from(bounds.size.height);
-                if previous_height.is_none_or(|previous| (previous - height).abs() >= 1.0) {
-                    let view = view.clone();
-                    window.on_next_frame(move |_, cx| {
-                        let _ = view.update(cx, |view, cx| {
-                            view.file_list_height = Some(height);
-                            cx.notify();
-                        });
-                    });
-                }
-            })
-    }
-
-    fn file_section_header(label: &'static str, count: usize) -> Div {
-        div()
-            .h(px(32.0))
-            .w_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .px_3()
-            .child(
-                div()
-                    .text_size(px(10.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().muted)
-                    .child(label),
-            )
-            .child(
-                div()
-                    .px(px(5.0))
-                    .py(px(1.0))
-                    .rounded(px(4.0))
-                    .bg(colors().elevated)
-                    .text_size(px(9.0))
-                    .text_color(colors().subtle)
-                    .child(count.to_string()),
-            )
-    }
-
-    fn file_card(&mut self, change: GitFileChange, cx: &mut Context<Self>) -> Stateful<Div> {
-        let path = change.path.clone();
-        let expanded = self.expanded.contains(&path);
-        let loading = self.loading.contains(&path);
-        let document = self
-            .documents
-            .get(&path)
-            .map(|cached| cached.document.clone());
-        let color = Self::status_color(change.status);
-        let (name, parent) = Self::path_parts(&change.path);
-        let additions = change
-            .additions
-            .or_else(|| document.as_ref().map(|d| d.diff.additions))
-            .unwrap_or(0);
-        let deletions = change
-            .deletions
-            .or_else(|| document.as_ref().map(|d| d.diff.deletions))
-            .unwrap_or(0);
-        let path_for_click = path.clone();
-
-        div()
-            .id(SharedString::from(format!("git-card-{}", change.path)))
-            .w_full()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .border_b_1()
-            .border_color(colors().border_subtle)
             .overflow_hidden()
-            // File header — click toggles its inline diff.
             .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "git-card-header-{}",
-                        change.path
-                    )))
-                    .h(px(FILE_HEADER_HEIGHT))
-                    .bg(surface_tint(
-                        if expanded {
-                            colors().elevated
-                        } else {
-                            colors().panel
-                        },
-                        colors().panel,
-                    ))
-                    .w_full()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px_3()
-                    .cursor_pointer()
-                    .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_path(path_for_click.clone(), cx);
-                    }))
-                    .child(
-                        div()
-                            .w(px(12.0))
-                            .h(px(18.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                gpui::svg()
-                                    .path(if expanded {
-                                        "chrome-icons/chevron-down.svg"
-                                    } else {
-                                        "chrome-icons/chevron-right.svg"
-                                    })
-                                    .size(px(9.0))
-                                    .flex_none()
-                                    .text_color(colors().subtle),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w(px(18.0))
-                            .h(px(18.0))
-                            .flex_none()
-                            .rounded(px(4.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(colors().selection)
-                            .font_family(MONO_FONT)
-                            .text_size(px(9.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(color)
-                            .child(change.status.badge()),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .justify_center()
-                            .gap(px(1.0))
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(12.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(colors().foreground)
-                                    .child(name),
-                            )
-                            .when(!parent.is_empty(), |row| {
-                                row.child(
-                                    div()
-                                        .min_w(px(0.0))
-                                        .truncate()
-                                        .text_size(px(9.0))
-                                        .text_color(colors().subtle)
-                                        .child(parent),
-                                )
-                            }),
-                    )
-                    .when(change.staged, |row| {
-                        row.child(
-                            div()
-                                .size(px(6.0))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(colors().diff_added),
-                        )
-                    })
-                    .when(additions > 0 || deletions > 0, |row| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .px_1()
-                                .py_0()
-                                .rounded(px(4.0))
-                                .bg(colors().selection)
-                                .font_family(MONO_FONT)
-                                .text_size(px(10.0))
-                                .when(additions > 0, |stats| {
-                                    stats.child(
-                                        div()
-                                            .text_color(colors().diff_added)
-                                            .child(format!("+{additions}")),
-                                    )
-                                })
-                                .when(deletions > 0, |stats| {
-                                    stats.child(
-                                        div()
-                                            .text_color(colors().diff_deleted)
-                                            .child(format!("−{deletions}")),
-                                    )
-                                }),
-                        )
-                    }),
+                list(
+                    self.list_state.clone(),
+                    cx.processor(|this, ix: usize, window, cx| this.render_row(ix, window, cx)),
+                )
+                .size_full(),
             )
-            .when(expanded, |card| {
-                card.child(self.inline_diff_body(&path, document, loading, cx))
-            })
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        window.on_mouse_event(
+                            move |event: &ScrollWheelEvent, phase, _window, cx| {
+                                if phase != DispatchPhase::Capture
+                                    || !bounds.contains(&event.position)
+                                {
+                                    return;
+                                }
+                                let delta = event.delta.pixel_delta(px(line_height));
+                                // Keep trackpad gestures on their dominant axis:
+                                // sideways drift must never scroll the files.
+                                if delta.x.abs() <= delta.y.abs() {
+                                    return;
+                                }
+                                let _ = view.update(cx, |this, cx| {
+                                    this.scroll_code_horizontally(f32::from(delta.x), cx);
+                                });
+                                cx.stop_propagation();
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .children(sticky)
     }
+}
 
-    fn inline_diff_body(
-        &mut self,
-        path: &str,
-        document: Option<Arc<DiffDocument>>,
-        loading: bool,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let truncated = document.as_ref().is_some_and(|d| d.diff.truncated);
-        let binary = document.as_ref().is_some_and(|d| d.diff.binary);
-        let row_count = document.as_ref().map_or(0, |d| d.diff.rows.len());
-
-        if row_count == 0 {
-            let message = if loading {
-                "Loading diff…"
-            } else if binary {
-                "Binary file — no text diff."
-            } else if document.is_some() {
-                "No text changes."
-            } else {
-                "Loading diff…"
-            };
-            return div()
-                .w_full()
-                .flex_none()
-                .border_t_1()
-                .border_color(colors().border_subtle)
-                .px_3()
-                .py_3()
-                .bg(surface_tint(colors().background, colors().panel))
-                .text_size(px(11.0))
-                .text_color(colors().subtle)
-                .child(message);
-        }
-
-        let height = inline_diff_height(
-            row_count,
-            self.file_list_height,
-            self.review_expanded,
-            truncated,
-        );
-        let document = document.expect("nonempty diff has a prepared document");
-        let theme = colors();
-        let view = self.inline_views.entry(path.to_owned()).or_insert_with(|| {
-            cx.new(|_| InlineDiffView {
-                document: document.clone(),
-                theme,
-                height,
-                scroll_handle: UniformListScrollHandle::new(),
-                #[cfg(test)]
-                render_count: 0,
-            })
-        });
-        // A scroll only dirties its own file view. Unchanged sibling views reuse
-        // their layout and paint instead of rebuilding every visible syntax run.
-        view.update(cx, |view, cx| {
-            if !Arc::ptr_eq(&view.document, &document)
-                || view.theme != theme
-                || view.height != height
-            {
-                view.document = document;
-                view.theme = theme;
-                view.height = height;
-                cx.notify();
-            }
-        });
-        let body = AnyView::from(view.clone()).cached(
-            StyleRefinement::default()
-                .w_full()
-                .h(px(height))
-                .flex_none(),
-        );
-
+impl Render for DiffView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let error = match self.mode {
+            GitPanelMode::Branch => self.branch_error.clone().or_else(|| self.error.clone()),
+            GitPanelMode::LatestTurn => self.turn_error.clone().or_else(|| self.error.clone()),
+            GitPanelMode::History => self.commit_error.clone().or_else(|| self.error.clone()),
+            GitPanelMode::Worktree => self.error.clone(),
+        };
+        let selected_commit = self.selected_commit.clone();
+        let menu_open = self.mode_menu_open;
+        let empty_message = self.empty_message();
+        let show_history = empty_message.is_none()
+            && self.mode == GitPanelMode::History
+            && selected_commit.is_none();
+        let show_files = empty_message.is_none()
+            && (matches!(
+                self.mode,
+                GitPanelMode::Worktree | GitPanelMode::Branch | GitPanelMode::LatestTurn
+            ) || selected_commit.is_some());
         div()
-            .w_full()
-            .flex_none()
+            .id("git-review")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
+            .size_full()
+            .relative()
             .flex()
             .flex_col()
-            .border_t_1()
-            .border_color(colors().border_subtle)
-            .bg(surface_tint(colors().background, colors().panel))
-            .when(truncated, |panel| {
-                panel.child(
+            .overflow_hidden()
+            .child(self.header(cx))
+            .when(self.mode == GitPanelMode::Branch, |view| {
+                view.child(self.branch_controls(cx))
+            })
+            .when_some(selected_commit, |view, commit| {
+                view.child(self.commit_controls(&commit, cx))
+            })
+            .when_some(error, |view, error| {
+                view.child(
                     div()
-                        .h(px(DIFF_NOTICE_HEIGHT))
                         .flex_none()
-                        .flex()
-                        .items_center()
                         .px_3()
-                        .bg(colors().elevated)
+                        .py_2()
+                        .bg(colors().diff_deleted_bg)
+                        .border_b_1()
+                        .border_color(colors().danger)
                         .text_size(px(9.0))
-                        .text_color(colors().warning)
-                        .child("Diff truncated"),
+                        .line_height(px(14.0))
+                        .text_color(colors().danger)
+                        .child(error),
                 )
             })
-            .child(body)
+            .when_some(empty_message, |view, text| view.child(self.message(text)))
+            .when(show_history, |view| view.child(self.history_list(cx)))
+            .when(show_files, |view| {
+                view.child(self.review_toolbar(cx))
+                    .child(self.review_list(window, cx))
+            })
+            .when(menu_open, |view| view.child(self.mode_menu(cx)))
     }
+}
 
-    fn diff_row(row: &GitDiffRow, text: &SharedString, spans: &[SyntaxSpan]) -> Div {
-        let background = match row.kind {
-            GitDiffRowKind::Addition => colors().diff_added_bg,
-            GitDiffRowKind::Deletion => colors().diff_deleted_bg,
-            GitDiffRowKind::Hunk => colors().diff_hunk_bg,
-            GitDiffRowKind::Section => colors().elevated,
-            GitDiffRowKind::Notice => colors().background,
-            GitDiffRowKind::Context => colors().background,
-        };
-        let gutter_bg = match row.kind {
-            GitDiffRowKind::Addition => colors().diff_added_bg,
-            GitDiffRowKind::Deletion => colors().diff_deleted_bg,
-            GitDiffRowKind::Hunk | GitDiffRowKind::Section => colors().diff_hunk_bg,
-            _ => colors().gutter,
-        };
-        let (marker, marker_color) = match row.kind {
-            GitDiffRowKind::Addition => ("+", colors().diff_added),
-            GitDiffRowKind::Deletion => ("−", colors().diff_deleted),
-            GitDiffRowKind::Notice => ("!", colors().warning),
-            _ => ("", colors().subtle),
-        };
-        let old_line = row
-            .old_line
-            .map(|line| line.to_string())
-            .unwrap_or_default();
-        let new_line = row
-            .new_line
-            .map(|line| line.to_string())
-            .unwrap_or_default();
-        let code = Self::styled_code_line(text, spans, row.kind);
-
-        div()
-            .h(px(DIFF_ROW_HEIGHT))
-            .w_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .bg(surface_tint(background, colors().background))
-            .font_family(MONO_FONT)
-            .text_size(px(DIFF_FONT_SIZE))
-            .line_height(px(DIFF_ROW_HEIGHT))
-            .child(Self::diff_gutter(
-                &old_line,
-                surface_tint(gutter_bg, background),
-            ))
-            .child(Self::diff_gutter(
-                &new_line,
-                surface_tint(gutter_bg, background),
-            ))
-            .child(
-                div()
-                    .w(px(DIFF_MARKER_WIDTH))
-                    .h_full()
-                    .flex_none()
-                    .text_center()
-                    .text_color(marker_color)
-                    .child(marker),
-            )
-            .child(div().flex_none().whitespace_nowrap().pr_4().child(code))
+impl DiffView {
+    fn empty_message(&self) -> Option<&'static str> {
+        match self.mode {
+            GitPanelMode::Worktree => {
+                if self.snapshot.is_none() && self.refreshing && !self.snapshot_settled {
+                    Some("Reading repository…")
+                } else if self.snapshot.is_none() {
+                    Some("No Git repository in this project.")
+                } else if self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.changes.is_empty())
+                {
+                    Some("No uncommitted changes")
+                } else {
+                    None
+                }
+            }
+            GitPanelMode::Branch => {
+                if self.branch_error.is_some() && self.branch_changes.is_none() {
+                    Some("Select available branches and try again.")
+                } else if self.branch_changes.is_none()
+                    && (self.branch_refreshing || (self.refreshing && !self.snapshot_settled))
+                {
+                    Some("Comparing with the base branch…")
+                } else if self.snapshot.is_none() && self.branch_changes.is_none() {
+                    Some("No Git repository in this project.")
+                } else if self
+                    .branch_changes
+                    .as_ref()
+                    .is_some_and(|changes| changes.base.is_empty())
+                {
+                    Some("No base branch (main, master, or upstream) to compare.")
+                } else if self
+                    .branch_changes
+                    .as_ref()
+                    .is_some_and(|changes| changes.snapshot.changes.is_empty())
+                {
+                    Some("No changes on this branch")
+                } else if self.branch_changes.is_none() {
+                    Some("Comparing with the base branch…")
+                } else {
+                    None
+                }
+            }
+            GitPanelMode::LatestTurn => {
+                if !self.turn_settled {
+                    Some("Reading the latest agent turn…")
+                } else if self.turn_error.is_some() && self.turn_changes.is_none() {
+                    Some("Could not compare the latest turn.")
+                } else if self.turn_baseline.is_none() && self.snapshot.is_none() {
+                    Some("No Git repository in this project.")
+                } else if self.turn_baseline.is_none() {
+                    Some(
+                        "No agent turn recorded here yet. When an agent starts working in this \
+                         repository, its changes appear here.",
+                    )
+                } else if self
+                    .turn_changes
+                    .as_ref()
+                    .is_none_or(|changes| changes.snapshot.changes.is_empty())
+                {
+                    Some("No changes since the latest turn started.")
+                } else {
+                    None
+                }
+            }
+            GitPanelMode::History if self.selected_commit.is_some() => {
+                if self.commit_changes.is_none() && self.commit_refreshing {
+                    Some("Loading commit changes…")
+                } else if self.commit_changes.is_none() {
+                    Some("Could not load this commit. Retry or return to history.")
+                } else if self
+                    .commit_changes
+                    .as_ref()
+                    .is_some_and(|changes| changes.snapshot.changes.is_empty())
+                {
+                    Some("This commit has no file changes.")
+                } else {
+                    None
+                }
+            }
+            GitPanelMode::History => {
+                if self.history.is_none()
+                    && (self.history_refreshing || (self.refreshing && !self.snapshot_settled))
+                {
+                    Some("Loading history…")
+                } else if self.history.is_none() && self.snapshot.is_none() {
+                    Some("No Git repository in this project.")
+                } else if self
+                    .history
+                    .as_ref()
+                    .is_some_and(|history| history.commits.is_empty())
+                {
+                    Some("This repository has no commits yet.")
+                } else if self.history.is_none() {
+                    Some("Loading history…")
+                } else {
+                    None
+                }
+            }
+        }
     }
+}
 
-    fn diff_gutter(number: &str, background: Rgba) -> Div {
-        div()
-            .w(px(DIFF_GUTTER_WIDTH))
-            .h_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_end()
-            .pr_2()
-            .bg(background)
-            .border_r_1()
-            .border_color(colors().border_subtle)
-            .font_family(MONO_FONT)
-            .text_size(px(10.5))
-            .text_color(colors().muted)
-            .child(number.to_owned())
+fn elapsed_label(elapsed: Duration) -> String {
+    let minutes = elapsed.as_secs() / 60;
+    match minutes {
+        0 => "started just now".to_owned(),
+        1..=59 => format!("started {minutes} min ago"),
+        _ => format!("started {} h ago", minutes / 60),
     }
+}
 
+impl DiffView {
     fn history_graph_width(graph: &[GitGraphRow]) -> f32 {
         let lanes = graph.iter().map(|row| row.lane_count).max().unwrap_or(1);
         (lanes as f32 * GRAPH_LANE_WIDTH).clamp(18.0, 48.0)
@@ -2246,216 +3845,6 @@ impl DiffView {
                     }),
             )
     }
-
-    fn styled_code_line(
-        text: &SharedString,
-        spans: &[SyntaxSpan],
-        kind: GitDiffRowKind,
-    ) -> StyledText {
-        let default_color = match kind {
-            GitDiffRowKind::Hunk | GitDiffRowKind::Section => colors().muted,
-            GitDiffRowKind::Notice => colors().warning,
-            GitDiffRowKind::Context | GitDiffRowKind::Addition | GitDiffRowKind::Deletion => {
-                colors().foreground
-            }
-        };
-        let default_style = TextStyle {
-            color: default_color.into(),
-            font_family: MONO_FONT.into(),
-            font_size: px(DIFF_FONT_SIZE).into(),
-            line_height: px(DIFF_ROW_HEIGHT).into(),
-            white_space: WhiteSpace::Nowrap,
-            ..Default::default()
-        };
-
-        // Hunk / notice lines keep a single accent color.
-        if matches!(
-            kind,
-            GitDiffRowKind::Hunk | GitDiffRowKind::Section | GitDiffRowKind::Notice
-        ) || spans.is_empty()
-        {
-            return StyledText::new(text.clone()).with_default_highlights(
-                &default_style,
-                std::iter::empty::<(std::ops::Range<usize>, HighlightStyle)>(),
-            );
-        }
-
-        let highlights = spans.iter().filter_map(|span| {
-            if span.range.start >= text.len() || span.range.end > text.len() {
-                return None;
-            }
-            if !text.is_char_boundary(span.range.start) || !text.is_char_boundary(span.range.end) {
-                return None;
-            }
-            Some((span.range.clone(), span.kind.highlight_style()))
-        });
-
-        StyledText::new(text.clone()).with_default_highlights(&default_style, highlights)
-    }
-}
-
-impl Render for DiffView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let error = match self.mode {
-            GitPanelMode::Branch => self.branch_error.clone().or_else(|| self.error.clone()),
-            GitPanelMode::History => self.commit_error.clone().or_else(|| self.error.clone()),
-            GitPanelMode::Worktree => self.error.clone(),
-        };
-        let selected_commit = self.selected_commit.clone();
-        let menu_open = self.mode_menu_open;
-        let empty_message = self.empty_message();
-        let show_history = empty_message.is_none()
-            && self.mode == GitPanelMode::History
-            && selected_commit.is_none();
-        let show_files = empty_message.is_none()
-            && (matches!(self.mode, GitPanelMode::Worktree | GitPanelMode::Branch)
-                || selected_commit.is_some());
-        div()
-            .id("git-review")
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if this.review_expanded && matches!(event.keystroke.key.as_str(), "escape" | "esc")
-                {
-                    this.set_review_expanded(false, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .size_full()
-            .relative()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .child(self.header(cx))
-            .when(self.mode == GitPanelMode::Branch, |view| {
-                view.child(self.branch_controls(cx))
-            })
-            .when_some(selected_commit, |view, commit| {
-                view.child(self.commit_controls(&commit, cx))
-            })
-            .when_some(error, |view, error| {
-                view.child(
-                    div()
-                        .flex_none()
-                        .px_3()
-                        .py_2()
-                        .bg(colors().diff_deleted_bg)
-                        .border_b_1()
-                        .border_color(colors().danger)
-                        .text_size(px(9.0))
-                        .line_height(px(14.0))
-                        .text_color(colors().danger)
-                        .child(error),
-                )
-            })
-            .when_some(empty_message, |view, text| view.child(self.message(text)))
-            .when(show_history, |view| view.child(self.history_list(cx)))
-            .when(show_files, |view| view.child(self.file_cards(cx)))
-            .when(menu_open, |view| view.child(self.mode_menu(cx)))
-    }
-}
-
-impl DiffView {
-    fn empty_message(&self) -> Option<&'static str> {
-        match self.mode {
-            GitPanelMode::Worktree => {
-                if self.snapshot.is_none() && self.refreshing && !self.snapshot_settled {
-                    Some("Reading repository…")
-                } else if self.snapshot.is_none() {
-                    Some("No Git repository in this project.")
-                } else if self
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|snapshot| snapshot.changes.is_empty())
-                {
-                    Some("No uncommitted changes")
-                } else {
-                    None
-                }
-            }
-            GitPanelMode::Branch => {
-                if self.branch_error.is_some() && self.branch_changes.is_none() {
-                    Some("Select available branches and try again.")
-                } else if self.branch_changes.is_none()
-                    && (self.branch_refreshing || (self.refreshing && !self.snapshot_settled))
-                {
-                    Some("Comparing with the base branch…")
-                } else if self.snapshot.is_none() && self.branch_changes.is_none() {
-                    Some("No Git repository in this project.")
-                } else if self
-                    .branch_changes
-                    .as_ref()
-                    .is_some_and(|changes| changes.base.is_empty())
-                {
-                    Some("No base branch (main, master, or upstream) to compare.")
-                } else if self
-                    .branch_changes
-                    .as_ref()
-                    .is_some_and(|changes| changes.snapshot.changes.is_empty())
-                {
-                    Some("No changes on this branch")
-                } else if self.branch_changes.is_none() {
-                    Some("Comparing with the base branch…")
-                } else {
-                    None
-                }
-            }
-            GitPanelMode::History if self.selected_commit.is_some() => {
-                if self.commit_changes.is_none() && self.commit_refreshing {
-                    Some("Loading commit changes…")
-                } else if self.commit_changes.is_none() {
-                    Some("Could not load this commit. Retry or return to history.")
-                } else if self
-                    .commit_changes
-                    .as_ref()
-                    .is_some_and(|changes| changes.snapshot.changes.is_empty())
-                {
-                    Some("This commit has no file changes.")
-                } else {
-                    None
-                }
-            }
-            GitPanelMode::History => {
-                if self.history.is_none()
-                    && (self.history_refreshing || (self.refreshing && !self.snapshot_settled))
-                {
-                    Some("Loading history…")
-                } else if self.history.is_none() && self.snapshot.is_none() {
-                    Some("No Git repository in this project.")
-                } else if self
-                    .history
-                    .as_ref()
-                    .is_some_and(|history| history.commits.is_empty())
-                {
-                    Some("This repository has no commits yet.")
-                } else if self.history.is_none() {
-                    Some("Loading history…")
-                } else {
-                    None
-                }
-            }
-        }
-    }
-}
-
-fn inline_diff_height(
-    row_count: usize,
-    file_list_height: Option<f32>,
-    expanded: bool,
-    truncated: bool,
-) -> f32 {
-    // Measure below the Git/commit/branch controls, and leave both the current
-    // file header and the next file's header within reach.
-    let mut maximum = file_list_height
-        .map(|height| height - 2.0 * FILE_HEADER_HEIGHT - 2.0)
-        .unwrap_or(MAX_INLINE_DIFF_HEIGHT);
-    if !expanded {
-        maximum = maximum.min(MAX_INLINE_DIFF_HEIGHT);
-    }
-    if truncated {
-        maximum -= DIFF_NOTICE_HEIGHT;
-    }
-    ((row_count as f32) * DIFF_ROW_HEIGHT)
-        .clamp(MIN_INLINE_DIFF_HEIGHT, maximum.max(MIN_INLINE_DIFF_HEIGHT))
 }
 
 fn format_short_date(iso: &str) -> String {
@@ -2492,241 +3881,6 @@ fn lane_color(lane: usize) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct ReviewScrollTest {
-        file: Entity<InlineDiffView>,
-        scroll: gpui::ScrollHandle,
-    }
-
-    impl Render for ReviewScrollTest {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .id("test-file-cards")
-                .w(px(320.0))
-                .h(px(300.0))
-                .overflow_y_scroll()
-                .track_scroll(&self.scroll)
-                .flex()
-                .flex_col()
-                .child(div().h(px(FILE_HEADER_HEIGHT)).flex_none())
-                .child(
-                    AnyView::from(self.file.clone())
-                        .cached(StyleRefinement::default().w_full().h(px(220.0)).flex_none()),
-                )
-                .child(div().h(px(220.0)).flex_none())
-        }
-    }
-
-    #[gpui::test]
-    fn diff_scroll_hands_off_at_vertical_edges(cx: &mut gpui::TestAppContext) {
-        use crate::ports::git::GitDiff;
-        use gpui::AppContext;
-
-        let document = Arc::new(DiffDocument::prepare(GitDiff {
-            path: "main.rs".into(),
-            rows: (1..=100)
-                .map(|line| GitDiffRow {
-                    old_line: Some(line),
-                    new_line: Some(line),
-                    kind: GitDiffRowKind::Context,
-                    text: "let value = 42; ".repeat(30),
-                })
-                .collect(),
-            additions: 0,
-            deletions: 0,
-            binary: false,
-            truncated: false,
-        }));
-        let inner = UniformListScrollHandle::new();
-        let outer = gpui::ScrollHandle::new();
-        let file = cx.new(|_| InlineDiffView {
-            document,
-            theme: colors(),
-            height: 220.0,
-            scroll_handle: inner.clone(),
-            render_count: 0,
-        });
-        let window = cx.add_window(|_, _| ReviewScrollTest {
-            file: file.clone(),
-            scroll: outer.clone(),
-        });
-        let draw = |cx: &mut gpui::TestAppContext| {
-            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
-                .unwrap();
-        };
-        let scroll = |x, y, cx: &mut gpui::TestAppContext| {
-            gpui::VisualTestContext::from_window(window.into(), cx).simulate_event(
-                gpui::ScrollWheelEvent {
-                    position: point(px(100.0), px(100.0)),
-                    delta: gpui::ScrollDelta::Pixels(point(px(x), px(y))),
-                    ..Default::default()
-                },
-            );
-        };
-        draw(cx);
-        let inner = inner.0.borrow().base_handle.clone();
-        assert!(inner.max_offset().height > px(0.0));
-        assert!(inner.max_offset().width > px(0.0));
-        assert!(outer.max_offset().height > px(0.0));
-
-        // While there are more code rows, only the diff moves.
-        scroll(0.0, -44.0, cx);
-        assert_eq!(inner.offset().y, px(-44.0));
-        assert_eq!(outer.offset().y, px(0.0));
-        draw(cx);
-
-        // Clamp immediately, including when more wheel events arrive before paint.
-        scroll(0.0, -10_000.0, cx);
-        assert_eq!(inner.offset().y, -inner.max_offset().height);
-        scroll(0.0, -40.0, cx);
-        assert_eq!(outer.offset().y, px(-40.0));
-        draw(cx);
-
-        // Horizontal trackpad movement, including diagonal drift, stays in the diff.
-        scroll(-60.0, -2.0, cx);
-        assert_eq!(inner.offset().x, px(-60.0));
-        assert_eq!(inner.offset().y, -inner.max_offset().height);
-        assert_eq!(outer.offset().y, px(-40.0));
-        draw(cx);
-
-        // The top edge hands scrolling back in the other direction, too.
-        scroll(0.0, 10_000.0, cx);
-        assert_eq!(inner.offset().y, px(0.0));
-        scroll(0.0, 40.0, cx);
-        assert_eq!(outer.offset().y, px(0.0));
-        draw(cx);
-
-        // A short diff must not trap the file list at all.
-        file.update(cx, |view, cx| {
-            let mut diff = view.document.diff.clone();
-            diff.rows.truncate(3);
-            view.document = Arc::new(DiffDocument::prepare(diff));
-            cx.notify();
-        });
-        draw(cx);
-        assert_eq!(inner.max_offset().height, px(0.0));
-        scroll(0.0, -40.0, cx);
-        assert_eq!(inner.offset().y, px(0.0));
-        assert_eq!(outer.offset().y, px(-40.0));
-    }
-
-    #[test]
-    fn diff_height_reserves_room_for_file_navigation() {
-        for viewport in [220.0, 400.0, 800.0] {
-            for expanded in [false, true] {
-                for truncated in [false, true] {
-                    let height = inline_diff_height(10_000, Some(viewport), expanded, truncated);
-                    let notice = if truncated { DIFF_NOTICE_HEIGHT } else { 0.0 };
-                    assert!(height + notice + 2.0 * FILE_HEADER_HEIGHT + 2.0 <= viewport);
-                    if !expanded {
-                        assert!(height <= MAX_INLINE_DIFF_HEIGHT);
-                    }
-                }
-            }
-        }
-        assert_eq!(
-            inline_diff_height(4, Some(800.0), true, false),
-            4.0 * DIFF_ROW_HEIGHT
-        );
-        assert_eq!(
-            inline_diff_height(10_000, Some(40.0), true, true),
-            MIN_INLINE_DIFF_HEIGHT
-        );
-    }
-
-    struct ReviewCacheTest {
-        files: Vec<Entity<InlineDiffView>>,
-    }
-
-    impl Render for ReviewCacheTest {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .children(self.files.iter().map(|file| {
-                    AnyView::from(file.clone())
-                        .cached(StyleRefinement::default().w_full().h(px(220.0)).flex_none())
-                }))
-        }
-    }
-
-    #[gpui::test]
-    fn scrolling_one_file_reuses_unchanged_sibling_code(cx: &mut gpui::TestAppContext) {
-        use crate::ports::git::GitDiff;
-        use gpui::AppContext;
-
-        let document = Arc::new(DiffDocument::prepare(GitDiff {
-            path: "main.rs".into(),
-            rows: (1..=100)
-                .map(|line| GitDiffRow {
-                    old_line: Some(line),
-                    new_line: Some(line),
-                    kind: GitDiffRowKind::Context,
-                    text: "let value = 42;".into(),
-                })
-                .collect(),
-            additions: 0,
-            deletions: 0,
-            binary: false,
-            truncated: false,
-        }));
-        let files = (0..2)
-            .map(|_| {
-                cx.new(|_| InlineDiffView {
-                    document: document.clone(),
-                    theme: colors(),
-                    height: 220.0,
-                    scroll_handle: UniformListScrollHandle::new(),
-                    render_count: 0,
-                })
-            })
-            .collect::<Vec<_>>();
-        let window = cx.add_window(|_, _| ReviewCacheTest {
-            files: files.clone(),
-        });
-        let draw = |cx: &mut gpui::TestAppContext| {
-            cx.update_window(window.into(), |_, window, cx| {
-                window.draw(cx).clear();
-            })
-            .unwrap();
-        };
-        draw(cx);
-        let before = files
-            .iter()
-            .map(|file| file.read_with(cx, |view, _| view.render_count))
-            .collect::<Vec<_>>();
-        assert!(before.iter().all(|count| *count > 0));
-
-        // Wheel input invalidates the entity that owns the list's scroll listener.
-        files[0].update(cx, |_, cx| cx.notify());
-        draw(cx);
-        assert!(files[0].read_with(cx, |view, _| view.render_count) > before[0]);
-        assert_eq!(
-            files[1].read_with(cx, |view, _| view.render_count),
-            before[1]
-        );
-
-        // A reloaded document must still invalidate its own cached paint.
-        files[1].update(cx, |view, cx| {
-            view.document = Arc::new(DiffDocument::prepare(GitDiff {
-                path: "main.rs".into(),
-                rows: vec![GitDiffRow {
-                    old_line: None,
-                    new_line: Some(1),
-                    kind: GitDiffRowKind::Addition,
-                    text: "let updated = true;".into(),
-                }],
-                additions: 1,
-                deletions: 0,
-                binary: false,
-                truncated: false,
-            }));
-            cx.notify();
-        });
-        draw(cx);
-        assert!(files[1].read_with(cx, |view, _| view.render_count) > before[1]);
-    }
 
     #[test]
     fn diff_source_tracks_worktree_file_changes() {
@@ -2773,5 +3927,209 @@ mod tests {
             DiffSource::new(&snapshot, &change, Some("parent"), Some("other-commit"))
         );
         std::fs::remove_dir_all(root).expect("remove test repository directory");
+    }
+
+    fn git(root: &std::path::Path, arguments: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {arguments:?}");
+    }
+
+    #[gpui::test]
+    fn review_list_is_one_flat_list_with_pinned_headers_and_comments(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::infrastructure::git::GitCliPort;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let root = std::env::temp_dir().join(format!(
+            "vibra-review-list-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.name", "Vibra Test"]);
+        git(&root, &["config", "user.email", "vibra@example.invalid"]);
+        let original: String = (1..=120)
+            .map(|line| format!("let line_{line} = {line};\n"))
+            .collect();
+        std::fs::write(root.join("a.rs"), &original).unwrap();
+        git(&root, &["add", "a.rs"]);
+        git(&root, &["commit", "-qm", "initial"]);
+        let changed: String = (1..=120)
+            .map(|line| {
+                if line % 3 == 0 {
+                    format!(
+                        "let line_{line} = {}; // {}\n",
+                        line * 2,
+                        "wide ".repeat(120)
+                    )
+                } else {
+                    format!("let line_{line} = {line};\n")
+                }
+            })
+            .collect();
+        std::fs::write(root.join("a.rs"), changed).unwrap();
+        std::fs::write(root.join("b.rs"), "fn added() {}\n").unwrap();
+
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut view = DiffView::new(root.clone(), Arc::new(GitCliPort::default()), cx);
+            view.set_panel_visible(true, cx);
+            view
+        });
+        let sent = Rc::new(RefCell::new(None::<String>));
+        let sink = sent.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event: &DiffViewEvent, _| {
+                if let DiffViewEvent::SendReview(prompt) = event {
+                    *sink.borrow_mut() = Some(prompt.clone());
+                }
+            })
+            .detach();
+        });
+        cx.run_until_parked();
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear());
+            cx.run_until_parked();
+        };
+
+        view.update(cx, |view, cx| {
+            view.toggle_path("a.rs".into(), cx);
+            view.toggle_path("b.rs".into(), cx);
+        });
+        cx.run_until_parked();
+        draw(cx);
+        draw(cx);
+
+        view.update(cx, |view, _| {
+            assert!(view.folds.is_empty(), "fold tweens settle");
+            let headers = view
+                .rows
+                .iter()
+                .filter(|row| matches!(row, ReviewRow::FileHeader { .. }))
+                .count();
+            assert_eq!(headers, 2);
+            let bodies = view
+                .rows
+                .iter()
+                .filter(|row| matches!(row, ReviewRow::Body { .. }))
+                .count();
+            assert!(bodies > 80, "every diff line is its own row: {bodies}");
+            assert!(view.h_max > 0.0, "the widest line overflows the code plane");
+        });
+
+        // Sideways gestures move only the code plane, never the file list.
+        let top_before = view.read_with(cx, |view, _| view.list_state.logical_scroll_top().item_ix);
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(300.0), px(400.0)),
+            delta: gpui::ScrollDelta::Pixels(point(px(-80.0), px(-3.0))),
+            ..Default::default()
+        });
+        view.update(cx, |view, _| {
+            assert_eq!(view.h_offset, 80.0);
+            assert_eq!(view.list_state.logical_scroll_top().item_ix, top_before);
+        });
+
+        // Scrolling into a file pins its header over the list.
+        view.update(cx, |view, _| {
+            view.list_state.scroll_to(ListOffset {
+                item_ix: 30,
+                offset_in_item: px(0.0),
+            })
+        });
+        draw(cx);
+        view.update(cx, |view, _| {
+            let (file, offset) = view.sticky_header().expect("header pinned");
+            assert_eq!(view.row_files[file].path, "a.rs");
+            assert_eq!(offset, 0.0);
+        });
+
+        // Split pairs rows without losing the scroll position's file.
+        view.update(cx, |view, cx| view.set_layout(DiffLayout::Split, cx));
+        draw(cx);
+        view.update(cx, |view, _| {
+            assert!(view.rows.iter().any(|row| matches!(
+                row,
+                ReviewRow::Body {
+                    row: BodyRow::Split { .. },
+                    ..
+                }
+            )));
+            let top = view.list_state.logical_scroll_top().item_ix;
+            assert_eq!(
+                view.rows[top]
+                    .file()
+                    .map(|file| view.row_files[file].path.as_str()),
+                Some("a.rs")
+            );
+        });
+
+        // A comment is drafted on a line, kept, and pasted as one prompt.
+        view.update_in(cx, |view, window, cx| {
+            view.open_draft(
+                CommentAnchor {
+                    path: "a.rs".into(),
+                    side: CommentSide::New,
+                    line: 3,
+                },
+                "let line_3 = 6;".into(),
+                window,
+                cx,
+            );
+            view.draft.as_mut().unwrap().body = "Keep the original value.".into();
+            view.commit_draft();
+        });
+        draw(cx);
+        view.update(cx, |view, cx| {
+            assert!(
+                view.rows
+                    .iter()
+                    .any(|row| matches!(row, ReviewRow::Comment { .. }))
+            );
+            view.send_review(cx);
+            assert!(view.comments.is_empty());
+        });
+        let prompt = sent.borrow().clone().expect("review sent to the agent");
+        assert!(prompt.contains("a.rs:3"));
+        assert!(prompt.contains("Keep the original value."));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn gutters_grow_with_line_numbers_and_font() {
+        let metrics = RowMetrics {
+            font_size: 12.0,
+            line_height: 22.0,
+            hunk_height: 28.0,
+            char_width: 7.0,
+            wrap: false,
+            h_offset: 0.0,
+        };
+        assert_eq!(metrics.gutter_width(9), metrics.gutter_width(999));
+        assert!(metrics.gutter_width(10_000) > metrics.gutter_width(999));
+        let larger = RowMetrics {
+            char_width: 9.0,
+            ..metrics
+        };
+        assert!(larger.gutter_width(999) > metrics.gutter_width(999));
+    }
+
+    #[test]
+    fn elapsed_labels_stay_short() {
+        assert_eq!(elapsed_label(Duration::from_secs(20)), "started just now");
+        assert_eq!(
+            elapsed_label(Duration::from_secs(5 * 60)),
+            "started 5 min ago"
+        );
+        assert_eq!(
+            elapsed_label(Duration::from_secs(3 * 3600)),
+            "started 3 h ago"
+        );
     }
 }

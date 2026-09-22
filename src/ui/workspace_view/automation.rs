@@ -37,6 +37,11 @@ pub(super) struct ResolvedAgentPresence {
     session_id: Option<String>,
 }
 
+fn turn_started(previous: Option<AgentRuntimeState>, current: AgentRuntimeState) -> bool {
+    current == AgentRuntimeState::Working
+        && matches!(previous, None | Some(AgentRuntimeState::Idle))
+}
+
 fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
     match state {
         AgentRuntimeState::Idle => "idle",
@@ -146,7 +151,7 @@ impl WorkspaceView {
             }
         };
         if changed {
-            self.publish_agent_activity(pane_id);
+            self.publish_agent_activity(pane_id, cx);
             cx.notify();
         }
         let _ = request.response.send(AutomationResponse::success(
@@ -227,7 +232,33 @@ impl WorkspaceView {
             .is_some_and(|session| session.id == pane_id)
     }
 
-    pub(super) fn publish_agent_activity(&mut self, pane_id: Uuid) {
+    /// An agent going from idle (or absent) to working starts a new turn:
+    /// freeze the tree so the Git panel can show what this turn changes.
+    /// Waiting → working is the same turn resuming after a prompt.
+    fn capture_turn_start(
+        &self,
+        pane_id: Uuid,
+        previous: Option<&AgentActivitySnapshot>,
+        current: Option<&AgentActivitySnapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(current) = current else {
+            return;
+        };
+        if !turn_started(previous.map(|previous| previous.state), current.state) {
+            return;
+        }
+        let Some(terminal) = self.terminals.get(&pane_id) else {
+            return;
+        };
+        let cwd = terminal.read(cx).current_working_directory();
+        let agent = current.kind.clone();
+        self.diff_view.update(cx, |diff_view, cx| {
+            diff_view.mark_turn_started(cwd, agent, cx)
+        });
+    }
+
+    pub(super) fn publish_agent_activity(&mut self, pane_id: Uuid, cx: &mut Context<Self>) {
         let current = self
             .resolved_agent_presence(pane_id)
             .map(|presence| AgentActivitySnapshot {
@@ -235,6 +266,8 @@ impl WorkspaceView {
                 state: presence.state,
                 attention: presence.attention,
             });
+        let previous = self.agent_activity_seen.get(&pane_id);
+        self.capture_turn_start(pane_id, previous, current.as_ref(), cx);
         let previous = self.agent_activity_seen.get(&pane_id);
         if let Some(notification) = should_notify_agent(
             previous,
@@ -295,6 +328,16 @@ mod tests {
             state: AgentRuntimeState::Working,
             process_id: Some(42),
         }
+    }
+
+    #[test]
+    fn only_idle_to_working_starts_a_turn() {
+        use AgentRuntimeState::{Idle, Waiting, Working};
+        assert!(turn_started(None, Working));
+        assert!(turn_started(Some(Idle), Working));
+        assert!(!turn_started(Some(Waiting), Working));
+        assert!(!turn_started(Some(Working), Working));
+        assert!(!turn_started(Some(Idle), Waiting));
     }
 
     #[test]

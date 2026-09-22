@@ -12,6 +12,7 @@ use super::WorkspaceView;
 use crate::infrastructure::automation::{
     AgentHookStatus, install_agent_hooks, uninstall_agent_hooks,
 };
+use crate::infrastructure::settings::{MAX_DIFF_FONT_SIZE, MIN_DIFF_FONT_SIZE};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SettingsPage {
@@ -55,6 +56,13 @@ fn theme_matches(family: &ThemeFamily, query: &str) -> bool {
     }
     family.label.to_ascii_lowercase().contains(query)
         || family.id.to_ascii_lowercase().contains(query)
+}
+
+struct FontSizeRow {
+    label: &'static str,
+    description: &'static str,
+    size: f32,
+    ids: [&'static str; 3],
 }
 
 fn settings_button_base(label: &'static str, id: &'static str) -> Stateful<Div> {
@@ -769,79 +777,98 @@ impl WorkspaceView {
                     .flex()
                     .flex_col()
                     .gap_3()
+                    .child(self.settings_font_row(
+                        FontSizeRow {
+                            label: "Tamaño del texto",
+                            description: "Fuente JetBrains Mono en todas las terminales.",
+                            size: font_size,
+                            ids: [
+                                "settings-font-down",
+                                "settings-font-reset",
+                                "settings-font-up",
+                            ],
+                        },
+                        cx,
+                        |this, size, cx| this.set_terminal_font_size(size, cx),
+                    ))
+                    .child(div().h(px(1.0)).bg(colors().border_subtle))
+                    .child(self.settings_font_row(
+                        FontSizeRow {
+                            label: "Texto del diff",
+                            description: "Código en el panel Git, independiente de la terminal.",
+                            size: self.settings.diff_font_size,
+                            ids: [
+                                "settings-diff-font-down",
+                                "settings-diff-font-reset",
+                                "settings-diff-font-up",
+                            ],
+                        },
+                        cx,
+                        |this, size, cx| this.set_diff_font_size(size, cx),
+                    )),
+            )
+    }
+
+    fn settings_font_row(
+        &self,
+        row: FontSizeRow,
+        cx: &mut Context<Self>,
+        set: impl Fn(&mut Self, f32, &mut Context<Self>) + Copy + 'static,
+    ) -> Div {
+        let size = row.size;
+        let [down, reset, up] = row.ids;
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_size(px(10.5))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(colors().foreground)
-                                            .child("Tamaño del texto"),
-                                    )
-                                    .child(
-                                        div().text_size(px(9.0)).text_color(colors().subtle).child(
-                                            "Fuente JetBrains Mono en todas las terminales.",
-                                        ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .w(px(52.0))
-                                    .h(px(26.0))
-                                    .flex_none()
-                                    .rounded(px(5.0))
-                                    .bg(surface_tint(colors().terminal, colors().panel))
-                                    .border_1()
-                                    .border_color(colors().border_subtle)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .font_family(MONO_FONT)
-                                    .text_size(px(9.0))
-                                    .text_color(colors().foreground)
-                                    .child(format!("{font_size:.0} px")),
-                            )
-                            .child(self.settings_button(
-                                "−",
-                                "settings-font-down",
-                                cx,
-                                |this, cx| {
-                                    this.set_terminal_font_size(
-                                        this.settings.terminal_font_size - 1.0,
-                                        cx,
-                                    );
-                                },
-                            ))
-                            .child(self.settings_button(
-                                "Restablecer",
-                                "settings-font-reset",
-                                cx,
-                                |this, cx| {
-                                    this.set_terminal_font_size(12.0, cx);
-                                },
-                            ))
-                            .child(self.settings_button(
-                                "+",
-                                "settings-font-up",
-                                cx,
-                                |this, cx| {
-                                    this.set_terminal_font_size(
-                                        this.settings.terminal_font_size + 1.0,
-                                        cx,
-                                    );
-                                },
-                            )),
+                            .text_size(px(10.5))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(colors().foreground)
+                            .child(row.label),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(colors().subtle)
+                            .child(row.description),
                     ),
             )
+            .child(
+                div()
+                    .w(px(52.0))
+                    .h(px(26.0))
+                    .flex_none()
+                    .rounded(px(5.0))
+                    .bg(surface_tint(colors().terminal, colors().panel))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family(MONO_FONT)
+                    .text_size(px(9.0))
+                    .text_color(colors().foreground)
+                    .child(format!("{size:.0} px")),
+            )
+            .child(self.settings_button("−", down, cx, move |this, cx| {
+                set(this, size - 1.0, cx);
+            }))
+            .child(
+                self.settings_button("Restablecer", reset, cx, move |this, cx| {
+                    set(this, 12.0, cx);
+                }),
+            )
+            .child(self.settings_button("+", up, cx, move |this, cx| {
+                set(this, size + 1.0, cx);
+            }))
     }
 
     fn general_settings(&self, panel: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -1118,6 +1145,19 @@ impl WorkspaceView {
 
     fn uninstall_agent_hooks_from_settings(&mut self, cx: &mut Context<Self>) {
         self.apply_agent_hook_result(uninstall_agent_hooks(), cx);
+    }
+
+    fn set_diff_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        let size = size.clamp(MIN_DIFF_FONT_SIZE, MAX_DIFF_FONT_SIZE);
+        if self.settings.diff_font_size == size {
+            return;
+        }
+        self.settings.diff_font_size = size;
+        let (split, wrap) = (self.settings.diff_split, self.settings.diff_wrap);
+        self.diff_view.update(cx, |diff_view, cx| {
+            diff_view.set_preferences(split, wrap, size, cx)
+        });
+        self.persist_settings(cx);
     }
 
     pub(super) fn set_terminal_font_size(&mut self, size: f32, cx: &mut Context<Self>) {

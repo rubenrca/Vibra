@@ -511,6 +511,12 @@ impl TerminalView {
         self.send(paste_bytes(text, mode.bracketed_paste));
     }
 
+    /// Insert text as if pasted (bracketed when the app asked for it), for
+    /// prompts composed elsewhere in Vibra.
+    pub fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.request_paste(text.to_owned(), cx);
+    }
+
     fn request_paste(&mut self, text: String, cx: &mut Context<Self>) {
         // When the app enabled bracketed paste, inject immediately (Warp/iTerm).
         // Confirm only for raw pastes that could execute as typed input.

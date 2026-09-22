@@ -55,10 +55,12 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - panel derecho unificado con las vistas `Files` y `Git`;
 - árbol de archivos confinado al proyecto, con iconos SVG de carpetas/archivos y guías de indentación;
 - árbol de archivos que conserva el terminal como superficie central y enfoca los archivos modificados directamente en Git;
-- panel Git con tres vistas: working tree, cambios de la rama frente a la base por defecto, e historial de commits con grafo de lanes;
+- panel Git con cuatro vistas: working tree, cambios de la rama frente a la base por defecto, `Latest turn` (lo que cambió desde que un agente empezó su último turno en el repositorio) e historial de commits con grafo de lanes;
 - en `History`, un clic en un commit abre sus archivos y diffs, con el primer archivo desplegado y `Back to history` para volver al listado; muestra solo lo guardado en ese commit y compara los merges con su primer padre;
 - `Branch changes` permite elegir `Base` y `Compare` entre ramas locales y referencias remotas del último fetch, sin cambiar de rama; dos ramas comparan sus versiones guardadas, y `Working tree` incluye cambios sin commit. `Auto` + `Working tree` conserva la comparación desde el ancestro común;
-- diffs de solo lectura con tarjetas de archivo plegables, numeración anterior/nueva, encabezados de bloques y resaltado de sintaxis (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
+- diffs de solo lectura en una sola lista virtualizada: archivos plegables con animación, la cabecera del archivo actual fija arriba, numeración anterior/nueva, encabezados de bloques y resaltado de sintaxis con el archivo completo como contexto (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
+- vista unificada o lado a lado y ajuste de líneas largas, recordados entre sesiones; sin ajuste, el scroll horizontal mueve solo el código, sincronizado entre archivos y columnas; el tamaño del texto del diff se ajusta aparte en Ajustes › Apariencia;
+- comentarios de revisión por línea (botón `+` al pasar el cursor) que se pegan como un solo prompt en la terminal del agente, sin enviarlo, para editarlo antes de pulsar Enter;
 - las mutaciones Git se realizan desde la terminal integrada.
 
 ### Agentes y seguimiento

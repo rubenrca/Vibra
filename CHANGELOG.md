@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Rebuild the Git review as one virtualized list: every file, hunk, and line shares a single scroll, the current file's header stays pinned until the next one pushes it away, and files fold open and shut with a short animation.
+- Add a split (side-by-side) layout and long-line wrapping, both remembered. Without wrapping, horizontal scrolling moves only the code, in sync across files and both columns, while line numbers stay in place.
+- Add line review comments: hover a line, press +, and send all comments to the agent's terminal as one prompt that is pasted but not submitted.
+- Add a Latest turn scope that shows what changed since an agent last started working in the repository, captured without touching the index, refs, or stash.
+- Highlight diffs with the whole old and new files as context, so block comments and strings opened outside a hunk color correctly.
+- Add a separate text size for the Git diff in Settings › Appearance.
+
 ## 0.3.27 — 2026-09-21
 
 - Add a quiet + beside each folder chevron to create a new tab in that folder.

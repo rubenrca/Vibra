@@ -69,6 +69,23 @@ pub struct GitDiff {
     pub truncated: bool,
 }
 
+/// Whole-file text on both sides of a diff, so syntax state (block comments,
+/// multi-line strings) is computed with full context instead of per hunk.
+/// `None` when a side does not exist, is binary, or is too large to read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitDiffSources {
+    pub old: Option<String>,
+    pub new: Option<String>,
+}
+
+/// The full working tree (tracked and untracked, respecting ignores) frozen as
+/// a tree object, without touching the real index or any ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitWorktreeCapture {
+    pub root: PathBuf,
+    pub tree: String,
+}
+
 /// Selected refs or working tree; automatic worktree comparison uses the merge-base.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitBranchChanges {
@@ -166,6 +183,18 @@ pub trait GitPort: Send + Sync {
     ) -> Result<Option<GitBranchChanges>>;
     fn history(&self, root: &Path, limit: usize) -> Result<Option<GitHistory>>;
     fn commit_changes(&self, root: &Path, revision: &str) -> Result<GitCommitChanges>;
+    /// Both whole files behind one file's diff. Worktree comparisons
+    /// (`against` = `None`) use the same sides as [`GitPort::diff`].
+    fn diff_sources(
+        &self,
+        repository: &Path,
+        change: &GitFileChange,
+        against: Option<&str>,
+        head: Option<&str>,
+    ) -> Result<GitDiffSources>;
+    fn capture_worktree(&self, root: &Path) -> Result<Option<GitWorktreeCapture>>;
+    /// Files that differ between two saved trees (or commits).
+    fn tree_changes(&self, root: &Path, base: &str, head: &str) -> Result<GitCommitChanges>;
     fn diff_against(
         &self,
         repository: &Path,

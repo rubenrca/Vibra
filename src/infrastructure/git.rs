@@ -11,8 +11,8 @@ use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
     GitBranchChanges, GitBranchRef, GitBranchSummary, GitCommit, GitCommitChanges, GitDiff,
-    GitDiffRow, GitDiffRowKind, GitFileChange, GitFileStatus, GitHistory, GitPort,
-    GitRepositorySnapshot,
+    GitDiffRow, GitDiffRowKind, GitDiffSources, GitFileChange, GitFileStatus, GitHistory, GitPort,
+    GitRepositorySnapshot, GitWorktreeCapture,
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
@@ -514,80 +514,102 @@ impl GitPort for GitCliPort {
                 String::from_utf8_lossy(&output.stdout).trim().to_owned()
             }
         };
-        // Keep each path independently reviewable, including both sides of a rename.
-        let output = run_git(
-            &root,
-            [
-                "diff",
-                "--name-status",
-                "-z",
-                "--no-renames",
-                "--no-ext-diff",
-                &base_revision,
-                &revision,
-                "--",
-            ],
-        )?;
-        ensure_success(&output, "git diff commit files")?;
-        let fields: Vec<&[u8]> = output.stdout.split(|byte| *byte == 0).collect();
-        let mut changes = Vec::new();
-        for pair in fields.chunks_exact(2) {
-            let status = pair[0].first().copied().unwrap_or(b'M') as char;
-            changes.push(GitFileChange {
-                path: String::from_utf8_lossy(pair[1]).into_owned(),
-                status: file_status(status, ' '),
-                staged: false,
-                unstaged: false,
-                untracked: false,
-                additions: None,
-                deletions: None,
-            });
+        changes_between(&root, base_revision, revision)
+    }
+
+    fn diff_sources(
+        &self,
+        repository: &Path,
+        change: &GitFileChange,
+        against: Option<&str>,
+        head: Option<&str>,
+    ) -> Result<GitDiffSources> {
+        validate_relative_path(&change.path)?;
+        let against = against.filter(|revision| !revision.is_empty());
+        if let Some(revision) = against {
+            validate_revision(revision)?;
         }
-        let output = run_git(
-            &root,
-            [
-                "diff",
-                "--numstat",
-                "-z",
-                "--no-renames",
-                "--no-ext-diff",
-                &base_revision,
-                &revision,
-                "--",
-            ],
-        )?;
-        ensure_success(&output, "git diff commit stats")?;
-        let stats: HashMap<String, (usize, usize)> = output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter_map(|record| {
-                let text = String::from_utf8_lossy(record);
-                let mut fields = text.splitn(3, '\t');
-                let additions = fields.next()?.parse().ok()?;
-                let deletions = fields.next()?.parse().ok()?;
-                Some((fields.next()?.to_owned(), (additions, deletions)))
-            })
-            .collect();
-        for change in &mut changes {
-            if let Some(&(additions, deletions)) = stats.get(&change.path) {
-                change.additions = Some(additions);
-                change.deletions = Some(deletions);
-            }
+        if let Some(head) = head {
+            validate_revision(head)?;
         }
-        changes.sort_by_key(|change| change.path.to_lowercase());
-        let additions = changes.iter().filter_map(|change| change.additions).sum();
-        let deletions = changes.iter().filter_map(|change| change.deletions).sum();
-        Ok(GitCommitChanges {
-            snapshot: GitRepositorySnapshot {
-                root,
-                branch: revision.clone(),
-                changes,
-                additions,
-                deletions,
+        let root = repository_root(repository)?.context("the repository is no longer available")?;
+        let path = change.path.as_str();
+        let worktree = || read_worktree_source(&root.join(path));
+        let blob = |revision: &str| read_blob_source(&root, &format!("{revision}:{path}"));
+        let deleted = change.status == GitFileStatus::Deleted;
+        let added = matches!(
+            change.status,
+            GitFileStatus::Added | GitFileStatus::Untracked
+        );
+
+        // Mirror the sides `diff` / `diff_against` compare.
+        let sources = match (against, head) {
+            (Some(revision), Some(head)) => GitDiffSources {
+                old: blob(revision),
+                new: blob(head),
             },
-            base_revision,
-            revision,
-        })
+            (Some(revision), None) if !change.untracked => GitDiffSources {
+                old: blob(revision),
+                new: worktree(),
+            },
+            _ if change.untracked => GitDiffSources {
+                old: None,
+                new: worktree(),
+            },
+            // Staged and worktree sections have different bases; per-row
+            // highlighting stays correct for both.
+            _ if change.staged && change.unstaged => GitDiffSources::default(),
+            _ if change.staged => GitDiffSources {
+                old: (!added).then(|| blob("HEAD")).flatten(),
+                new: (!deleted).then(|| blob("")).flatten(),
+            },
+            _ => GitDiffSources {
+                old: blob(""),
+                new: (!deleted).then(worktree).flatten(),
+            },
+        };
+        Ok(sources)
+    }
+
+    fn capture_worktree(&self, root: &Path) -> Result<Option<GitWorktreeCapture>> {
+        let Some(root) = repository_root(root)? else {
+            return Ok(None);
+        };
+        // Stage everything into a throwaway copy of the index: the stat cache
+        // in the copy keeps unchanged files from being hashed again, and the
+        // real index, refs, and stash stay untouched.
+        let index = git_path(&root, "index")?;
+        let temporary = TemporaryIndex(std::env::temp_dir().join(format!(
+            "vibra-turn-index-{}",
+            uuid::Uuid::new_v4().simple()
+        )));
+        if index.is_file() {
+            let _ = std::fs::copy(&index, &temporary.0);
+        }
+        let output = run_git_with_index(
+            &root,
+            &temporary.0,
+            ["add", "--all", "--ignore-errors", "--", "."],
+        )?;
+        ensure_success(&output, "git add (turn snapshot)")?;
+        let output = run_git_with_index(&root, &temporary.0, ["write-tree"])?;
+        ensure_success(&output, "git write-tree")?;
+        let tree = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        validate_revision(&tree)?;
+        if tree.is_empty() {
+            bail!("git write-tree returned no tree");
+        }
+        Ok(Some(GitWorktreeCapture { root, tree }))
+    }
+
+    fn tree_changes(&self, root: &Path, base: &str, head: &str) -> Result<GitCommitChanges> {
+        let root = repository_root(root)?.context("the repository is no longer available")?;
+        validate_revision(base)?;
+        validate_revision(head)?;
+        if base.is_empty() || head.is_empty() {
+            bail!("Select two revisions to compare");
+        }
+        changes_between(&root, base.to_owned(), head.to_owned())
     }
 
     fn diff_against(
@@ -644,6 +666,158 @@ impl GitPort for GitCliPort {
             truncated,
         })
     }
+}
+
+/// Every path that differs between two revisions, each reviewable on its own
+/// (renames stay as a deletion plus an addition).
+fn changes_between(
+    root: &Path,
+    base_revision: String,
+    revision: String,
+) -> Result<GitCommitChanges> {
+    let root = root.to_path_buf();
+    // Keep each path independently reviewable, including both sides of a rename.
+    let output = run_git(
+        &root,
+        [
+            "diff",
+            "--name-status",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            &base_revision,
+            &revision,
+            "--",
+        ],
+    )?;
+    ensure_success(&output, "git diff commit files")?;
+    let fields: Vec<&[u8]> = output.stdout.split(|byte| *byte == 0).collect();
+    let mut changes = Vec::new();
+    for pair in fields.chunks_exact(2) {
+        let status = pair[0].first().copied().unwrap_or(b'M') as char;
+        changes.push(GitFileChange {
+            path: String::from_utf8_lossy(pair[1]).into_owned(),
+            status: file_status(status, ' '),
+            staged: false,
+            unstaged: false,
+            untracked: false,
+            additions: None,
+            deletions: None,
+        });
+    }
+    let output = run_git(
+        &root,
+        [
+            "diff",
+            "--numstat",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            &base_revision,
+            &revision,
+            "--",
+        ],
+    )?;
+    ensure_success(&output, "git diff commit stats")?;
+    let stats: HashMap<String, (usize, usize)> = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|record| {
+            let text = String::from_utf8_lossy(record);
+            let mut fields = text.splitn(3, '\t');
+            let additions = fields.next()?.parse().ok()?;
+            let deletions = fields.next()?.parse().ok()?;
+            Some((fields.next()?.to_owned(), (additions, deletions)))
+        })
+        .collect();
+    for change in &mut changes {
+        if let Some(&(additions, deletions)) = stats.get(&change.path) {
+            change.additions = Some(additions);
+            change.deletions = Some(deletions);
+        }
+    }
+    changes.sort_by_key(|change| change.path.to_lowercase());
+    let additions = changes.iter().filter_map(|change| change.additions).sum();
+    let deletions = changes.iter().filter_map(|change| change.deletions).sum();
+    Ok(GitCommitChanges {
+        snapshot: GitRepositorySnapshot {
+            root,
+            branch: revision.clone(),
+            changes,
+            additions,
+            deletions,
+        },
+        base_revision,
+        revision,
+    })
+}
+
+struct TemporaryIndex(PathBuf);
+
+impl Drop for TemporaryIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(self.0.with_extension("lock"));
+    }
+}
+
+/// Path Git uses for `name` inside the repository's Git directory.
+fn git_path(root: &Path, name: &str) -> Result<PathBuf> {
+    let output = run_git(root, ["rev-parse", "--git-path", name])?;
+    ensure_success(&output, "git rev-parse --git-path")?;
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    })
+}
+
+fn run_git_with_index<I, S>(root: &Path, index: &Path, arguments: I) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    git_command()
+        .env("GIT_INDEX_FILE", index)
+        .arg("-C")
+        .arg(root)
+        .args(arguments)
+        .output()
+        .with_context(|| format!("failed to run Git in {}", root.display()))
+}
+
+/// Largest whole file read for context-aware highlighting.
+const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
+
+fn source_text(bytes: Vec<u8>) -> Option<String> {
+    if bytes.contains(&0) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn read_worktree_source(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
+        return None;
+    }
+    source_text(std::fs::read(path).ok()?)
+}
+
+/// `spec` is `<revision>:<path>`, or `:<path>` for the index.
+fn read_blob_source(root: &Path, spec: &str) -> Option<String> {
+    let size = run_git(root, ["cat-file", "-s", spec]).ok()?;
+    if !size.status.success() {
+        return None;
+    }
+    let size: u64 = String::from_utf8_lossy(&size.stdout).trim().parse().ok()?;
+    if size > MAX_SOURCE_BYTES {
+        return None;
+    }
+    let output = run_git(root, ["cat-file", "blob", spec]).ok()?;
+    output.status.success().then_some(())?;
+    source_text(output.stdout)
 }
 
 fn repository_root(root: &Path) -> Result<Option<PathBuf>> {
@@ -2002,6 +2176,102 @@ mod tests {
                 .changes
                 .iter()
                 .any(|change| change.path == "tracked.txt")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn worktree_captures_compare_one_turn_without_touching_the_index() {
+        let root = repository();
+        fs::write(root.join("before.txt"), "untracked before the turn\n").unwrap();
+        fs::write(root.join(".gitignore"), "ignored.log\n").unwrap();
+        let port = GitCliPort::default();
+        let status_before = port.snapshot(&root).unwrap().unwrap();
+
+        let base = port.capture_worktree(&root).unwrap().unwrap();
+        fs::write(root.join("tracked.txt"), "one\nturn\n").unwrap();
+        fs::write(root.join("created.txt"), "made by the agent\n").unwrap();
+        fs::write(root.join("ignored.log"), "noise\n").unwrap();
+        fs::remove_file(root.join("before.txt")).unwrap();
+        let head = port.capture_worktree(&root).unwrap().unwrap();
+
+        let changes = port.tree_changes(&root, &base.tree, &head.tree).unwrap();
+        let mut paths: Vec<(&str, GitFileStatus)> = changes
+            .snapshot
+            .changes
+            .iter()
+            .map(|change| (change.path.as_str(), change.status))
+            .collect();
+        paths.sort_by_key(|(path, _)| *path);
+        assert_eq!(
+            paths,
+            vec![
+                ("before.txt", GitFileStatus::Deleted),
+                ("created.txt", GitFileStatus::Added),
+                ("tracked.txt", GitFileStatus::Modified),
+            ]
+        );
+        let tracked = changes
+            .snapshot
+            .changes
+            .iter()
+            .find(|change| change.path == "tracked.txt")
+            .unwrap();
+        let diff = port
+            .diff_against(&root, &base.tree, Some(&head.tree), tracked)
+            .unwrap();
+        assert_eq!((diff.additions, diff.deletions), (1, 1));
+
+        // The real index and status are exactly as they were.
+        let status_after = port.snapshot(&root).unwrap().unwrap();
+        assert!(status_after.changes.iter().all(|change| !change.staged));
+        assert_eq!(status_before.branch, status_after.branch);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diff_sources_follow_the_compared_sides() {
+        let root = repository();
+        let port = GitCliPort::default();
+        fs::write(root.join("tracked.txt"), "one\nchanged\n").unwrap();
+        let snapshot = port.snapshot(&root).unwrap().unwrap();
+        let tracked = snapshot
+            .changes
+            .iter()
+            .find(|change| change.path == "tracked.txt")
+            .unwrap();
+        let sources = port.diff_sources(&root, tracked, None, None).unwrap();
+        assert_eq!(sources.old.as_deref(), Some("one\ntwo\n"));
+        assert_eq!(sources.new.as_deref(), Some("one\nchanged\n"));
+
+        git(&root, &["add", "tracked.txt"]);
+        let snapshot = port.snapshot(&root).unwrap().unwrap();
+        let staged = snapshot.changes.first().unwrap();
+        let sources = port.diff_sources(&root, staged, None, None).unwrap();
+        assert_eq!(sources.old.as_deref(), Some("one\ntwo\n"));
+        assert_eq!(sources.new.as_deref(), Some("one\nchanged\n"));
+
+        fs::write(root.join("tracked.txt"), "one\nchanged\nagain\n").unwrap();
+        let snapshot = port.snapshot(&root).unwrap().unwrap();
+        let both = snapshot.changes.first().unwrap();
+        assert_eq!(
+            port.diff_sources(&root, both, None, None).unwrap(),
+            GitDiffSources::default()
+        );
+
+        fs::write(root.join("binary.bin"), b"a\0b").unwrap();
+        let binary = GitFileChange {
+            path: "binary.bin".into(),
+            status: GitFileStatus::Untracked,
+            staged: false,
+            unstaged: false,
+            untracked: true,
+            additions: None,
+            deletions: None,
+        };
+        assert_eq!(
+            port.diff_sources(&root, &binary, None, None).unwrap(),
+            GitDiffSources::default()
         );
         fs::remove_dir_all(root).unwrap();
     }

@@ -44,10 +44,27 @@ pub struct AppSettings {
     pub window_width: f32,
     #[serde(default = "default_window_height")]
     pub window_height: f32,
+    /// Review diffs side by side instead of unified.
+    #[serde(default)]
+    pub diff_split: bool,
+    /// Wrap long diff lines instead of scrolling them horizontally.
+    #[serde(default)]
+    pub diff_wrap: bool,
+    /// Code size in the Git review, independent of the terminal.
+    #[serde(default = "default_diff_font_size")]
+    pub diff_font_size: f32,
 }
 
 const fn default_terminal_font_size() -> f32 {
     12.0
+}
+
+pub const DEFAULT_DIFF_FONT_SIZE: f32 = 12.0;
+pub const MIN_DIFF_FONT_SIZE: f32 = 9.0;
+pub const MAX_DIFF_FONT_SIZE: f32 = 24.0;
+
+const fn default_diff_font_size() -> f32 {
+    DEFAULT_DIFF_FONT_SIZE
 }
 
 const fn default_true() -> bool {
@@ -101,6 +118,9 @@ impl Default for AppSettings {
             agent_notifications: true,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
+            diff_split: false,
+            diff_wrap: false,
+            diff_font_size: DEFAULT_DIFF_FONT_SIZE,
         }
     }
 }
@@ -111,6 +131,12 @@ impl AppSettings {
             self.terminal_font_size = default_terminal_font_size();
         }
         self.terminal_font_size = self.terminal_font_size.clamp(8.0, 32.0);
+        if !self.diff_font_size.is_finite() {
+            self.diff_font_size = DEFAULT_DIFF_FONT_SIZE;
+        }
+        self.diff_font_size = self
+            .diff_font_size
+            .clamp(MIN_DIFF_FONT_SIZE, MAX_DIFF_FONT_SIZE);
         if !self.left_sidebar_width.is_finite() {
             self.left_sidebar_width = DEFAULT_LEFT_SIDEBAR_WIDTH;
         }

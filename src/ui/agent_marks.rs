@@ -65,6 +65,12 @@ bundled_assets! {
     ("chrome-icons/chevrons-left.svg", "ChromeIcons/chevrons-left.svg"),
     ("chrome-icons/chevrons-right.svg", "ChromeIcons/chevrons-right.svg"),
     ("chrome-icons/chevron-right.svg", "ChromeIcons/chevron-right.svg"),
+    ("chrome-icons/diff-split.svg", "ChromeIcons/diff-split.svg"),
+    ("chrome-icons/diff-unified.svg", "ChromeIcons/diff-unified.svg"),
+    ("chrome-icons/wrap.svg", "ChromeIcons/wrap.svg"),
+    ("chrome-icons/comment.svg", "ChromeIcons/comment.svg"),
+    ("chrome-icons/send.svg", "ChromeIcons/send.svg"),
+    ("chrome-icons/close.svg", "ChromeIcons/close.svg"),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

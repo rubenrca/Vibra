@@ -395,10 +395,27 @@ impl WorkspaceView {
             .selected_project()
             .and_then(|project| project.directory().map(PathBuf::from))
             .unwrap_or_else(|| launch_directory.clone());
-        let diff_view = cx.new(|cx| DiffView::new(diff_root, git_port.clone(), cx));
+        let diff_view = cx.new(|cx| {
+            let mut view = DiffView::new(diff_root, git_port.clone(), cx);
+            view.set_preferences(
+                settings.diff_split,
+                settings.diff_wrap,
+                settings.diff_font_size,
+                cx,
+            );
+            view
+        });
         let diff_subscription = cx.subscribe(
             &diff_view,
-            |_this, _diff_view, _event: &DiffViewEvent, cx| cx.notify(),
+            |this, _diff_view, event: &DiffViewEvent, cx| match event {
+                DiffViewEvent::Changed => cx.notify(),
+                DiffViewEvent::PreferencesChanged { split, wrap } => {
+                    this.settings.diff_split = *split;
+                    this.settings.diff_wrap = *wrap;
+                    this.persist_settings(cx);
+                }
+                DiffViewEvent::SendReview(prompt) => this.send_review_to_agent(prompt, cx),
+            },
         );
         let (agent_hook_status, agent_hook_error) = match agent_hook_status() {
             Ok(status) => (Some(status), None),
@@ -1308,7 +1325,7 @@ impl WorkspaceView {
                 self.agent_presence.remove(session_id);
                 self.hook_agent_presence.remove(session_id);
                 self.agent_names.remove(session_id);
-                self.publish_agent_activity(*session_id);
+                self.publish_agent_activity(*session_id, cx);
                 cx.notify();
             }
             TerminalViewEvent::ContextMenuRequested { session_id, x, y } => {
@@ -1356,7 +1373,7 @@ impl WorkspaceView {
                 } else {
                     self.agent_presence.remove(session_id);
                 }
-                self.publish_agent_activity(*session_id);
+                self.publish_agent_activity(*session_id, cx);
                 cx.notify();
             }
             TerminalViewEvent::FontSizeChanged { size } => {
@@ -1389,6 +1406,41 @@ impl WorkspaceView {
         } else {
             self.focus_handle.focus(window);
         }
+    }
+
+    /// Paste Git review comments into the agent that should act on them: the
+    /// selected pane when it runs an agent, else a visible pane that does.
+    /// The prompt is pasted, never submitted, so it can still be edited.
+    fn send_review_to_agent(&mut self, prompt: &str, cx: &mut Context<Self>) {
+        let selected = self.snapshot.selected_session().map(|session| session.id);
+        let has_agent = |this: &Self, id: Uuid| this.resolved_agent_presence(id).is_some();
+        let target = selected
+            .filter(|id| has_agent(self, *id))
+            .or_else(|| {
+                self.snapshot.selected_tab().and_then(|tab| {
+                    tab.sessions
+                        .iter()
+                        .map(|session| session.id)
+                        .find(|id| has_agent(self, *id))
+                })
+            })
+            .or(selected);
+        let Some(target) = target else {
+            self.persistence_error =
+                Some("Abre una terminal con un agente para enviarle la revisión.".into());
+            cx.notify();
+            return;
+        };
+        let Some(terminal) = self.terminals.get(&target).cloned() else {
+            return;
+        };
+        terminal.update(cx, |terminal, cx| terminal.insert_text(prompt, cx));
+        if selected != Some(target) && self.snapshot.select_terminal(target) {
+            self.sync_terminal_surface_visibility(cx);
+            self.persist(cx);
+        }
+        self.pending_focus_session = Some(target);
+        cx.notify();
     }
 
     fn focus_terminal(&self, session_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
