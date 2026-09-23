@@ -31,6 +31,14 @@ use std::{
 };
 use uuid::Uuid;
 
+const MAX_TERMINAL_EVENTS: usize = 32;
+const MAX_QUEUED_PTY_INPUTS: usize = 32;
+// A 1 MiB clipboard response grows to ~1.34 MiB after OSC 52 base64.
+const MAX_PTY_INPUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CLIPBOARD_STORE_BYTES: usize = 1024 * 1024;
+const MAX_PENDING_PTY_WRITE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TERMINAL_TITLE_BYTES: usize = 4096;
+
 #[repr(C)]
 #[derive(Default)]
 struct Info {
@@ -80,6 +88,13 @@ unsafe extern "C" {
     fn vg_clear_history(p: *mut c_void) -> i32;
     fn vg_select(p: *mut c_void, action: i32, kind: i32, x: u16, y: u16, right: i32) -> i32;
     fn vg_search(p: *mut c_void, s: *const u8, n: usize, previous: i32) -> i32;
+    fn vg_search_step(
+        p: *mut c_void,
+        s: *const u8,
+        n: usize,
+        previous: i32,
+        continuation: i32,
+    ) -> i32;
     fn vg_text(p: *mut c_void, n: *mut usize, selection: i32) -> *mut u8;
     fn vg_buffer_free(p: *mut u8, n: usize);
     fn vg_recent_text(p: *mut c_void, n: *mut usize, lines: usize) -> *mut u8;
@@ -112,6 +127,9 @@ unsafe extern "C" fn event(data: *mut c_void, kind: i32, p: *const u8, n: usize)
             let _ = context.events.try_send(TerminalEvent::Bell);
         }
         2 => {
+            if data.len() > MAX_TERMINAL_TITLE_BYTES {
+                return;
+            }
             let title = String::from_utf8_lossy(data).into_owned();
             let _ = context.events.try_send(if title.is_empty() {
                 TerminalEvent::ResetTitle
@@ -120,13 +138,17 @@ unsafe extern "C" fn event(data: *mut c_void, kind: i32, p: *const u8, n: usize)
             });
         }
         3 => {
+            if data.len() > MAX_CLIPBOARD_STORE_BYTES {
+                return;
+            }
             let _ = context.events.try_send(TerminalEvent::ClipboardStore(
                 String::from_utf8_lossy(data).into_owned(),
             ));
         }
         4 => {
             if let Some((prefix, suffix)) = clipboard_template(data) {
-                let _ = context
+                let empty_response = format!("{prefix}{suffix}");
+                if context
                     .events
                     .try_send(TerminalEvent::ClipboardLoad(Arc::new(move |text| {
                         use base64::Engine as _;
@@ -136,7 +158,13 @@ unsafe extern "C" fn event(data: *mut c_void, kind: i32, p: *const u8, n: usize)
                             base64::engine::general_purpose::STANDARD.encode(text),
                             suffix
                         )
-                    })));
+                    })))
+                    .is_err()
+                {
+                    // The parser already denied the synchronous read. If the
+                    // UI queue is full, still complete the OSC 52 query.
+                    context.replies.extend(empty_response.bytes());
+                }
             }
         }
         _ => {}
@@ -440,29 +468,37 @@ impl TerminalPort for GhosttyTerminalPort {
         Ok(handle)
     }
 }
-enum PtyCommand {
-    Input(PtyInput),
-    Resize(TerminalSize),
-    Shutdown,
-}
 enum PtyInput {
     Bytes(Vec<u8>),
     Key(TerminalKeyInput),
 }
+struct PtyWorkerControl {
+    inputs: mpsc::Receiver<PtyInput>,
+    signal: UnixStream,
+    shutdown_requested: Arc<AtomicBool>,
+    pending_resize: Arc<Mutex<Option<TerminalSize>>>,
+}
 
-fn enqueue_replies(writes: &mut VecDeque<PtyInput>, engine: &mut Engine) {
+fn enqueue_replies(
+    writes: &mut VecDeque<(PtyInput, usize)>,
+    queued_bytes: &mut usize,
+    engine: &mut Engine,
+) {
     if !engine.callbacks.replies.is_empty() {
-        writes.push_back(PtyInput::Bytes(
-            engine.callbacks.replies.drain(..).collect(),
-        ));
+        let bytes: Vec<_> = engine.callbacks.replies.drain(..).collect();
+        let len = bytes.len();
+        *queued_bytes += len;
+        writes.push_back((PtyInput::Bytes(bytes), len));
     }
 }
 struct GhosttyTerminal {
     engine: Arc<Mutex<Engine>>,
-    commands: mpsc::Sender<PtyCommand>,
+    inputs: mpsc::SyncSender<PtyInput>,
     events: Receiver<TerminalEvent>,
     wakeup: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
+    shutdown_requested: Arc<AtomicBool>,
+    pending_resize: Arc<Mutex<Option<TerminalSize>>>,
     pid: u32,
     probe: File,
     signal: UnixStream,
@@ -483,7 +519,7 @@ impl GhosttyTerminal {
         shell: Option<(&str, &[&str])>,
     ) -> Result<Arc<Self>> {
         let size = TerminalSize::default();
-        let (tx, events) = async_channel::unbounded();
+        let (tx, events) = async_channel::bounded(MAX_TERMINAL_EVENTS);
         let engine = Arc::new(Mutex::new(Engine::new(size, tx.clone())?));
         let mut master = -1;
         let mut slave = -1;
@@ -563,12 +599,16 @@ impl GhosttyTerminal {
             .spawn()
             .with_context(|| format!("no se pudo iniciar {program}"))?;
         let pid = child.id();
-        let (commands, rx) = mpsc::channel();
+        let (inputs, input_rx) = mpsc::sync_channel(MAX_QUEUED_PTY_INPUTS);
         let wakeup = Arc::new(AtomicBool::new(false));
         let alive = Arc::new(AtomicBool::new(true));
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let pending_resize = Arc::new(Mutex::new(None));
         let worker_engine = engine.clone();
         let worker_wakeup = wakeup.clone();
         let worker_alive = alive.clone();
+        let worker_shutdown_requested = shutdown_requested.clone();
+        let worker_pending_resize = pending_resize.clone();
         // A failed thread spawn drops Child without reaping it; retain it in a
         // shared slot until the worker actually starts to cover that error path.
         let child_slot = Arc::new(Mutex::new(Some(child)));
@@ -580,7 +620,12 @@ impl GhosttyTerminal {
                 pty_worker(
                     master,
                     child,
-                    (rx, worker_signal),
+                    PtyWorkerControl {
+                        inputs: input_rx,
+                        signal: worker_signal,
+                        shutdown_requested: worker_shutdown_requested,
+                        pending_resize: worker_pending_resize,
+                    },
                     worker_engine,
                     tx,
                     worker_wakeup,
@@ -596,18 +641,25 @@ impl GhosttyTerminal {
         }
         Ok(Arc::new(Self {
             engine,
-            commands,
+            inputs,
             events,
             wakeup,
             alive,
+            shutdown_requested,
+            pending_resize,
             pid,
             probe,
             signal,
         }))
     }
-    fn dispatch(&self, command: PtyCommand) -> Result<()> {
-        self.commands.send(command).context("PTY cerrado")?;
-        // A full socket already contains a wakeup. The command queue is the
+    fn enqueue_input(&self, input: PtyInput) -> Result<()> {
+        self.inputs.try_send(input).map_err(|error| match error {
+            mpsc::TrySendError::Full(_) => {
+                anyhow::anyhow!("la cola de entrada de la terminal está llena")
+            }
+            mpsc::TrySendError::Disconnected(_) => anyhow::anyhow!("PTY cerrado"),
+        })?;
+        // A full socket already contains a wakeup. The input queue is the
         // source of truth, so the signal carries no payload and can coalesce.
         let _ = (&self.signal).write(&[1]);
         Ok(())
@@ -620,39 +672,125 @@ impl GhosttyTerminal {
         (pid > 0).then_some(pid as u32)
     }
 }
-fn wake(events: &Sender<TerminalEvent>, pending: &AtomicBool) {
-    if !pending.swap(true, Ordering::AcqRel) {
-        let _ = events.try_send(TerminalEvent::Wakeup);
+fn wake(events: &Sender<TerminalEvent>, pending: &AtomicBool) -> bool {
+    if pending.swap(true, Ordering::AcqRel) {
+        return true;
+    }
+    if events.try_send(TerminalEvent::Wakeup).is_ok() {
+        true
+    } else {
+        pending.store(false, Ordering::Release);
+        false
     }
 }
+
+fn flush_pending_writes(
+    master: &mut File,
+    engine: &Arc<Mutex<Engine>>,
+    writes: &mut VecDeque<(PtyInput, usize)>,
+    queued_bytes: &mut usize,
+    write_offset: &mut usize,
+) {
+    for _ in 0..16 {
+        let Some((input, cost)) = writes.front_mut() else {
+            break;
+        };
+        let encoded = if let PtyInput::Key(key) = input {
+            // Encode after reading output, which may have changed keyboard mode.
+            Some(key.bytes(engine.lock().unwrap().mode()))
+        } else {
+            None
+        };
+        let data = match (encoded.as_ref(), &*input) {
+            (Some(data), _) | (_, PtyInput::Bytes(data)) => data,
+            _ => unreachable!(),
+        };
+        let len = data.len();
+        if *write_offset == len {
+            *queued_bytes -= *cost;
+            writes.pop_front();
+            *write_offset = 0;
+            continue;
+        }
+        match master.write(&data[*write_offset..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                *write_offset += n;
+                if *write_offset == len {
+                    *queued_bytes -= *cost;
+                    writes.pop_front();
+                    *write_offset = 0;
+                } else if let Some(data) = encoded {
+                    // Preserve a partially written key sequence verbatim.
+                    *input = PtyInput::Bytes(data);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                writes.clear();
+                *queued_bytes = 0;
+                *write_offset = 0;
+                break;
+            }
+        }
+    }
+}
+
 fn pty_worker(
     mut master: File,
     mut child: Child,
-    control: (mpsc::Receiver<PtyCommand>, UnixStream),
+    control: PtyWorkerControl,
     engine: Arc<Mutex<Engine>>,
     events: Sender<TerminalEvent>,
     pending: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
 ) {
-    let (commands, mut signal) = control;
+    let PtyWorkerControl {
+        inputs,
+        mut signal,
+        shutdown_requested,
+        pending_resize,
+    } = control;
     let mut output = [0u8; 65536];
     let mut writes = VecDeque::new();
+    let mut queued_bytes = 0usize;
     let mut write_offset = 0;
     let mut shutdown = None;
     let mut exit = None;
     let mut read_closed = false;
+    let mut refresh_needed = false;
     loop {
-        loop {
-            match commands.try_recv() {
-                Ok(PtyCommand::Input(input)) => writes.push_back(input),
-                Ok(PtyCommand::Resize(size)) => {
-                    let ws = window_size(size);
-                    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &ws) } == 0 {
-                        let _ = engine.lock().unwrap().resize(size);
-                        wake(&events, &pending);
-                    }
+        if shutdown_requested.load(Ordering::Acquire) {
+            shutdown.get_or_insert_with(Instant::now);
+        }
+        if shutdown.is_none()
+            && let Some(size) = pending_resize.lock().unwrap().take()
+        {
+            let mut engine = engine.lock().unwrap();
+            if engine.size != size {
+                let ws = window_size(size);
+                if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &ws) } == 0
+                    && engine.resize(size).is_ok()
+                {
+                    refresh_needed = true;
                 }
-                Ok(PtyCommand::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
+            }
+        }
+        for _ in 0..MAX_QUEUED_PTY_INPUTS {
+            if queued_bytes >= MAX_PENDING_PTY_WRITE_BYTES || shutdown.is_some() {
+                break;
+            }
+            match inputs.try_recv() {
+                Ok(input) => {
+                    let size = match &input {
+                        PtyInput::Bytes(bytes) => bytes.len(),
+                        PtyInput::Key(_) => 64,
+                    };
+                    queued_bytes += size;
+                    writes.push_back((input, size));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
                     shutdown.get_or_insert_with(Instant::now);
                     break;
                 }
@@ -678,10 +816,13 @@ fn pty_worker(
         }
         // Resize can emit in-band reports even when the child is waiting and
         // produces no further output. Flush every callback batch, not just feed.
-        enqueue_replies(&mut writes, &mut engine.lock().unwrap());
+        enqueue_replies(&mut writes, &mut queued_bytes, &mut engine.lock().unwrap());
         let mut changed = false;
         // Bound each batch so continuous output cannot starve shutdown/input.
         for _ in 0..16 {
+            if queued_bytes >= MAX_PENDING_PTY_WRITE_BYTES {
+                break;
+            }
             match master.read(&mut output) {
                 Ok(0) => {
                     read_closed = true;
@@ -690,7 +831,7 @@ fn pty_worker(
                 Ok(n) => {
                     let mut e = engine.lock().unwrap();
                     e.feed(&output[..n]);
-                    enqueue_replies(&mut writes, &mut e);
+                    enqueue_replies(&mut writes, &mut queued_bytes, &mut e);
                     changed = true;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -702,51 +843,18 @@ fn pty_worker(
             }
         }
         if changed {
-            wake(&events, &pending);
+            refresh_needed = true;
         }
-        for _ in 0..16 {
-            let Some(input) = writes.front_mut() else {
-                break;
-            };
-            let encoded = if let PtyInput::Key(key) = input {
-                // Output can include the TUI's keyboard-mode cleanup. Encode
-                // only after reading it, immediately before the PTY write.
-                Some(key.bytes(engine.lock().unwrap().mode()))
-            } else {
-                None
-            };
-            let data = match (encoded.as_ref(), &*input) {
-                (Some(data), _) | (_, PtyInput::Bytes(data)) => data,
-                _ => unreachable!(),
-            };
-            let len = data.len();
-            if write_offset == len {
-                writes.pop_front();
-                write_offset = 0;
-                continue;
-            }
-            match master.write(&data[write_offset..]) {
-                Ok(0) => break,
-                Ok(n) => {
-                    write_offset += n;
-                    if write_offset == len {
-                        writes.pop_front();
-                        write_offset = 0;
-                    } else if let Some(data) = encoded {
-                        // Preserve a partially written sequence, but retain
-                        // unencoded keys on WouldBlock so modes can change.
-                        *input = PtyInput::Bytes(data);
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    writes.clear();
-                    write_offset = 0;
-                    break;
-                }
-            }
+        if refresh_needed && wake(&events, &pending) {
+            refresh_needed = false;
         }
+        flush_pending_writes(
+            &mut master,
+            &engine,
+            &mut writes,
+            &mut queued_bytes,
+            &mut write_offset,
+        );
         if exit.is_none() {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -765,7 +873,9 @@ fn pty_worker(
         if let Some((code, at)) = exit
             && (read_closed || !changed || at.elapsed() > Duration::from_millis(200))
         {
-            let _ = events.try_send(TerminalEvent::Exit(code));
+            // Exit must survive a full queue without keeping the reaper thread
+            // alive after the UI stops consuming events.
+            let _ = events.force_send(TerminalEvent::Exit(code));
             break;
         }
         if read_closed && shutdown.is_none() {
@@ -774,7 +884,11 @@ fn pty_worker(
         let mut polls = [
             libc::pollfd {
                 fd: if read_closed { -1 } else { master.as_raw_fd() },
-                events: libc::POLLIN | if writes.is_empty() { 0 } else { libc::POLLOUT },
+                events: if queued_bytes >= MAX_PENDING_PTY_WRITE_BYTES {
+                    0
+                } else {
+                    libc::POLLIN
+                } | if writes.is_empty() { 0 } else { libc::POLLOUT },
                 revents: 0,
             },
             libc::pollfd {
@@ -813,16 +927,21 @@ impl TerminalHandle for GhosttyTerminal {
         if !self.alive.load(Ordering::Acquire) {
             bail!("la terminal ya terminó")
         }
-        self.dispatch(PtyCommand::Input(PtyInput::Bytes(input)))
+        if input.len() > MAX_PTY_INPUT_BYTES {
+            bail!("entrada de terminal demasiado grande")
+        }
+        self.enqueue_input(PtyInput::Bytes(input))
     }
     fn send_key_input(&self, input: TerminalKeyInput) -> Result<()> {
         if !self.alive.load(Ordering::Acquire) {
             bail!("la terminal ya terminó")
         }
-        self.dispatch(PtyCommand::Input(PtyInput::Key(input)))
+        self.enqueue_input(PtyInput::Key(input))
     }
     fn resize(&self, size: TerminalSize) -> Result<()> {
-        self.dispatch(PtyCommand::Resize(size))
+        *self.pending_resize.lock().unwrap() = Some(size);
+        let _ = (&self.signal).write(&[1]);
+        Ok(())
     }
     fn scroll(&self, lines: i32) {
         let mut e = self.engine.lock().unwrap();
@@ -916,6 +1035,30 @@ impl TerminalHandle for GhosttyTerminal {
         }
         Ok(r == 1)
     }
+    fn search_step(
+        &self,
+        query: &str,
+        direction: TerminalSearchDirection,
+        continuation: bool,
+    ) -> Result<Option<bool>> {
+        let mut e = self.engine.lock().unwrap();
+        let result = unsafe {
+            vg_search_step(
+                e.p(),
+                query.as_ptr(),
+                query.len(),
+                (direction == TerminalSearchDirection::Previous).into(),
+                continuation.into(),
+            )
+        };
+        e.dirty = true;
+        match result {
+            0 => Ok(Some(false)),
+            1 => Ok(Some(true)),
+            2 => Ok(None),
+            code => bail!("Ghostty search: {code}"),
+        }
+    }
     fn hyperlink_at(&self, point: TerminalPoint) -> Option<String> {
         let s = self.snapshot();
         let line = s.lines.get(point.row)?;
@@ -929,7 +1072,8 @@ impl TerminalHandle for GhosttyTerminal {
         self.wakeup.store(false, Ordering::Release);
     }
     fn shutdown(&self) {
-        let _ = self.dispatch(PtyCommand::Shutdown);
+        self.shutdown_requested.store(true, Ordering::Release);
+        let _ = (&self.signal).write(&[1]);
     }
 }
 
@@ -960,469 +1104,4 @@ fn plain_hyperlink(line: &[TerminalCell], column: usize) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ports::terminal_keyboard::{
-        TerminalKeyEventType, TerminalKeyInput, TerminalKeystroke, TerminalModifiers,
-    };
-    fn engine() -> Engine {
-        let (tx, _) = async_channel::unbounded();
-        Engine::new(TerminalSize::default(), tx).unwrap()
-    }
-    #[test]
-    fn fragmented_unicode_styles_modes_and_alternate_screen() {
-        let mut e = engine();
-        for b in "\x1b[38;2;17;101;221mEspañol 日本語 e\u{301} 🦀\x1b[0m".as_bytes() {
-            e.feed(&[*b]);
-        }
-        let s = e.snapshot().unwrap();
-        assert_eq!(s.lines[0][0].foreground, TerminalRgb::new(17, 101, 221));
-        assert!(e.text(false).unwrap().contains("日本語 e\u{301} 🦀"));
-        assert!(s.lines[0].iter().any(|c| c.wide_spacer));
-        e.feed(b"\x1b[?2004h\x1b[?1h\x1b[>31u");
-        let m = e.mode();
-        assert!(m.bracketed_paste && m.application_cursor && m.report_associated_text);
-        e.feed(b"\x1b[?1049hALTERNATE");
-        assert!(e.mode().alternate_screen);
-        assert!(e.text(false).unwrap().contains("ALTERNATE"));
-        e.feed(b"\x1b[?1049l");
-        assert!(!e.mode().alternate_screen);
-        assert!(e.text(false).unwrap().contains("Español"));
-    }
-    #[test]
-    fn snapshot_cache_selection_search_and_hyperlinks() {
-        let mut e = engine();
-        e.feed(b"hello world\r\n\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\");
-        let a = e.snapshot().unwrap();
-        assert_eq!(
-            a.lines[1][0].hyperlink.as_deref(),
-            Some("https://example.com")
-        );
-        assert!(Arc::ptr_eq(&a, &e.snapshot().unwrap()));
-        e.select(
-            1,
-            TerminalSelectionType::Semantic,
-            TerminalPoint { row: 0, column: 7 },
-            TerminalCellSide::Left,
-        );
-        assert_eq!(e.text(true).as_deref(), Some("world"));
-        assert!(e.snapshot().unwrap().lines[0][7].selected);
-        e.select(
-            0,
-            TerminalSelectionType::Simple,
-            TerminalPoint::default(),
-            TerminalCellSide::Left,
-        );
-        assert_eq!(unsafe { vg_search(e.p(), b"hello".as_ptr(), 5, 0) }, 1);
-        assert_eq!(e.text(true).as_deref(), Some("hello"));
-        assert_eq!(
-            unsafe { vg_search(e.p(), b"not present".as_ptr(), 11, 0) },
-            0
-        );
-    }
-    #[test]
-    fn replies_and_scrollback_resize() {
-        let mut e = engine();
-        e.feed(b"\x1b[6n");
-        assert_eq!(
-            e.callbacks.replies.drain(..).collect::<Vec<_>>(),
-            b"\x1b[1;1R"
-        );
-        for i in 0..100 {
-            e.feed(format!("line {i}\r\n").as_bytes());
-        }
-        assert!(e.snapshot().unwrap().history_size > 0);
-        unsafe { vg_scroll(e.p(), -10) };
-        e.dirty = true;
-        assert!(e.snapshot().unwrap().display_offset > 0);
-        e.resize(TerminalSize {
-            columns: 40,
-            rows: 12,
-            ..TerminalSize::default()
-        })
-        .unwrap();
-        assert_eq!(e.snapshot().unwrap().columns, 40);
-        checked(unsafe { vg_clear_history(e.p()) }).unwrap();
-        e.dirty = true;
-        assert_eq!(e.snapshot().unwrap().history_size, 0);
-    }
-    fn wait_for(t: &GhosttyTerminal, needle: &str) {
-        let until = Instant::now() + Duration::from_secs(5);
-        loop {
-            let text = t.engine.lock().unwrap().text(false).unwrap_or_default();
-            if text.contains(needle) {
-                return;
-            }
-            assert!(Instant::now() < until, "missing {needle:?}: {text:?}");
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-    #[test]
-    fn real_pty_input_resize_exit_and_environment() {
-        let t=GhosttyTerminal::spawn(Uuid::new_v4(),Path::new("/tmp"),&HashMap::new(),Some(("/bin/sh",&["-c","printf 'READY\\n'; read answer; printf 'ANSWER=%s TERM=%s\\n' \"$answer\" \"$TERM\"; stty size; exit 7"]))).unwrap();
-        wait_for(&t, "READY");
-        assert!(t.foreground_process_id().is_some());
-        t.resize(TerminalSize {
-            columns: 100,
-            rows: 30,
-            ..TerminalSize::default()
-        })
-        .unwrap();
-        t.send_input(b"from-vibra\n".to_vec()).unwrap();
-        wait_for(&t, "ANSWER=from-vibra TERM=xterm-256color");
-        wait_for(&t, "30 100");
-        let until = Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Ok(TerminalEvent::Exit(code)) = t.events.try_recv() {
-                assert_eq!(code, Some(7));
-                break;
-            }
-            assert!(Instant::now() < until);
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert!(t.send_input(vec![b'x']).is_err());
-    }
-    #[test]
-    fn real_pty_ctrl_c_and_query_reply() {
-        let t = GhosttyTerminal::spawn(
-            Uuid::new_v4(),
-            Path::new("/tmp"),
-            &HashMap::new(),
-            Some((
-                "/bin/sh",
-                &[
-                    "-c",
-                    "trap 'printf INTERRUPTED; exit 0' INT; printf READY; read answer",
-                ],
-            )),
-        )
-        .unwrap();
-        wait_for(&t, "READY");
-        t.send_input(vec![3]).unwrap();
-        wait_for(&t, "INTERRUPTED");
-        let q = GhosttyTerminal::spawn(Uuid::new_v4(), Path::new("/tmp"), &HashMap::new(),
-            Some(("/bin/sh", &["-c", "stty -echo -icanon min 1 time 0; printf '\\033[6n'; dd bs=1 count=6 2>/dev/null | od -An -tx1"]))).unwrap();
-        wait_for(&q, "52");
-        let reply = q.engine.lock().unwrap().text(false).unwrap();
-        assert_eq!(
-            reply.split_whitespace().collect::<Vec<_>>(),
-            ["1b", "5b", "31", "3b", "31", "52"]
-        );
-    }
-
-    #[test]
-    fn queued_ctrl_c_events_use_restored_shell_mode() {
-        let t = GhosttyTerminal::spawn(
-            Uuid::new_v4(),
-            Path::new("/tmp"),
-            &HashMap::new(),
-            Some(("/bin/sh", &["-c", "stty raw -echo; printf '\\033[>3uREADY\\r\\n'; dd bs=1 count=3 2>/dev/null | od -An -tx1; printf '\\r\\nDONE'"])),
-        )
-        .unwrap();
-        wait_for(&t, "READY");
-        let input = |event_type| TerminalKeyInput {
-            keystroke: TerminalKeystroke {
-                key: "c".into(),
-                key_char: Some("c".into()),
-                modifiers: TerminalModifiers {
-                    control: true,
-                    ..TerminalModifiers::default()
-                },
-            },
-            event_type,
-        };
-        assert_eq!(
-            input(TerminalKeyEventType::Release).bytes(t.input_mode()),
-            b"\x1b[99;5:3u"
-        );
-        {
-            // Hold the worker before it can write input. This is the same
-            // ordering as a TUI's pending cleanup being read before a queued key.
-            let mut e = t.engine.lock().unwrap();
-            for event_type in [
-                TerminalKeyEventType::Release,
-                TerminalKeyEventType::Press,
-                TerminalKeyEventType::Repeat,
-                TerminalKeyEventType::Release,
-            ] {
-                t.send_key_input(input(event_type)).unwrap();
-            }
-            e.feed(b"\x1b[<u");
-            assert!(!e.mode().kitty_keyboard());
-            t.send_input(b"A".to_vec()).unwrap();
-        }
-        wait_for(&t, "DONE");
-        let text = t.engine.lock().unwrap().text(false).unwrap();
-        assert_eq!(
-            text.split_whitespace().collect::<Vec<_>>(),
-            ["READY", "03", "03", "41", "DONE"],
-            "Kitty sequences leaked into shell input: {text:?}"
-        );
-    }
-
-    #[test]
-    fn clipboard_write_and_selection_drag() {
-        let (tx, rx) = async_channel::unbounded();
-        let mut e = Engine::new(TerminalSize::default(), tx).unwrap();
-        e.feed(b"\x1b]52;c;aGVsbG8=\x07");
-        assert!(
-            matches!(rx.try_recv(), Ok(TerminalEvent::ClipboardStore(text)) if text == "hello")
-        );
-        e.feed(b"hello world");
-        e.select(
-            1,
-            TerminalSelectionType::Simple,
-            TerminalPoint { row: 0, column: 0 },
-            TerminalCellSide::Left,
-        );
-        e.select(
-            2,
-            TerminalSelectionType::Simple,
-            TerminalPoint { row: 0, column: 4 },
-            TerminalCellSide::Right,
-        );
-        assert_eq!(e.text(true).as_deref(), Some("hello"));
-        e.feed(b"\r\n(https://example.com).");
-        let snapshot = e.snapshot().unwrap();
-        assert_eq!(
-            plain_hyperlink(&snapshot.lines[1], 4).as_deref(),
-            Some("https://example.com")
-        );
-        assert_eq!(plain_hyperlink(&snapshot.lines[1], 0), None);
-    }
-
-    #[test]
-    fn clipboard_reads_are_owned_and_wait_for_consent() {
-        use base64::Engine as _;
-        let (tx, rx) = async_channel::unbounded();
-        let mut e = Engine::new(TerminalSize::default(), tx).unwrap();
-        for byte in b"\x1b]52;c;?\x07\x1b]52;p;?\x1b\\" {
-            e.feed(&[*byte]);
-        }
-        assert!(
-            e.callbacks.replies.is_empty(),
-            "must not answer before consent"
-        );
-        let TerminalEvent::ClipboardLoad(first) = rx.try_recv().unwrap() else {
-            panic!("missing consent event")
-        };
-        let TerminalEvent::ClipboardLoad(second) = rx.try_recv().unwrap() else {
-            panic!("missing consent event")
-        };
-        // Call after further parser mutations and terminal destruction: callbacks
-        // must contain owned protocol strings, never a borrowed Ghostty request.
-        e.feed(b"still responsive");
-        drop(e);
-        let secret = "Español\n\x1b]52;c;injection";
-        let encoded = base64::engine::general_purpose::STANDARD.encode(secret);
-        assert_eq!(first(secret), format!("\x1b]52;c;{encoded}\x07"));
-        assert_eq!(second("hello"), "\x1b]52;p;aGVsbG8=\x1b\\");
-        assert!(clipboard_template(b"\x1b]52;c;payload\x07").is_none());
-        assert!(clipboard_template(b"\x1b]52;x;\x07").is_none());
-    }
-
-    #[test]
-    fn literal_search_preserves_case_whitespace_and_wraps() {
-        let mut e = engine();
-        e.feed(b"Hello hello HELLO  src/(main|lib).rs\r\nhello");
-        for needle in ["hello", "Hello", "HELLO", "src/(main|lib).rs", "  "] {
-            assert_eq!(
-                unsafe { vg_search(e.p(), needle.as_ptr(), needle.len(), 0) },
-                1,
-                "{needle}"
-            );
-            // Selection formatter trims whitespace for copying; compare that policy.
-            assert_eq!(e.text(true).unwrap().trim_end(), needle.trim_end());
-        }
-        assert_eq!(unsafe { vg_search(e.p(), b"hElLo".as_ptr(), 5, 0) }, 0);
-        for direction in [0, 0, 0, 1, 1] {
-            assert_eq!(
-                unsafe { vg_search(e.p(), b"hello".as_ptr(), 5, direction) },
-                1
-            );
-            assert_eq!(e.text(true).as_deref(), Some("hello"));
-        }
-    }
-
-    #[test]
-    fn incremental_snapshot_keeps_clean_rows_and_clears_dirty_cells() {
-        let mut e = engine();
-        e.feed(b"row zero\r\nrow one\r\nrow two");
-        let before = e.snapshot().unwrap();
-        e.feed(b"\x1b[2;1H\x1b[2Kchanged");
-        let _ = e.mode(); // Querying modes must not consume pending cell damage.
-        let after = e.snapshot().unwrap();
-        assert!(Arc::ptr_eq(&before.lines[0], &after.lines[0]));
-        assert!(Arc::ptr_eq(&before.lines[2], &after.lines[2]));
-        assert!(!Arc::ptr_eq(&before.lines[1], &after.lines[1]));
-        assert!(
-            e.last_painted_cells <= 160,
-            "clean rows must not cross FFI: {}",
-            e.last_painted_cells
-        );
-        assert_eq!(after.lines[1][0].text(), "c");
-        assert_eq!(after.lines[1][7].text(), " ");
-        e.feed(b"\x1b[2J");
-        assert!(
-            e.snapshot()
-                .unwrap()
-                .lines
-                .iter()
-                .flat_map(|r| r.iter())
-                .all(|c| c.text() == " ")
-        );
-    }
-
-    #[test]
-    fn real_pty_sustained_output_and_recent_text_ignore_viewport() {
-        let t = GhosttyTerminal::spawn(Uuid::new_v4(), Path::new("/tmp"), &HashMap::new(),
-            Some(("/bin/sh", &["-c", "i=0; while [ $i -lt 12000 ]; do printf 'line-%s abcdefghijklmnopqrstuvwxyz0123456789\\n' $i; i=$((i+1)); done; printf 'FINAL-TAIL'; read answer"]))).unwrap();
-        wait_for(&t, "FINAL-TAIL");
-        let before = t.snapshot();
-        assert!(before.history_size > 0);
-        t.scroll(50);
-        let scrolled = t.snapshot();
-        assert!(scrolled.display_offset > 0);
-        assert_ne!(before.lines[0], scrolled.lines[0]);
-        let recent = t.recent_text(3).unwrap();
-        assert!(recent.contains("FINAL-TAIL"));
-        assert!(!recent.contains("line-0 "));
-        t.shutdown();
-    }
-
-    #[test]
-    fn real_vim_enters_and_leaves_alternate_screen() {
-        let t = GhosttyTerminal::spawn(
-            Uuid::new_v4(),
-            Path::new("/tmp"),
-            &HashMap::new(),
-            Some(("/usr/bin/vim", &["-Nu", "NONE", "-n", "-i", "NONE"])),
-        )
-        .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !t.input_mode().alternate_screen {
-            assert!(
-                Instant::now() < deadline,
-                "vim did not enter alternate screen"
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
-        t.send_input(b":q!\r".to_vec()).unwrap();
-        while t.alive.load(Ordering::Acquire) {
-            assert!(Instant::now() < deadline, "vim did not exit");
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert!(!t.input_mode().alternate_screen);
-    }
-
-    #[test]
-    #[ignore = "manual performance measurement, not a timing-sensitive CI assertion"]
-    fn profile_sessions() {
-        fn peak_rss() -> i64 {
-            let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
-            assert_eq!(
-                unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) },
-                0
-            );
-            unsafe { usage.assume_init().ru_maxrss }
-        }
-        let baseline = peak_rss();
-        let mut engines = Vec::new();
-        for _ in 0..8 {
-            let mut e = engine();
-            e.resize(TerminalSize {
-                columns: 120,
-                rows: 40,
-                ..TerminalSize::default()
-            })
-            .unwrap();
-            e.feed(
-                "build: abcdefghijklmnopqrstuvwxyz 0123456789\r\n"
-                    .repeat(4000)
-                    .as_bytes(),
-            );
-            e.snapshot().unwrap();
-            engines.push(e);
-        }
-        let mut elapsed = Vec::new();
-        let mut cells = 0u64;
-        for i in 0..800 {
-            let e = &mut engines[i % 8];
-            let start = Instant::now();
-            e.feed(format!("\x1b[2;1Htick {i:08}").as_bytes());
-            e.snapshot().unwrap();
-            elapsed.push(start.elapsed().as_secs_f64() * 1000.);
-            cells += u64::from(e.last_painted_cells);
-        }
-        elapsed.sort_by(f64::total_cmp);
-        println!(
-            "PROFILE 8 sessions: update median_ms={:.3} p95_ms={:.3}; cells={cells}/{} full-screen baseline; peak_rss_before={} after={} bytes",
-            elapsed[400],
-            elapsed[760],
-            800 * 120 * 40,
-            baseline,
-            peak_rss()
-        );
-        let t = GhosttyTerminal::spawn(
-            Uuid::new_v4(),
-            Path::new("/tmp"),
-            &HashMap::new(),
-            Some((
-                "/bin/sh",
-                &[
-                    "-c",
-                    "printf 'READY\\n'; while read value; do printf 'ACK-%s\\n' \"$value\"; done",
-                ],
-            )),
-        )
-        .unwrap();
-        wait_for(&t, "READY");
-        let mut latency = Vec::new();
-        for i in 0..30 {
-            let token = format!("ACK-{i:04}");
-            let start = Instant::now();
-            t.send_input(format!("{i:04}\n").into_bytes()).unwrap();
-            loop {
-                if t.recent_text(40).unwrap().contains(&token) {
-                    break;
-                }
-                assert!(start.elapsed() < Duration::from_secs(5));
-                thread::sleep(Duration::from_micros(100));
-            }
-            latency.push(start.elapsed().as_secs_f64() * 1000.);
-        }
-        latency.sort_by(f64::total_cmp);
-        println!(
-            "PROFILE PTY roundtrip (100us observation polling): median_ms={:.3} p95_ms={:.3}",
-            latency[15], latency[28]
-        );
-    }
-
-    #[test]
-    fn shutdown_reaps_child() {
-        let t = GhosttyTerminal::spawn(
-            Uuid::new_v4(),
-            Path::new("/tmp"),
-            &HashMap::new(),
-            Some((
-                "/bin/sh",
-                &[
-                    "-c",
-                    "trap '' HUP; printf 'READY\\n'; while :; do sleep 1; done",
-                ],
-            )),
-        )
-        .unwrap();
-        wait_for(&t, "READY");
-        t.shutdown();
-        let until = Instant::now() + Duration::from_secs(5);
-        while t.alive.load(Ordering::Acquire) {
-            assert!(Instant::now() < until, "child not reaped");
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert_eq!(
-            unsafe { libc::waitpid(t.pid as i32, std::ptr::null_mut(), libc::WNOHANG) },
-            -1
-        );
-    }
-}
+mod tests;

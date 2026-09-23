@@ -302,9 +302,7 @@ pub trait TerminalHandle: Send + Sync {
     fn send_input(&self, input: Vec<u8>) -> Result<()>;
     /// Backends that queue writes must encode the key after parsing pending
     /// output, since it may restore the shell's keyboard mode.
-    fn send_key_input(&self, input: TerminalKeyInput) -> Result<()> {
-        self.send_input(input.bytes(self.input_mode()))
-    }
+    fn send_key_input(&self, input: TerminalKeyInput) -> Result<()>;
     fn resize(&self, size: TerminalSize) -> Result<()>;
     fn scroll(&self, lines: i32);
     fn clear_scrollback(&self);
@@ -337,6 +335,16 @@ pub trait TerminalHandle: Send + Sync {
     fn update_selection(&self, point: TerminalPoint, side: TerminalCellSide);
     fn selection_text(&self) -> Option<String>;
     fn search(&self, query: &str, direction: TerminalSearchDirection) -> Result<bool>;
+    /// One bounded search slice. `None` means the caller should schedule
+    /// another slice; the default keeps simple backends compatible.
+    fn search_step(
+        &self,
+        query: &str,
+        direction: TerminalSearchDirection,
+        _continuation: bool,
+    ) -> Result<Option<bool>> {
+        self.search(query, direction).map(Some)
+    }
     fn hyperlink_at(&self, point: TerminalPoint) -> Option<String>;
     fn acknowledge_wakeup(&self);
     fn shutdown(&self);

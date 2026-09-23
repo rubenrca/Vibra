@@ -83,7 +83,7 @@ impl WorkspaceSnapshot {
 
     pub fn rename_project(&mut self, project_id: Uuid, name: &str) -> bool {
         let name = name.trim();
-        if name.is_empty() {
+        if name.is_empty() || name.chars().count() > super::MAX_NAME_CHARS {
             return false;
         }
         let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {

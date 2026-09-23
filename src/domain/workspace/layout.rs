@@ -27,12 +27,17 @@ impl PaneLayoutSnapshot {
     }
 
     pub fn terminal_ids(&self) -> Vec<Uuid> {
+        let mut ids = Vec::new();
+        self.collect_terminal_ids(&mut ids);
+        ids
+    }
+
+    fn collect_terminal_ids(&self, ids: &mut Vec<Uuid>) {
         match self {
-            Self::Terminal { id } => vec![*id],
+            Self::Terminal { id } => ids.push(*id),
             Self::Split { first, second, .. } => {
-                let mut ids = first.terminal_ids();
-                ids.extend(second.terminal_ids());
-                ids
+                first.collect_terminal_ids(ids);
+                second.collect_terminal_ids(ids);
             }
         }
     }
@@ -70,6 +75,10 @@ impl PaneLayoutSnapshot {
                 second.map_terminal_ids(map);
             }
         }
+    }
+
+    pub(super) fn replace_terminal_id(&mut self, old_id: Uuid, new_id: Uuid) {
+        self.map_terminal_ids(&mut |id| if id == old_id { new_id } else { id });
     }
 
     pub fn split_terminal(
@@ -286,20 +295,19 @@ impl PaneLayoutSnapshot {
         }
     }
 
-    pub fn joining(mut layouts: Vec<Self>, axis: WorkspaceSplitAxis) -> Self {
+    pub fn joining(layouts: Vec<Self>, axis: WorkspaceSplitAxis) -> Self {
         assert!(
             !layouts.is_empty(),
             "a pane layout needs at least one terminal"
         );
-        let first = layouts.remove(0);
-        layouts
-            .into_iter()
-            .fold(first, |first, second| Self::Split {
-                axis,
-                ratio: DEFAULT_PANE_SPLIT_RATIO,
-                first: Box::new(first),
-                second: Box::new(second),
-            })
+        let mut layouts = layouts.into_iter();
+        let first = layouts.next().expect("checked above");
+        layouts.fold(first, |first, second| Self::Split {
+            axis,
+            ratio: DEFAULT_PANE_SPLIT_RATIO,
+            first: Box::new(first),
+            second: Box::new(second),
+        })
     }
 }
 

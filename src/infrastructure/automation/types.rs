@@ -1,4 +1,3 @@
-use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -12,8 +11,6 @@ pub(crate) const MAX_AUTOMATION_REQUEST_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_AUTOMATION_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) const MAX_AGENT_HOOK_BYTES: u64 = 1024 * 1024;
 pub(crate) const AUTOMATION_IO_TIMEOUT: Duration = Duration::from_secs(5);
-pub(crate) static NEXT_AUTOMATION_SERVER_ID: AtomicU64 = AtomicU64::new(1);
-
 pub const AUTOMATION_QUEUE_CAPACITY: usize = 32;
 pub(crate) const AUTOMATION_MAX_CLIENT_THREADS: usize = 8;
 

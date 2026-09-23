@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
@@ -14,12 +14,12 @@ use gpui::{
 };
 use uuid::Uuid;
 
-use crate::domain::agents::{AgentKind, AgentRuntimeState};
+use crate::domain::agents::AgentKind;
 use crate::ports::terminal::{
-    TerminalAgentKindSource, TerminalAgentPresence, TerminalCell, TerminalCellSide, TerminalCursor,
-    TerminalCursorShape, TerminalEvent, TerminalHandle, TerminalInputMode, TerminalPoint,
-    TerminalPort, TerminalRgb, TerminalSearchDirection, TerminalSelectionType, TerminalSize,
-    TerminalSnapshot, TerminalUnderline, is_safe_hyperlink,
+    TerminalAgentPresence, TerminalCell, TerminalCellSide, TerminalCursor, TerminalCursorShape,
+    TerminalEvent, TerminalHandle, TerminalInputMode, TerminalPoint, TerminalPort, TerminalRgb,
+    TerminalSearchDirection, TerminalSelectionType, TerminalSize, TerminalSnapshot,
+    TerminalUnderline, is_safe_hyperlink,
 };
 use crate::ports::terminal_keyboard::{
     TerminalKeyEventType, TerminalKeyInput, TerminalKeystroke, TerminalModifiers,
@@ -32,6 +32,9 @@ use crate::{
     PasteTerminal, ResetTerminalFontSize, SearchTerminal, SearchTerminalNext,
     SearchTerminalPrevious,
 };
+
+mod agent_presence;
+use agent_presence::{detect_agent_presence, is_interactive_shell_process_name};
 
 const TERMINAL_FONT_SIZE: f32 = 12.0;
 const TERMINAL_LINE_HEIGHT: f32 = 16.0;
@@ -46,6 +49,20 @@ const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 /// Poll shell/foreground cwd often enough that `cd` feels live in the chrome.
 const WORKING_DIRECTORY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const BELL_FLASH_DURATION: Duration = Duration::from_millis(140);
+const INPUT_ERROR_VISIBLE_DURATION: Duration = Duration::from_secs(4);
+const PROCESS_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+const SEARCH_STEP_DELAY: Duration = Duration::from_millis(1);
+const MAX_CLIPBOARD_CONFIRMATIONS: usize = 4;
+const MAX_CLIPBOARD_READ_BYTES: usize = 1024 * 1024;
+const MAX_EXTERNAL_PASTE_BYTES: usize = 1024 * 1024;
+const MAX_PENDING_EXTERNAL_PASTES: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalInsertStatus {
+    Accepted,
+    Pending,
+    Rejected,
+}
 
 #[derive(Clone, Debug)]
 pub enum TerminalViewEvent {
@@ -76,11 +93,19 @@ pub enum TerminalViewEvent {
         x: f32,
         y: f32,
     },
+    ExternalPasteResolved {
+        session_id: Uuid,
+        token: Uuid,
+        accepted: bool,
+    },
 }
 
 #[derive(Clone)]
 enum TerminalConfirmation {
-    Paste(String),
+    Paste {
+        text: String,
+        external_token: Option<Uuid>,
+    },
     ClipboardRead {
         contents: String,
         formatter: Arc<dyn Fn(&str) -> String + Send + Sync>,
@@ -90,7 +115,7 @@ enum TerminalConfirmation {
 impl TerminalConfirmation {
     fn title(&self) -> String {
         match self {
-            Self::Paste(text) => {
+            Self::Paste { text, .. } => {
                 let line_count = text.lines().count().max(1);
                 format!("Pegar {line_count} líneas en la terminal?")
             }
@@ -102,7 +127,7 @@ impl TerminalConfirmation {
 
     fn preview(&self) -> String {
         let text = match self {
-            Self::Paste(text) => text,
+            Self::Paste { text, .. } => text,
             Self::ClipboardRead { contents, .. } => contents,
         };
         let mut preview = text
@@ -121,7 +146,7 @@ impl TerminalConfirmation {
 
     fn hint(&self) -> &'static str {
         match self {
-            Self::Paste(_) => "↵ pegar    esc cancelar",
+            Self::Paste { .. } => "↵ pegar    esc cancelar",
             Self::ClipboardRead { .. } => "↵ permitir    esc denegar",
         }
     }
@@ -140,6 +165,7 @@ pub struct TerminalView {
     title: String,
     working_directory: PathBuf,
     error: Option<SharedString>,
+    input_error: Option<SharedString>,
     exited: bool,
     marked_text: String,
     font_size: f32,
@@ -154,6 +180,9 @@ pub struct TerminalView {
     search_active: bool,
     search_query: String,
     search_match_found: bool,
+    search_pending: bool,
+    search_generation: u64,
+    last_process_probe: Option<Instant>,
     pending_confirmations: VecDeque<TerminalConfirmation>,
     pressed_key_foregrounds: HashMap<String, Option<u32>>,
     cursor_visible: bool,
@@ -162,12 +191,15 @@ pub struct TerminalView {
     bell_active: bool,
     agent_presence: Option<TerminalAgentPresence>,
     render_cache: Arc<Mutex<TerminalRenderCache>>,
+    last_requested_size: Arc<Mutex<Option<TerminalSize>>>,
     surface_visible: bool,
     _focus_subscriptions: Vec<Subscription>,
     _event_task: Option<Task<()>>,
     _cursor_task: Task<()>,
     _working_directory_task: Task<()>,
     _bell_task: Option<Task<()>>,
+    _search_task: Option<Task<()>>,
+    _input_error_task: Option<Task<()>>,
 }
 
 /// A non-interactive, frozen rendering of a terminal used while its pane is
@@ -253,6 +285,7 @@ impl TerminalView {
                         // recognizable banner. Poll its identity as a backstop to
                         // terminal wakeups so its mark still appears promptly.
                         this.refresh_agent_presence(cx);
+                        this.last_process_probe = Some(Instant::now());
                     })
                     .is_err()
                 {
@@ -268,6 +301,7 @@ impl TerminalView {
             title,
             working_directory: working_directory.to_path_buf(),
             error,
+            input_error: None,
             exited: false,
             marked_text: String::new(),
             font_size: TERMINAL_FONT_SIZE,
@@ -282,6 +316,9 @@ impl TerminalView {
             search_active: false,
             search_query: String::new(),
             search_match_found: false,
+            search_pending: false,
+            search_generation: 0,
+            last_process_probe: None,
             pending_confirmations: VecDeque::new(),
             pressed_key_foregrounds: HashMap::new(),
             cursor_visible: true,
@@ -290,12 +327,15 @@ impl TerminalView {
             bell_active: false,
             agent_presence: None,
             render_cache: Arc::new(Mutex::new(TerminalRenderCache::default())),
+            last_requested_size: Arc::new(Mutex::new(None)),
             surface_visible: true,
             _focus_subscriptions: Vec::new(),
             _event_task: event_task,
             _cursor_task: cursor_task,
             _working_directory_task: working_directory_task,
             _bell_task: None,
+            _search_task: None,
+            _input_error_task: None,
         }
     }
 
@@ -342,6 +382,10 @@ impl TerminalView {
             .as_ref()
             .and_then(|handle| handle.current_working_directory())
             .unwrap_or_else(|| self.working_directory.clone())
+    }
+
+    pub fn cached_working_directory(&self) -> &Path {
+        &self.working_directory
     }
 
     pub fn foreground_process_name(&self) -> Option<String> {
@@ -403,40 +447,50 @@ impl TerminalView {
         });
     }
 
+    fn refresh_process_state_if_due(&mut self, cx: &mut Context<Self>) {
+        if self
+            .last_process_probe
+            .is_none_or(|last| last.elapsed() >= PROCESS_PROBE_INTERVAL)
+        {
+            self.last_process_probe = Some(Instant::now());
+            self.refresh_working_directory(cx);
+            self.refresh_agent_presence(cx);
+        }
+    }
+
+    fn set_title(&mut self, title: String, cx: &mut Context<Self>) {
+        if self.title == title {
+            return;
+        }
+        self.title.clone_from(&title);
+        self.refresh_process_state_if_due(cx);
+        cx.emit(TerminalViewEvent::TitleChanged {
+            session_id: self.session_id,
+            title,
+        });
+        cx.notify();
+    }
+
+    fn emit_external_paste_resolution(&self, token: Uuid, accepted: bool, cx: &mut Context<Self>) {
+        cx.emit(TerminalViewEvent::ExternalPasteResolved {
+            session_id: self.session_id,
+            token,
+            accepted,
+        });
+    }
+
     fn handle_terminal_event(&mut self, event: TerminalEvent, cx: &mut Context<Self>) {
         match event {
             TerminalEvent::Wakeup => {
-                self.refresh_working_directory(cx);
-                self.refresh_agent_presence(cx);
+                self.refresh_process_state_if_due(cx);
                 if let Some(handle) = &self.handle {
                     handle.acknowledge_wakeup();
                 }
                 self.cursor_visible = true;
                 cx.notify();
             }
-            TerminalEvent::Title(title) => {
-                if self.title != title {
-                    self.title.clone_from(&title);
-                    self.refresh_agent_presence(cx);
-                    cx.emit(TerminalViewEvent::TitleChanged {
-                        session_id: self.session_id,
-                        title,
-                    });
-                    cx.notify();
-                }
-            }
-            TerminalEvent::ResetTitle => {
-                let title = "Terminal".to_owned();
-                if self.title != title {
-                    self.title.clone_from(&title);
-                    self.refresh_agent_presence(cx);
-                    cx.emit(TerminalViewEvent::TitleChanged {
-                        session_id: self.session_id,
-                        title,
-                    });
-                    cx.notify();
-                }
-            }
+            TerminalEvent::Title(title) => self.set_title(title, cx),
+            TerminalEvent::ResetTitle => self.set_title("Terminal".to_owned(), cx),
             TerminalEvent::ClipboardStore(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
@@ -445,6 +499,17 @@ impl TerminalView {
                     .read_from_clipboard()
                     .and_then(|item| item.text())
                     .unwrap_or_default();
+                let pending_reads = self
+                    .pending_confirmations
+                    .iter()
+                    .filter(|item| matches!(item, TerminalConfirmation::ClipboardRead { .. }))
+                    .count();
+                if contents.len() > MAX_CLIPBOARD_READ_BYTES
+                    || pending_reads >= MAX_CLIPBOARD_CONFIRMATIONS
+                {
+                    self.send_protocol(formatter("").into_bytes(), cx);
+                    return;
+                }
                 self.pending_confirmations
                     .push_back(TerminalConfirmation::ClipboardRead {
                         contents,
@@ -467,6 +532,17 @@ impl TerminalView {
             TerminalEvent::Exit(code) => {
                 if !self.exited {
                     self.exited = true;
+                    let unresolved = self
+                        .pending_confirmations
+                        .drain(..)
+                        .filter_map(|confirmation| match confirmation {
+                            TerminalConfirmation::Paste { external_token, .. } => external_token,
+                            TerminalConfirmation::ClipboardRead { .. } => None,
+                        })
+                        .collect::<Vec<_>>();
+                    for token in unresolved {
+                        self.emit_external_paste_resolution(token, false, cx);
+                    }
                     cx.emit(TerminalViewEvent::Exited {
                         session_id: self.session_id,
                         code,
@@ -477,44 +553,123 @@ impl TerminalView {
         }
     }
 
-    fn send(&self, input: Vec<u8>) {
-        if let Some(handle) = &self.handle {
-            handle.clear_selection();
-            handle.scroll(i32::MIN);
-            let _ = handle.send_input(input);
+    fn record_input_result(&mut self, result: anyhow::Result<()>, cx: &mut Context<Self>) -> bool {
+        match result {
+            Ok(()) => {
+                if self.input_error.take().is_some() {
+                    self._input_error_task = None;
+                    cx.notify();
+                }
+                true
+            }
+            Err(error) => {
+                self.input_error =
+                    Some(format!("No se pudo enviar a la terminal: {error:#}").into());
+                self._input_error_task = Some(cx.spawn(async move |this, cx| {
+                    Timer::after(INPUT_ERROR_VISIBLE_DURATION).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.input_error = None;
+                        cx.notify();
+                    });
+                }));
+                cx.notify();
+                false
+            }
         }
     }
 
-    fn send_protocol(&self, input: Vec<u8>) {
-        if let Some(handle) = &self.handle {
-            let _ = handle.send_input(input);
-        }
+    fn send(&mut self, input: Vec<u8>, cx: &mut Context<Self>) -> bool {
+        let Some(handle) = &self.handle else {
+            return false;
+        };
+        handle.clear_selection();
+        handle.scroll(i32::MIN);
+        self.record_input_result(handle.send_input(input), cx)
     }
 
-    fn send_key(&self, key: &Keystroke, event_type: TerminalKeyEventType) {
-        if let Some(handle) = &self.handle {
-            handle.clear_selection();
-            handle.scroll(i32::MIN);
-            let _ = handle.send_key_input(TerminalKeyInput {
+    fn send_protocol(&mut self, input: Vec<u8>, cx: &mut Context<Self>) -> bool {
+        let Some(handle) = &self.handle else {
+            return false;
+        };
+        self.record_input_result(handle.send_input(input), cx)
+    }
+
+    fn send_key(
+        &mut self,
+        key: &Keystroke,
+        event_type: TerminalKeyEventType,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(handle) = &self.handle else {
+            return false;
+        };
+        handle.clear_selection();
+        handle.scroll(i32::MIN);
+        self.record_input_result(
+            handle.send_key_input(TerminalKeyInput {
                 keystroke: terminal_keystroke(key),
                 event_type,
-            });
-        }
+            }),
+            cx,
+        )
     }
 
-    fn paste(&self, text: &str) {
+    fn paste(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
         let mode = self
             .handle
             .as_ref()
             .map(|handle| handle.input_mode())
             .unwrap_or_default();
-        self.send(paste_bytes(text, mode.bracketed_paste));
+        self.send(paste_bytes(text, mode.bracketed_paste), cx)
     }
 
-    /// Insert text as if pasted (bracketed when the app asked for it), for
-    /// prompts composed elsewhere in Vibra.
-    pub fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.request_paste(text.to_owned(), cx);
+    /// Submit text from another view and report when a required paste
+    /// confirmation is resolved. The caller owns `token` and can retain its
+    /// source data until it sees Accepted or a successful resolution event.
+    pub fn insert_external_text(
+        &mut self,
+        text: &str,
+        token: Uuid,
+        cx: &mut Context<Self>,
+    ) -> TerminalInsertStatus {
+        let Some(handle) = &self.handle else {
+            return TerminalInsertStatus::Rejected;
+        };
+        if text.is_empty() || text.len() > MAX_EXTERNAL_PASTE_BYTES {
+            return TerminalInsertStatus::Rejected;
+        }
+        if !handle.input_mode().bracketed_paste && paste_requires_confirmation(text) {
+            let pending = self
+                .pending_confirmations
+                .iter()
+                .filter(|confirmation| {
+                    matches!(
+                        confirmation,
+                        TerminalConfirmation::Paste {
+                            external_token: Some(_),
+                            ..
+                        }
+                    )
+                })
+                .count();
+            if pending >= MAX_PENDING_EXTERNAL_PASTES {
+                return TerminalInsertStatus::Rejected;
+            }
+            self.pending_confirmations
+                .push_back(TerminalConfirmation::Paste {
+                    text: text.to_owned(),
+                    external_token: Some(token),
+                });
+            cx.notify();
+            return TerminalInsertStatus::Pending;
+        }
+        if self.paste(text, cx) {
+            self.reset_cursor_blink();
+            cx.notify();
+            TerminalInsertStatus::Accepted
+        } else {
+            TerminalInsertStatus::Rejected
+        }
     }
 
     fn request_paste(&mut self, text: String, cx: &mut Context<Self>) {
@@ -527,10 +682,13 @@ impl TerminalView {
             .unwrap_or(false);
         if !bracketed && paste_requires_confirmation(&text) {
             self.pending_confirmations
-                .push_back(TerminalConfirmation::Paste(text));
+                .push_back(TerminalConfirmation::Paste {
+                    text,
+                    external_token: None,
+                });
             cx.notify();
         } else {
-            self.paste(&text);
+            self.paste(&text, cx);
             self.reset_cursor_blink();
             cx.notify();
         }
@@ -549,7 +707,7 @@ impl TerminalView {
         // Warp: `is_cli_agent_paste && clipboard_content.has_image_data()` then
         // `write_user_bytes_to_pty(vec![escape_sequences::C0::SYN], …)` on !windows.
         if has_image && self.has_active_cli_agent() {
-            self.send_protocol(vec![0x16]);
+            self.send_protocol(vec![0x16], cx);
             self.reset_cursor_blink();
             cx.notify();
             return;
@@ -576,26 +734,43 @@ impl TerminalView {
 
     fn confirm_pending_action(&mut self, cx: &mut Context<Self>) {
         match self.pending_confirmations.pop_front() {
-            Some(TerminalConfirmation::Paste(text)) => {
-                self.paste(&text);
-                self.reset_cursor_blink();
+            Some(TerminalConfirmation::Paste {
+                text,
+                external_token,
+            }) => {
+                let accepted = self.paste(&text, cx);
+                if accepted {
+                    self.reset_cursor_blink();
+                }
+                if let Some(token) = external_token {
+                    self.emit_external_paste_resolution(token, accepted, cx);
+                }
             }
             Some(TerminalConfirmation::ClipboardRead {
                 contents,
                 formatter,
-            }) => self.send_protocol(formatter(&contents).into_bytes()),
+            }) => {
+                self.send_protocol(formatter(&contents).into_bytes(), cx);
+            }
             None => {}
         }
         cx.notify();
     }
 
     fn cancel_pending_action(&mut self, cx: &mut Context<Self>) {
-        if let Some(TerminalConfirmation::ClipboardRead { formatter, .. }) =
-            self.pending_confirmations.pop_front()
-        {
-            // Complete the protocol with an empty clipboard; never leave the
-            // requesting program waiting and never disclose the captured value.
-            self.send_protocol(formatter("").into_bytes());
+        match self.pending_confirmations.pop_front() {
+            Some(TerminalConfirmation::ClipboardRead { formatter, .. }) => {
+                // Complete the protocol with an empty clipboard; never leave
+                // the requesting program waiting or disclose captured data.
+                self.send_protocol(formatter("").into_bytes(), cx);
+            }
+            Some(TerminalConfirmation::Paste {
+                external_token: Some(token),
+                ..
+            }) => {
+                self.emit_external_paste_resolution(token, false, cx);
+            }
+            _ => {}
         }
         cx.notify();
     }
@@ -617,33 +792,85 @@ impl TerminalView {
         self.search_active = true;
         self.marked_text.clear();
         if !self.search_query.is_empty() {
-            self.refresh_search();
+            self.refresh_search(cx);
         }
         cx.notify();
     }
 
     fn close_search(&mut self, clear_selection: bool, cx: &mut Context<Self>) {
         self.search_active = false;
+        self.search_pending = false;
+        self.search_generation = self.search_generation.wrapping_add(1);
+        self._search_task = None;
         self.marked_text.clear();
+        if let Some(handle) = &self.handle {
+            let _ = handle.search_step("", TerminalSearchDirection::Next, false);
+        }
         if clear_selection && let Some(handle) = &self.handle {
             handle.clear_selection();
         }
         cx.notify();
     }
 
-    fn search(&mut self, direction: TerminalSearchDirection) {
-        self.search_match_found = self.handle.as_ref().is_some_and(|handle| {
-            handle
-                .search(&self.search_query, direction)
-                .unwrap_or(false)
-        });
+    fn search(&mut self, direction: TerminalSearchDirection, cx: &mut Context<Self>) {
+        self.search_generation = self.search_generation.wrapping_add(1);
+        self._search_task = None;
+        let generation = self.search_generation;
+        let query = self.search_query.clone();
+        let Some(handle) = self.handle.clone() else {
+            self.search_pending = false;
+            self.search_match_found = false;
+            return;
+        };
+        match handle.search_step(&query, direction, false) {
+            Ok(Some(found)) => {
+                self.search_match_found = found;
+                self.search_pending = false;
+            }
+            Ok(None) => {
+                self.search_match_found = false;
+                self.search_pending = true;
+                self._search_task = Some(cx.spawn(async move |this, cx| {
+                    loop {
+                        Timer::after(SEARCH_STEP_DELAY).await;
+                        let active = this.update(cx, |this, cx| {
+                            if this.search_generation != generation || !this.search_active {
+                                return false;
+                            }
+                            match handle.search_step(&query, direction, true) {
+                                Ok(Some(found)) => {
+                                    this.search_match_found = found;
+                                    this.search_pending = false;
+                                    cx.notify();
+                                    false
+                                }
+                                Ok(None) => true,
+                                Err(_) => {
+                                    this.search_match_found = false;
+                                    this.search_pending = false;
+                                    cx.notify();
+                                    false
+                                }
+                            }
+                        });
+                        if !matches!(active, Ok(true)) {
+                            break;
+                        }
+                    }
+                }));
+            }
+            Err(_) => {
+                self.search_match_found = false;
+                self.search_pending = false;
+            }
+        }
     }
 
-    fn refresh_search(&mut self) {
+    fn refresh_search(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = &self.handle {
             handle.clear_selection();
         }
-        self.search(TerminalSearchDirection::Next);
+        self.search(TerminalSearchDirection::Next, cx);
     }
 
     fn reset_cursor_blink(&mut self) {
@@ -671,7 +898,7 @@ impl TerminalView {
         if !self.search_active {
             self.search_active = true;
         }
-        self.search(TerminalSearchDirection::Next);
+        self.search(TerminalSearchDirection::Next, cx);
         cx.notify();
     }
 
@@ -684,7 +911,7 @@ impl TerminalView {
         if !self.search_active {
             self.search_active = true;
         }
-        self.search(TerminalSearchDirection::Previous);
+        self.search(TerminalSearchDirection::Previous, cx);
         cx.notify();
     }
 
@@ -724,7 +951,7 @@ impl TerminalView {
         if let Some(handle) = &self.handle {
             handle.clear_scrollback();
         }
-        self.send_protocol(vec![0x0c]);
+        self.send_protocol(vec![0x0c], cx);
         self.reset_cursor_blink();
         cx.notify();
     }
@@ -767,20 +994,20 @@ impl TerminalView {
                     } else {
                         TerminalSearchDirection::Next
                     };
-                    self.search(direction);
+                    self.search(direction, cx);
                     cx.notify();
                 }
                 "backspace" => {
                     self.search_query.pop();
-                    self.refresh_search();
+                    self.refresh_search(cx);
                     cx.notify();
                 }
                 _ if keystroke.modifiers.platform && key == "g" && keystroke.modifiers.shift => {
-                    self.search(TerminalSearchDirection::Previous);
+                    self.search(TerminalSearchDirection::Previous, cx);
                     cx.notify();
                 }
                 _ if keystroke.modifiers.platform && key == "g" => {
-                    self.search(TerminalSearchDirection::Next);
+                    self.search(TerminalSearchDirection::Next, cx);
                     cx.notify();
                 }
                 _ if keystroke.modifiers.platform && key == "f" => {}
@@ -822,7 +1049,7 @@ impl TerminalView {
                     if let Some(handle) = &self.handle {
                         handle.clear_scrollback();
                     }
-                    self.send_protocol(vec![0x0c]);
+                    self.send_protocol(vec![0x0c], cx);
                     self.reset_cursor_blink();
                     cx.notify();
                     cx.stop_propagation();
@@ -851,7 +1078,7 @@ impl TerminalView {
                         .and_then(|handle| handle.foreground_process_id()),
                 );
             }
-            self.send_key(keystroke, event_type);
+            self.send_key(keystroke, event_type, cx);
             self.reset_cursor_blink();
             cx.stop_propagation();
         }
@@ -881,7 +1108,7 @@ impl TerminalView {
             .map(|handle| handle.input_mode())
             .unwrap_or_default();
         if key_event_bytes(&event.keystroke, mode, TerminalKeyEventType::Release).is_some() {
-            self.send_key(&event.keystroke, TerminalKeyEventType::Release);
+            self.send_key(&event.keystroke, TerminalKeyEventType::Release, cx);
             cx.stop_propagation();
         }
     }
@@ -922,12 +1149,12 @@ impl TerminalView {
                     event.modifiers,
                     mode,
                 ) {
-                    self.send_protocol(bytes);
+                    self.send_protocol(bytes, cx);
                 }
             }
         } else if mode.alternate_screen && mode.alternate_scroll && !event.modifiers.shift {
             let sequence = if lines > 0 { b"\x1bOA" } else { b"\x1bOB" };
-            self.send_protocol(sequence.repeat(lines.unsigned_abs() as usize));
+            self.send_protocol(sequence.repeat(lines.unsigned_abs() as usize), cx);
         } else {
             handle.scroll(lines);
         }
@@ -978,7 +1205,7 @@ impl TerminalView {
                     mode,
                 )
             {
-                self.send_protocol(bytes);
+                self.send_protocol(bytes, cx);
                 cx.stop_propagation();
             }
             return;
@@ -1027,7 +1254,7 @@ impl TerminalView {
                     mode,
                 )
             {
-                self.send_protocol(bytes);
+                self.send_protocol(bytes, cx);
                 cx.stop_propagation();
             }
         } else if event.button == MouseButton::Left {
@@ -1084,7 +1311,7 @@ impl TerminalView {
                     event.modifiers,
                     mode,
                 ) {
-                    self.send_protocol(bytes);
+                    self.send_protocol(bytes, cx);
                     cx.stop_propagation();
                 }
             }
@@ -1148,7 +1375,7 @@ impl TerminalView {
                 .map(|handle| handle.input_mode())
                 .unwrap_or_default();
             if mode.focus_reporting {
-                this.send_protocol(b"\x1b[I".to_vec());
+                this.send_protocol(b"\x1b[I".to_vec(), cx);
             }
             cx.notify();
         });
@@ -1161,7 +1388,7 @@ impl TerminalView {
                 .map(|handle| handle.input_mode())
                 .unwrap_or_default();
             if mode.focus_reporting {
-                this.send_protocol(b"\x1b[O".to_vec());
+                this.send_protocol(b"\x1b[O".to_vec(), cx);
             }
             cx.notify();
         });
@@ -1262,12 +1489,12 @@ impl EntityInputHandler for TerminalView {
         if !new_text.is_empty() {
             if self.search_active {
                 self.search_query.push_str(new_text);
-                self.refresh_search();
+                self.refresh_search(cx);
             } else if new_text.chars().count() > 1 {
-                self.paste(new_text);
+                self.paste(new_text, cx);
                 self.reset_cursor_blink();
             } else {
-                self.send(new_text.as_bytes().to_vec());
+                self.send(new_text.as_bytes().to_vec(), cx);
                 self.reset_cursor_blink();
             }
         }
@@ -1392,6 +1619,104 @@ struct TerminalShapeContext<'a> {
     window: &'a Window,
 }
 
+fn search_overlay(
+    query: String,
+    marked_text: SharedString,
+    found: bool,
+    pending: bool,
+) -> impl IntoElement {
+    let status = if query.is_empty() {
+        "Escribe para buscar"
+    } else if pending {
+        "Buscando…"
+    } else if found {
+        "↵ siguiente  ⇧↵ anterior"
+    } else {
+        "Sin resultados"
+    };
+    let status_color = if found || pending || query.is_empty() {
+        colors().muted
+    } else {
+        colors().danger
+    };
+    div()
+        .absolute()
+        .top_3()
+        .left_3()
+        .right_3()
+        .max_w(px(420.0))
+        .ml_auto()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .border_color(colors().border_subtle)
+        .bg(popover_surface())
+        .shadow_sm()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .truncate()
+                .text_sm()
+                .text_color(colors().foreground)
+                .child(format!("Buscar  {query}{marked_text}")),
+        )
+        .child(
+            div()
+                .truncate()
+                .text_xs()
+                .text_color(status_color)
+                .child(status),
+        )
+}
+
+fn confirmation_overlay(confirmation: TerminalConfirmation) -> impl IntoElement {
+    let title = confirmation.title();
+    let preview = confirmation.preview();
+    let hint = confirmation.hint();
+    let warning = confirmation.warning();
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(colors().overlay())
+        .child(
+            div()
+                .w(px(480.0))
+                .max_w_full()
+                .mx_4()
+                .p_4()
+                .rounded_lg()
+                .border_1()
+                .border_color(colors().border_subtle)
+                .bg(popover_surface())
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().text_sm().text_color(colors().foreground).child(title))
+                .when_some(warning, |dialog, warning| {
+                    dialog.child(div().text_xs().text_color(colors().danger).child(warning))
+                })
+                .child(
+                    div()
+                        .px_2()
+                        .py_2()
+                        .rounded_sm()
+                        .bg(surface_tint(colors().terminal, colors().sidebar))
+                        .text_xs()
+                        .text_color(colors().muted)
+                        .overflow_hidden()
+                        .child(preview),
+                )
+                .child(div().text_xs().text_color(colors().muted).child(hint)),
+        )
+}
+
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.install_focus_observers(window, cx);
@@ -1400,15 +1725,18 @@ impl Render for TerminalView {
         let marked_text: SharedString = self.marked_text.clone().into();
         let canvas_marked_text = marked_text.clone();
         let error = self.error.clone();
+        let input_error = self.input_error.clone();
         let exited = self.exited;
         let search_active = self.search_active;
         let search_query = self.search_query.clone();
         let search_match_found = self.search_match_found;
+        let search_pending = self.search_pending;
         let pending_confirmation = self.pending_confirmations.front().cloned();
         let cursor_visible = self.cursor_visible;
         let bell_active = self.bell_active;
         let hyperlink_hovered = self.hovered_hyperlink.is_some();
         let render_cache = self.render_cache.clone();
+        let last_requested_size = self.last_requested_size.clone();
         let font_size = self.font_size;
         let line_height = font_size + (TERMINAL_LINE_HEIGHT - TERMINAL_FONT_SIZE);
 
@@ -1496,7 +1824,12 @@ impl Render for TerminalView {
                                     cell_width: natural_cell_width,
                                     cell_height: natural_line_height,
                                 };
-                                let _ = handle.resize(size);
+                                let mut last = last_requested_size
+                                    .lock()
+                                    .expect("terminal resize cache poisoned");
+                                if *last != Some(size) && handle.resize(size).is_ok() {
+                                    *last = Some(size);
+                                }
                             }
                             let snapshot = entity.read(cx).snapshot();
                             // Stretch paint metrics to the *live* snapshot grid so every
@@ -1615,103 +1948,15 @@ impl Render for TerminalView {
                 .size_full(),
             )
             .when(search_active, |terminal| {
-                let status = if search_query.is_empty() {
-                    "Escribe para buscar"
-                } else if search_match_found {
-                    "↵ siguiente  ⇧↵ anterior"
-                } else {
-                    "Sin resultados"
-                };
-                let composition = if marked_text.is_empty() {
-                    String::new()
-                } else {
-                    format!("{marked_text}")
-                };
-                terminal.child(
-                    div()
-                        .absolute()
-                        .top_3()
-                        .left_3()
-                        .right_3()
-                        .max_w(px(420.0))
-                        .ml_auto()
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(popover_surface())
-                        .shadow_sm()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_sm()
-                                .text_color(colors().foreground)
-                                .child(format!("Buscar  {search_query}{composition}")),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .text_xs()
-                                .text_color(if search_match_found {
-                                    colors().muted
-                                } else {
-                                    colors().danger
-                                })
-                                .child(status),
-                        ),
-                )
+                terminal.child(search_overlay(
+                    search_query,
+                    marked_text,
+                    search_match_found,
+                    search_pending,
+                ))
             })
             .when_some(pending_confirmation, |terminal, confirmation| {
-                let title = confirmation.title();
-                let preview = confirmation.preview();
-                let hint = confirmation.hint();
-                let warning = confirmation.warning();
-                terminal.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(colors().overlay())
-                        .child(
-                            div()
-                                .w(px(480.0))
-                                .max_w_full()
-                                .mx_4()
-                                .p_4()
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(colors().border_subtle)
-                                .bg(popover_surface())
-                                .shadow_lg()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .child(div().text_sm().text_color(colors().foreground).child(title))
-                                .when_some(warning, |dialog, warning| {
-                                    dialog.child(
-                                        div().text_xs().text_color(colors().danger).child(warning),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .px_2()
-                                        .py_2()
-                                        .rounded_sm()
-                                        .bg(surface_tint(colors().terminal, colors().sidebar))
-                                        .text_xs()
-                                        .text_color(colors().muted)
-                                        .overflow_hidden()
-                                        .child(preview),
-                                )
-                                .child(div().text_xs().text_color(colors().muted).child(hint)),
-                        ),
-                )
+                terminal.child(confirmation_overlay(confirmation))
             })
             .when_some(error, |terminal, error| {
                 terminal.child(
@@ -1723,6 +1968,24 @@ impl Render for TerminalView {
                         .text_sm()
                         .text_color(colors().danger)
                         .child(error),
+                )
+            })
+            .when_some(input_error, |terminal, input_error| {
+                terminal.child(
+                    div()
+                        .absolute()
+                        .left_3()
+                        .bottom_3()
+                        .max_w(px(500.0))
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(colors().danger)
+                        .bg(popover_surface())
+                        .text_xs()
+                        .text_color(colors().danger)
+                        .child(input_error),
                 )
             })
             .when(exited, |terminal| {
@@ -2122,7 +2385,7 @@ fn key_event_bytes(
     mode: TerminalInputMode,
     event: TerminalKeyEventType,
 ) -> Option<Vec<u8>> {
-    crate::ports::terminal_keyboard::key_event_bytes(&terminal_keystroke(key), mode, event)
+    crate::infrastructure::terminal_keyboard::key_event_bytes(&terminal_keystroke(key), mode, event)
 }
 
 fn terminal_keystroke(key: &Keystroke) -> TerminalKeystroke {
@@ -2231,883 +2494,5 @@ fn encode_mouse_coordinate(bytes: &mut Vec<u8>, coordinate: usize, utf8: bool) {
     }
 }
 
-fn detect_agent_presence(
-    title: &str,
-    snapshot: &TerminalSnapshot,
-    recent_text: Option<&str>,
-    process_name: Option<&str>,
-    process_id: Option<u32>,
-) -> Option<TerminalAgentPresence> {
-    let screen = recent_text
-        .map(str::to_lowercase)
-        .unwrap_or_else(|| visible_screen_text(snapshot));
-    // Identity and activity deliberately use different evidence. Process names
-    // are reliable at startup, titles are the next-best structured signal, and
-    // screen text remains a fallback for wrappers and unsupported terminals.
-    // Once a known shell owns the TTY again, old agent titles and scrollback
-    // must not keep the pane looking live or make aliases target the shell.
-    if process_name.is_some_and(is_interactive_shell_process_name) {
-        return None;
-    }
-    let (kind, kind_source) = process_name
-        .and_then(AgentKind::from_process_name)
-        .map(|kind| (kind, TerminalAgentKindSource::Process))
-        .or_else(|| AgentKind::from_text(title).map(|kind| (kind, TerminalAgentKindSource::Title)))
-        .or_else(|| {
-            AgentKind::from_text(&screen).map(|kind| (kind, TerminalAgentKindSource::Screen))
-        })?;
-    let state = agent_state_from_text(title, &screen);
-    Some(TerminalAgentPresence {
-        kind: kind.display_name().to_owned(),
-        kind_source,
-        state,
-        process_id: (kind_source == TerminalAgentKindSource::Process)
-            .then_some(process_id)
-            .flatten(),
-    })
-}
-
-fn is_interactive_shell_process_name(process_name: &str) -> bool {
-    let base = std::path::Path::new(process_name)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_else(|| process_name.to_ascii_lowercase());
-    let base = base.strip_prefix('-').unwrap_or(&base);
-    matches!(
-        base,
-        "sh" | "bash" | "zsh" | "fish" | "nu" | "pwsh" | "powershell" | "cmd" | "dash" | "ksh"
-    )
-}
-
-fn visible_screen_text(snapshot: &TerminalSnapshot) -> String {
-    let start = snapshot.lines.len().saturating_sub(14);
-    let mut text = String::new();
-    for line in &snapshot.lines[start..] {
-        for cell in line.iter().filter(|cell| !cell.wide_spacer) {
-            text.push_str(&cell.text().to_lowercase());
-        }
-        text.push('\n');
-    }
-    text
-}
-
-fn agent_state_from_text(title: &str, screen: &str) -> AgentRuntimeState {
-    let mut visible = title.to_lowercase();
-    visible.push('\n');
-    visible.push_str(screen);
-    // Grok paints the permission mode on the footer for the whole session.
-    // "always-approve" would otherwise match the "approve" waiting marker.
-    let visible = strip_permission_mode_chrome(&visible);
-    let waiting_markers = [
-        "action required",
-        "allow once",
-        "allow?",
-        "approve",
-        "do you want to continue",
-        "don't ask again",
-        "press enter to confirm",
-        "waiting for input",
-        "(y/n)",
-        "[y/n]",
-        "permission required",
-        "permission requested",
-    ];
-    let working_markers = [
-        "esc to interrupt",
-        "ctrl+c to interrupt",
-        "thinking",
-        "generating response",
-        "running tool",
-        "running command",
-        "running:",
-        "preparing",
-        "responding",
-        "compacting",
-    ];
-    if waiting_markers
-        .iter()
-        .any(|marker| contains_marker(&visible, marker))
-    {
-        AgentRuntimeState::Waiting
-    } else if working_markers
-        .iter()
-        .any(|marker| contains_marker(&visible, marker))
-    {
-        AgentRuntimeState::Working
-    } else {
-        AgentRuntimeState::Idle
-    }
-}
-
-fn contains_marker(text: &str, marker: &str) -> bool {
-    text.match_indices(marker).any(|(index, _)| {
-        let before = text[..index].chars().next_back();
-        let after = text[index + marker.len()..].chars().next();
-        !before.is_some_and(|ch| ch.is_ascii_alphanumeric())
-            && !after.is_some_and(|ch| ch.is_ascii_alphanumeric())
-    })
-}
-
-fn strip_permission_mode_chrome(text: &str) -> String {
-    [
-        "always-approve",
-        "always approve",
-        "auto-approve",
-        "auto approve",
-    ]
-    .into_iter()
-    .fold(text.to_owned(), |text, badge| text.replace(badge, " "))
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use anyhow::Result;
-    use async_channel::{Receiver, Sender};
-    use gpui::{KeyBinding, Modifiers, TestAppContext};
-
-    struct MockTerminalPort {
-        handle: Arc<MockTerminalHandle>,
-    }
-
-    struct MockTerminalHandle {
-        events: Receiver<TerminalEvent>,
-        _events_tx: Sender<TerminalEvent>,
-        inputs: Mutex<Vec<Vec<u8>>>,
-        mode: Mutex<TerminalInputMode>,
-        foreground: Mutex<Option<u32>>,
-    }
-
-    impl MockTerminalPort {
-        fn new() -> Self {
-            let (events_tx, events) = async_channel::unbounded();
-            Self {
-                handle: Arc::new(MockTerminalHandle {
-                    events,
-                    _events_tx: events_tx,
-                    inputs: Mutex::new(Vec::new()),
-                    mode: Mutex::new(TerminalInputMode::default()),
-                    foreground: Mutex::new(None),
-                }),
-            }
-        }
-    }
-
-    impl TerminalPort for MockTerminalPort {
-        fn backend_name(&self) -> &'static str {
-            "mock"
-        }
-
-        fn spawn(
-            &self,
-            _: Uuid,
-            _: &Path,
-            _: &std::collections::HashMap<String, String>,
-        ) -> Result<Arc<dyn TerminalHandle>> {
-            Ok(self.handle.clone())
-        }
-    }
-
-    impl TerminalHandle for MockTerminalHandle {
-        fn events(&self) -> Receiver<TerminalEvent> {
-            self.events.clone()
-        }
-
-        fn send_input(&self, input: Vec<u8>) -> Result<()> {
-            self.inputs.lock().unwrap().push(input);
-            Ok(())
-        }
-
-        fn resize(&self, _: TerminalSize) -> Result<()> {
-            Ok(())
-        }
-
-        fn scroll(&self, _: i32) {}
-
-        fn clear_scrollback(&self) {}
-
-        fn snapshot(&self) -> Arc<TerminalSnapshot> {
-            Arc::new(TerminalSnapshot {
-                columns: 80,
-                rows: 24,
-                lines: (0..24)
-                    .map(|row| {
-                        Arc::from(
-                            (0..80)
-                                .map(|column| {
-                                    let mut cell = TerminalCell::blank(row, column);
-                                    cell.foreground = TerminalRgb::new(0xe5, 0xe5, 0xe6);
-                                    cell.background = TerminalRgb::new(0x10, 0x10, 0x11);
-                                    cell.underline_color = TerminalRgb::new(0xe5, 0xe5, 0xe6);
-                                    cell
-                                })
-                                .collect::<Vec<_>>(),
-                        )
-                    })
-                    .collect(),
-                cursor: None,
-                display_offset: 0,
-                history_size: 0,
-            })
-        }
-
-        fn input_mode(&self) -> TerminalInputMode {
-            *self.mode.lock().unwrap()
-        }
-
-        fn foreground_process_id(&self) -> Option<u32> {
-            *self.foreground.lock().unwrap()
-        }
-
-        fn clear_selection(&self) {}
-
-        fn start_selection(&self, _: TerminalSelectionType, _: TerminalPoint, _: TerminalCellSide) {
-        }
-
-        fn update_selection(&self, _: TerminalPoint, _: TerminalCellSide) {}
-
-        fn selection_text(&self) -> Option<String> {
-            None
-        }
-
-        fn search(&self, _: &str, _: TerminalSearchDirection) -> Result<bool> {
-            Ok(true)
-        }
-
-        fn hyperlink_at(&self, _: TerminalPoint) -> Option<String> {
-            None
-        }
-
-        fn acknowledge_wakeup(&self) {}
-
-        fn shutdown(&self) {}
-    }
-
-    fn key(key: &str, modifiers: Modifiers) -> Keystroke {
-        Keystroke {
-            key: key.into(),
-            key_char: Some(key.into()),
-            modifiers,
-        }
-    }
-
-    #[gpui::test]
-    fn terminal_key_context_dispatches_product_shortcuts(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            cx.bind_keys([
-                KeyBinding::new("cmd-f", SearchTerminal, Some("Terminal")),
-                KeyBinding::new("cmd-=", IncreaseTerminalFontSize, Some("Terminal")),
-            ]);
-        });
-        let port = Arc::new(MockTerminalPort::new());
-        let mock_handle = port.handle.clone();
-        let window = cx.update(|cx| {
-            let port = port.clone();
-            cx.open_window(Default::default(), |window, cx| {
-                let terminal = cx.new(|cx| {
-                    TerminalView::new_with_environment(
-                        Uuid::new_v4(),
-                        "Terminal".into(),
-                        Path::new("/"),
-                        port,
-                        std::collections::HashMap::new(),
-                        cx,
-                    )
-                });
-                terminal.read(cx).focus_handle(cx).focus(window);
-                terminal
-            })
-            .unwrap()
-        });
-
-        cx.dispatch_keystroke(*window, Keystroke::parse("cmd-f").unwrap());
-        window
-            .update(cx, |terminal, _, _| assert!(terminal.search_active))
-            .unwrap();
-
-        cx.dispatch_keystroke(*window, Keystroke::parse("escape").unwrap());
-        cx.dispatch_keystroke(*window, Keystroke::parse("cmd-=").unwrap());
-        window
-            .update(cx, |terminal, _, _| {
-                assert!(!terminal.search_active);
-                assert_eq!(terminal.font_size, TERMINAL_FONT_SIZE + 1.0);
-            })
-            .unwrap();
-
-        cx.simulate_input(*window, "x");
-        assert_eq!(
-            mock_handle.inputs.lock().unwrap().as_slice(),
-            [b"x".to_vec()]
-        );
-    }
-
-    #[gpui::test]
-    fn key_release_does_not_follow_exited_foreground_job_into_shell(cx: &mut TestAppContext) {
-        let port = Arc::new(MockTerminalPort::new());
-        let handle = port.handle.clone();
-        *handle.mode.lock().unwrap() = TerminalInputMode {
-            disambiguate_escape_codes: true,
-            report_event_types: true,
-            ..TerminalInputMode::default()
-        };
-        *handle.foreground.lock().unwrap() = Some(200);
-        let window = cx.update(|cx| {
-            cx.open_window(Default::default(), |_, cx| {
-                cx.new(|cx| {
-                    TerminalView::new_with_environment(
-                        Uuid::new_v4(),
-                        "Terminal".into(),
-                        Path::new("/"),
-                        port,
-                        HashMap::new(),
-                        cx,
-                    )
-                })
-            })
-            .unwrap()
-        });
-        let ctrl_c = key(
-            "c",
-            Modifiers {
-                control: true,
-                ..Modifiers::default()
-            },
-        );
-        window
-            .update(cx, |terminal, window, cx| {
-                terminal.on_key_down(
-                    &KeyDownEvent {
-                        keystroke: ctrl_c.clone(),
-                        is_held: false,
-                    },
-                    window,
-                    cx,
-                );
-            })
-            .unwrap();
-        *handle.foreground.lock().unwrap() = Some(100);
-        window
-            .update(cx, |terminal, window, cx| {
-                terminal.on_key_up(
-                    &KeyUpEvent {
-                        keystroke: ctrl_c.clone(),
-                    },
-                    window,
-                    cx,
-                );
-            })
-            .unwrap();
-        assert_eq!(handle.inputs.lock().unwrap().as_slice(), [b"\x1b[99;5u"]);
-
-        *handle.foreground.lock().unwrap() = Some(300);
-        window
-            .update(cx, |terminal, window, cx| {
-                terminal.on_key_down(
-                    &KeyDownEvent {
-                        keystroke: ctrl_c.clone(),
-                        is_held: false,
-                    },
-                    window,
-                    cx,
-                );
-                terminal.on_key_up(
-                    &KeyUpEvent {
-                        keystroke: ctrl_c.clone(),
-                    },
-                    window,
-                    cx,
-                );
-            })
-            .unwrap();
-        assert_eq!(
-            handle.inputs.lock().unwrap().as_slice(),
-            [
-                b"\x1b[99;5u".to_vec(),
-                b"\x1b[99;5u".to_vec(),
-                b"\x1b[99;5:3u".to_vec(),
-            ]
-        );
-    }
-
-    #[gpui::test]
-    fn osc52_clipboard_reads_wait_for_explicit_consent(cx: &mut TestAppContext) {
-        cx.write_to_clipboard(ClipboardItem::new_string("token-super-secreto".into()));
-        let port = Arc::new(MockTerminalPort::new());
-        let mock_handle = port.handle.clone();
-        let window = cx.update(|cx| {
-            let port = port.clone();
-            cx.open_window(Default::default(), |_, cx| {
-                cx.new(|cx| {
-                    TerminalView::new_with_environment(
-                        Uuid::new_v4(),
-                        "Terminal".into(),
-                        Path::new("/"),
-                        port,
-                        std::collections::HashMap::new(),
-                        cx,
-                    )
-                })
-            })
-            .unwrap()
-        });
-
-        window
-            .update(cx, |terminal, _, cx| {
-                terminal.handle_terminal_event(
-                    TerminalEvent::ClipboardLoad(Arc::new(|text| format!("OSC52:{text}"))),
-                    cx,
-                );
-                assert_eq!(terminal.pending_confirmations.len(), 1);
-            })
-            .unwrap();
-        assert!(mock_handle.inputs.lock().unwrap().is_empty());
-
-        window
-            .update(cx, |terminal, _, cx| {
-                terminal.confirm_pending_action(cx);
-            })
-            .unwrap();
-        assert_eq!(
-            mock_handle.inputs.lock().unwrap().as_slice(),
-            [b"OSC52:token-super-secreto".to_vec()]
-        );
-    }
-
-    #[gpui::test]
-    fn denying_an_osc52_clipboard_read_sends_empty_response(cx: &mut TestAppContext) {
-        cx.write_to_clipboard(ClipboardItem::new_string("no-compartir".into()));
-        let port = Arc::new(MockTerminalPort::new());
-        let mock_handle = port.handle.clone();
-        let window = cx.update(|cx| {
-            let port = port.clone();
-            cx.open_window(Default::default(), |_, cx| {
-                cx.new(|cx| {
-                    TerminalView::new_with_environment(
-                        Uuid::new_v4(),
-                        "Terminal".into(),
-                        Path::new("/"),
-                        port,
-                        std::collections::HashMap::new(),
-                        cx,
-                    )
-                })
-            })
-            .unwrap()
-        });
-
-        window
-            .update(cx, |terminal, _, cx| {
-                terminal.handle_terminal_event(
-                    TerminalEvent::ClipboardLoad(Arc::new(|text| format!("\x1b]52;c;{text}\x07"))),
-                    cx,
-                );
-                terminal.cancel_pending_action(cx);
-            })
-            .unwrap();
-
-        assert_eq!(
-            mock_handle.inputs.lock().unwrap().as_slice(),
-            [b"\x1b]52;c;\x07".to_vec()]
-        );
-    }
-
-    #[test]
-    fn application_cursor_uses_ss3_sequences() {
-        let bytes = key_bytes(
-            &key("up", Modifiers::default()),
-            TerminalInputMode {
-                application_cursor: true,
-                ..TerminalInputMode::default()
-            },
-        );
-        assert_eq!(bytes.as_deref(), Some(b"\x1bOA".as_slice()));
-    }
-
-    #[test]
-    fn control_letters_map_to_ascii_control_codes() {
-        let bytes = key_bytes(
-            &key(
-                "c",
-                Modifiers {
-                    control: true,
-                    ..Modifiers::default()
-                },
-            ),
-            TerminalInputMode::default(),
-        );
-        assert_eq!(bytes, Some(vec![3]));
-    }
-
-    #[test]
-    fn background_runs_preserve_tui_colors_and_selection_during_resize() {
-        let black = TerminalRgb::new(0, 0, 0);
-        let blue = TerminalRgb::new(20, 40, 80);
-        let cell = |row, column, background| {
-            TerminalCell::with_text(
-                row,
-                column,
-                " ",
-                TerminalRgb::new(255, 255, 255),
-                background,
-            )
-        };
-        let mut selected = cell(0, 2, blue);
-        selected.selected = true;
-        let snapshot = TerminalSnapshot {
-            columns: 3,
-            rows: 2,
-            // A shorter row may arrive while the terminal is resizing.
-            lines: vec![
-                Arc::from([cell(0, 0, black), cell(0, 1, blue), selected]),
-                Arc::from([cell(1, 0, black)]),
-            ],
-            cursor: None,
-            display_offset: 0,
-            history_size: 0,
-        };
-        let mut coverage = [0; 6];
-        let mut backgrounds = [to_hsla(black); 6];
-        for run in collect_background_runs(&snapshot) {
-            assert!(run.row < 2 && run.columns.end <= 3);
-            for column in run.columns {
-                let index = run.row * 3 + column;
-                coverage[index] += 1;
-                backgrounds[index] = run.color;
-            }
-        }
-        assert_eq!(coverage, [1; 6], "background tints must never overlap");
-        assert_eq!(
-            backgrounds,
-            [
-                to_hsla(black),
-                to_hsla(blue),
-                colors().selection.into(),
-                to_hsla(black),
-                to_hsla(black),
-                to_hsla(black),
-            ]
-        );
-    }
-
-    #[test]
-    fn screen_fallback_detects_supported_agents_and_waiting_state() {
-        let snapshot = TerminalSnapshot {
-            columns: 80,
-            rows: 1,
-            lines: vec![Arc::from([TerminalCell::with_text(
-                0,
-                0,
-                "Claude Code — allow? [y/n]",
-                TerminalRgb::new(255, 255, 255),
-                TerminalRgb::new(0, 0, 0),
-            )])],
-            cursor: None,
-            display_offset: 0,
-            history_size: 0,
-        };
-
-        let presence = detect_agent_presence("Terminal", &snapshot, None, None, None).unwrap();
-
-        assert_eq!(presence.kind, "Claude");
-        assert_eq!(presence.state, AgentRuntimeState::Waiting);
-
-        let title_presence =
-            detect_agent_presence("OpenAI Codex", &snapshot, None, None, None).unwrap();
-        assert_eq!(title_presence.kind, "Codex");
-        assert_eq!(title_presence.state, AgentRuntimeState::Waiting);
-    }
-
-    #[test]
-    fn grok_permission_mode_badge_is_not_a_waiting_prompt() {
-        let snapshot = blank_agent_snapshot();
-        let working = detect_agent_presence(
-            ".. - Preparing read_file... - Add Sidebar",
-            &snapshot,
-            Some("❯\nalways-approve   42%"),
-            Some("grok"),
-            Some(7),
-        )
-        .unwrap();
-        assert_eq!(working.kind, "Grok");
-        assert_eq!(working.state, AgentRuntimeState::Working);
-
-        let responding = detect_agent_presence(
-            "Responding - vibra",
-            &snapshot,
-            Some("always-approve"),
-            Some("grok"),
-            Some(7),
-        )
-        .unwrap();
-        assert_eq!(responding.state, AgentRuntimeState::Working);
-
-        let idle = detect_agent_presence(
-            "vibra",
-            &snapshot,
-            Some("❯\nalways-approve   12%"),
-            Some("grok"),
-            Some(7),
-        )
-        .unwrap();
-        assert_eq!(idle.state, AgentRuntimeState::Idle);
-        assert_eq!(
-            detect_agent_presence(
-                "vibra",
-                &snapshot,
-                Some("corresponding change\nalways-approve"),
-                Some("grok"),
-                Some(7),
-            )
-            .unwrap()
-            .state,
-            AgentRuntimeState::Idle
-        );
-
-        let permission = detect_agent_presence(
-            "Action Required - vibra",
-            &snapshot,
-            Some("Yes, allow once\nNo, reject\nalways-approve"),
-            Some("grok"),
-            Some(7),
-        )
-        .unwrap();
-        assert_eq!(permission.state, AgentRuntimeState::Waiting);
-        assert_eq!(
-            detect_agent_presence(
-                "Terminal",
-                &snapshot,
-                Some("approve this command?"),
-                Some("grok"),
-                Some(7),
-            )
-            .unwrap()
-            .state,
-            AgentRuntimeState::Waiting
-        );
-    }
-
-    fn blank_agent_snapshot() -> TerminalSnapshot {
-        TerminalSnapshot {
-            columns: 80,
-            rows: 1,
-            lines: vec![Arc::from([TerminalCell::with_text(
-                0,
-                0,
-                " ",
-                TerminalRgb::new(255, 255, 255),
-                TerminalRgb::new(0, 0, 0),
-            )])],
-            cursor: None,
-            display_offset: 0,
-            history_size: 0,
-        }
-    }
-
-    #[test]
-    fn process_name_detects_codex_before_screen_banner() {
-        let snapshot = TerminalSnapshot {
-            columns: 80,
-            rows: 1,
-            lines: vec![Arc::from([TerminalCell::with_text(
-                0,
-                0,
-                "ready",
-                TerminalRgb::new(255, 255, 255),
-                TerminalRgb::new(0, 0, 0),
-            )])],
-            cursor: None,
-            display_offset: 0,
-            history_size: 0,
-        };
-
-        let presence = detect_agent_presence(
-            "Claude Code",
-            &snapshot,
-            None,
-            Some("codex-code-mode-host"),
-            Some(42),
-        )
-        .unwrap();
-        assert_eq!(presence.kind, "Codex");
-        assert_eq!(presence.kind_source, TerminalAgentKindSource::Process);
-        assert_eq!(presence.state, AgentRuntimeState::Idle);
-        assert_eq!(presence.process_id, Some(42));
-
-        let bare = detect_agent_presence(
-            "Terminal",
-            &snapshot,
-            None,
-            Some("/usr/local/bin/codex"),
-            Some(43),
-        )
-        .unwrap();
-        assert_eq!(bare.kind, "Codex");
-        assert_eq!(bare.kind_source, TerminalAgentKindSource::Process);
-        assert_eq!(
-            detect_agent_presence("Terminal", &snapshot, None, Some("goose"), Some(46))
-                .unwrap()
-                .kind,
-            "Goose"
-        );
-        assert_eq!(
-            detect_agent_presence(
-                "Terminal",
-                &snapshot,
-                None,
-                Some("/usr/local/bin/cursor-agent"),
-                Some(47),
-            )
-            .unwrap()
-            .kind,
-            "Cursor"
-        );
-
-        let process_with_state_word =
-            detect_agent_presence("Terminal", &snapshot, None, Some("codex-working"), Some(44))
-                .unwrap();
-        assert_eq!(process_with_state_word.state, AgentRuntimeState::Idle);
-        assert!(AgentKind::from_process_name("codexical").is_none());
-        assert!(
-            detect_agent_presence(
-                "Claude Code",
-                &snapshot,
-                Some("old Claude Code output"),
-                Some("/bin/zsh"),
-                Some(45),
-            )
-            .is_none(),
-            "a shell must win over stale title and scrollback evidence"
-        );
-    }
-
-    #[test]
-    fn bracketed_paste_is_wrapped_and_cannot_close_early() {
-        assert_eq!(
-            paste_bytes("uno\x1b[201~dos", true),
-            b"\x1b[200~unodos\x1b[201~"
-        );
-        assert_eq!(
-            paste_bytes("uno\x03dos\x1b[31m", true),
-            b"\x1b[200~unodos[31m\x1b[201~"
-        );
-    }
-
-    #[test]
-    fn plain_paste_normalizes_line_endings_to_enter() {
-        assert_eq!(paste_bytes("uno\r\ndos\ntres", false), b"uno\rdos\rtres");
-    }
-
-    #[test]
-    fn paste_filters_non_text_control_characters() {
-        assert_eq!(
-            paste_bytes("uno\0\x04\x07\tdos", true),
-            b"\x1b[200~uno\tdos\x1b[201~"
-        );
-    }
-
-    #[test]
-    fn multiline_and_control_pastes_require_confirmation() {
-        assert!(!paste_requires_confirmation("cargo test"));
-        assert!(!paste_requires_confirmation("uno\tdos"));
-        assert!(paste_requires_confirmation("cargo test\nrm -rf build"));
-        assert!(paste_requires_confirmation("echo\x1b[31m"));
-    }
-
-    #[test]
-    fn clipboard_image_detection_ignores_text_only_items() {
-        let text = ClipboardItem::new_string("hola".into());
-        assert!(!clipboard_has_image(&text));
-    }
-
-    #[test]
-    fn modified_arrows_use_xterm_modifier_parameters() {
-        let bytes = key_event_bytes(
-            &key(
-                "up",
-                Modifiers {
-                    shift: true,
-                    control: true,
-                    ..Modifiers::default()
-                },
-            ),
-            TerminalInputMode::default(),
-            TerminalKeyEventType::Press,
-        );
-        assert_eq!(bytes.as_deref(), Some(b"\x1b[1;6A".as_slice()));
-    }
-
-    #[test]
-    fn kitty_keyboard_reports_press_repeat_and_release() {
-        let mode = TerminalInputMode {
-            disambiguate_escape_codes: true,
-            report_event_types: true,
-            ..TerminalInputMode::default()
-        };
-        let keystroke = key(
-            "c",
-            Modifiers {
-                control: true,
-                ..Modifiers::default()
-            },
-        );
-        assert_eq!(
-            key_event_bytes(&keystroke, mode, TerminalKeyEventType::Press).as_deref(),
-            Some(b"\x1b[99;5u".as_slice())
-        );
-        assert_eq!(
-            key_event_bytes(&keystroke, mode, TerminalKeyEventType::Repeat).as_deref(),
-            Some(b"\x1b[99;5:2u".as_slice())
-        );
-        assert_eq!(
-            key_event_bytes(&keystroke, mode, TerminalKeyEventType::Release).as_deref(),
-            Some(b"\x1b[99;5:3u".as_slice())
-        );
-    }
-
-    #[test]
-    fn sgr_mouse_reports_coordinates_modifiers_and_release() {
-        let mode = TerminalInputMode {
-            sgr_mouse: true,
-            mouse_report_click: true,
-            ..TerminalInputMode::default()
-        };
-        let modifiers = Modifiers {
-            control: true,
-            ..Modifiers::default()
-        };
-        let point = TerminalPoint { row: 4, column: 9 };
-        assert_eq!(
-            mouse_report_bytes(point, 0, MouseReportState::Pressed, modifiers, mode).as_deref(),
-            Some(b"\x1b[<16;10;5M".as_slice())
-        );
-        assert_eq!(
-            mouse_report_bytes(point, 0, MouseReportState::Released, modifiers, mode).as_deref(),
-            Some(b"\x1b[<16;10;5m".as_slice())
-        );
-    }
-
-    #[test]
-    fn legacy_mouse_uses_x10_packet_encoding() {
-        let point = TerminalPoint { row: 1, column: 2 };
-        assert_eq!(
-            mouse_report_bytes(
-                point,
-                0,
-                MouseReportState::Pressed,
-                Modifiers::default(),
-                TerminalInputMode {
-                    mouse_report_click: true,
-                    ..TerminalInputMode::default()
-                },
-            ),
-            Some(vec![0x1b, b'[', b'M', 32, 35, 34])
-        );
-    }
-
-    #[test]
-    fn hyperlink_opening_is_limited_to_expected_schemes() {
-        assert!(is_safe_hyperlink("https://example.com"));
-        assert!(is_safe_hyperlink("mailto:hello@example.com"));
-        assert!(!is_safe_hyperlink("javascript:alert(1)"));
-    }
-}
+mod tests;

@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -15,9 +17,22 @@ impl FileSystemPort for LocalFileSystemPort {
         directory: &Path,
         show_hidden: bool,
     ) -> Result<Vec<FileEntry>> {
+        self.list_directory_limited(project_root, directory, show_hidden, usize::MAX)
+    }
+
+    fn list_directory_limited(
+        &self,
+        project_root: &Path,
+        directory: &Path,
+        show_hidden: bool,
+        limit: usize,
+    ) -> Result<Vec<FileEntry>> {
         let root = canonical_root(project_root)?;
         let directory = canonical_directory(&root, directory)?;
-        let mut entries = Vec::new();
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut entries = BinaryHeap::new();
         for entry in fs::read_dir(&directory)
             .with_context(|| format!("no se pudo leer {}", directory.display()))?
         {
@@ -34,19 +49,48 @@ impl FileSystemPort for LocalFileSystemPort {
             } else {
                 FileEntryKind::File
             };
-            entries.push(FileEntry {
+            let candidate = SortedEntry(FileEntry {
                 path: entry.path(),
                 name,
                 kind,
             });
+            if entries.len() < limit {
+                entries.push(candidate);
+            } else if entries.peek().is_some_and(|largest| candidate < *largest) {
+                entries.pop();
+                entries.push(candidate);
+            }
         }
-        entries.sort_by(|left, right| {
-            entry_rank(left.kind)
-                .cmp(&entry_rank(right.kind))
-                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-                .then_with(|| left.name.cmp(&right.name))
-        });
-        Ok(entries)
+        Ok(entries
+            .into_sorted_vec()
+            .into_iter()
+            .map(|entry| entry.0)
+            .collect())
+    }
+}
+
+struct SortedEntry(FileEntry);
+
+impl PartialEq for SortedEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for SortedEntry {}
+
+impl PartialOrd for SortedEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SortedEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        entry_rank(self.0.kind)
+            .cmp(&entry_rank(other.0.kind))
+            .then_with(|| self.0.name.to_lowercase().cmp(&other.0.name.to_lowercase()))
+            .then_with(|| self.0.name.cmp(&other.0.name))
     }
 }
 
@@ -104,6 +148,14 @@ mod tests {
             ["alpha", "z.txt"]
         );
         assert_eq!(port.list_directory(&root, &root, true).unwrap().len(), 3);
+        assert_eq!(
+            port.list_directory_limited(&root, &root, true, 2)
+                .unwrap()
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", ".secret"]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

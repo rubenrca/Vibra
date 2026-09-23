@@ -33,13 +33,21 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
+      - name: Validate Pages inputs
+        run: |
+          first_link=$(find docs -type l -print -quit)
+          if [[ -n "$first_link" ]]; then
+            echo "docs/ contains a symlink: $first_link" >&2
+            exit 1
+          fi
+          python3 -c 'import xml.etree.ElementTree as ET; ET.parse("docs/appcast.xml")'
+
       # upload-pages-artifact invokes upload-artifact through a mutable v4 tag,
       # which violates this repository's full-SHA policy. Keep the official
       # archive format but call the underlying action directly and immutably.
       - name: Archive Pages artifact
         run: |
           tar \
-            --dereference --hard-dereference \
             --directory docs \
             -cvf "$RUNNER_TEMP/artifact.tar" \
             --exclude=.git \

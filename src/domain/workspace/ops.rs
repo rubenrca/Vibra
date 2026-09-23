@@ -12,10 +12,11 @@ impl super::WorkspaceSnapshot {
     }
 
     /// Relocates workspaces created from an unsafe launcher fallback (typically `/`).
-    /// Only exact path matches are changed, so intentionally configured subdirectories
-    /// and sessions that have moved elsewhere are preserved.
+    /// The caller validates `to` before relocating. Only exact path matches are
+    /// changed, so intentionally configured subdirectories and sessions that have
+    /// moved elsewhere are preserved.
     pub fn relocate_root(&mut self, from: &Path, to: &Path) -> bool {
-        if from == to || !to.is_dir() {
+        if from == to {
             return false;
         }
         let directory_name = to
@@ -220,7 +221,7 @@ impl super::WorkspaceSnapshot {
         let Some(current) = ids.iter().position(|id| *id == selected_id) else {
             return false;
         };
-        let next = (current as isize + offset).rem_euclid(ids.len() as isize) as usize;
+        let next = (current + offset.rem_euclid(ids.len() as isize) as usize) % ids.len();
         self.select_terminal(ids[next])
     }
 
@@ -376,7 +377,7 @@ impl super::WorkspaceSnapshot {
 
     pub fn rename_workspace(&mut self, project_id: Uuid, workspace_id: Uuid, name: &str) -> bool {
         let name = name.trim();
-        if name.is_empty() {
+        if name.is_empty() || name.chars().count() > super::MAX_NAME_CHARS {
             return false;
         }
         let Some(project) = self
@@ -530,16 +531,30 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn cycle_workspace(&mut self, offset: isize) -> bool {
-        let entries = self.workspace_entries();
+        let entries: Vec<_> = self
+            .projects
+            .iter()
+            .flat_map(|project| {
+                project.workspaces.iter().flatten().map(|workspace| {
+                    (
+                        project.id,
+                        workspace.id,
+                        self.selected_project_id == Some(project.id)
+                            && project.selected_workspace_id == Some(workspace.id),
+                    )
+                })
+            })
+            .collect();
         if entries.is_empty() || offset == 0 {
             return false;
         }
         let current = entries
             .iter()
-            .position(|entry| entry.is_selected)
+            .position(|(_, _, selected)| *selected)
             .unwrap_or(0);
-        let next = (current as isize + offset).rem_euclid(entries.len() as isize) as usize;
-        self.select_workspace(entries[next].project_id, entries[next].workspace_id)
+        let next = (current + offset.rem_euclid(entries.len() as isize) as usize) % entries.len();
+        let (project_id, workspace_id, _) = entries[next];
+        self.select_workspace(project_id, workspace_id)
     }
 
     pub fn workspace_entries(&self) -> Vec<WorkspaceEntry> {
@@ -550,49 +565,58 @@ impl super::WorkspaceSnapshot {
                     .workspaces
                     .iter()
                     .flatten()
-                    .map(move |workspace| WorkspaceEntry {
-                        project_id: project.id,
-                        workspace_id: workspace.id,
-                        project_name: project.name.clone(),
-                        workspace_name: workspace.name.clone(),
-                        title_is_manual: workspace.title_source
-                            == Some(WorkspaceTitleSource::Manual),
-                        working_directory: workspace
-                            .primary_working_directory()
-                            .unwrap_or_else(|| project.root_path.clone()),
-                        session_count: workspace.tabs.iter().map(|tab| tab.sessions.len()).sum(),
-                        is_selected: self.selected_project_id == Some(project.id)
-                            && project.selected_workspace_id == Some(workspace.id),
-                    })
+                    .map(move |workspace| self.workspace_entry(project, workspace))
             })
             .collect()
     }
 
     pub fn sidebar_entries(&self) -> Vec<SidebarEntry> {
-        let entries = self.workspace_entries();
-        self.projects
-            .iter()
-            .flat_map(|project| {
-                let mut rows = vec![SidebarEntry::Project {
-                    id: project.id,
-                    name: project.name.clone(),
-                    root_path: project.root_path.clone(),
-                    collapsed: project.collapsed,
-                    workspace_count: project.workspaces.as_ref().map_or(0, Vec::len),
-                    is_selected: self.selected_project_id == Some(project.id),
-                }];
-                if !project.collapsed {
-                    rows.extend(
-                        entries
-                            .iter()
-                            .filter(|entry| entry.project_id == project.id)
-                            .cloned()
-                            .map(|entry| SidebarEntry::Workspace { entry }),
-                    );
-                }
-                rows
-            })
-            .collect()
+        let capacity = self.projects.len()
+            + self
+                .projects
+                .iter()
+                .filter(|project| !project.collapsed)
+                .map(|project| project.workspaces.as_ref().map_or(0, Vec::len))
+                .sum::<usize>();
+        let mut entries = Vec::with_capacity(capacity);
+        for project in &self.projects {
+            entries.push(SidebarEntry::Project {
+                id: project.id,
+                name: project.name.clone(),
+                root_path: project.root_path.clone(),
+                collapsed: project.collapsed,
+                workspace_count: project.workspaces.as_ref().map_or(0, Vec::len),
+                is_selected: self.selected_project_id == Some(project.id),
+            });
+            if !project.collapsed {
+                entries.extend(project.workspaces.iter().flatten().map(|workspace| {
+                    SidebarEntry::Workspace {
+                        entry: self.workspace_entry(project, workspace),
+                    }
+                }));
+            }
+        }
+        entries
+    }
+
+    fn workspace_entry(
+        &self,
+        project: &ProjectSnapshot,
+        workspace: &TerminalWorkspaceSnapshot,
+    ) -> WorkspaceEntry {
+        WorkspaceEntry {
+            project_id: project.id,
+            workspace_id: workspace.id,
+            project_name: project.name.clone(),
+            workspace_name: workspace.name.clone(),
+            title_is_manual: workspace.title_source == Some(WorkspaceTitleSource::Manual),
+            working_directory: workspace
+                .primary_working_directory()
+                .unwrap_or_else(|| project.root_path.clone()),
+            session_count: workspace.tabs.iter().map(|tab| tab.sessions.len()).sum(),
+            is_selected: self.selected_project_id == Some(project.id)
+                && project.selected_workspace_id == Some(workspace.id),
+        }
     }
 
     pub fn selected_workspace(&self) -> Option<&TerminalWorkspaceSnapshot> {
@@ -654,6 +678,7 @@ impl super::WorkspaceSnapshot {
         if title.is_empty() {
             return false;
         }
+        let title: String = title.chars().take(80).collect();
         let Some(session) = self
             .projects
             .iter_mut()
@@ -664,10 +689,10 @@ impl super::WorkspaceSnapshot {
         else {
             return false;
         };
-        if session.agent_task_title.as_deref() == Some(title) {
+        if session.agent_task_title.as_deref() == Some(title.as_str()) {
             return false;
         }
-        session.agent_task_title = Some(title.chars().take(80).collect());
+        session.agent_task_title = Some(title);
         true
     }
 
@@ -676,6 +701,7 @@ impl super::WorkspaceSnapshot {
         if title.is_empty() {
             return false;
         }
+        let title: String = title.chars().take(super::MAX_SESSION_TITLE_CHARS).collect();
         for project in &mut self.projects {
             let Some(session) = project
                 .workspaces
@@ -690,8 +716,7 @@ impl super::WorkspaceSnapshot {
             if session.title == title {
                 return false;
             }
-            session.title = title.to_owned();
-            project.normalize();
+            session.title = title;
             return true;
         }
         false
@@ -733,7 +758,6 @@ impl super::WorkspaceSnapshot {
                 }
 
                 if path_changed || name_changed {
-                    project.normalize();
                     return true;
                 }
                 return false;

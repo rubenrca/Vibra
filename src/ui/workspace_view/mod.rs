@@ -9,6 +9,7 @@ mod files;
 mod input;
 mod palette;
 mod panes;
+mod persistence;
 mod projects;
 mod settings;
 mod titlebar;
@@ -17,6 +18,7 @@ use automation::HookAgentPresence;
 use chrome::*;
 pub(crate) use drag::*;
 use files::*;
+use persistence::{FinishError, PersistenceQueue, SaveResult, save_final_blocking};
 use settings::SettingsPage;
 
 use std::collections::{HashMap, HashSet};
@@ -27,12 +29,12 @@ use std::time::{Duration, Instant};
 use gpui::{
     AnyElement, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement, MouseButton,
     MouseDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Task, Timer, Window,
-    div, prelude::*, px,
+    div, prelude::*, px, uniform_list,
 };
 use uuid::Uuid;
 
 use crate::domain::workspace::{
-    PaneSplitDirection, SessionSnapshot, SidebarEntry, WorkspaceSnapshot,
+    PaneSplitDirection, SessionSnapshot, SidebarEntry, WorkspaceEntry, WorkspaceSnapshot,
 };
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentRuntimeState, AutomationServer, agent_hook_status,
@@ -50,8 +52,10 @@ use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
 use crate::ui::agent_marks::{TERMINAL_GLYPH, agent_compact_badge};
 use crate::ui::diff_view::{DiffView, DiffViewEvent};
-use crate::ui::terminal::{TerminalView, TerminalViewEvent};
-use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface, surface_tint, window_surface};
+use crate::ui::terminal::{TerminalInsertStatus, TerminalView, TerminalViewEvent};
+use crate::ui::theme::{
+    self, MONO_FONT, colors, popover_surface, surface, surface_tint, window_surface,
+};
 use crate::{
     CloseTerminal, GoToTab, NewTerminalTab, NewWorkspace, NextWorkspace, PreviousWorkspace,
     ShowSettings, ToggleLeftSidebar, ToggleRightSidebar,
@@ -88,6 +92,42 @@ struct PaneIdentity {
     agent_state: Option<AgentRuntimeState>,
     agent_attention: Option<AgentAttention>,
     agent_model: Option<String>,
+}
+
+fn sidebar_card(
+    entry: &WorkspaceEntry,
+    primary: Option<&PaneIdentity>,
+    active_agent: Option<&PaneIdentity>,
+    meta: Option<&SidebarWorkspaceMeta>,
+    home_directory: Option<&Path>,
+    width: f32,
+) -> (SidebarSessionCard, String) {
+    let cwd = meta
+        .map(|meta| meta.cwd.as_str())
+        .unwrap_or(&entry.working_directory);
+    let agent = active_agent.or(primary);
+    let title = if entry.title_is_manual {
+        entry.workspace_name.clone()
+    } else {
+        primary
+            .map(|identity| identity.title.clone())
+            .unwrap_or_else(|| entry.workspace_name.clone())
+    };
+    let card = SidebarSessionCard {
+        context: entry.project_name.clone(),
+        title,
+        branch: meta.and_then(format_sidebar_branch),
+        path: format_sidebar_path(cwd, home_directory),
+        selected: entry.is_selected,
+        dirty: meta.is_some_and(|meta| meta.dirty),
+        behind: meta.map_or(0, |meta| meta.behind),
+        agent_kind: agent.and_then(|identity| identity.agent_kind.clone()),
+        agent_state: agent.and_then(|identity| identity.agent_state),
+        agent_attention: agent.and_then(|identity| identity.agent_attention),
+        agent_model: agent.and_then(|identity| identity.agent_model.clone()),
+        width,
+    };
+    (card, cwd.to_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +255,7 @@ pub struct WorkspaceView {
     pending_focus_session: Option<Uuid>,
     terminals: HashMap<Uuid, Entity<TerminalView>>,
     terminal_subscriptions: HashMap<Uuid, Subscription>,
+    pending_review_pastes: HashMap<Uuid, (Uuid, Vec<u64>)>,
     automation_tokens: HashMap<Uuid, Uuid>,
     automation_socket: Option<PathBuf>,
     _automation_server: Option<AutomationServer>,
@@ -235,21 +276,26 @@ pub struct WorkspaceView {
     /// Per-workspace path/branch metadata shown in the sessions sidebar.
     sidebar_workspace_meta: HashMap<Uuid, SidebarWorkspaceMeta>,
     sidebar_git_request_id: u64,
+    sidebar_git_in_flight: bool,
+    sidebar_git_needs_refresh: bool,
     _sidebar_git_task: Option<Task<()>>,
     _sidebar_git_poll_task: Option<Task<()>>,
     expanded_directories: HashSet<PathBuf>,
-    project_files: Vec<ProjectFileRow>,
+    project_files: Arc<Vec<ProjectFileRow>>,
     selected_file_path: Option<PathBuf>,
     file_error: Option<SharedString>,
     palette_mode: Option<PaletteMode>,
     palette_query: String,
     palette_selected: usize,
     palette_files: Vec<PathBuf>,
+    palette_loading: bool,
+    palette_error: Option<SharedString>,
     settings_open: bool,
     settings_page: SettingsPage,
     theme_query: String,
     context_menu: Option<ContextMenuState>,
     ide_menu_open: bool,
+    ide_discovering: bool,
     installed_editors: Vec<InstalledEditor>,
     ide_icons: HashMap<&'static str, Arc<gpui::Image>>,
     rename_prompt: Option<RenamePrompt>,
@@ -264,8 +310,15 @@ pub struct WorkspaceView {
     sidebar_resize_dirty: bool,
     reorder_drag: Option<ReorderDrag>,
     persistence_error: Option<SharedString>,
+    workspace_save_error: Option<SharedString>,
+    settings_save_error: Option<SharedString>,
+    workspace_load_error: Option<SharedString>,
+    settings_load_error: Option<SharedString>,
+    persistence_queue: Option<PersistenceQueue>,
+    _persistence_result_task: Option<Task<()>>,
     persist_generation: u64,
     _persist_task: Option<Task<()>>,
+    settings_generation: u64,
     files_request_id: u64,
     _files_task: Option<Task<()>>,
     files_watch: Option<files::FilesWatch>,
@@ -294,29 +347,32 @@ fn lookup_sidebar_branch_summaries(
     port: Arc<dyn GitPort>,
     targets: Vec<(Uuid, PathBuf)>,
 ) -> Vec<(Uuid, PathBuf, Option<GitBranchSummary>)> {
-    if targets.len() <= 1 {
-        return targets
-            .into_iter()
-            .map(|(workspace_id, cwd)| {
-                let summary = port.branch_summary(&cwd).ok().flatten();
-                (workspace_id, cwd, summary)
+    const MAX_CONCURRENT_GIT_LOOKUPS: usize = 4;
+    let mut by_cwd: HashMap<PathBuf, Vec<Uuid>> = HashMap::new();
+    for (workspace_id, cwd) in targets {
+        by_cwd.entry(cwd).or_default().push(workspace_id);
+    }
+    let groups: Vec<_> = by_cwd.into_iter().collect();
+    let mut results = Vec::new();
+    for batch in groups.chunks(MAX_CONCURRENT_GIT_LOOKUPS) {
+        let handles: Vec<_> = batch
+            .iter()
+            .map(|(cwd, _)| {
+                let port = port.clone();
+                let cwd = cwd.clone();
+                std::thread::spawn(move || port.branch_summary(&cwd).ok().flatten())
             })
             .collect();
+        for ((cwd, workspace_ids), handle) in batch.iter().zip(handles) {
+            let summary = handle.join().ok().flatten();
+            results.extend(
+                workspace_ids
+                    .iter()
+                    .map(|workspace_id| (*workspace_id, cwd.clone(), summary.clone())),
+            );
+        }
     }
-    let handles: Vec<_> = targets
-        .into_iter()
-        .map(|(workspace_id, cwd)| {
-            let port = port.clone();
-            std::thread::spawn(move || {
-                let summary = port.branch_summary(&cwd).ok().flatten();
-                (workspace_id, cwd, summary)
-            })
-        })
-        .collect();
-    handles
-        .into_iter()
-        .filter_map(|handle| handle.join().ok())
-        .collect()
+    results
 }
 
 impl WorkspaceView {
@@ -333,33 +389,43 @@ impl WorkspaceView {
             file_port,
             git_port,
         } = dependencies;
-        let (mut snapshot, mut persistence_error, first_launch) = match repository.load() {
-            Ok(Some(snapshot)) => (snapshot, None, false),
-            Ok(None) => (WorkspaceSnapshot::default(), None, true),
-            Err(error) => (
-                WorkspaceSnapshot::default(),
-                Some(SharedString::from(format!(
-                    "No se pudo restaurar el workspace: {error}"
-                ))),
-                false,
-            ),
-        };
-        let settings = match settings_repository.load() {
-            Ok(settings) => settings,
-            Err(error) => {
-                if persistence_error.is_none() {
-                    persistence_error =
-                        Some(format!("No se pudieron cargar los settings: {error}").into());
+        let (mut snapshot, mut persistence_error, first_launch, workspace_load_error) =
+            match repository.load() {
+                Ok(Some(snapshot)) => (snapshot, None, false, None),
+                Ok(None) => (WorkspaceSnapshot::default(), None, true, None),
+                Err(error) => {
+                    let message: SharedString = format!(
+                        concat!(
+                            "No se pudo restaurar el workspace: {error}. ",
+                            "Los cambios no se guardarán hasta reparar el archivo."
+                        ),
+                        error = error
+                    )
+                    .into();
+                    (WorkspaceSnapshot::default(), None, false, Some(message))
                 }
-                AppSettings::default()
+            };
+        theme::refresh_user_themes();
+        let (settings, settings_load_error) = match settings_repository.load() {
+            Ok(settings) => (settings, None),
+            Err(error) => {
+                let message: SharedString = format!(
+                    "No se pudieron cargar los settings: {error}. Los cambios no se guardarán hasta reparar el archivo."
+                )
+                .into();
+                (AppSettings::default(), Some(message))
             }
         };
-        let mut snapshot_changed = snapshot.relocate_root(Path::new("/"), &launch_directory);
+        let mut snapshot_changed =
+            launch_directory.is_dir() && snapshot.relocate_root(Path::new("/"), &launch_directory);
         if first_launch {
             snapshot.create_workspace(&launch_directory);
             snapshot_changed = true;
         }
-        if snapshot_changed && let Err(error) = repository.save(&snapshot) {
+        if snapshot_changed
+            && workspace_load_error.is_none()
+            && let Err(error) = repository.save(&snapshot)
+        {
             persistence_error = Some(format!("No se pudo guardar el workspace: {error}").into());
         }
 
@@ -414,7 +480,27 @@ impl WorkspaceView {
                     this.settings.diff_wrap = *wrap;
                     this.persist_settings(cx);
                 }
-                DiffViewEvent::SendReview(prompt) => this.send_review_to_agent(prompt, cx),
+                DiffViewEvent::SendReview {
+                    prompt,
+                    comment_ids,
+                } => {
+                    let status = this.send_review_to_agent(prompt, comment_ids, cx);
+                    if status == TerminalInsertStatus::Pending {
+                        return;
+                    }
+                    let diff_view = this.diff_view.clone();
+                    let comment_ids = comment_ids.clone();
+                    cx.spawn(async move |_, cx| {
+                        let _ = diff_view.update(cx, |view, cx| {
+                            if status == TerminalInsertStatus::Accepted {
+                                view.confirm_review_sent(&comment_ids, cx);
+                            } else {
+                                view.review_delivery_failed(cx);
+                            }
+                        });
+                    })
+                    .detach();
+                }
             },
         );
         let (agent_hook_status, agent_hook_error) = match agent_hook_status() {
@@ -442,16 +528,45 @@ impl WorkspaceView {
                 }
             }
         });
+        let (persistence_queue, persistence_result_task) =
+            match PersistenceQueue::start(repository.clone(), settings_repository.clone()) {
+                Ok((queue, results)) => {
+                    let task = cx.spawn(async move |this, cx| {
+                        while let Ok(result) = results.recv().await {
+                            if this
+                                .update(cx, |this, cx| this.apply_persistence_result(result, cx))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                    (Some(queue), Some(task))
+                }
+                Err(error) => {
+                    if persistence_error.is_none() {
+                        persistence_error = Some(
+                            format!("Guardado en segundo plano no disponible: {error}").into(),
+                        );
+                    }
+                    (None, None)
+                }
+            };
         let release_subscription = cx.on_release(|this, _| {
-            if this.persist_generation > 0
-                && let Err(error) = this.repository.save(&this.snapshot)
-            {
-                eprintln!("No se pudieron guardar proyectos al cerrar: {error}");
-            }
-            if this.window_size_persist_generation > 0
-                && let Err(error) = this.settings_repository.save(&this.settings)
-            {
-                eprintln!("No se pudieron guardar settings al cerrar: {error}");
+            let workspace = (this.persist_generation > 0 && this.workspace_load_error.is_none())
+                .then(|| (this.persist_generation, this.snapshot.clone()));
+            let settings = ((this.settings_generation > 0
+                || this.window_size_persist_generation > 0)
+                && this.settings_load_error.is_none())
+            .then(|| (this.settings_generation, this.settings.clone()));
+            if let Some(queue) = &this.persistence_queue {
+                match queue.finish(workspace, settings) {
+                    Ok(()) => {}
+                    Err(FinishError::Save(error)) => eprintln!("{error}"),
+                    Err(FinishError::Unavailable) => this.save_final_direct(),
+                }
+            } else {
+                this.save_final_direct();
             }
         });
         let mut view = Self {
@@ -468,6 +583,7 @@ impl WorkspaceView {
             pending_focus_session: None,
             terminals: HashMap::new(),
             terminal_subscriptions: HashMap::new(),
+            pending_review_pastes: HashMap::new(),
             automation_tokens: HashMap::new(),
             automation_socket,
             _automation_server: automation_server,
@@ -489,21 +605,26 @@ impl WorkspaceView {
             left_sidebar_mode: LeftSidebarMode::Sessions,
             sidebar_workspace_meta: HashMap::new(),
             sidebar_git_request_id: 0,
+            sidebar_git_in_flight: false,
+            sidebar_git_needs_refresh: false,
             _sidebar_git_task: None,
             _sidebar_git_poll_task: Some(sidebar_git_poll_task),
             expanded_directories: HashSet::new(),
-            project_files: Vec::new(),
+            project_files: Arc::new(Vec::new()),
             selected_file_path: None,
             file_error: None,
             palette_mode: None,
             palette_query: String::new(),
             palette_selected: 0,
             palette_files: Vec::new(),
+            palette_loading: false,
+            palette_error: None,
             settings_open: false,
             settings_page: SettingsPage::General,
             theme_query: String::new(),
             context_menu: None,
             ide_menu_open: false,
+            ide_discovering: false,
             installed_editors: Vec::new(),
             ide_icons: HashMap::new(),
             rename_prompt: None,
@@ -521,8 +642,15 @@ impl WorkspaceView {
             sidebar_resize_dirty: false,
             reorder_drag: None,
             persistence_error,
+            workspace_save_error: workspace_load_error.clone(),
+            settings_save_error: settings_load_error.clone(),
+            workspace_load_error,
+            settings_load_error,
+            persistence_queue,
+            _persistence_result_task: persistence_result_task,
             persist_generation: 0,
             _persist_task: None,
+            settings_generation: 0,
             files_request_id: 0,
             _files_task: None,
             files_watch: None,
@@ -602,7 +730,7 @@ impl WorkspaceView {
             .map(|terminal| {
                 terminal
                     .read(cx)
-                    .current_working_directory()
+                    .cached_working_directory()
                     .to_string_lossy()
                     .into_owned()
             })
@@ -740,6 +868,13 @@ impl WorkspaceView {
             cx.notify();
         }
 
+        if self.sidebar_git_in_flight {
+            self.sidebar_git_needs_refresh = true;
+            return;
+        }
+
+        self.sidebar_git_in_flight = true;
+        self.sidebar_git_needs_refresh = false;
         self.sidebar_git_request_id = self.sidebar_git_request_id.wrapping_add(1);
         let request_id = self.sidebar_git_request_id;
         let port = self.git_port.clone();
@@ -748,6 +883,7 @@ impl WorkspaceView {
         self._sidebar_git_task = Some(cx.spawn(async move |this, cx| {
             let results = task.await;
             let _ = this.update(cx, |this, cx| {
+                this.sidebar_git_in_flight = false;
                 if request_id != this.sidebar_git_request_id {
                     return;
                 }
@@ -755,11 +891,10 @@ impl WorkspaceView {
                 for (workspace_id, cwd, summary) in results {
                     let cwd_str = cwd.to_string_lossy().into_owned();
                     // Drop stale results if the workspace already moved again.
-                    if this
-                        .sidebar_workspace_meta
-                        .get(&workspace_id)
-                        .is_some_and(|meta| meta.cwd != cwd_str)
-                    {
+                    let Some(current) = this.sidebar_workspace_meta.get(&workspace_id) else {
+                        continue;
+                    };
+                    if current.cwd != cwd_str {
                         continue;
                     }
                     let next = match summary {
@@ -791,6 +926,9 @@ impl WorkspaceView {
                 if changed {
                     cx.notify();
                 }
+                if this.sidebar_git_needs_refresh {
+                    this.refresh_sidebar_workspace_meta(cx);
+                }
             });
         }));
     }
@@ -800,7 +938,7 @@ impl WorkspaceView {
         if !self.has_project_context() {
             self._files_task = None;
             self.files_watch = None;
-            self.project_files.clear();
+            self.project_files = Arc::new(Vec::new());
             self.selected_file_path = None;
             self.file_error = None;
             return;
@@ -841,14 +979,14 @@ impl WorkspaceView {
                 }
                 match result {
                     Ok(()) => {
-                        this.project_files = rows;
+                        this.project_files = Arc::new(rows);
                         this.file_error = None;
                         if selected.as_ref().is_some_and(|path| !path.exists()) {
                             this.selected_file_path = None;
                         }
                     }
                     Err(error) => {
-                        this.project_files = rows;
+                        this.project_files = Arc::new(rows);
                         this.file_error = Some(error.to_string().into());
                     }
                 }
@@ -937,6 +1075,17 @@ impl WorkspaceView {
         let name = prompt.value.trim().to_owned();
         if name.is_empty() {
             self.persistence_error = Some("El nombre no puede estar vacío".into());
+            cx.notify();
+            return;
+        }
+        if name.chars().count() > crate::domain::workspace::MAX_NAME_CHARS {
+            self.persistence_error = Some(
+                format!(
+                    "El nombre es demasiado largo (máx. {} caracteres)",
+                    crate::domain::workspace::MAX_NAME_CHARS
+                )
+                .into(),
+            );
             cx.notify();
             return;
         }
@@ -1207,6 +1356,7 @@ impl WorkspaceView {
             .copied()
             .collect();
         for session_id in stale_ids {
+            self.fail_pending_review_for_session(session_id, cx);
             if let Some(terminal) = self.terminals.remove(&session_id) {
                 terminal.read(cx).shutdown();
             }
@@ -1284,6 +1434,29 @@ impl WorkspaceView {
 
     fn handle_terminal_view_event(&mut self, event: &TerminalViewEvent, cx: &mut Context<Self>) {
         match event {
+            TerminalViewEvent::ExternalPasteResolved {
+                session_id,
+                token,
+                accepted,
+            } => {
+                if self
+                    .pending_review_pastes
+                    .get(token)
+                    .is_some_and(|(target, _)| target == session_id)
+                {
+                    let (_, comment_ids) = self
+                        .pending_review_pastes
+                        .remove(token)
+                        .expect("pending review token was checked above");
+                    self.diff_view.update(cx, |view, cx| {
+                        if *accepted {
+                            view.confirm_review_sent(&comment_ids, cx);
+                        } else {
+                            view.review_delivery_failed(cx);
+                        }
+                    });
+                }
+            }
             TerminalViewEvent::TitleChanged { session_id, title } => {
                 if self.snapshot.update_session_title(*session_id, title) {
                     self.persist(cx);
@@ -1322,6 +1495,7 @@ impl WorkspaceView {
                 session_id,
                 code: _code,
             } => {
+                self.fail_pending_review_for_session(*session_id, cx);
                 self.agent_presence.remove(session_id);
                 self.hook_agent_presence.remove(session_id);
                 self.agent_names.remove(session_id);
@@ -1330,7 +1504,17 @@ impl WorkspaceView {
             }
             TerminalViewEvent::ContextMenuRequested { session_id, x, y } => {
                 let session_id = *session_id;
-                let _ = self.snapshot.select_terminal_global(session_id);
+                let was_selected = self
+                    .snapshot
+                    .selected_session()
+                    .is_some_and(|session| session.id == session_id);
+                if self.snapshot.select_terminal_global(session_id) && !was_selected {
+                    self.sync_terminal_surface_visibility(cx);
+                    self.sync_diff_root(cx);
+                    self.refresh_project_files(cx);
+                    self.refresh_sidebar_workspace_meta(cx);
+                    self.persist(cx);
+                }
                 self.open_context_menu(ContextMenuKind::Pane { session_id }, *x, *y, cx);
             }
             TerminalViewEvent::Activated { session_id } => {
@@ -1382,6 +1566,16 @@ impl WorkspaceView {
         }
     }
 
+    fn fail_pending_review_for_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        let previous = self.pending_review_pastes.len();
+        self.pending_review_pastes
+            .retain(|_, (target, _)| *target != session_id);
+        if self.pending_review_pastes.len() != previous {
+            self.diff_view
+                .update(cx, |view, cx| view.review_delivery_failed(cx));
+        }
+    }
+
     fn project_id_for_session(&self, session_id: Uuid) -> Option<Uuid> {
         self.snapshot.projects.iter().find_map(|project| {
             project
@@ -1411,7 +1605,12 @@ impl WorkspaceView {
     /// Paste Git review comments into the agent that should act on them: the
     /// selected pane when it runs an agent, else a visible pane that does.
     /// The prompt is pasted, never submitted, so it can still be edited.
-    fn send_review_to_agent(&mut self, prompt: &str, cx: &mut Context<Self>) {
+    fn send_review_to_agent(
+        &mut self,
+        prompt: &str,
+        comment_ids: &[u64],
+        cx: &mut Context<Self>,
+    ) -> TerminalInsertStatus {
         let selected = self.snapshot.selected_session().map(|session| session.id);
         let has_agent = |this: &Self, id: Uuid| this.resolved_agent_presence(id).is_some();
         let target = selected
@@ -1429,18 +1628,48 @@ impl WorkspaceView {
             self.persistence_error =
                 Some("Abre una terminal con un agente para enviarle la revisión.".into());
             cx.notify();
-            return;
+            return TerminalInsertStatus::Rejected;
         };
         let Some(terminal) = self.terminals.get(&target).cloned() else {
-            return;
+            self.persistence_error =
+                Some("No se pudo encontrar la terminal para enviarle la revisión.".into());
+            cx.notify();
+            return TerminalInsertStatus::Rejected;
         };
-        terminal.update(cx, |terminal, cx| terminal.insert_text(prompt, cx));
+        let token = Uuid::new_v4();
+        let status = terminal.update(cx, |terminal, cx| {
+            terminal.insert_external_text(prompt, token, cx)
+        });
+        if status == TerminalInsertStatus::Rejected {
+            self.persistence_error = Some(
+                concat!(
+                    "No se pudo pegar la revisión: la terminal está ocupada o rechazó el texto. ",
+                    "Los comentarios siguen disponibles."
+                )
+                .into(),
+            );
+            cx.notify();
+            return status;
+        }
+        if status == TerminalInsertStatus::Pending {
+            self.pending_review_pastes
+                .insert(token, (target, comment_ids.to_vec()));
+        }
+        if self.persistence_error.as_ref().is_some_and(|error| {
+            let error = error.to_string();
+            error.starts_with("No se pudo pegar la revisión:")
+                || error.starts_with("Abre una terminal con un agente")
+                || error.starts_with("No se pudo encontrar la terminal para enviarle la revisión")
+        }) {
+            self.persistence_error = None;
+        }
         if selected != Some(target) && self.snapshot.select_terminal(target) {
             self.sync_terminal_surface_visibility(cx);
             self.persist(cx);
         }
         self.pending_focus_session = Some(target);
         cx.notify();
+        status
     }
 
     fn focus_terminal(&self, session_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
@@ -1611,6 +1840,9 @@ impl WorkspaceView {
 
     fn persist(&mut self, cx: &mut Context<Self>) {
         cx.notify();
+        if self.workspace_load_error.is_some() {
+            return;
+        }
         self.persist_generation = self.persist_generation.wrapping_add(1);
         let generation = self.persist_generation;
         self._persist_task = Some(cx.spawn(async move |this, cx| {
@@ -1625,7 +1857,17 @@ impl WorkspaceView {
     }
 
     fn flush_persist(&mut self, cx: &mut Context<Self>) {
-        self.persistence_error = self
+        if self.workspace_load_error.is_some() {
+            return;
+        }
+        if self.persistence_queue.as_ref().is_some_and(|queue| {
+            queue
+                .save_workspace(self.persist_generation, self.snapshot.clone())
+                .is_ok()
+        }) {
+            return;
+        }
+        self.workspace_save_error = self
             .repository
             .save(&self.snapshot)
             .err()
@@ -1634,11 +1876,65 @@ impl WorkspaceView {
     }
 
     fn persist_settings(&mut self, cx: &mut Context<Self>) {
-        if let Err(error) = self.settings_repository.save(&self.settings) {
-            self.persistence_error =
-                Some(format!("No se pudieron guardar settings: {error}").into());
+        if self.settings_load_error.is_some() {
+            cx.notify();
+            return;
         }
+        self.settings_generation = self.settings_generation.wrapping_add(1);
+        if self.persistence_queue.as_ref().is_some_and(|queue| {
+            queue
+                .save_settings(self.settings_generation, self.settings.clone())
+                .is_ok()
+        }) {
+            cx.notify();
+            return;
+        }
+        self.settings_save_error = self
+            .settings_repository
+            .save(&self.settings)
+            .err()
+            .map(|error| format!("No se pudieron guardar settings: {error}").into());
         cx.notify();
+    }
+
+    fn apply_persistence_result(&mut self, result: SaveResult, cx: &mut Context<Self>) {
+        match result {
+            SaveResult::Workspace { generation, error } => {
+                if error.is_some() || generation == self.persist_generation {
+                    self.workspace_save_error = error.map(Into::into);
+                    cx.notify();
+                }
+            }
+            SaveResult::Settings { generation, error } => {
+                if error.is_some() || generation == self.settings_generation {
+                    self.settings_save_error = error.map(Into::into);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn save_final_direct(&self) {
+        let workspace = (self.persist_generation > 0 && self.workspace_load_error.is_none())
+            .then(|| self.snapshot.clone());
+        let settings = ((self.settings_generation > 0 || self.window_size_persist_generation > 0)
+            && self.settings_load_error.is_none())
+        .then(|| self.settings.clone());
+        if workspace.is_none() && settings.is_none() {
+            return;
+        }
+        match save_final_blocking(
+            self.repository.clone(),
+            self.settings_repository.clone(),
+            workspace,
+            settings,
+        ) {
+            Ok(()) => {}
+            Err(FinishError::Save(error)) => eprintln!("{error}"),
+            Err(FinishError::Unavailable) => {
+                eprintln!("El guardado final no está disponible")
+            }
+        }
     }
 
     fn ensure_activation_subscription(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1935,57 +2231,21 @@ impl WorkspaceView {
                         let selected = entry.is_selected;
                         let (primary_identity, active_agent_identity) = sidebar_identities
                             .get(&workspace_id)
-                            .cloned()
+                            .map(|(primary, active)| (primary.as_ref(), active.as_ref()))
                             .unwrap_or((None, None));
-                        let agent_identity =
-                            active_agent_identity.or_else(|| primary_identity.clone());
                         let meta = meta_by_workspace.get(&workspace_id);
-                        let cwd = meta
-                            .map(|m| m.cwd.as_str())
-                            .unwrap_or(entry.working_directory.as_str());
-                        let path_label = format_sidebar_path(cwd, self.home_directory.as_deref());
-                        // The automatic workspace title follows the selected pane identity.
-                        // A manually renamed workspace remains authoritative.
-                        let title_label = if entry.title_is_manual {
-                            entry.workspace_name.clone()
-                        } else {
-                            primary_identity
-                                .as_ref()
-                                .map(|identity| identity.title.clone())
-                                .unwrap_or_else(|| entry.workspace_name.clone())
-                        };
-                        // Agent and project context above, task title in the middle,
-                        // branch below: the same hierarchy for every session.
-                        let branch_label = meta.and_then(format_sidebar_branch);
-                        let appearance = sidebar_workspace_appearance(
-                            selected,
-                            meta.map(|m| m.dirty).unwrap_or(false),
-                            meta.map(|m| m.behind).unwrap_or_default(),
+                        let (card, cwd) = sidebar_card(
+                            &entry,
+                            primary_identity,
+                            active_agent_identity,
+                            meta,
+                            self.home_directory.as_deref(),
+                            item_width,
                         );
-                        let card = SidebarSessionCard {
-                            context: entry.project_name.clone(),
-                            title: title_label,
-                            branch: branch_label,
-                            path: path_label,
-                            selected,
-                            dirty: meta.map(|m| m.dirty).unwrap_or(false),
-                            behind: meta.map(|m| m.behind).unwrap_or_default(),
-                            agent_kind: agent_identity
-                                .as_ref()
-                                .and_then(|identity| identity.agent_kind.clone()),
-                            agent_state: agent_identity
-                                .as_ref()
-                                .and_then(|identity| identity.agent_state),
-                            agent_attention: agent_identity
-                                .as_ref()
-                                .and_then(|identity| identity.agent_attention),
-                            agent_model: agent_identity
-                                .as_ref()
-                                .and_then(|identity| identity.agent_model.clone()),
-                            width: item_width,
-                        };
+                        let appearance =
+                            sidebar_workspace_appearance(selected, card.dirty, card.behind);
                         let content = sidebar_workspace_content(&card);
-                        let detail = sidebar_session_detail(&card, cwd);
+                        let detail = sidebar_session_detail(&card, &cwd);
                         let drag = SidebarWorkspaceDrag {
                             workspace_id,
                             project_id,
@@ -2197,12 +2457,16 @@ impl WorkspaceView {
     }
 
     fn files_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let rows = self.project_files.clone();
+        let rows = Arc::clone(&self.project_files);
         let selected_path = self.selected_file_path.clone();
         let file_error = self.file_error.clone();
         let project_root = self.project_root();
         let (git_root, git_statuses) = self.diff_view.read(cx).status_index();
         let status_root = git_root.unwrap_or_else(|| project_root.clone());
+        let dir_statuses: HashMap<String, _> = aggregate_dir_statuses(&git_statuses)
+            .into_iter()
+            .map(|(path, status)| (path.to_owned(), status))
+            .collect();
 
         div()
             .id("project-files-content")
@@ -2217,35 +2481,53 @@ impl WorkspaceView {
                     .id("project-file-tree")
                     .flex_1()
                     .min_h(px(0.0))
-                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
                     .px_1()
                     .pt_1()
                     .pb_2()
-                    .children(rows.into_iter().map(|row| {
-                        let path = row.entry.path.clone();
-                        let selected = selected_path.as_ref() == Some(&path);
-                        let is_directory = row.entry.kind == FileEntryKind::Directory;
-                        let rel = relative_repo_path(&path, &status_root);
-                        let status = if is_directory {
-                            rel.as_deref()
-                                .and_then(|rel| aggregate_dir_status(rel, &git_statuses))
-                        } else {
-                            rel.as_ref().and_then(|rel| git_statuses.get(rel).copied())
-                        };
-                        let icon_color = if is_directory {
-                            status.map(git_status_color).unwrap_or(colors().folder)
-                        } else {
-                            file_tree_icon_color(row.entry.kind, &row.entry.name)
-                        };
-                        let name_color = status.map(git_status_color).unwrap_or(if is_directory {
-                            colors().foreground
-                        } else {
-                            colors().muted
-                        });
-                        let depth = row.depth;
-                        let expanded = row.expanded;
-                        let rel_for_click = rel.clone();
-                        div()
+                    .child(
+                        uniform_list(
+                            "project-file-rows",
+                            rows.len(),
+                            cx.processor(
+                                move |_this, range: std::ops::Range<usize>, _window, cx| {
+                                    range
+                                        .map(|index| {
+                                            let row = &rows[index];
+                                            let path = row.entry.path.clone();
+                                            let selected = selected_path.as_ref() == Some(&path);
+                                            let is_directory =
+                                                row.entry.kind == FileEntryKind::Directory;
+                                            let rel = relative_repo_path(&path, &status_root);
+                                            let status = if is_directory {
+                                                rel.as_deref()
+                                                    .and_then(|rel| dir_statuses.get(rel).copied())
+                                            } else {
+                                                rel.as_ref()
+                                                    .and_then(|rel| git_statuses.get(rel).copied())
+                                            };
+                                            let icon_color = if is_directory {
+                                                status
+                                                    .map(git_status_color)
+                                                    .unwrap_or(colors().folder)
+                                            } else {
+                                                file_tree_icon_color(
+                                                    row.entry.kind,
+                                                    &row.entry.name,
+                                                )
+                                            };
+                                            let name_color = status
+                                                .map(git_status_color)
+                                                .unwrap_or(if is_directory {
+                                                    colors().foreground
+                                                } else {
+                                                    colors().muted
+                                                });
+                                            let depth = row.depth;
+                                            let expanded = row.expanded;
+                                            let rel_for_click = rel.clone();
+                                            div()
                             .id(SharedString::from(format!(
                                 "file-row-{}",
                                 path.to_string_lossy()
@@ -2363,12 +2645,21 @@ impl WorkspaceView {
                                     } else {
                                         name_color
                                     })
-                                    .child(row.entry.name),
+                                    .child(row.entry.name.clone()),
                             )
                             .when_some(status.map(git_status_trailing), |row, trailing| {
                                 row.child(trailing)
                             })
-                    })),
+                            .into_any_element()
+                                        })
+                                        .collect()
+                                },
+                            ),
+                        )
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .w_full(),
+                    ),
             )
             .when_some(file_error, |panel, error| {
                 panel.child(
@@ -2806,7 +3097,17 @@ impl WorkspaceView {
     }
 
     fn error_banner(&self) -> Option<impl IntoElement> {
-        self.persistence_error.as_ref().map(|error| {
+        let errors: Vec<_> = [
+            self.persistence_error.as_ref(),
+            self.workspace_save_error.as_ref(),
+            self.settings_save_error.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(ToString::to_string)
+        .collect();
+        (!errors.is_empty()).then(|| {
+            let error = errors.join(" · ");
             div()
                 .h(px(30.0))
                 .flex_none()
@@ -2826,13 +3127,7 @@ impl WorkspaceView {
                         .rounded_full()
                         .bg(colors().danger),
                 )
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .flex_1()
-                        .truncate()
-                        .child(error.clone()),
-                )
+                .child(div().min_w(px(0.0)).flex_1().truncate().child(error))
         })
     }
 }
@@ -2960,370 +3255,4 @@ impl Render for WorkspaceView {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
-
-    use crate::domain::workspace::WorkspaceSnapshot;
-    use uuid::Uuid;
-
-    #[test]
-    fn sidebar_branch_label_includes_tracking_and_dirty_marker() {
-        let dirty = SidebarWorkspaceMeta {
-            cwd: "/tmp/repo".into(),
-            branch: Some("main".into()),
-            ahead: 2,
-            behind: 1,
-            dirty: true,
-        };
-        assert_eq!(
-            format_sidebar_branch(&dirty).as_deref(),
-            Some("main* ↑2 ↓1")
-        );
-
-        let synced = SidebarWorkspaceMeta {
-            cwd: "/tmp/repo".into(),
-            branch: Some("feature".into()),
-            ahead: 0,
-            behind: 0,
-            dirty: false,
-        };
-        // In-sync remotes stay silent so the branch line stays short.
-        assert_eq!(format_sidebar_branch(&synced).as_deref(), Some("feature"));
-    }
-
-    #[test]
-    fn sidebar_path_collapses_long_segments() {
-        let long = format_sidebar_path(
-            "/Users/demo/very/deep/nested/project/src",
-            Some(Path::new("/Users/demo")),
-        );
-        assert!(
-            long.contains('…') || long.ends_with("project/src") || long.ends_with("nested/project"),
-            "unexpected collapsed path: {long}"
-        );
-        assert_eq!(format_sidebar_path("", None), "—");
-    }
-
-    #[test]
-    fn directory_basename_uses_last_segment() {
-        assert_eq!(directory_basename("/Users/demo/Dev/Vibra"), "Vibra");
-        assert_eq!(directory_basename("/Users/demo/Dev/Vibra/"), "Vibra");
-        assert_eq!(directory_basename("~"), "~");
-        assert_eq!(directory_basename(""), "—");
-    }
-
-    #[test]
-    fn tab_titles_prefer_the_directory_over_generic_shell_names() {
-        assert_eq!(
-            tab_display_title(None, Some("zsh"), Some("/Users/demo/Dev/Vibra"), 0),
-            "Vibra"
-        );
-        assert_eq!(
-            tab_display_title(
-                None,
-                Some("ruben@mac: ~/Dev/Vibra/src"),
-                Some("/Users/demo/Dev/Vibra"),
-                0
-            ),
-            "Vibra"
-        );
-        assert_eq!(
-            tab_display_title(
-                None,
-                Some("claude --dangerously-skip-permissions"),
-                Some("/Users/demo/Dev/Vibra"),
-                0,
-            ),
-            "claude --dangerously-skip-permissions"
-        );
-        assert_eq!(
-            tab_display_title(
-                Some("reviewer"),
-                Some("claude --dangerously-skip-permissions"),
-                Some("/Users/demo/Dev/Vibra"),
-                0,
-            ),
-            "reviewer"
-        );
-        assert_eq!(
-            tab_display_title(None, Some("claude"), Some("/Users/demo/Dev/Vibra"), 0),
-            "claude"
-        );
-        assert_eq!(
-            tab_display_title(None, Some("Terminal"), None, 2),
-            "Terminal 3"
-        );
-    }
-
-    #[test]
-    fn tab_titles_follow_live_cwd_without_losing_task_names() {
-        for title in ["demo@mac:~/old", "demo@mac: ~/old", "/old", "~/old"] {
-            assert_eq!(
-                tab_display_title(None, Some(title), Some("/Dev/current"), 0),
-                "current"
-            );
-        }
-        assert_eq!(
-            tab_display_title(None, Some("demo@mac:~/old"), None, 0),
-            "old"
-        );
-        assert_eq!(
-            tab_display_title(
-                None,
-                Some("Review: /src/parser.rs"),
-                Some("/Dev/current"),
-                0
-            ),
-            "Review: /src/parser.rs"
-        );
-        let name = "Revisar nombres de las sesiones";
-        assert_eq!(
-            tab_display_title(Some(name), Some("zsh"), Some("/Dev/current"), 0),
-            name
-        );
-    }
-
-    #[test]
-    fn pane_details_keep_command_and_path_for_an_alias() {
-        assert_eq!(
-            pane_detail_title(
-                Some("reviewer"),
-                Some("claude --dangerously-skip-permissions"),
-                Some("/Users/demo/Dev/Vibra"),
-                Some(Path::new("/Users/demo")),
-            )
-            .as_deref(),
-            Some("claude --dangerously-skip-permissions  ·  ~/Dev/Vibra")
-        );
-    }
-
-    struct SilentTerminalPort;
-
-    struct SilentTerminalHandle {
-        events: async_channel::Receiver<crate::ports::terminal::TerminalEvent>,
-        _keep_sender: async_channel::Sender<crate::ports::terminal::TerminalEvent>,
-    }
-
-    impl crate::ports::terminal::TerminalPort for SilentTerminalPort {
-        fn backend_name(&self) -> &'static str {
-            "silent"
-        }
-
-        fn spawn(
-            &self,
-            _: Uuid,
-            _: &Path,
-            _: &std::collections::HashMap<String, String>,
-        ) -> anyhow::Result<std::sync::Arc<dyn crate::ports::terminal::TerminalHandle>> {
-            let (sender, events) = async_channel::unbounded();
-            Ok(std::sync::Arc::new(SilentTerminalHandle {
-                events,
-                _keep_sender: sender,
-            }))
-        }
-    }
-
-    impl crate::ports::terminal::TerminalHandle for SilentTerminalHandle {
-        fn events(&self) -> async_channel::Receiver<crate::ports::terminal::TerminalEvent> {
-            self.events.clone()
-        }
-        fn send_input(&self, _: Vec<u8>) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn resize(&self, _: crate::ports::terminal::TerminalSize) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn scroll(&self, _: i32) {}
-        fn clear_scrollback(&self) {}
-        fn snapshot(&self) -> std::sync::Arc<crate::ports::terminal::TerminalSnapshot> {
-            std::sync::Arc::new(crate::ports::terminal::TerminalSnapshot {
-                columns: 80,
-                rows: 24,
-                lines: Vec::new(),
-                cursor: None,
-                display_offset: 0,
-                history_size: 0,
-            })
-        }
-        fn input_mode(&self) -> crate::ports::terminal::TerminalInputMode {
-            crate::ports::terminal::TerminalInputMode::default()
-        }
-        fn clear_selection(&self) {}
-        fn start_selection(
-            &self,
-            _: crate::ports::terminal::TerminalSelectionType,
-            _: crate::ports::terminal::TerminalPoint,
-            _: crate::ports::terminal::TerminalCellSide,
-        ) {
-        }
-        fn update_selection(
-            &self,
-            _: crate::ports::terminal::TerminalPoint,
-            _: crate::ports::terminal::TerminalCellSide,
-        ) {
-        }
-        fn selection_text(&self) -> Option<String> {
-            None
-        }
-        fn search(
-            &self,
-            _: &str,
-            _: crate::ports::terminal::TerminalSearchDirection,
-        ) -> anyhow::Result<bool> {
-            Ok(true)
-        }
-        fn hyperlink_at(&self, _: crate::ports::terminal::TerminalPoint) -> Option<String> {
-            None
-        }
-        fn acknowledge_wakeup(&self) {}
-        fn shutdown(&self) {}
-    }
-
-    #[gpui::test]
-    fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAppContext) {
-        use crate::infrastructure::files::LocalFileSystemPort;
-        use crate::infrastructure::git::GitCliPort;
-        use crate::infrastructure::persistence::WorkspaceRepository;
-        use crate::infrastructure::settings::SettingsRepository;
-        use std::sync::Arc;
-
-        let root = std::env::temp_dir().join(format!("vibra-surface-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let repository = WorkspaceRepository::at(root.join("workspace.json"));
-        let mut snapshot = WorkspaceSnapshot::default();
-        snapshot.create_workspace(&root);
-        snapshot.create_terminal_tab_with_options(true, None);
-        let first_project = snapshot.selected_project_id.unwrap();
-        let first_workspace = snapshot.selected_workspace().unwrap().id;
-        snapshot.create_workspace(&root);
-        let second_workspace = snapshot.selected_workspace().unwrap().id;
-        repository.save(&snapshot).unwrap();
-        let settings_repository = SettingsRepository::at(root.join("settings.json"));
-        let settings = crate::infrastructure::settings::AppSettings {
-            agent_notifications: false,
-            ..crate::infrastructure::settings::AppSettings::default()
-        };
-        settings_repository.save(&settings).unwrap();
-
-        let window = cx
-            .update(|cx| {
-                cx.open_window(Default::default(), |window, cx| {
-                    let focus_handle = cx.focus_handle();
-                    focus_handle.focus(window);
-                    cx.new(|cx| {
-                        WorkspaceView::new(
-                            WorkspaceDependencies {
-                                repository,
-                                settings_repository,
-                                terminal_port: Arc::new(SilentTerminalPort),
-                                file_port: Arc::new(LocalFileSystemPort),
-                                git_port: Arc::new(GitCliPort::default()),
-                            },
-                            root.clone(),
-                            focus_handle,
-                            cx,
-                        )
-                    })
-                })
-            })
-            .unwrap();
-
-        window
-            .update(cx, |view, window, cx| {
-                let first = view
-                    .snapshot
-                    .projects
-                    .iter()
-                    .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-                    .find(|workspace| workspace.id == first_workspace)
-                    .unwrap();
-                let first_tab = first.tabs[0].id;
-                let second_tab = first.tabs[1].id;
-                let first_session = first.tabs[0].sessions[0].id;
-                let second_session = first.tabs[1].sessions[0].id;
-                let other_session = view.snapshot.selected_session().unwrap().id;
-                assert_eq!(
-                    view.snapshot.selected_workspace().unwrap().id,
-                    second_workspace
-                );
-                assert!(view.terminals[&other_session].read(cx).is_surface_visible());
-                assert!(!view.terminals[&first_session].read(cx).is_surface_visible());
-                assert!(
-                    !view.terminals[&second_session]
-                        .read(cx)
-                        .is_surface_visible()
-                );
-
-                view.select_workspace(first_project, first_workspace, window, cx);
-                assert!(
-                    view.terminals[&second_session]
-                        .read(cx)
-                        .is_surface_visible()
-                );
-                assert!(
-                    !view.terminals[&other_session].read(cx).is_surface_visible(),
-                    "sessions in the unselected workspace must stop cwd/agent polls"
-                );
-
-                view.select_tab(first_tab, window, cx);
-                assert!(view.terminals[&first_session].read(cx).is_surface_visible());
-                assert!(
-                    !view.terminals[&second_session]
-                        .read(cx)
-                        .is_surface_visible(),
-                    "the unselected tab must not keep cwd/agent polls running"
-                );
-
-                view.select_tab(second_tab, window, cx);
-                assert!(!view.terminals[&first_session].read(cx).is_surface_visible());
-                assert!(
-                    view.terminals[&second_session]
-                        .read(cx)
-                        .is_surface_visible()
-                );
-
-                // Changing a terminal's cwd must not switch project ownership or Files.
-                view.handle_terminal_view_event(
-                    &TerminalViewEvent::WorkingDirectoryChanged {
-                        session_id: second_session,
-                        path: root.join("another-folder"),
-                    },
-                    cx,
-                );
-                assert_eq!(view.project_root(), root);
-                assert_eq!(view.snapshot.selected_project_id, Some(first_project));
-
-                assert!(
-                    view.snapshot
-                        .close_workspace(first_project, first_workspace)
-                );
-                assert!(
-                    view.snapshot
-                        .close_workspace(first_project, second_workspace)
-                );
-                view.reconcile_terminal_views(cx);
-                view.apply_workspace_selection_change(window, cx);
-                assert!(view.terminals.is_empty());
-                assert_eq!(view.project_root(), root);
-                assert!(view.has_project_context());
-                assert_eq!(view.snapshot.selected_project_id, Some(first_project));
-                view.flush_persist(cx);
-                assert_eq!(view.repository.load().unwrap().unwrap(), view.snapshot);
-
-                assert!(view.snapshot.remove_project(first_project));
-                view.apply_workspace_selection_change(window, cx);
-                assert!(!view.has_project_context());
-                assert!(view.project_files.is_empty());
-                assert!(view.files_watch.is_none());
-                view.flush_persist(cx);
-                assert!(view.repository.load().unwrap().unwrap().projects.is_empty());
-            })
-            .unwrap();
-
-        window
-            .update(cx, |_, window, _| window.remove_window())
-            .unwrap();
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
+mod tests;

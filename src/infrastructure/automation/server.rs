@@ -1,12 +1,13 @@
 use anyhow::{Context, Result, bail};
 use std::fs;
-use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::io::{ErrorKind, Read, Write};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use super::types::*;
 
@@ -20,14 +21,18 @@ pub struct AutomationServer {
 impl AutomationServer {
     pub fn start() -> Result<Self> {
         let directory = automation_directory();
-        fs::create_dir_all(&directory)
-            .with_context(|| format!("no se pudo crear {}", directory.display()))?;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-        let server_id = NEXT_AUTOMATION_SERVER_ID.fetch_add(1, Ordering::Relaxed);
-        let path = directory.join(format!("{}-{server_id}.sock", std::process::id()));
+        prepare_automation_directory(&directory)?;
+        // A crashed process may leave its socket behind. A random name lets a
+        // new server start without ever unlinking another process's socket.
+        let path = directory.join(format!("{}.sock", uuid::Uuid::new_v4().simple()));
         let listener = UnixListener::bind(&path)
             .with_context(|| format!("no se pudo abrir {}", path.display()))?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        if let Err(error) = fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .and_then(|_| listener.set_nonblocking(true))
+        {
+            let _ = fs::remove_file(&path);
+            return Err(error).with_context(|| format!("no se pudo preparar {}", path.display()));
+        }
         let (sender, receiver) = async_channel::bounded(AUTOMATION_QUEUE_CAPACITY);
         let stopped = Arc::new(AtomicBool::new(false));
         let thread_stopped = stopped.clone();
@@ -35,13 +40,24 @@ impl AutomationServer {
         let thread = thread::Builder::new()
             .name("vibra-automation".into())
             .spawn(move || {
-                for connection in listener.incoming() {
+                loop {
                     if thread_stopped.load(Ordering::Acquire) {
                         break;
                     }
-                    let Ok(stream) = connection else {
-                        continue;
+                    let stream = match listener.accept() {
+                        Ok((stream, _)) => stream,
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(25));
+                            continue;
+                        }
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(25));
+                            continue;
+                        }
                     };
+                    if stream.set_nonblocking(false).is_err() {
+                        continue;
+                    }
                     let sender = sender.clone();
                     let live = client_threads.fetch_add(1, Ordering::AcqRel);
                     if live >= AUTOMATION_MAX_CLIENT_THREADS as u64 {
@@ -54,14 +70,21 @@ impl AutomationServer {
                         );
                         continue;
                     }
-                    let client_threads = client_threads.clone();
-                    let _ = thread::Builder::new()
+                    let active_threads = client_threads.clone();
+                    if thread::Builder::new()
                         .name("vibra-automation-client".into())
                         .spawn(move || {
                             handle_connection(stream, &sender);
-                            client_threads.fetch_sub(1, Ordering::AcqRel);
-                        });
+                            active_threads.fetch_sub(1, Ordering::AcqRel);
+                        })
+                        .is_err()
+                    {
+                        client_threads.fetch_sub(1, Ordering::AcqRel);
+                    }
                 }
+            })
+            .inspect_err(|_| {
+                let _ = fs::remove_file(&path);
             })?;
         Ok(Self {
             path,
@@ -83,7 +106,6 @@ impl AutomationServer {
 impl Drop for AutomationServer {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Release);
-        let _ = UnixStream::connect(&self.path);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -146,4 +168,36 @@ pub(super) fn enqueue_automation_request(
 fn automation_directory() -> PathBuf {
     let user = unsafe { libc::geteuid() };
     std::env::temp_dir().join(format!("vibra-{user}"))
+}
+
+fn prepare_automation_directory(directory: &Path) -> Result<()> {
+    fs::create_dir_all(directory)
+        .with_context(|| format!("no se pudo crear {}", directory.display()))?;
+    let metadata = fs::symlink_metadata(directory)?;
+    if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        bail!(
+            "{} no es un directorio privado del usuario",
+            directory.display()
+        );
+    }
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn automation_directory_rejects_symlinks() {
+        let root = std::env::temp_dir().join(format!("vibra-server-{}", uuid::Uuid::new_v4()));
+        let real = root.join("real");
+        let link = root.join("link");
+        fs::create_dir_all(&real).unwrap();
+        symlink(&real, &link).unwrap();
+
+        assert!(prepare_automation_directory(&link).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

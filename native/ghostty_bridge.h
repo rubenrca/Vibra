@@ -23,6 +23,8 @@ void vg_scroll(void *, int64_t);
 int vg_clear_history(void *);
 int vg_select(void *, int, int, uint16_t, uint16_t, int);
 int vg_search(void *, const uint8_t *, size_t, int);
+/* 0 = no match, 1 = match, 2 = more candidates to inspect, <0 = error. */
+int vg_search_step(void *, const uint8_t *, size_t, int, int);
 uint8_t *vg_text(void *, size_t *, int);
 void vg_buffer_free(uint8_t *, size_t);
 

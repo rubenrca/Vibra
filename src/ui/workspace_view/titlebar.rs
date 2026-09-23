@@ -333,6 +333,16 @@ impl super::WorkspaceView {
                                 .text_color(colors().subtle)
                                 .child("ABRIR CARPETA EN"),
                         )
+                        .when(self.ide_discovering, |menu| {
+                            menu.child(
+                                div()
+                                    .px_3()
+                                    .py_2()
+                                    .text_size(px(11.0))
+                                    .text_color(colors().muted)
+                                    .child("Buscando editores…"),
+                            )
+                        })
                         .children(self.installed_editors.clone().into_iter().enumerate().map(
                             |(index, editor)| {
                                 let label = editor.name;
@@ -386,27 +396,45 @@ impl super::WorkspaceView {
             cx.notify();
             return;
         }
-        self.installed_editors = crate::infrastructure::editor::installed_editors();
-        for editor in &self.installed_editors {
-            if !self.ide_icons.contains_key(editor.bundle_identifier)
-                && let Some(png) =
-                    crate::infrastructure::editor::editor_icon_png(editor.bundle_identifier)
-            {
-                self.ide_icons.insert(
-                    editor.bundle_identifier,
-                    Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
-                );
-            }
+        self.ide_menu_open = true;
+        self.context_menu = None;
+        if self.ide_discovering {
+            cx.notify();
+            return;
         }
-        if self.installed_editors.is_empty() {
-            self.persistence_error = Some(
-                "No compatible IDE found. Install Cursor, VS Code, Windsurf, Zed, Xcode, Sublime Text, or VSCodium"
-                    .into(),
-            );
-        } else {
-            self.ide_menu_open = true;
-            self.context_menu = None;
-        }
+        self.installed_editors.clear();
+        self.ide_discovering = true;
+        let discovery =
+            cx.background_spawn(async { crate::infrastructure::editor::installed_editors() });
+        self._open_ide_task = Some(cx.spawn(async move |this, cx| {
+            let editors = discovery.await;
+            let _ = this.update(cx, |this, cx| {
+                this.ide_discovering = false;
+                if editors.is_empty() && this.ide_menu_open {
+                    this.ide_menu_open = false;
+                    this.persistence_error = Some(
+                        concat!(
+                            "No compatible IDE found. Install Cursor, VS Code, Windsurf, ",
+                            "Zed, Xcode, Sublime Text, or VSCodium"
+                        )
+                        .into(),
+                    );
+                }
+                for editor in &editors {
+                    if !this.ide_icons.contains_key(editor.bundle_identifier)
+                        && let Some(png) =
+                            crate::infrastructure::editor::editor_icon_png(editor.bundle_identifier)
+                    {
+                        this.ide_icons.insert(
+                            editor.bundle_identifier,
+                            Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
+                        );
+                    }
+                }
+                this.installed_editors = editors;
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 

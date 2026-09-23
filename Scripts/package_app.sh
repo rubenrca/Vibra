@@ -17,8 +17,8 @@ usage() {
   print -u2 -- "  --universal  build aarch64 and x86_64 slices and merge them"
   print -u2 -- "  --dmg        also produce dist/Vibra.dmg"
   print -u2 -- "  --notarize   notarize the distributable artifact with Apple and staple its ticket"
-  print -u2 -- "  --sign <id>  signing identity. Defaults to \$VIBRA_SIGNING_IDENTITY, then the"
-  print -u2 -- "               first Developer ID Application identity, then ad-hoc signing."
+  print -u2 -- "  --sign <id>  signing identity. Required for --notarize; otherwise defaults to"
+  print -u2 -- "               \$VIBRA_SIGNING_IDENTITY, first Developer ID, or ad-hoc signing."
   print -u2 --
   print -u2 -- "Notarization reads APPLE_KEYCHAIN_PROFILE, or APPLE_ID + APPLE_TEAM_ID +"
   print -u2 -- "APPLE_APP_SPECIFIC_PASSWORD. Set VIBRA_NOTARY_WAIT_TIMEOUT (default: 2h)"
@@ -51,6 +51,25 @@ if [[ $signing_identity == - ]]; then
   force_ad_hoc=1
 fi
 
+if (( notarize )); then
+  if ! source_head=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null); then
+    print -u2 -- "--notarize requires a Git checkout with a committed source revision."
+    exit 65
+  fi
+  if ! source_status=$(git -C "$repo_root" status --porcelain --untracked-files=all); then
+    print -u2 -- "cannot verify the source checkout before notarization."
+    exit 65
+  fi
+  if [[ -n $source_status ]]; then
+    print -u2 -- "--notarize requires a clean checkout so the embedded commit matches the app source."
+    exit 65
+  fi
+  if [[ -n ${VIBRA_SOURCE_COMMIT:-} && ${VIBRA_SOURCE_COMMIT:l} != ${source_head:l} ]]; then
+    print -u2 -- "VIBRA_SOURCE_COMMIT does not match the source checkout."
+    exit 65
+  fi
+fi
+
 app_dir="$repo_root/dist/Vibra.app"
 contents_dir="$app_dir/Contents"
 macos_dir="$contents_dir/MacOS"
@@ -60,11 +79,17 @@ plist="$contents_dir/Info.plist"
 plist_template="$repo_root/Resources/Info.plist"
 entitlements="$repo_root/Resources/Vibra.entitlements"
 icon_source="$repo_root/Resources/AppIcon.png"
-iconset_dir="$repo_root/target/Vibra.iconset"
+target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
+if [[ $target_dir != /* ]]; then
+  target_dir="${PWD:A}/$target_dir"
+fi
+export CARGO_TARGET_DIR=$target_dir
+iconset_dir="$target_dir/Vibra.iconset"
 icon_file="$resources_dir/Vibra.icns"
 dmg_path="$repo_root/dist/Vibra.dmg"
 notarization_dir="$repo_root/dist/notarization"
 notary_wait_timeout=${VIBRA_NOTARY_WAIT_TIMEOUT:-2h}
+sparkle_version=${VIBRA_SPARKLE_VERSION:-2.9.4}
 
 # Sparkle checks this feed and refuses any update whose EdDSA signature does not
 # verify against the public key below. The matching private key lives in the
@@ -83,9 +108,9 @@ resolve_sparkle_framework() {
   local candidate
   for candidate in \
     "${VIBRA_SPARKLE_FRAMEWORK:-}" \
+    "$repo_root/third_party/sparkle-$sparkle_version/Sparkle.framework" \
     "$repo_root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" \
     "$repo_root/.build/checkouts/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" \
-    "$repo_root"/third_party/sparkle-*/Sparkle.framework(N) \
     "$repo_root/third_party/Sparkle.framework" \
     "$repo_root/dist/Vibra.app/Contents/Frameworks/Sparkle.framework"
   do
@@ -94,13 +119,27 @@ resolve_sparkle_framework() {
   return 1
 }
 
-sparkle_source=$(resolve_sparkle_framework || true)
-if [[ -z ${sparkle_source:-} ]]; then
-  sparkle_source=$("$repo_root/Scripts/fetch_sparkle.sh")
+if (( notarize )); then
+  # A publishable app must use the checksum-verified archive, even when an
+  # ignored local framework is already present in this clean checkout.
+  sparkle_source=$("$repo_root/Scripts/fetch_sparkle.sh" --refresh)
+else
+  sparkle_source=$(resolve_sparkle_framework || true)
+  if [[ -z ${sparkle_source:-} ]]; then
+    sparkle_source=$("$repo_root/Scripts/fetch_sparkle.sh")
+  fi
 fi
 if [[ -z ${sparkle_source:-} || ! -d $sparkle_source ]]; then
   print -u2 -- "Sparkle.framework not found and could not be fetched."
   exit 70
+fi
+# An earlier bundle can be the only local source. Preserve it before replacing
+# dist/Vibra.app below, including when the caller points at it explicitly.
+if [[ ${sparkle_source:A} == ${app_dir:A}/* ]]; then
+  sparkle_staging_dir=$(mktemp -d)
+  trap 'rm -rf "$sparkle_staging_dir"' EXIT
+  ditto "$sparkle_source" "$sparkle_staging_dir/Sparkle.framework"
+  sparkle_source="$sparkle_staging_dir/Sparkle.framework"
 fi
 export VIBRA_SPARKLE_FRAMEWORK=$sparkle_source
 print "using Sparkle: $sparkle_source"
@@ -117,6 +156,12 @@ build_version=${VIBRA_BUILD_VERSION:-}
 if [[ -z $build_version ]]; then
   build_version=$(git -C "$repo_root" rev-list --count HEAD 2>/dev/null || true)
   build_version=${build_version:-1}
+fi
+
+source_commit=${VIBRA_SOURCE_COMMIT:-$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)}
+if [[ -n $source_commit && ! $source_commit =~ '^[0-9a-fA-F]{40}$' ]]; then
+  print -u2 -- "VIBRA_SOURCE_COMMIT must be a full Git commit hash."
+  exit 64
 fi
 
 if (( universal )); then
@@ -155,7 +200,7 @@ for target in $targets; do
   print "building Vibra ($configuration, $target)"
   # Ensure the build script can find Sparkle while compiling the ObjC bridge.
   VIBRA_SPARKLE_FRAMEWORK=$sparkle_source cargo "${cargo_args[@]}" --manifest-path "$repo_root/Cargo.toml"
-  binary="$repo_root/target/$target/$profile_dir/vibra"
+  binary="$target_dir/$target/$profile_dir/vibra"
   if [[ ! -x $binary ]]; then
     print -u2 -- "Cargo did not produce the expected binary: $binary"
     exit 70
@@ -186,12 +231,19 @@ iconutil -c icns "$iconset_dir" -o "$icon_file"
 cp "$plist_template" "$plist"
 plutil -replace CFBundleShortVersionString -string "$marketing_version" "$plist"
 plutil -replace CFBundleVersion -string "$build_version" "$plist"
+if [[ -n $source_commit ]]; then
+  plutil -insert VibraSourceCommit -string "$source_commit" "$plist"
+fi
 plutil -replace SUFeedURL -string "$feed_url" "$plist"
 plutil -replace SUPublicEDKey -string "$public_ed_key" "$plist"
 plutil -replace SUEnableAutomaticChecks -bool true "$plist"
 plutil -replace SUScheduledCheckInterval -integer 86400 "$plist"
 plutil -lint "$plist" "$entitlements" >/dev/null
 
+if (( notarize )) && [[ -z $signing_identity ]]; then
+  print -u2 -- "--notarize requires --sign or VIBRA_SIGNING_IDENTITY; selecting the first certificate is unsafe."
+  exit 78
+fi
 if [[ -z $signing_identity ]] && (( ! force_ad_hoc )); then
   signing_identity=$(
     security find-identity -v -p codesigning 2>/dev/null \
@@ -215,7 +267,12 @@ fi
 # invalidates the container's signature. Sparkle's helpers ship entitlements of
 # their own — the installer and downloader XPC services especially — so theirs
 # are preserved rather than replaced with Vibra's.
-sparkle_versioned_dir="$frameworks_dir/Sparkle.framework/Versions/B"
+sparkle_current_dir="$frameworks_dir/Sparkle.framework/Versions/Current"
+if [[ ! -d $sparkle_current_dir ]]; then
+  print -u2 -- "Sparkle.framework has no current version: $sparkle_current_dir"
+  exit 70
+fi
+sparkle_versioned_dir=${sparkle_current_dir:A}
 for helper in \
   "$sparkle_versioned_dir/XPCServices/Downloader.xpc" \
   "$sparkle_versioned_dir/XPCServices/Installer.xpc" \
@@ -300,17 +357,24 @@ if (( notarize )); then
       wait_status=$?
       print -u2 -- "Notarization did not complete successfully. Apple keeps processing after a timeout."
       print -u2 -- "Submission ID: $submission_id"
-      print -u2 -- "Check:  xcrun notarytool info $submission_id --keychain-profile \"${APPLE_KEYCHAIN_PROFILE:-Vibra-Notary}\""
+      print -u2 -- \
+        "Check:  xcrun notarytool info $submission_id" \
+        "--keychain-profile \"${APPLE_KEYCHAIN_PROFILE:-Vibra-Notary}\""
       print -u2 -- "Record: $submission_record"
       exit "$wait_status"
     }
 
-  print "stapling Apple's ticket to $notarize_label"
-  xcrun stapler staple "$notarize_path"
-  xcrun stapler validate "$notarize_path"
   if (( make_dmg )); then
+    print "stapling Apple's ticket to $notarize_label"
+    xcrun stapler staple "$dmg_path"
+    xcrun stapler validate "$dmg_path"
     spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg_path"
   else
+    # The ZIP transports the app to the notary service; tickets attach to the
+    # bundle itself, not to the temporary ZIP archive.
+    print "stapling Apple's ticket to Vibra.app"
+    xcrun stapler staple "$app_dir"
+    xcrun stapler validate "$app_dir"
     spctl --assess --type execute --verbose=2 "$app_dir"
     rm -f "$notarize_path"
   fi

@@ -16,8 +16,9 @@
 //!   opened outside a hunk (block comments, strings) still colors correctly.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -31,14 +32,14 @@ use gpui::{
 
 use crate::ports::git::{
     GitBranchChanges, GitBranchRef, GitCommit, GitCommitChanges, GitDiffRow, GitDiffRowKind,
-    GitFileChange, GitFileStatus, GitGraphRow, GitHistory, GitPort, GitRepositorySnapshot,
-    assign_commit_lanes,
+    GitFileChange, GitFileStatus, GitHistory, GitPort, GitRepositorySnapshot,
 };
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::diff_rows::{
     BodyRow, CommentAnchor, CommentSide, DiffLayout, FlattenFile, ReviewComment, ReviewRow,
     body_row_anchors, body_rows, flatten, review_prompt,
 };
+use crate::ui::git_graph::{GitGraphRow, assign_commit_lanes};
 use crate::ui::syntax::SyntaxSpan;
 use crate::ui::theme::{MONO_FONT, colors, floating_surface, popover_surface, surface_tint};
 
@@ -65,6 +66,7 @@ const COMMENT_BUTTON_SIZE: f32 = 16.0;
 const FOLD_DURATION: Duration = Duration::from_millis(180);
 /// Rows searched below the scroll top for the header that pushes the sticky one.
 const STICKY_PUSH_SCAN: usize = 96;
+const MAX_EXPANDED_DIFFS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum GitPanelMode {
@@ -188,6 +190,7 @@ pub struct DiffView {
     _baseline_tasks: Vec<Task<()>>,
     /// Paths currently expanded; multiple files may stay open.
     expanded: HashSet<String>,
+    expanded_order: VecDeque<String>,
     /// Prepared diffs for expanded (and recently expanded) paths.
     documents: HashMap<String, CachedDiffDocument>,
     status_root: Option<PathBuf>,
@@ -195,8 +198,6 @@ pub struct DiffView {
     panel_visible: bool,
     review_expanded: bool,
     focus_handle: FocusHandle,
-    /// Paths currently loading a diff.
-    loading: HashSet<String>,
     refreshing: bool,
     /// First snapshot for the current root has finished (success, none, or error).
     snapshot_settled: bool,
@@ -234,6 +235,7 @@ pub struct DiffView {
     folds: HashMap<String, FileFold>,
     fold_generation: u64,
     comments: Vec<ReviewComment>,
+    review_delivery_pending: bool,
     next_comment_id: u64,
     draft: Option<CommentDraft>,
 }
@@ -251,6 +253,9 @@ struct DiffSource {
 struct WorktreeFileVersion {
     length: u64,
     modified: Option<SystemTime>,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+    inode: u64,
 }
 
 impl DiffSource {
@@ -260,11 +265,14 @@ impl DiffSource {
         against: Option<&str>,
         head: Option<&str>,
     ) -> Self {
-        let worktree_version = std::fs::metadata(snapshot.root.join(&change.path))
+        let worktree_version = std::fs::symlink_metadata(snapshot.root.join(&change.path))
             .ok()
             .map(|metadata| WorktreeFileVersion {
                 length: metadata.len(),
                 modified: metadata.modified().ok(),
+                changed_seconds: metadata.ctime(),
+                changed_nanoseconds: metadata.ctime_nsec(),
+                inode: metadata.ino(),
             });
         Self {
             repository: snapshot.root.clone(),
@@ -296,7 +304,10 @@ pub enum DiffViewEvent {
     /// The toolbar changed a persisted preference.
     PreferencesChanged { split: bool, wrap: bool },
     /// Review comments to paste into the agent's terminal.
-    SendReview(String),
+    SendReview {
+        prompt: String,
+        comment_ids: Vec<u64>,
+    },
 }
 
 impl EventEmitter<DiffViewEvent> for DiffView {}
@@ -347,13 +358,13 @@ impl DiffView {
             _turn_task: None,
             _baseline_tasks: Vec::new(),
             expanded: HashSet::new(),
+            expanded_order: VecDeque::new(),
             documents: HashMap::new(),
             status_root: None,
             status_index: Arc::new(HashMap::new()),
             panel_visible: false,
             review_expanded: false,
             focus_handle: cx.focus_handle(),
-            loading: HashSet::new(),
             refreshing: false,
             snapshot_settled: false,
             branch_refreshing: false,
@@ -384,6 +395,7 @@ impl DiffView {
             folds: HashMap::new(),
             fold_generation: 0,
             comments: Vec::new(),
+            review_delivery_pending: false,
             next_comment_id: 1,
             draft: None,
         }
@@ -511,8 +523,12 @@ impl DiffView {
             });
         }));
         if self._baseline_tasks.len() > 8 {
-            self._baseline_tasks
-                .drain(0..self._baseline_tasks.len() - 4);
+            for task in self
+                ._baseline_tasks
+                .drain(0..self._baseline_tasks.len() - 4)
+            {
+                task.detach();
+            }
         }
     }
 
@@ -525,6 +541,15 @@ impl DiffView {
         self.clear_turn();
         self.forget_scroll();
         self.context_root = root;
+        self.comments.clear();
+        self.review_delivery_pending = false;
+        self.draft = None;
+        // A hidden panel can stay hidden indefinitely. Drop the previous
+        // repository immediately so file selection and status colors never
+        // use another project's snapshot while the new one is loading.
+        self.snapshot = None;
+        self.status_root = None;
+        self.status_index = Arc::new(HashMap::new());
         self.selected_base = None;
         self.selected_head = None;
         self.branches.clear();
@@ -545,6 +570,8 @@ impl DiffView {
         self.mode_menu_open = false;
         self.draft = None;
         self.h_offset = 0.0;
+        cx.emit(DiffViewEvent::Changed);
+        cx.notify();
         if self.panel_visible {
             self.refresh_visible_sources(true, cx);
         }
@@ -592,6 +619,9 @@ impl DiffView {
         self.clear_turn();
         self.forget_scroll();
         self.mode = mode;
+        self.comments.clear();
+        self.review_delivery_pending = false;
+        self.draft = None;
         self.h_offset = 0.0;
         match mode {
             GitPanelMode::Worktree => {}
@@ -643,7 +673,6 @@ impl DiffView {
                         if this.mode == GitPanelMode::Worktree {
                             this.expanded.clear();
                             this.documents.clear();
-                            this.loading.clear();
                             this.pending_loads.clear();
                         }
                         this.error = None;
@@ -666,6 +695,9 @@ impl DiffView {
         reference: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.comments.clear();
+        self.review_delivery_pending = false;
+        self.draft = None;
         if is_base {
             self.selected_base = reference;
         } else {
@@ -679,7 +711,6 @@ impl DiffView {
         self.expanded.clear();
         self.documents.clear();
         self.pending_loads.clear();
-        self.loading.clear();
         self.refresh_branch(true, cx);
     }
 
@@ -851,7 +882,6 @@ impl DiffView {
                         if this.mode == GitPanelMode::Branch {
                             this.documents.clear();
                             this.pending_loads.clear();
-                            this.loading.clear();
                         }
                     }
                 }
@@ -997,18 +1027,23 @@ impl DiffView {
         self.commit_refreshing = false;
         self.expanded.clear();
         self.documents.clear();
-        self.loading.clear();
         self.pending_loads.clear();
         self.folds.clear();
     }
 
     fn back_to_history(&mut self, cx: &mut Context<Self>) {
+        self.comments.clear();
+        self.review_delivery_pending = false;
+        self.draft = None;
         self.clear_commit();
         self.refresh_history(false, cx);
         cx.notify();
     }
 
     fn select_commit(&mut self, commit: GitCommit, cx: &mut Context<Self>) {
+        self.comments.clear();
+        self.review_delivery_pending = false;
+        self.draft = None;
         self.clear_commit();
         self.forget_scroll();
         self.selected_commit = Some(commit);
@@ -1080,6 +1115,8 @@ impl DiffView {
             .collect();
 
         self.expanded.retain(|path| sources.contains_key(path));
+        self.expanded_order
+            .retain(|path| self.expanded.contains(path));
         self.documents.retain(|path, cached| {
             sources
                 .get(path)
@@ -1090,8 +1127,6 @@ impl DiffView {
                 .get(path)
                 .is_some_and(|source| source == &pending.source)
         });
-        self.loading
-            .retain(|path| self.pending_loads.contains_key(path));
         self.folds.retain(|path, _| sources.contains_key(path));
         self.evict_diff_caches();
     }
@@ -1133,8 +1168,7 @@ impl DiffView {
     }
 
     fn evict_diff_caches(&mut self) {
-        const MAX_CACHED_DIFFS: usize = 16;
-        if self.documents.len() <= MAX_CACHED_DIFFS {
+        if self.documents.len() <= MAX_EXPANDED_DIFFS {
             return;
         }
         self.documents
@@ -1143,10 +1177,22 @@ impl DiffView {
 
     fn expand_path(&mut self, path: String, cx: &mut Context<Self>) {
         if self.expanded.insert(path.clone()) {
+            self.expanded_order
+                .retain(|candidate| self.expanded.contains(candidate) && candidate != &path);
+            self.expanded_order.push_back(path.clone());
+            while self.expanded.len() > MAX_EXPANDED_DIFFS {
+                let Some(oldest) = self.expanded_order.pop_front() else {
+                    break;
+                };
+                self.expanded.remove(&oldest);
+                self.folds.remove(&oldest);
+                self.pending_loads.remove(&oldest);
+            }
+            self.evict_diff_caches();
             self.load_diff(path, cx);
             cx.emit(DiffViewEvent::Changed);
             cx.notify();
-        } else if !self.documents.contains_key(&path) && !self.loading.contains(&path) {
+        } else if !self.documents.contains_key(&path) && !self.pending_loads.contains_key(&path) {
             self.load_diff(path, cx);
             cx.notify();
         }
@@ -1157,7 +1203,7 @@ impl DiffView {
         let animate = self.documents.contains_key(&path) && !self.wrap;
         if self.expanded.contains(&path) {
             self.expanded.remove(&path);
-            self.loading.remove(&path);
+            self.expanded_order.retain(|candidate| candidate != &path);
             self.pending_loads.remove(&path);
             // Keep cached diff so re-expand is instant.
             if animate {
@@ -1262,7 +1308,6 @@ impl DiffView {
             let (against, head) = self.active_revisions();
             Some(DiffSource::new(snapshot, &change, against, head))
         }) else {
-            self.loading.remove(&path);
             return;
         };
 
@@ -1278,7 +1323,6 @@ impl DiffView {
             return;
         }
 
-        self.loading.insert(path.clone());
         self.diff_request_id = self.diff_request_id.wrapping_add(1);
         let request_id = self.diff_request_id;
         self.pending_loads.insert(
@@ -1325,7 +1369,6 @@ impl DiffView {
                     return;
                 }
                 this.pending_loads.remove(&path_for_task);
-                this.loading.remove(&path_for_task);
                 match result {
                     Ok(document) => {
                         this.documents.insert(
@@ -1343,9 +1386,12 @@ impl DiffView {
                 cx.notify();
             });
         }));
-        // Bound concurrent task handles; completed tasks are inert once dropped.
+        // Keep the handle list bounded without cancelling an in-flight load.
+        // Cancelling its callback would leave `pending_loads` stuck forever.
         if self._diff_tasks.len() > 12 {
-            self._diff_tasks.drain(0..self._diff_tasks.len() - 8);
+            for task in self._diff_tasks.drain(0..self._diff_tasks.len() - 8) {
+                task.detach();
+            }
         }
         cx.notify();
     }
@@ -1490,12 +1536,30 @@ impl DiffView {
 
     fn send_review(&mut self, cx: &mut Context<Self>) {
         self.commit_draft();
-        if self.comments.is_empty() {
+        if self.comments.is_empty() || self.review_delivery_pending {
             return;
         }
         let prompt = review_prompt(&self.comments);
-        self.comments.clear();
-        cx.emit(DiffViewEvent::SendReview(prompt));
+        let comment_ids = self.comments.iter().map(|comment| comment.id).collect();
+        self.review_delivery_pending = true;
+        cx.emit(DiffViewEvent::SendReview {
+            prompt,
+            comment_ids,
+        });
+        cx.notify();
+    }
+
+    /// Retire only comments included in a review that reached a terminal.
+    /// A new comment added while delivery was queued must remain available.
+    pub fn confirm_review_sent(&mut self, comment_ids: &[u64], cx: &mut Context<Self>) {
+        self.comments
+            .retain(|comment| !comment_ids.contains(&comment.id));
+        self.review_delivery_pending = false;
+        cx.notify();
+    }
+
+    pub fn review_delivery_failed(&mut self, cx: &mut Context<Self>) {
+        self.review_delivery_pending = false;
         cx.notify();
     }
 
@@ -1556,14 +1620,15 @@ impl DiffView {
     // Row model
     // -----------------------------------------------------------------------
 
-    fn ordered_files(&self) -> Vec<GitFileChange> {
+    fn ordered_file_refs(&self) -> impl Iterator<Item = &GitFileChange> {
         let changes = self
             .active_snapshot()
-            .map(|snapshot| snapshot.changes.clone())
-            .unwrap_or_default();
-        let (staged, unstaged): (Vec<_>, Vec<_>) =
-            changes.into_iter().partition(|change| change.staged);
-        unstaged.into_iter().chain(staged).collect()
+            .map(|snapshot| snapshot.changes.as_slice())
+            .unwrap_or(&[]);
+        changes
+            .iter()
+            .filter(|change| !change.staged)
+            .chain(changes.iter().filter(|change| change.staged))
     }
 
     fn document(&self, path: &str) -> Option<&Arc<DiffDocument>> {
@@ -1573,7 +1638,6 @@ impl DiffView {
     /// Rebuild the flat rows when anything they depend on changed, keeping the
     /// row at the top of the viewport in place.
     fn sync_rows(&mut self) {
-        let files = self.ordered_files();
         let mut hasher = DefaultHasher::new();
         (
             self.mode,
@@ -1583,8 +1647,17 @@ impl DiffView {
         )
             .hash(&mut hasher);
         self.font_size.to_bits().hash(&mut hasher);
-        for change in &files {
-            (&change.path, change.staged, change.status.badge()).hash(&mut hasher);
+        for change in self.ordered_file_refs() {
+            (
+                &change.path,
+                &change.old_path,
+                change.staged,
+                change.unstaged,
+                change.additions,
+                change.deletions,
+                git_status_badge(change.status),
+            )
+                .hash(&mut hasher);
             self.expanded.contains(&change.path).hash(&mut hasher);
             self.folds
                 .get(&change.path)
@@ -1602,9 +1675,10 @@ impl DiffView {
             .map(|draft| &draft.anchor)
             .hash(&mut hasher);
         let signature = hasher.finish();
-        if self.rows_signature == Some(signature) {
+        if self.rows_signature == Some(signature) && self.pending_reveal.is_none() {
             return;
         }
+        let files: Vec<_> = self.ordered_file_refs().cloned().collect();
         self.rows_signature = Some(signature);
 
         let worktree = self.mode == GitPanelMode::Worktree;
@@ -1976,7 +2050,7 @@ impl DiffView {
                     .text_size(px(9.0))
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(color)
-                    .child(change.status.badge()),
+                    .child(git_status_badge(change.status)),
             )
             .child(
                 div()
@@ -3008,6 +3082,7 @@ impl DiffView {
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.comments.clear();
+                            this.review_delivery_pending = false;
                             this.draft = None;
                             cx.notify();
                         })),
@@ -3847,6 +3922,19 @@ impl DiffView {
     }
 }
 
+fn git_status_badge(status: GitFileStatus) -> &'static str {
+    match status {
+        GitFileStatus::Added => "A",
+        GitFileStatus::Modified => "M",
+        GitFileStatus::Deleted => "D",
+        GitFileStatus::Renamed => "R",
+        GitFileStatus::Copied => "C",
+        GitFileStatus::TypeChanged => "T",
+        GitFileStatus::Untracked => "?",
+        GitFileStatus::Conflicted => "U",
+    }
+}
+
 fn format_short_date(iso: &str) -> String {
     let mut parts = iso.split('-');
     let Some(year) = parts.next() else {
@@ -3879,257 +3967,4 @@ fn lane_color(lane: usize) -> Rgba {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn diff_source_tracks_worktree_file_changes() {
-        let root = std::env::temp_dir().join(format!(
-            "vibra-diff-source-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        std::fs::create_dir(&root).expect("create test repository directory");
-        std::fs::write(root.join("main.rs"), "fn main() {}\n").expect("write first contents");
-
-        let change = GitFileChange {
-            path: "main.rs".into(),
-            status: GitFileStatus::Modified,
-            staged: false,
-            unstaged: true,
-            untracked: false,
-            additions: Some(1),
-            deletions: Some(1),
-        };
-        let snapshot = GitRepositorySnapshot {
-            root: root.clone(),
-            branch: "main".into(),
-            changes: vec![change.clone()],
-            additions: 1,
-            deletions: 1,
-        };
-        let before = DiffSource::new(&snapshot, &change, None, None);
-        let committed_before = DiffSource::new(&snapshot, &change, Some("parent"), Some("commit"));
-
-        std::fs::write(
-            root.join("main.rs"),
-            "fn main() { println!(\"changed\"); }\n",
-        )
-        .expect("write changed contents");
-        let after = DiffSource::new(&snapshot, &change, None, None);
-
-        assert_ne!(before, after);
-        assert_eq!(
-            committed_before,
-            DiffSource::new(&snapshot, &change, Some("parent"), Some("commit"))
-        );
-        assert_ne!(
-            committed_before,
-            DiffSource::new(&snapshot, &change, Some("parent"), Some("other-commit"))
-        );
-        std::fs::remove_dir_all(root).expect("remove test repository directory");
-    }
-
-    fn git(root: &std::path::Path, arguments: &[&str]) {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(arguments)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "git {arguments:?}");
-    }
-
-    #[gpui::test]
-    fn review_list_is_one_flat_list_with_pinned_headers_and_comments(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        use crate::infrastructure::git::GitCliPort;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        let root = std::env::temp_dir().join(format!(
-            "vibra-review-list-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        git(&root, &["init", "-q"]);
-        git(&root, &["config", "user.name", "Vibra Test"]);
-        git(&root, &["config", "user.email", "vibra@example.invalid"]);
-        let original: String = (1..=120)
-            .map(|line| format!("let line_{line} = {line};\n"))
-            .collect();
-        std::fs::write(root.join("a.rs"), &original).unwrap();
-        git(&root, &["add", "a.rs"]);
-        git(&root, &["commit", "-qm", "initial"]);
-        let changed: String = (1..=120)
-            .map(|line| {
-                if line % 3 == 0 {
-                    format!(
-                        "let line_{line} = {}; // {}\n",
-                        line * 2,
-                        "wide ".repeat(120)
-                    )
-                } else {
-                    format!("let line_{line} = {line};\n")
-                }
-            })
-            .collect();
-        std::fs::write(root.join("a.rs"), changed).unwrap();
-        std::fs::write(root.join("b.rs"), "fn added() {}\n").unwrap();
-
-        let (view, cx) = cx.add_window_view(|_, cx| {
-            let mut view = DiffView::new(root.clone(), Arc::new(GitCliPort::default()), cx);
-            view.set_panel_visible(true, cx);
-            view
-        });
-        let sent = Rc::new(RefCell::new(None::<String>));
-        let sink = sent.clone();
-        cx.update(|_, cx| {
-            cx.subscribe(&view, move |_, event: &DiffViewEvent, _| {
-                if let DiffViewEvent::SendReview(prompt) = event {
-                    *sink.borrow_mut() = Some(prompt.clone());
-                }
-            })
-            .detach();
-        });
-        cx.run_until_parked();
-        let draw = |cx: &mut gpui::VisualTestContext| {
-            cx.update(|window, cx| window.draw(cx).clear());
-            cx.run_until_parked();
-        };
-
-        view.update(cx, |view, cx| {
-            view.toggle_path("a.rs".into(), cx);
-            view.toggle_path("b.rs".into(), cx);
-        });
-        cx.run_until_parked();
-        draw(cx);
-        draw(cx);
-
-        view.update(cx, |view, _| {
-            assert!(view.folds.is_empty(), "fold tweens settle");
-            let headers = view
-                .rows
-                .iter()
-                .filter(|row| matches!(row, ReviewRow::FileHeader { .. }))
-                .count();
-            assert_eq!(headers, 2);
-            let bodies = view
-                .rows
-                .iter()
-                .filter(|row| matches!(row, ReviewRow::Body { .. }))
-                .count();
-            assert!(bodies > 80, "every diff line is its own row: {bodies}");
-            assert!(view.h_max > 0.0, "the widest line overflows the code plane");
-        });
-
-        // Sideways gestures move only the code plane, never the file list.
-        let top_before = view.read_with(cx, |view, _| view.list_state.logical_scroll_top().item_ix);
-        cx.simulate_event(ScrollWheelEvent {
-            position: point(px(300.0), px(400.0)),
-            delta: gpui::ScrollDelta::Pixels(point(px(-80.0), px(-3.0))),
-            ..Default::default()
-        });
-        view.update(cx, |view, _| {
-            assert_eq!(view.h_offset, 80.0);
-            assert_eq!(view.list_state.logical_scroll_top().item_ix, top_before);
-        });
-
-        // Scrolling into a file pins its header over the list.
-        view.update(cx, |view, _| {
-            view.list_state.scroll_to(ListOffset {
-                item_ix: 30,
-                offset_in_item: px(0.0),
-            })
-        });
-        draw(cx);
-        view.update(cx, |view, _| {
-            let (file, offset) = view.sticky_header().expect("header pinned");
-            assert_eq!(view.row_files[file].path, "a.rs");
-            assert_eq!(offset, 0.0);
-        });
-
-        // Split pairs rows without losing the scroll position's file.
-        view.update(cx, |view, cx| view.set_layout(DiffLayout::Split, cx));
-        draw(cx);
-        view.update(cx, |view, _| {
-            assert!(view.rows.iter().any(|row| matches!(
-                row,
-                ReviewRow::Body {
-                    row: BodyRow::Split { .. },
-                    ..
-                }
-            )));
-            let top = view.list_state.logical_scroll_top().item_ix;
-            assert_eq!(
-                view.rows[top]
-                    .file()
-                    .map(|file| view.row_files[file].path.as_str()),
-                Some("a.rs")
-            );
-        });
-
-        // A comment is drafted on a line, kept, and pasted as one prompt.
-        view.update_in(cx, |view, window, cx| {
-            view.open_draft(
-                CommentAnchor {
-                    path: "a.rs".into(),
-                    side: CommentSide::New,
-                    line: 3,
-                },
-                "let line_3 = 6;".into(),
-                window,
-                cx,
-            );
-            view.draft.as_mut().unwrap().body = "Keep the original value.".into();
-            view.commit_draft();
-        });
-        draw(cx);
-        view.update(cx, |view, cx| {
-            assert!(
-                view.rows
-                    .iter()
-                    .any(|row| matches!(row, ReviewRow::Comment { .. }))
-            );
-            view.send_review(cx);
-            assert!(view.comments.is_empty());
-        });
-        let prompt = sent.borrow().clone().expect("review sent to the agent");
-        assert!(prompt.contains("a.rs:3"));
-        assert!(prompt.contains("Keep the original value."));
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn gutters_grow_with_line_numbers_and_font() {
-        let metrics = RowMetrics {
-            font_size: 12.0,
-            line_height: 22.0,
-            hunk_height: 28.0,
-            char_width: 7.0,
-            wrap: false,
-            h_offset: 0.0,
-        };
-        assert_eq!(metrics.gutter_width(9), metrics.gutter_width(999));
-        assert!(metrics.gutter_width(10_000) > metrics.gutter_width(999));
-        let larger = RowMetrics {
-            char_width: 9.0,
-            ..metrics
-        };
-        assert!(larger.gutter_width(999) > metrics.gutter_width(999));
-    }
-
-    #[test]
-    fn elapsed_labels_stay_short() {
-        assert_eq!(elapsed_label(Duration::from_secs(20)), "started just now");
-        assert_eq!(
-            elapsed_label(Duration::from_secs(5 * 60)),
-            "started 5 min ago"
-        );
-        assert_eq!(
-            elapsed_label(Duration::from_secs(3 * 3600)),
-            "started 3 h ago"
-        );
-    }
-}
+mod tests;

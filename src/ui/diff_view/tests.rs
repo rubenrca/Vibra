@@ -1,0 +1,375 @@
+use super::*;
+
+#[gpui::test]
+fn changing_repository_clears_old_snapshot_before_refresh(cx: &mut gpui::TestAppContext) {
+    use crate::infrastructure::git::GitCliPort;
+
+    let old_root = PathBuf::from("/tmp/vibra-old-project");
+    let new_root = PathBuf::from("/tmp/vibra-new-project");
+    let change = GitFileChange {
+        path: "src/main.rs".into(),
+        old_path: None,
+        status: GitFileStatus::Modified,
+        staged: false,
+        unstaged: true,
+        untracked: false,
+        additions: Some(1),
+        deletions: Some(0),
+    };
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut view = DiffView::new(old_root.clone(), Arc::new(GitCliPort::default()), cx);
+        view.snapshot = Some(GitRepositorySnapshot {
+            root: old_root.clone(),
+            branch: "main".into(),
+            changes: vec![change],
+            additions: 1,
+            deletions: 0,
+        });
+        view.status_root = Some(old_root);
+        view.status_index = Arc::new(HashMap::from([(
+            "src/main.rs".into(),
+            GitFileStatus::Modified,
+        )]));
+        view
+    });
+
+    view.update(cx, |view, cx| {
+        view.set_root(new_root.clone(), cx);
+        assert_eq!(view.context_root, new_root);
+        assert!(view.snapshot.is_none());
+        assert!(view.status_root.is_none());
+        assert!(view.status_index.is_empty());
+        assert!(!view.select_path_if_changed("src/main.rs", cx));
+    });
+}
+
+#[test]
+fn diff_source_tracks_worktree_file_changes() {
+    let root = std::env::temp_dir().join(format!(
+        "vibra-diff-source-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir(&root).expect("create test repository directory");
+    std::fs::write(root.join("main.rs"), "fn main() {}\n").expect("write first contents");
+
+    let change = GitFileChange {
+        path: "main.rs".into(),
+        old_path: None,
+        status: GitFileStatus::Modified,
+        staged: false,
+        unstaged: true,
+        untracked: false,
+        additions: Some(1),
+        deletions: Some(1),
+    };
+    let snapshot = GitRepositorySnapshot {
+        root: root.clone(),
+        branch: "main".into(),
+        changes: vec![change.clone()],
+        additions: 1,
+        deletions: 1,
+    };
+    let before = DiffSource::new(&snapshot, &change, None, None);
+    let committed_before = DiffSource::new(&snapshot, &change, Some("parent"), Some("commit"));
+
+    let path = root.join("main.rs");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&path, "fn test() {}\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let same_size_and_mtime = DiffSource::new(&snapshot, &change, None, None);
+    assert_eq!(before.worktree_version.as_ref().unwrap().length, 13);
+    assert_eq!(
+        before.worktree_version.as_ref().unwrap().modified,
+        same_size_and_mtime
+            .worktree_version
+            .as_ref()
+            .unwrap()
+            .modified
+    );
+    assert_ne!(before, same_size_and_mtime);
+
+    std::fs::write(
+        root.join("main.rs"),
+        "fn main() { println!(\"changed\"); }\n",
+    )
+    .expect("write changed contents");
+    let after = DiffSource::new(&snapshot, &change, None, None);
+
+    assert_ne!(before, after);
+    assert_eq!(
+        committed_before,
+        DiffSource::new(&snapshot, &change, Some("parent"), Some("commit"))
+    );
+    assert_ne!(
+        committed_before,
+        DiffSource::new(&snapshot, &change, Some("parent"), Some("other-commit"))
+    );
+    std::fs::remove_dir_all(root).expect("remove test repository directory");
+}
+
+fn git(root: &std::path::Path, arguments: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {arguments:?}");
+}
+
+#[gpui::test]
+fn loading_more_than_twelve_diffs_does_not_strand_older_files(cx: &mut gpui::TestAppContext) {
+    use crate::infrastructure::git::GitCliPort;
+
+    let root = std::env::temp_dir().join(format!(
+        "vibra-many-diffs-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    git(&root, &["config", "user.name", "Vibra Test"]);
+    git(&root, &["config", "user.email", "vibra@example.invalid"]);
+    for index in 0..13 {
+        std::fs::write(root.join(format!("file_{index}.rs")), "let value = 0;\n").unwrap();
+    }
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-qm", "initial"]);
+    for index in 0..13 {
+        std::fs::write(root.join(format!("file_{index}.rs")), "let value = 1;\n").unwrap();
+    }
+
+    let port = Arc::new(GitCliPort::default());
+    let snapshot = port.snapshot(&root).unwrap().unwrap();
+    let paths: Vec<_> = snapshot
+        .changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect();
+    assert_eq!(paths.len(), 13);
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut view = DiffView::new(root.clone(), port, cx);
+        view.snapshot = Some(snapshot);
+        view
+    });
+    view.update(cx, |view, cx| {
+        for path in paths {
+            view.load_diff(path, cx);
+        }
+        assert_eq!(view.pending_loads.len(), 13);
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, _| {
+        assert!(view.pending_loads.is_empty());
+        assert_eq!(view.documents.len(), 13);
+    });
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn review_list_is_one_flat_list_with_pinned_headers_and_comments(cx: &mut gpui::TestAppContext) {
+    use crate::infrastructure::git::GitCliPort;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let root = std::env::temp_dir().join(format!(
+        "vibra-review-list-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    git(&root, &["config", "user.name", "Vibra Test"]);
+    git(&root, &["config", "user.email", "vibra@example.invalid"]);
+    let original: String = (1..=120)
+        .map(|line| format!("let line_{line} = {line};\n"))
+        .collect();
+    std::fs::write(root.join("a.rs"), &original).unwrap();
+    git(&root, &["add", "a.rs"]);
+    git(&root, &["commit", "-qm", "initial"]);
+    let changed: String = (1..=120)
+        .map(|line| {
+            if line % 3 == 0 {
+                format!(
+                    "let line_{line} = {}; // {}\n",
+                    line * 2,
+                    "wide ".repeat(120)
+                )
+            } else {
+                format!("let line_{line} = {line};\n")
+            }
+        })
+        .collect();
+    std::fs::write(root.join("a.rs"), changed).unwrap();
+    std::fs::write(root.join("b.rs"), "fn added() {}\n").unwrap();
+
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut view = DiffView::new(root.clone(), Arc::new(GitCliPort::default()), cx);
+        view.set_panel_visible(true, cx);
+        view
+    });
+    let sent = Rc::new(RefCell::new(Vec::<String>::new()));
+    let sink = sent.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event: &DiffViewEvent, _| {
+            if let DiffViewEvent::SendReview { prompt, .. } = event {
+                sink.borrow_mut().push(prompt.clone());
+            }
+        })
+        .detach();
+    });
+    cx.run_until_parked();
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.run_until_parked();
+    };
+
+    view.update(cx, |view, cx| {
+        view.toggle_path("a.rs".into(), cx);
+        view.toggle_path("b.rs".into(), cx);
+    });
+    cx.run_until_parked();
+    draw(cx);
+    draw(cx);
+
+    view.update(cx, |view, _| {
+        assert!(view.folds.is_empty(), "fold tweens settle");
+        let headers = view
+            .rows
+            .iter()
+            .filter(|row| matches!(row, ReviewRow::FileHeader { .. }))
+            .count();
+        assert_eq!(headers, 2);
+        let bodies = view
+            .rows
+            .iter()
+            .filter(|row| matches!(row, ReviewRow::Body { .. }))
+            .count();
+        assert!(bodies > 80, "every diff line is its own row: {bodies}");
+        assert!(view.h_max > 0.0, "the widest line overflows the code plane");
+    });
+
+    // Sideways gestures move only the code plane, never the file list.
+    let top_before = view.read_with(cx, |view, _| view.list_state.logical_scroll_top().item_ix);
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(300.0), px(400.0)),
+        delta: gpui::ScrollDelta::Pixels(point(px(-80.0), px(-3.0))),
+        ..Default::default()
+    });
+    view.update(cx, |view, _| {
+        assert_eq!(view.h_offset, 80.0);
+        assert_eq!(view.list_state.logical_scroll_top().item_ix, top_before);
+    });
+
+    // Scrolling into a file pins its header over the list.
+    view.update(cx, |view, _| {
+        view.list_state.scroll_to(ListOffset {
+            item_ix: 30,
+            offset_in_item: px(0.0),
+        })
+    });
+    draw(cx);
+    view.update(cx, |view, _| {
+        let (file, offset) = view.sticky_header().expect("header pinned");
+        assert_eq!(view.row_files[file].path, "a.rs");
+        assert_eq!(offset, 0.0);
+    });
+
+    // Split pairs rows without losing the scroll position's file.
+    view.update(cx, |view, cx| view.set_layout(DiffLayout::Split, cx));
+    draw(cx);
+    view.update(cx, |view, _| {
+        assert!(view.rows.iter().any(|row| matches!(
+            row,
+            ReviewRow::Body {
+                row: BodyRow::Split { .. },
+                ..
+            }
+        )));
+        let top = view.list_state.logical_scroll_top().item_ix;
+        assert_eq!(
+            view.rows[top]
+                .file()
+                .map(|file| view.row_files[file].path.as_str()),
+            Some("a.rs")
+        );
+    });
+
+    // A comment is drafted on a line, kept, and pasted as one prompt.
+    view.update_in(cx, |view, window, cx| {
+        view.open_draft(
+            CommentAnchor {
+                path: "a.rs".into(),
+                side: CommentSide::New,
+                line: 3,
+            },
+            "let line_3 = 6;".into(),
+            window,
+            cx,
+        );
+        view.draft.as_mut().unwrap().body = "Keep the original value.".into();
+        view.commit_draft();
+    });
+    draw(cx);
+    view.update(cx, |view, cx| {
+        assert!(
+            view.rows
+                .iter()
+                .any(|row| matches!(row, ReviewRow::Comment { .. }))
+        );
+        view.send_review(cx);
+        view.send_review(cx);
+        assert!(view.review_delivery_pending);
+        assert_eq!(
+            view.comments.len(),
+            1,
+            "comments remain until delivery succeeds"
+        );
+        let sent_id = view.comments[0].id;
+        view.confirm_review_sent(&[sent_id], cx);
+        assert!(view.comments.is_empty());
+    });
+    let sent = sent.borrow();
+    assert_eq!(sent.len(), 1, "a repeated click must not paste twice");
+    let prompt = &sent[0];
+    assert!(prompt.contains("a.rs:3"));
+    assert!(prompt.contains("Keep the original value."));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn gutters_grow_with_line_numbers_and_font() {
+    let metrics = RowMetrics {
+        font_size: 12.0,
+        line_height: 22.0,
+        hunk_height: 28.0,
+        char_width: 7.0,
+        wrap: false,
+        h_offset: 0.0,
+    };
+    assert_eq!(metrics.gutter_width(9), metrics.gutter_width(999));
+    assert!(metrics.gutter_width(10_000) > metrics.gutter_width(999));
+    let larger = RowMetrics {
+        char_width: 9.0,
+        ..metrics
+    };
+    assert!(larger.gutter_width(999) > metrics.gutter_width(999));
+}
+
+#[test]
+fn elapsed_labels_stay_short() {
+    assert_eq!(elapsed_label(Duration::from_secs(20)), "started just now");
+    assert_eq!(
+        elapsed_label(Duration::from_secs(5 * 60)),
+        "started 5 min ago"
+    );
+    assert_eq!(
+        elapsed_label(Duration::from_secs(3 * 3600)),
+        "started 3 h ago"
+    );
+}

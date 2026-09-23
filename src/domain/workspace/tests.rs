@@ -51,6 +51,103 @@ fn agent_task_titles_persist_and_survive_terminal_updates_without_renaming_manua
     );
 }
 
+#[test]
+fn truncated_agent_task_title_updates_are_idempotent() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(Path::new("/tmp/task-title"));
+    let session_id = snapshot.selected_session().unwrap().id;
+    let title = "é".repeat(100);
+
+    assert!(snapshot.update_agent_task_title(session_id, &title));
+    assert_eq!(
+        snapshot
+            .selected_session()
+            .unwrap()
+            .agent_task_title
+            .as_deref(),
+        Some("é".repeat(80).as_str())
+    );
+    assert!(!snapshot.update_agent_task_title(session_id, &title));
+}
+
+#[test]
+fn normalization_repairs_duplicate_terminal_ids_without_losing_sessions() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(Path::new("/tmp/duplicate-terminals"));
+    let original_id = snapshot.selected_session().unwrap().id;
+    let second_id = snapshot
+        .split_selected_terminal(PaneSplitDirection::Right)
+        .unwrap();
+    let tab = &mut snapshot.projects[0].workspaces.as_mut().unwrap()[0].tabs[0];
+    tab.sessions[1].id = original_id;
+    tab.sessions[1].title = "Second pane".into();
+    tab.layout.replace_terminal_id(second_id, original_id);
+
+    snapshot.normalize();
+
+    let tab = snapshot.selected_tab().unwrap();
+    assert_eq!(tab.sessions.len(), 2);
+    assert_eq!(tab.sessions[1].title, "Second pane");
+    assert_ne!(tab.sessions[0].id, tab.sessions[1].id);
+    assert_eq!(
+        tab.layout.terminal_ids(),
+        tab.sessions.iter().map(|s| s.id).collect::<Vec<_>>()
+    );
+    assert!(snapshot.selected_session().is_some());
+}
+
+#[test]
+fn normalization_preserves_geometry_when_ids_collide_across_tabs() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(Path::new("/tmp/duplicate-tabs"));
+    let first_id = snapshot.selected_session().unwrap().id;
+    let (_, second_id) = snapshot
+        .create_terminal_tab_with_options(true, None)
+        .unwrap();
+    let third_id = snapshot
+        .split_selected_terminal(PaneSplitDirection::Right)
+        .unwrap();
+    assert!(snapshot.set_selected_split_ratio(&[], 7_000));
+    let tab = &mut snapshot.projects[0].workspaces.as_mut().unwrap()[0].tabs[1];
+    tab.sessions[0].id = first_id;
+    tab.layout.replace_terminal_id(second_id, first_id);
+    tab.selected_session_id = Some(first_id);
+    tab.zoomed_session_id = Some(first_id);
+
+    snapshot.normalize();
+
+    let tab = snapshot.selected_tab().unwrap();
+    let reassigned_id = tab.sessions[0].id;
+    assert_ne!(reassigned_id, first_id);
+    assert_eq!(tab.selected_session_id, Some(reassigned_id));
+    assert_eq!(tab.zoomed_session_id, Some(reassigned_id));
+    assert_eq!(tab.layout.terminal_ids(), vec![reassigned_id, third_id]);
+    assert!(matches!(
+        tab.layout,
+        PaneLayoutSnapshot::Split { ratio: 7_000, .. }
+    ));
+}
+
+#[test]
+fn cycling_panes_handles_large_offsets_without_overflow() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(Path::new("/tmp/cycle-panes"));
+    let first = snapshot.selected_session().unwrap().id;
+    let second = snapshot
+        .split_selected_terminal(PaneSplitDirection::Right)
+        .unwrap();
+    let third = snapshot
+        .split_selected_terminal(PaneSplitDirection::Right)
+        .unwrap();
+    let ids = snapshot.selected_tab().unwrap().layout.terminal_ids();
+    assert_eq!(ids, vec![first, second, third]);
+
+    assert!(snapshot.cycle_terminal(isize::MAX));
+    assert_eq!(snapshot.selected_session().unwrap().id, first);
+    assert!(snapshot.cycle_terminal(isize::MIN));
+    assert_eq!(snapshot.selected_session().unwrap().id, second);
+}
+
 fn uuid(value: &str) -> Uuid {
     Uuid::parse_str(value).unwrap()
 }
@@ -478,6 +575,21 @@ fn terminal_title_updates_the_canonical_and_legacy_views() {
 }
 
 #[test]
+fn oversized_terminal_titles_are_bounded_and_repeat_updates_are_idempotent() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(Path::new("/tmp/vibra-title-limit"));
+    let session_id = snapshot.selected_session().unwrap().id;
+    let title = "é".repeat(MAX_SESSION_TITLE_CHARS + 100);
+
+    assert!(snapshot.update_session_title(session_id, &title));
+    assert_eq!(
+        snapshot.selected_session().unwrap().title.chars().count(),
+        MAX_SESSION_TITLE_CHARS
+    );
+    assert!(!snapshot.update_session_title(session_id, &title));
+}
+
+#[test]
 fn global_session_operations_find_unselected_projects_workspaces_and_tabs() {
     let mut snapshot = WorkspaceSnapshot::default();
     let root = Path::new("/tmp/vibra-global");
@@ -607,7 +719,6 @@ fn painted_session_ids_follow_tab_workspace_and_zoom() {
 #[test]
 fn accidental_root_workspace_relocates_every_session() {
     let target = std::env::temp_dir().join(format!("VibraDev-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&target).unwrap();
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/"));
     snapshot.create_terminal_tab_with_options(true, None);
@@ -624,5 +735,5 @@ fn accidental_root_workspace_relocates_every_session() {
             .all(|session| { session.working_directory == target.to_string_lossy() })
     );
     assert!(!snapshot.relocate_root(Path::new("/"), &target));
-    std::fs::remove_dir_all(target).unwrap();
+    assert!(!snapshot.relocate_root(&target, &target));
 }

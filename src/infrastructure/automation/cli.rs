@@ -96,18 +96,20 @@ pub(super) fn parse_cli_command(mode: &str, arguments: &[String]) -> Result<Auto
         "presence" => parse_agent_presence(&arguments[1..]),
         "attention" => parse_agent_attention(&arguments[1..]),
         "hook" => parse_agent_hook(&arguments[1..]),
-        "clear" => Ok(AutomationCommand::ClearAgentPresence {
-            session_id: parse_agent_flag(&arguments[1..], "--session")?,
-        }),
-        "idle" => Ok(AutomationCommand::SetAgentState {
-            state: AgentRuntimeState::Idle,
-        }),
-        "working" => Ok(AutomationCommand::SetAgentState {
-            state: AgentRuntimeState::Working,
-        }),
-        "waiting" => Ok(AutomationCommand::SetAgentState {
-            state: AgentRuntimeState::Waiting,
-        }),
+        "clear" => {
+            let options = parse_agent_options(&arguments[1..], false)?;
+            Ok(AutomationCommand::ClearAgentPresence {
+                session_id: options.session_id,
+            })
+        }
+        "idle" | "working" | "waiting" => {
+            if arguments.len() != 1 {
+                bail!("{operation} no acepta argumentos");
+            }
+            Ok(AutomationCommand::SetAgentState {
+                state: parse_agent_runtime_state(Some(operation))?,
+            })
+        }
         _ => bail!("uso: +agent [presence|attention|hook|clear|idle|working|waiting]"),
     }
 }
@@ -127,24 +129,23 @@ fn parse_agent_presence(arguments: &[String]) -> Result<AutomationCommand> {
             )
         })?;
     let state = parse_agent_runtime_state(arguments.get(1).map(String::as_str))?;
-    let attention = arguments
-        .get(2)
-        .filter(|value| !value.starts_with("--"))
-        .and_then(|value| AgentAttention::parse(value))
-        .or_else(|| (state == AgentRuntimeState::Waiting).then_some(AgentAttention::Notification));
-    if arguments
-        .get(2)
-        .is_some_and(|value| !value.starts_with("--") && attention.is_none())
-    {
-        bail!("atención esperada: permission, question, plan o notification");
-    }
+    let explicit_attention = arguments.get(2).filter(|value| !value.starts_with("--"));
+    let attention = match explicit_attention {
+        Some(value) => Some(parse_attention(value)?),
+        None if state == AgentRuntimeState::Waiting => Some(AgentAttention::Notification),
+        None => None,
+    };
+    let options = parse_agent_options(
+        &arguments[2 + usize::from(explicit_attention.is_some())..],
+        true,
+    )?;
     Ok(AutomationCommand::SetAgentPresence {
         task_title: None,
         kind,
         state,
         attention,
-        model: parse_agent_flag(arguments, "--model")?,
-        session_id: parse_agent_flag(arguments, "--session")?,
+        model: options.model,
+        session_id: options.session_id,
     })
 }
 
@@ -153,17 +154,22 @@ fn parse_agent_attention(arguments: &[String]) -> Result<AutomationCommand> {
         .first()
         .and_then(|kind| AgentKind::parse(kind))
         .context("agent esperado después de attention")?;
-    let attention = arguments
-        .get(1)
-        .and_then(|attention| AgentAttention::parse(attention))
+    let explicit_attention = arguments.get(1).filter(|value| !value.starts_with("--"));
+    let attention = explicit_attention
+        .map(|value| parse_attention(value))
+        .transpose()?
         .unwrap_or(AgentAttention::Notification);
+    let options = parse_agent_options(
+        &arguments[1 + usize::from(explicit_attention.is_some())..],
+        true,
+    )?;
     Ok(AutomationCommand::SetAgentPresence {
         task_title: None,
         kind,
         state: AgentRuntimeState::Waiting,
         attention: Some(attention),
-        model: parse_agent_flag(arguments, "--model")?,
-        session_id: parse_agent_flag(arguments, "--session")?,
+        model: options.model,
+        session_id: options.session_id,
     })
 }
 
@@ -176,6 +182,12 @@ fn parse_agent_hook(arguments: &[String]) -> Result<AutomationCommand> {
         .get(1)
         .map(String::as_str)
         .context("falta evento de hook")?;
+    if arguments.len() != 2 {
+        bail!("uso: +agent hook <claude|codex> <evento>");
+    }
+    if !matches!(kind, AgentKind::Claude | AgentKind::Codex) {
+        bail!("Vibra todavía no incluye hooks para {}", kind.cli_name());
+    }
     let mut input = String::new();
     std::io::stdin()
         .take(MAX_AGENT_HOOK_BYTES + 1)
@@ -273,15 +285,36 @@ fn parse_agent_runtime_state(value: Option<&str>) -> Result<AgentRuntimeState> {
     }
 }
 
-fn parse_agent_flag(arguments: &[String], flag: &str) -> Result<Option<String>> {
-    let Some(index) = arguments.iter().position(|argument| argument == flag) else {
-        return Ok(None);
-    };
-    arguments
-        .get(index + 1)
-        .cloned()
-        .map(Some)
-        .with_context(|| format!("falta valor para {flag}"))
+fn parse_attention(value: &str) -> Result<AgentAttention> {
+    AgentAttention::parse(value)
+        .context("atención esperada: permission, question, plan o notification")
+}
+
+#[derive(Default)]
+struct AgentOptions {
+    model: Option<String>,
+    session_id: Option<String>,
+}
+
+fn parse_agent_options(arguments: &[String], allow_model: bool) -> Result<AgentOptions> {
+    let mut options = AgentOptions::default();
+    let mut arguments = arguments.iter();
+    while let Some(flag) = arguments.next() {
+        let destination = match flag.as_str() {
+            "--model" if allow_model => &mut options.model,
+            "--session" => &mut options.session_id,
+            _ => bail!("argumento no reconocido: {flag}"),
+        };
+        if destination.is_some() {
+            bail!("{flag} aparece más de una vez");
+        }
+        let value = arguments
+            .next()
+            .filter(|value| !value.is_empty() && !value.starts_with("--"))
+            .with_context(|| format!("falta valor para {flag}"))?;
+        *destination = Some(value.clone());
+    }
+    Ok(options)
 }
 
 /// A local, bounded label from the user's first prose line. Follow-up acknowledgements
@@ -410,7 +443,10 @@ mod task_title_tests {
         let title = agent_task_title(&"á".repeat(100)).unwrap();
         assert_eq!(title.chars().count(), 57);
         assert!(title.ends_with('…'));
-        let title = agent_task_title("Agregar soporte para notificaciones cuando el agente termine de ejecutar todas las pruebas").unwrap();
+        let title = agent_task_title(
+            "Agregar soporte para notificaciones cuando el agente termine de ejecutar todas las pruebas",
+        )
+        .unwrap();
         assert!(title.chars().count() <= 57);
         assert!(title.ends_with('…'));
     }

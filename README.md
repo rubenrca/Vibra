@@ -118,6 +118,10 @@ cargo run
 cargo run -- /ruta/al/proyecto
 ```
 
+Las rutas relativas se resuelven contra el directorio actual antes de guardarse.
+Si una carpeta se llama `agent`, usa `./agent` para distinguirla del subcomando
+de configuración de hooks.
+
 Para evaluar fluidez y rendimiento, usa `cargo run --release`; `cargo run` compila
 sin optimizaciones y añade coste al renderizado.
 
@@ -144,34 +148,38 @@ open dist/Vibra.app
 Bundle universal, DMG, firma Developer ID y notarización:
 
 ```bash
-./Scripts/package_app.sh release --universal --dmg --notarize
+./Scripts/package_app.sh release --universal --dmg --notarize --sign "$VIBRA_SIGNING_IDENTITY"
 ```
 
 La notarización usa `APPLE_KEYCHAIN_PROFILE`, o `APPLE_ID`, `APPLE_TEAM_ID` y
 `APPLE_APP_SPECIFIC_PASSWORD`. La identidad puede definirse con
-`VIBRA_SIGNING_IDENTITY` o `--sign`. El release normal notariza solo el DMG,
+`VIBRA_SIGNING_IDENTITY` o `--sign`; para notarizar se exige elegirla explícitamente.
+El release normal notariza solo el DMG,
 que es el archivo distribuido. La espera está limitada a dos horas por defecto;
 si Apple demora más, conserva la solicitud y el ID queda en
-`dist/notarization/Vibra.dmg.submission-id` para consultarlo después.
+`dist/notarization/Vibra.dmg.submission-id` para consultarlo después. El script
+respeta `CARGO_TARGET_DIR` si se usa un directorio de compilación distinto.
 
 ## Releases
 
 Requiere un árbol limpio, `Cargo.toml` y una sección en `CHANGELOG.md` con la
 misma versión, más Sparkle descargado con `./Scripts/fetch_sparkle.sh`
-(clave EdDSA en el llavero):
+(clave EdDSA en el llavero) y `VIBRA_SIGNING_IDENTITY` con el nombre completo
+del certificado Developer ID de Vibra:
 
 ```bash
 ./Scripts/release.sh 0.3.27 --dry-run
 ./Scripts/release.sh 0.3.27
 ./Scripts/release.sh 0.3.27-beta.1 --prerelease
-./Scripts/release.sh 0.3.27 --no-notarize   # solo si hace falta omitir notarización
-./Scripts/release.sh 0.3.27 --resume-dmg    # publica un DMG ya notarizado tras una espera interrumpida
+./Scripts/release.sh 0.3.27 --dry-run --no-notarize  # empaquetado local sin notarizar
+./Scripts/release.sh 0.3.27 --resume-dmg    # valida y publica el DMG tras una espera interrumpida
 ```
 
 Un release **estable** crea el DMG universal, firma con Developer ID, notariza
-por defecto (opt-out con `--no-notarize`), firma el appcast, publica en GitHub
+con Apple, firma el appcast, publica en GitHub
 como Latest y actualiza `docs/appcast.xml`. Un **prerelease** no toca el feed
-de Sparkle.
+de Sparkle. Al reanudar, el script comprueba versión, build, commit de origen,
+identidad de firma y ticket de notarización antes de publicar.
 
 ## Migración de datos
 

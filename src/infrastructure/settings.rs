@@ -1,13 +1,15 @@
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::appearance::AppearanceMode;
 use crate::infrastructure::paths::{
-    application_support_directory, atomic_write, gpui_preview_support_directory,
+    RevisionGuard, application_support_directory, atomic_write, gpui_preview_support_directory,
 };
-use crate::ui::theme::{AppearanceMode, is_known_theme_id};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
@@ -161,7 +163,7 @@ impl AppSettings {
         self.window_height = self
             .window_height
             .clamp(MIN_WINDOW_HEIGHT, MAX_WINDOW_DIMENSION);
-        if !is_known_theme_id(&self.theme_id) {
+        if self.theme_id.trim().is_empty() {
             self.theme_id = default_theme_id();
         }
         self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
@@ -186,6 +188,7 @@ impl AppSettings {
 pub struct SettingsRepository {
     path: PathBuf,
     preview_path: Option<PathBuf>,
+    revision: Arc<RevisionGuard>,
 }
 
 impl SettingsRepository {
@@ -195,6 +198,7 @@ impl SettingsRepository {
             path: support_directory.join(SETTINGS_FILE_NAME),
             preview_path: gpui_preview_support_directory()
                 .map(|directory| directory.join(SETTINGS_FILE_NAME)),
+            revision: Arc::new(RevisionGuard::default()),
         })
     }
 
@@ -203,6 +207,7 @@ impl SettingsRepository {
         Self {
             path: path.into(),
             preview_path: None,
+            revision: Arc::new(RevisionGuard::default()),
         }
     }
 
@@ -211,20 +216,25 @@ impl SettingsRepository {
         Self {
             path: path.into(),
             preview_path: Some(preview_path.into()),
+            revision: Arc::new(RevisionGuard::default()),
         }
     }
 
     pub fn load(&self) -> Result<AppSettings> {
-        crate::ui::theme::refresh_user_themes();
+        let result = self.load_inner();
+        if let Err(error) = &result {
+            self.revision.blocked(error);
+        }
+        result
+    }
+
+    fn load_inner(&self) -> Result<AppSettings> {
         self.import_preview_settings()?;
         if !self.path.exists() {
+            self.revision.loaded(None);
             return Ok(AppSettings::default());
         }
-        let metadata = fs::metadata(&self.path)?;
-        if metadata.len() > MAX_SETTINGS_BYTES {
-            bail!("{} supera el límite de 1 MiB", self.path.display());
-        }
-        let bytes = fs::read(&self.path)?;
+        let bytes = read_settings_file(&self.path)?;
         let mut settings: AppSettings = serde_json::from_slice(&bytes)
             .with_context(|| format!("JSON inválido en {}", self.path.display()))?;
         if settings.schema_version > CURRENT_SETTINGS_SCHEMA_VERSION {
@@ -236,13 +246,17 @@ impl SettingsRepository {
             );
         }
         settings.normalize();
+        self.revision.loaded(Some(bytes));
         Ok(settings)
     }
 
     pub fn save(&self, settings: &AppSettings) -> Result<()> {
         self.import_preview_settings()?;
         let data = serde_json::to_vec(settings)?;
-        atomic_write(&self.path, &data)?;
+        if data.len() as u64 > MAX_SETTINGS_BYTES {
+            bail!("los settings superan el límite de 1 MiB y no se pueden guardar");
+        }
+        self.revision.save(&self.path, &data)?;
         Ok(())
     }
 
@@ -259,7 +273,13 @@ impl SettingsRepository {
         };
         let parent = self.path.parent().context("settings.json no tiene padre")?;
         fs::create_dir_all(parent)?;
-        fs::copy(preview_path, &self.path).with_context(|| {
+        let data = read_settings_file(preview_path)?;
+        let preview: AppSettings = serde_json::from_slice(&data)
+            .with_context(|| format!("JSON inválido en {}", preview_path.display()))?;
+        if preview.schema_version > CURRENT_SETTINGS_SCHEMA_VERSION {
+            bail!("{} usa un esquema futuro", preview_path.display());
+        }
+        atomic_write(&self.path, &data).with_context(|| {
             format!(
                 "no se pudo importar {} a {}",
                 preview_path.display(),
@@ -268,6 +288,20 @@ impl SettingsRepository {
         })?;
         Ok(())
     }
+}
+
+fn read_settings_file(path: &std::path::Path) -> Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if metadata.len() > MAX_SETTINGS_BYTES {
+        bail!("{} supera el límite de 1 MiB", path.display());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SETTINGS_BYTES {
+        bail!("{} supera el límite de 1 MiB", path.display());
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -297,6 +331,23 @@ mod tests {
     }
 
     #[test]
+    fn settings_load_preserves_theme_id_without_ui_theme_registry() {
+        let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
+        let repository = SettingsRepository::at(root.join("settings.json"));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("settings.json"),
+            br#"{"themeId":"user:temporarily-missing","appearanceMode":"dark"}"#,
+        )
+        .unwrap();
+
+        let settings = repository.load().unwrap();
+        assert_eq!(settings.theme_id, "user:temporarily-missing");
+        assert_eq!(settings.appearance_mode, AppearanceMode::Dark);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn settings_import_from_the_gpui_preview_once() {
         let root = std::env::temp_dir().join(format!("vibra-settings-import-{}", Uuid::new_v4()));
         let canonical = root.join("Vibra/settings.json");
@@ -304,7 +355,11 @@ mod tests {
         fs::create_dir_all(preview.parent().unwrap()).unwrap();
         fs::write(
             &preview,
-            br#"{"schemaVersion":1,"terminalFontSize":14,"showHiddenFiles":true,"leftSidebarVisible":false,"gitPanelVisible":true}"#,
+            concat!(
+                r#"{"schemaVersion":1,"terminalFontSize":14,"showHiddenFiles":true,"#,
+                r#""leftSidebarVisible":false,"gitPanelVisible":true}"#
+            )
+            .as_bytes(),
         )
         .unwrap();
         let repository = SettingsRepository::with_preview(&canonical, &preview);
@@ -320,6 +375,41 @@ mod tests {
         assert_eq!(settings.window_width, DEFAULT_WINDOW_WIDTH);
         assert_eq!(settings.window_height, DEFAULT_WINDOW_HEIGHT);
         assert!(canonical.exists());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&canonical).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_load_never_overwrites_future_settings() {
+        let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
+        let path = root.join("settings.json");
+        fs::create_dir_all(&root).unwrap();
+        let original = br#"{"schemaVersion":999,"agentNotifications":false}"#;
+        fs::write(&path, original).unwrap();
+        let repository = SettingsRepository::at(&path);
+        assert!(repository.load().is_err());
+        assert!(repository.save(&AppSettings::default()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_settings_instances_detect_conflicting_changes() {
+        let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
+        let path = root.join("settings.json");
+        let first = SettingsRepository::at(&path);
+        let second = SettingsRepository::at(&path);
+        let mut first_settings = first.load().unwrap();
+        let mut second_settings = second.load().unwrap();
+        first_settings.show_hidden_files = true;
+        second_settings.agent_notifications = false;
+        first.save(&first_settings).unwrap();
+        assert!(second.save(&second_settings).is_err());
+        assert_eq!(first.load().unwrap(), first_settings);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -37,5 +37,7 @@ jobs:
       - name: Verify
         run: ./Scripts/verify.sh
 
-      - name: Package development bundle
-        run: ./Scripts/package_app.sh debug --universal --sign -
+      - name: Package universal release bundle and DMG
+        run: |
+          ./Scripts/package_app.sh release --universal --dmg --sign -
+          test -s dist/Vibra.dmg

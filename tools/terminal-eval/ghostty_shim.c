@@ -53,10 +53,14 @@ unsigned long long eval_capture(void *ptr) {
         check(ghostty_render_state_row_get(it, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells));
         while (ghostty_render_state_row_cells_next(cells)) {
             uint32_t count = 0;
-            check(ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &count));
+            check(ghostty_render_state_row_cells_get(
+                cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &count));
             uint32_t *cp = count ? malloc(count * sizeof(*cp)) : NULL;
             if (count && !cp) abort();
-            if (count) check(ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, cp));
+            if (count) {
+                check(ghostty_render_state_row_cells_get(
+                    cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, cp));
+            }
             if (!count) { hash ^= 32; hash *= 1099511628211ULL; }
             for (uint32_t i = 0; i < count; ++i) { hash ^= cp[i]; hash *= 1099511628211ULL; }
             free(cp);

@@ -90,6 +90,13 @@ fn resolve_launch_directory(
 ) -> PathBuf {
     arguments
         .into_iter()
+        .filter_map(|path| {
+            if path.is_absolute() {
+                Some(path)
+            } else {
+                current_directory.as_ref().map(|cwd| cwd.join(path))
+            }
+        })
         .find(|path| path.is_dir())
         .or_else(|| {
             current_directory.filter(|path| path != std::path::Path::new("/") && path.is_dir())
@@ -314,7 +321,12 @@ fn run() -> Result<()> {
 }
 
 fn main() {
-    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    // File names passed to the app may contain non-UTF-8 bytes. The CLI only
+    // recognizes text commands; launch_directory() reads the original OsStrings.
+    let arguments: Vec<_> = std::env::args_os()
+        .skip(1)
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect();
     match infrastructure::automation::run_cli(&arguments) {
         Ok(true) => return,
         Ok(false) => {}
@@ -367,6 +379,20 @@ mod launch_directory_tests {
         );
 
         assert_eq!(resolved, explicit);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relative_launch_directory_is_resolved_before_it_is_saved() {
+        let root = std::env::temp_dir().join(format!("vibra-launch-{}", Uuid::new_v4()));
+        let current = root.join("current");
+        let project = current.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let resolved = resolve_launch_directory(vec!["project".into()], Some(current), None);
+
+        assert_eq!(resolved, project);
+        assert!(resolved.is_absolute());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

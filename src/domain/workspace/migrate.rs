@@ -7,6 +7,9 @@ use super::types::*;
 impl super::WorkspaceSnapshot {
     pub fn normalize(&mut self) {
         if self.schema_version < 7 {
+            // Legacy migration uses IDs as hash-map keys. Repair collisions
+            // first so two projects or workspaces cannot overwrite each other.
+            self.reassign_duplicate_container_ids();
             for project in &mut self.projects {
                 project.normalize();
             }
@@ -15,6 +18,8 @@ impl super::WorkspaceSnapshot {
         for project in &mut self.projects {
             project.normalize();
         }
+        self.reassign_duplicate_container_ids();
+        self.reassign_duplicate_session_ids();
         if !self
             .projects
             .iter()
@@ -29,6 +34,71 @@ impl super::WorkspaceSnapshot {
             .collect();
         self.sidebar_items.clear();
         self.schema_version = CURRENT_WORKSPACE_SCHEMA_VERSION;
+    }
+
+    /// Global session lookups require distinct IDs across all projects.
+    fn reassign_duplicate_session_ids(&mut self) {
+        let mut seen_sessions = HashSet::new();
+        for project in &mut self.projects {
+            for workspace in project.workspaces.iter_mut().flatten() {
+                for tab in &mut workspace.tabs {
+                    for session in &mut tab.sessions {
+                        if seen_sessions.insert(session.id) {
+                            continue;
+                        }
+                        let old_id = session.id;
+                        loop {
+                            session.id = Uuid::new_v4();
+                            if seen_sessions.insert(session.id) {
+                                break;
+                            }
+                        }
+                        tab.layout.replace_terminal_id(old_id, session.id);
+                        if tab.selected_session_id == Some(old_id) {
+                            tab.selected_session_id = Some(session.id);
+                        }
+                        if tab.zoomed_session_id == Some(old_id) {
+                            tab.zoomed_session_id = Some(session.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn reassign_duplicate_container_ids(&mut self) {
+        let mut project_ids = HashSet::new();
+        let mut workspace_ids = HashSet::new();
+        let mut tab_ids = HashSet::new();
+        for project in &mut self.projects {
+            if !project_ids.insert(project.id) {
+                project.id = fresh_id(&mut project_ids);
+            }
+            let mut local_workspace_ids = HashSet::new();
+            for workspace in project.workspaces.iter_mut().flatten() {
+                let old_id = workspace.id;
+                let first_in_project = local_workspace_ids.insert(old_id);
+                if !workspace_ids.insert(old_id) {
+                    workspace.id = fresh_id(&mut workspace_ids);
+                    local_workspace_ids.insert(workspace.id);
+                    if first_in_project && project.selected_workspace_id == Some(old_id) {
+                        project.selected_workspace_id = Some(workspace.id);
+                    }
+                }
+                let mut local_tab_ids = HashSet::new();
+                for tab in &mut workspace.tabs {
+                    let old_id = tab.id;
+                    let first_in_workspace = local_tab_ids.insert(old_id);
+                    if !tab_ids.insert(old_id) {
+                        tab.id = fresh_id(&mut tab_ids);
+                        local_tab_ids.insert(tab.id);
+                        if first_in_workspace && workspace.selected_tab_id == Some(old_id) {
+                            workspace.selected_tab_id = Some(tab.id);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Keep named spaces intact. A mixed-folder or empty space requires an explicit
@@ -113,8 +183,11 @@ impl super::WorkspaceSnapshot {
                     collapsed,
                     workspace_ids,
                 } => {
-                    if !seen_spaces.insert(id) {
-                        continue;
+                    // Legacy sidebars can repeat an ID. Keep both named spaces:
+                    // their workspace lists can contain different sessions.
+                    let mut id = id;
+                    while owners.contains_key(&id) || !seen_spaces.insert(id) {
+                        id = Uuid::new_v4();
                     }
                     let workspaces: Vec<_> = workspace_ids
                         .into_iter()
@@ -128,11 +201,6 @@ impl super::WorkspaceSnapshot {
                         roots.into_iter().next().unwrap()
                     } else {
                         String::new()
-                    };
-                    let id = if owners.contains_key(&id) {
-                        Uuid::new_v4()
-                    } else {
-                        id
                     };
                     let name = if name.trim().is_empty() {
                         "Espacio".into()
@@ -168,6 +236,16 @@ impl super::WorkspaceSnapshot {
         }
     }
 }
+
+fn fresh_id(seen: &mut HashSet<Uuid>) -> Uuid {
+    loop {
+        let id = Uuid::new_v4();
+        if seen.insert(id) {
+            return id;
+        }
+    }
+}
+
 impl ProjectSnapshot {
     pub fn normalize(&mut self) {
         if self
@@ -240,10 +318,12 @@ impl ProjectSnapshot {
         if self.sessions.is_empty() {
             return Vec::new();
         }
-        let visible_ids = self
+        let visible_ids: HashSet<_> = self
             .visible_session_ids
             .clone()
-            .unwrap_or_else(|| self.selected_session_id.into_iter().collect());
+            .unwrap_or_else(|| self.selected_session_id.into_iter().collect())
+            .into_iter()
+            .collect();
         let visible_sessions: Vec<_> = self
             .sessions
             .iter()
@@ -309,25 +389,33 @@ impl TabSnapshot {
             self.zoomed_session_id = None;
             return;
         }
-        let session_ids: Vec<_> = self.sessions.iter().map(|session| session.id).collect();
+        let mut session_ids = HashSet::with_capacity(self.sessions.len());
+        let mut reassigned_id = false;
+        for session in &mut self.sessions {
+            while !session_ids.insert(session.id) {
+                session.id = Uuid::new_v4();
+                reassigned_id = true;
+            }
+        }
         let layout_ids = self.layout.terminal_ids();
-        if layout_ids.len() != session_ids.len()
-            || !session_ids.iter().all(|id| layout_ids.contains(id))
+        if reassigned_id
+            || layout_ids.len() != session_ids.len()
+            || layout_ids.iter().copied().collect::<HashSet<_>>() != session_ids
         {
             self.layout = PaneLayoutSnapshot::joining(
-                session_ids
+                self.sessions
                     .iter()
-                    .copied()
+                    .map(|session| session.id)
                     .map(PaneLayoutSnapshot::terminal)
                     .collect(),
                 WorkspaceSplitAxis::Horizontal,
             );
         }
-        if !session_ids
-            .iter()
-            .any(|id| Some(*id) == self.selected_session_id)
+        if self
+            .selected_session_id
+            .is_none_or(|id| !session_ids.contains(&id))
         {
-            self.selected_session_id = session_ids.first().copied();
+            self.selected_session_id = self.sessions.first().map(|session| session.id);
         }
         if self
             .zoomed_session_id

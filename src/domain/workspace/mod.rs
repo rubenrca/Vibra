@@ -6,6 +6,9 @@ mod types;
 
 pub use types::*;
 
+pub const MAX_NAME_CHARS: usize = 128;
+pub const MAX_SESSION_TITLE_CHARS: usize = 256;
+
 #[cfg(test)]
 mod project_tests;
 #[cfg(test)]

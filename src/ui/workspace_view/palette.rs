@@ -14,6 +14,7 @@ use super::{
 impl super::WorkspaceView {
     pub(super) fn open_palette(&mut self, mode: PaletteMode, cx: &mut Context<Self>) {
         self.palette_mode = Some(mode);
+        self.palette_request_id = self.palette_request_id.wrapping_add(1);
         self.palette_query.clear();
         self.palette_selected = 0;
         self.settings_open = false;
@@ -21,23 +22,29 @@ impl super::WorkspaceView {
         self.ide_menu_open = false;
         self.rename_prompt = None;
         self.palette_files.clear();
+        self.palette_loading = false;
+        self.palette_error = None;
         if mode == PaletteMode::Files && self.has_project_context() {
-            self.palette_request_id = self.palette_request_id.wrapping_add(1);
+            self.palette_loading = true;
             let request_id = self.palette_request_id;
             let root = self.project_root();
             let port = self.file_port.clone();
             let task = cx.background_spawn(async move {
                 let mut files = Vec::new();
-                let _ = collect_search_files(port.as_ref(), &root, &root, &mut files);
-                files
+                let error = collect_search_files(port.as_ref(), &root, &root, &mut files)
+                    .err()
+                    .map(|error| format!("No se pudieron buscar archivos: {error}"));
+                (files, error)
             });
             self._palette_task = Some(cx.spawn(async move |this, cx| {
-                let files = task.await;
+                let (files, error) = task.await;
                 let _ = this.update(cx, |this, cx| {
                     if request_id != this.palette_request_id {
                         return;
                     }
                     this.palette_files = files;
+                    this.palette_loading = false;
+                    this.palette_error = error.map(Into::into);
                     cx.notify();
                 });
             }));
@@ -53,6 +60,7 @@ impl super::WorkspaceView {
     ) {
         if self.palette_mode.is_some() {
             self.palette_mode = None;
+            self.palette_request_id = self.palette_request_id.wrapping_add(1);
             self.palette_files.clear();
             cx.notify();
         } else {
@@ -278,6 +286,13 @@ impl super::WorkspaceView {
         let mode = self.palette_mode?;
         let items = self.palette_items();
         let empty = items.is_empty();
+        let empty_message = if self.palette_loading {
+            "Buscando archivos…".into()
+        } else if let Some(error) = &self.palette_error {
+            error.to_string()
+        } else {
+            "No results".into()
+        };
         let selected = self.palette_selected.min(items.len().saturating_sub(1));
         let query = self.palette_query.clone();
         let placeholder = match mode {
@@ -441,7 +456,7 @@ impl super::WorkspaceView {
                                     .justify_center()
                                     .text_sm()
                                     .text_color(colors().subtle)
-                                    .child("No results"),
+                                    .child(empty_message),
                             )
                         })
                         .child(

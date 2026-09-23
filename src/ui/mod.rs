@@ -2,6 +2,7 @@ pub mod agent_marks;
 mod diff_document;
 mod diff_rows;
 pub mod diff_view;
+mod git_graph;
 pub mod idle;
 pub mod syntax;
 pub mod terminal;

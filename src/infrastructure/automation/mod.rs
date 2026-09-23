@@ -23,11 +23,12 @@ mod tests {
     use super::types::AutomationEnvelope;
     use super::*;
     use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
     use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use serde_json::Value;
     use uuid::Uuid;
@@ -105,6 +106,95 @@ mod tests {
         assert!(parse_cli_command("+skill", &[]).is_err());
         assert!(run_cli(&["+pane".into(), "split".into(), "right".into()]).is_err());
         assert!(run_cli(&["+skill".into()]).is_err());
+    }
+
+    #[test]
+    fn agent_cli_rejects_unknown_targets_and_malformed_flags() {
+        for arguments in [
+            vec!["uninstall".into(), "claud".into()],
+            vec!["status".into(), "cursor".into()],
+            vec!["setup".into(), "--unknown".into()],
+            vec!["uninstall".into(), "--dry-run".into()],
+        ] {
+            assert!(run_agent_setup_cli(&arguments).is_err(), "{arguments:?}");
+        }
+        for arguments in [
+            vec!["attention", "claude", "questionn"],
+            vec!["attention", "claude", "--session", "--model", "x"],
+            vec!["presence", "codex", "waiting", "permisson"],
+            vec![
+                "presence", "codex", "waiting", "--model", "x", "--model", "y",
+            ],
+            vec!["clear", "--model", "x"],
+            vec!["working", "unexpected"],
+        ] {
+            assert!(
+                parse_cli_command(
+                    "+agent",
+                    &arguments
+                        .iter()
+                        .map(|value| (*value).into())
+                        .collect::<Vec<_>>()
+                )
+                .is_err(),
+                "{arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_hook_scripts_require_private_directories_and_regular_files() {
+        let home = TestHome::new();
+        let selected = [AgentKind::Claude].into_iter().collect();
+        manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap();
+        for directory in [home.0.join(".vibra"), home.0.join(".vibra/agent-hooks")] {
+            let mode = fs::metadata(directory).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+
+        let script = home.0.join(".vibra/agent-hooks/vibra-claude.sh");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let status =
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Status, false).unwrap();
+        assert_eq!(status["agents"][0]["installed"], false);
+        let repaired =
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap();
+        assert_eq!(repaired["agents"][0]["changed"], true);
+        assert_eq!(
+            fs::metadata(&script).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        fs::remove_file(&script).unwrap();
+        let outside = home.0.join("outside.sh");
+        fs::write(&outside, "unchanged").unwrap();
+        symlink(&outside, &script).unwrap();
+        assert!(
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).is_err()
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "unchanged");
+
+        fs::remove_file(&script).unwrap();
+        fs::remove_dir(home.0.join(".vibra/agent-hooks")).unwrap();
+        symlink(&home.0, home.0.join(".vibra/agent-hooks")).unwrap();
+        assert!(
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).is_err()
+        );
+    }
+
+    #[test]
+    fn hook_setup_checks_every_provider_before_changing_any_configuration() {
+        let home = TestHome::new();
+        let codex_config = home.0.join(".codex/hooks.json");
+        write_text_atomically(&codex_config, "invalid json", 0o600).unwrap();
+        let selected = [AgentKind::Claude, AgentKind::Codex].into_iter().collect();
+
+        let error =
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap_err();
+
+        assert!(error.to_string().contains("Codex"));
+        assert!(!home.0.join(".claude/settings.json").exists());
+        assert!(!home.0.join(".vibra/agent-hooks/vibra-claude.sh").exists());
     }
 
     #[test]
@@ -334,12 +424,31 @@ mod tests {
     }
 
     #[test]
+    fn automation_server_stops_when_its_socket_path_was_removed() {
+        let server = AutomationServer::start().unwrap();
+        fs::remove_file(server.path()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            drop(server);
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("automation server blocked during shutdown");
+    }
+
+    #[test]
     fn automation_server_accepts_a_second_request_while_the_first_is_pending() {
         let server = AutomationServer::start().unwrap();
         let path = server.path().to_path_buf();
         let start_client = |path: PathBuf| {
             thread::spawn(move || {
                 let mut stream = UnixStream::connect(path).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 serde_json::to_writer(
                     &mut stream,
                     &AutomationEnvelope {
@@ -357,26 +466,30 @@ mod tests {
         };
 
         let first_client = start_client(path.clone());
-        let first = server.receiver().recv_blocking().unwrap();
-        let second_client = start_client(path);
         let receiver = server.receiver();
+        let first_deadline = Instant::now() + Duration::from_secs(5);
+        let first = loop {
+            match receiver.try_recv() {
+                Ok(incoming) => break incoming,
+                Err(async_channel::TryRecvError::Empty) if Instant::now() < first_deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("first automation request did not arrive: {error}"),
+            }
+        };
+        let second_client = start_client(path);
         let (incoming_tx, incoming_rx) = mpsc::channel();
         let relay = thread::spawn(move || incoming_tx.send(receiver.recv_blocking()).unwrap());
 
-        let (second, concurrent) = match incoming_rx.recv_timeout(Duration::from_millis(500)) {
+        let (second, concurrent) = match incoming_rx.recv_timeout(Duration::from_secs(2)) {
             Ok(second) => (second.unwrap(), true),
             Err(_) => {
                 first
                     .response
                     .send(AutomationResponse::success(Value::Null))
                     .unwrap();
-                (
-                    incoming_rx
-                        .recv_timeout(Duration::from_secs(2))
-                        .unwrap()
-                        .unwrap(),
-                    false,
-                )
+                let second = incoming_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                (second.unwrap(), false)
             }
         };
         second

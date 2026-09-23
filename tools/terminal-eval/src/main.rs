@@ -195,9 +195,27 @@ fn fixtures() {
 
 fn benchmark() {
     let workloads = [
-        ("ascii", "build: checking compilation unit 12345 OK\r\n".repeat(100_000)),
-        ("ansi", "\x1b[32mPASS\x1b[0m test 12345\r\n\x1b[38;2;17;101;221mINFO\x1b[0m build completed\r\n".repeat(60_000)),
-        ("tui", "\x1b[H\x1b[2Kagent running\r\n\x1b[32mprocessing source files\x1b[0m\x1b[5;1H\x1b[2Kstatus ready".repeat(60_000)),
+        (
+            "ascii",
+            "build: checking compilation unit 12345 OK\r\n".repeat(100_000),
+        ),
+        (
+            "ansi",
+            concat!(
+                "\x1b[32mPASS\x1b[0m test 12345\r\n",
+                "\x1b[38;2;17;101;221mINFO\x1b[0m build completed\r\n"
+            )
+            .repeat(60_000),
+        ),
+        (
+            "tui",
+            concat!(
+                "\x1b[H\x1b[2Kagent running\r\n",
+                "\x1b[32mprocessing source files\x1b[0m",
+                "\x1b[5;1H\x1b[2Kstatus ready"
+            )
+            .repeat(60_000),
+        ),
     ];
     println!("BENCH engine,workload,bytes,median_ms (7 runs, parser only, 4096-byte chunks)");
     for (name, input) in workloads {

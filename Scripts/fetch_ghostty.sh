@@ -9,9 +9,17 @@ zig_bin=${ZIG:-}
 if [[ -z $zig_bin ]]; then
   host_arch=$(uname -m)
   case "$host_arch" in
-    arm64) host_arch=aarch64; zig_sha=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489 ;;
-    x86_64) zig_sha=0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7 ;;
-    *) print -u2 -- 'Only macOS arm64/x86_64 hosts are supported.'; exit 1 ;;
+    arm64)
+      host_arch=aarch64
+      zig_sha=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489
+      ;;
+    x86_64)
+      zig_sha=0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7
+      ;;
+    *)
+      print -u2 -- 'Only macOS arm64/x86_64 hosts are supported.'
+      exit 1
+      ;;
   esac
   toolchain="$repo_root/.build/ghostty/toolchain"
   zig_bin="$toolchain/zig-$host_arch-macos-0.16.0/zig"
@@ -19,9 +27,12 @@ if [[ -z $zig_bin ]]; then
     mkdir -p "$toolchain"
     archive=$(mktemp "$toolchain/zig.XXXXXX")
     trap 'rm -f "$archive"' EXIT
-    curl --fail --location --retry 3 "https://ziglang.org/download/0.16.0/zig-$host_arch-macos-0.16.0.tar.xz" -o "$archive"
+    curl --fail --location --retry 3 \
+      "https://ziglang.org/download/0.16.0/zig-$host_arch-macos-0.16.0.tar.xz" \
+      -o "$archive"
     if [[ $(shasum -a 256 "$archive" | cut -d ' ' -f 1) != $zig_sha ]]; then
-      print -u2 -- 'Zig archive checksum mismatch'; exit 1
+      print -u2 -- 'Zig archive checksum mismatch'
+      exit 1
     fi
     tar -xJf "$archive" -C "$toolchain"
     rm -f "$archive"
@@ -32,7 +43,10 @@ arch=${1:-$(uname -m)}
 case "$arch" in
   arm64|aarch64) arch=aarch64 ;;
   x86_64) ;;
-  *) print -u2 -- "usage: $script_name [aarch64|x86_64]"; exit 64 ;;
+  *)
+    print -u2 -- "usage: $script_name [aarch64|x86_64]"
+    exit 64
+    ;;
 esac
 if [[ $("$zig_bin" version) != 0.16.0 ]]; then
   print -u2 -- 'Ghostty requires Zig 0.16.0. Set ZIG to that executable.'

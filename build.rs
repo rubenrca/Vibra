@@ -20,6 +20,12 @@ fn main() {
     }
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let sparkle_framework = find_sparkle_framework(&manifest_dir);
+    // Cargo otherwise keeps a previously built stub bridge after Sparkle is
+    // fetched. Watch only the selected framework and higher-priority paths;
+    // watching dist/Vibra.app on every build would rebuild native code after
+    // each packaging run.
+    watch_sparkle_paths(&manifest_dir, sparkle_framework.as_deref());
     compile_objc(
         &manifest_dir,
         "native/notification_bridge.m",
@@ -41,7 +47,7 @@ fn main() {
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=UserNotifications");
-    if let Some(framework_dir) = find_sparkle_framework(&manifest_dir) {
+    if let Some(framework_dir) = sparkle_framework {
         let parent = framework_dir
             .parent()
             .expect("Sparkle.framework must live inside a Frameworks directory")
@@ -62,9 +68,10 @@ fn main() {
         // Local `cargo run` against the same framework directory.
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", parent.display());
     } else {
-        println!(
-            "cargo:warning=Sparkle.framework not found; building stub updater (set VIBRA_SPARKLE_FRAMEWORK or run package once)"
-        );
+        println!(concat!(
+            "cargo:warning=Sparkle.framework not found; building stub updater ",
+            "(set VIBRA_SPARKLE_FRAMEWORK or run package once)"
+        ));
         cc::Build::new()
             .file(manifest_dir.join("native/sparkle_bridge_stub.c"))
             .include(manifest_dir.join("native"))
@@ -136,10 +143,14 @@ fn find_sparkle_framework(manifest_dir: &Path) -> Option<PathBuf> {
         }
     }
 
-    let candidates = [
-        manifest_dir.join("third_party/Sparkle.framework"),
+    sparkle_candidates(manifest_dir)
+        .into_iter()
+        .find(|path| path.is_dir())
+}
+
+fn sparkle_candidates(manifest_dir: &Path) -> [PathBuf; 5] {
+    [
         manifest_dir.join("third_party/sparkle-2.9.4/Sparkle.framework"),
-        manifest_dir.join("dist/Vibra.app/Contents/Frameworks/Sparkle.framework"),
         // Legacy Swift Package Manager layouts, still checked for local caches.
         manifest_dir.join(
             ".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework",
@@ -147,23 +158,23 @@ fn find_sparkle_framework(manifest_dir: &Path) -> Option<PathBuf> {
         manifest_dir.join(
             ".build/checkouts/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework",
         ),
-    ];
-    if let Some(path) = candidates.into_iter().find(|path| path.is_dir()) {
-        return Some(path);
-    }
+        manifest_dir.join("third_party/Sparkle.framework"),
+        manifest_dir.join("dist/Vibra.app/Contents/Frameworks/Sparkle.framework"),
+    ]
+}
 
-    let third_party = manifest_dir.join("third_party");
-    let Ok(entries) = std::fs::read_dir(&third_party) else {
-        return None;
-    };
-    entries.flatten().find_map(|entry| {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with("sparkle-") {
-            return None;
+fn watch_sparkle_paths(manifest_dir: &Path, selected: Option<&Path>) {
+    if let Some(path) = env::var_os("VIBRA_SPARKLE_FRAMEWORK") {
+        let path = PathBuf::from(path);
+        println!("cargo:rerun-if-changed={}", path.display());
+        if selected == Some(path.as_path()) {
+            return;
         }
-        let framework = path.join("Sparkle.framework");
-        framework.is_dir().then_some(framework)
-    })
+    }
+    for candidate in sparkle_candidates(manifest_dir) {
+        println!("cargo:rerun-if-changed={}", candidate.display());
+        if selected == Some(candidate.as_path()) {
+            break;
+        }
+    }
 }

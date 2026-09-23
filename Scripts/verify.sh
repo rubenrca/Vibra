@@ -9,5 +9,6 @@ cd "$repo_root"
 cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets --all-features -- -D warnings
+python3 Scripts/test_release.py
 plutil -lint Resources/Info.plist Resources/Vibra.entitlements
 zsh -n Scripts/*.sh

@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, OnceLock, RwLock};
 
 use gpui::{Hsla, Rgba, WindowAppearance, rgb, rgba};
-use serde::{Deserialize, Serialize};
 
+pub use crate::domain::appearance::AppearanceMode;
 use crate::ports::terminal::TerminalRgb;
 use crate::ui::theme_import::{self, ImportedScheme};
 
@@ -391,17 +391,6 @@ pub fn to_terminal_rgb(color: Rgba) -> TerminalRgb {
 
 pub fn terminal_palette() -> TerminalPalette {
     colors().terminal_palette()
-}
-
-/// How the app chooses light vs dark for dual-mode palettes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AppearanceMode {
-    Light,
-    Dark,
-    #[default]
-    #[serde(other)]
-    System,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1439,11 +1428,6 @@ fn theme_from_scheme(scheme: &ImportedScheme) -> Theme {
     theme_from_seed(spec)
 }
 
-pub fn is_known_theme_id(id: &str) -> bool {
-    built_in_themes().iter().any(|family| family.id == id)
-        || user_themes().iter().any(|family| family.id == id)
-}
-
 fn family_by_id(id: &str) -> ThemeFamily {
     built_in_themes()
         .iter()
@@ -1585,14 +1569,18 @@ mod tests {
             moss_dark().accent
         );
         assert!(built_in_themes().len() >= 30);
-        assert!(is_known_theme_id("nord"));
-        assert!(is_known_theme_id("gruvbox"));
-        assert!(is_known_theme_id("catppuccin"));
-        assert!(is_known_theme_id("tokyo"));
-        assert!(is_known_theme_id("warp"));
-        assert!(is_known_theme_id("flexoki"));
-        assert!(is_known_theme_id("tokyo-storm"));
-        assert!(is_known_theme_id("catppuccin-frappe"));
+        for id in [
+            "nord",
+            "gruvbox",
+            "catppuccin",
+            "tokyo",
+            "warp",
+            "flexoki",
+            "tokyo-storm",
+            "catppuccin-frappe",
+        ] {
+            assert!(seen.contains(id), "missing theme id {id}");
+        }
         assert!(resolve("nord", AppearanceMode::Dark, true).is_dark());
         assert!(!resolve("nord", AppearanceMode::Light, false).is_dark());
         assert!(resolve("gruvbox", AppearanceMode::Dark, true).is_dark());

@@ -10,7 +10,7 @@ use crate::ui::theme::{
 
 use super::WorkspaceView;
 use crate::infrastructure::automation::{
-    AgentHookStatus, install_agent_hooks, uninstall_agent_hooks,
+    AgentHookStatus, agent_hook_status, install_agent_hooks, uninstall_agent_hooks,
 };
 use crate::infrastructure::settings::{MAX_DIFF_FONT_SIZE, MIN_DIFF_FONT_SIZE};
 
@@ -976,9 +976,10 @@ impl WorkspaceView {
                             .text_size(px(9.0))
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
-                            .child(
-                                "Vibra reconoce los agentes que ejecutas en sus terminales y muestra su actividad en panes, tabs y sesiones.",
-                            ),
+                            .child(concat!(
+                                "Vibra reconoce los agentes que ejecutas en sus terminales ",
+                                "y muestra su actividad en panes, tabs y sesiones."
+                            )),
                     )
                     .child(div().h(px(1.0)).bg(colors().border_subtle))
                     .child(
@@ -1002,9 +1003,11 @@ impl WorkspaceView {
                             .text_size(px(9.0))
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
-                            .child(
-                                "Opcional: instala hooks para que Claude y Codex informen cuándo trabajan, terminan o piden permiso. Los demás agentes se detectan por el proceso y la pantalla.",
-                            ),
+                            .child(concat!(
+                                "Opcional: instala hooks para que Claude y Codex informen cuándo ",
+                                "trabajan, terminan o piden permiso. Los demás agentes se detectan ",
+                                "por el proceso y la pantalla."
+                            )),
                     )
                     .child(self.settings_hook_status_row("Claude", agent_hooks.claude_installed))
                     .child(self.settings_hook_status_row("Codex", agent_hooks.codex_installed))
@@ -1115,7 +1118,10 @@ impl WorkspaceView {
                             .text_size(px(9.0))
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
-                            .child("Cada lectura requiere confirmación. La comunicación local usa un socket privado y un token distinto por pane."),
+                            .child(concat!(
+                                "Cada lectura requiere confirmación. La comunicación local usa ",
+                                "un socket privado y un token distinto por pane."
+                            )),
                     ),
             )
     }
@@ -1131,7 +1137,9 @@ impl WorkspaceView {
                 self.agent_hook_error = None;
             }
             Err(error) => {
-                self.agent_hook_status = None;
+                if let Ok(status) = agent_hook_status() {
+                    self.agent_hook_status = Some(status);
+                }
                 self.agent_hook_error =
                     Some(format!("No se pudo actualizar las integraciones: {error}").into());
             }

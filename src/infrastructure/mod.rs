@@ -8,5 +8,6 @@ pub mod paths;
 pub mod persistence;
 pub mod settings;
 pub mod sparkle;
+pub mod terminal_keyboard;
 mod terminal_support;
 pub mod window;
