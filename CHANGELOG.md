@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.29 — 2026-09-23
+
+- Fix a crash when expanding or collapsing a previously loaded Git diff in unified and split layouts.
+
 ## 0.3.28 — 2026-09-23
 
 - Rebuild the Git review as one virtualized list: every file, hunk, and line shares a single scroll, the current file's header stays pinned until the next one pushes it away, and files fold open and shut with a short animation.
