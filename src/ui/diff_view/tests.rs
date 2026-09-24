@@ -253,6 +253,34 @@ fn review_list_is_one_flat_list_with_pinned_headers_and_comments(cx: &mut gpui::
         assert!(view.h_max > 0.0, "the widest line overflows the code plane");
     });
 
+    // Draw while a cached diff is folding, before its timer can settle. GPUI
+    // holds the list state mutably while invoking the row renderer.
+    for layout in [DiffLayout::Unified, DiffLayout::Split] {
+        view.update(cx, |view, cx| view.set_layout(layout, cx));
+        draw(cx);
+        for expanding in [false, true] {
+            view.update(cx, |view, cx| {
+                view.toggle_path("a.rs".into(), cx);
+                assert_eq!(view.folds["a.rs"].expanding, expanding);
+            });
+            cx.update(|window, cx| window.draw(cx).clear());
+            view.update(cx, |view, _| {
+                assert!(
+                    view.rows
+                        .iter()
+                        .any(|row| matches!(row, ReviewRow::Folding { .. })),
+                    "the animation row must actually be rendered"
+                );
+            });
+            cx.executor().advance_clock(FOLD_DURATION);
+            cx.run_until_parked();
+            draw(cx);
+            view.update(cx, |view, _| assert!(view.folds.is_empty()));
+        }
+    }
+    view.update(cx, |view, cx| view.set_layout(DiffLayout::Unified, cx));
+    draw(cx);
+
     // Sideways gestures move only the code plane, never the file list.
     let top_before = view.read_with(cx, |view, _| view.list_state.logical_scroll_top().item_ix);
     cx.simulate_event(ScrollWheelEvent {

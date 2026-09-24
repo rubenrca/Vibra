@@ -1229,8 +1229,9 @@ impl DiffView {
                 generation,
             },
         );
+        let delay = cx.background_executor().timer(FOLD_DURATION);
         cx.spawn(async move |this, cx| {
-            Timer::after(FOLD_DURATION).await;
+            delay.await;
             let _ = this.update(cx, |this, cx| {
                 if this
                     .folds
@@ -1879,7 +1880,12 @@ impl DiffView {
         Some((file, offset.min(0.0)))
     }
 
-    fn render_row(&mut self, ix: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(
+        &mut self,
+        ix: usize,
+        viewport_height: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(row) = self.rows.get(ix).copied() else {
             return div().into_any_element();
         };
@@ -1920,7 +1926,7 @@ impl DiffView {
             }
             ReviewRow::Draft { .. } => self.draft_card(metrics, cx).into_any_element(),
             ReviewRow::Folding { file } => match files.get(file) {
-                Some(change) => self.folding_body(&change.path, metrics),
+                Some(change) => self.folding_body(&change.path, metrics, viewport_height),
                 None => div().into_any_element(),
             },
         }
@@ -2521,12 +2527,12 @@ impl DiffView {
 
     /// A body folding open or shut: a clipped stand-in whose height tweens,
     /// built only from the rows the clip can reveal.
-    fn folding_body(&self, path: &str, metrics: RowMetrics) -> AnyElement {
+    fn folding_body(&self, path: &str, metrics: RowMetrics, viewport_height: f32) -> AnyElement {
         let (Some(document), Some(fold)) = (self.document(path), self.folds.get(path)) else {
             return div().into_any_element();
         };
         let rows = &document.diff.rows;
-        let viewport = f32::from(self.list_state.viewport_bounds().size.height).max(200.0);
+        let viewport = viewport_height.max(200.0);
         let gutter = metrics.gutter_width(document.max_line_number);
         let mut height = 0.0;
         let mut children = Vec::new();
@@ -3285,6 +3291,9 @@ impl DiffView {
     fn review_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_rows();
         self.sync_horizontal_metrics(window);
+        // GPUI holds ListState mutably while rendering rows. Capture the last
+        // viewport now so fold animations never borrow it from that callback.
+        let viewport_height = f32::from(self.list_state.viewport_bounds().size.height);
         let sticky = self.sticky_header().and_then(|(file, offset)| {
             let change = self.row_files.get(file)?.clone();
             Some(
@@ -3309,7 +3318,9 @@ impl DiffView {
             .child(
                 list(
                     self.list_state.clone(),
-                    cx.processor(|this, ix: usize, window, cx| this.render_row(ix, window, cx)),
+                    cx.processor(move |this, ix: usize, _, cx| {
+                        this.render_row(ix, viewport_height, cx)
+                    }),
                 )
                 .size_full(),
             )
