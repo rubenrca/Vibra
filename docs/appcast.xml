@@ -3,24 +3,17 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.28</title>
-            <pubDate>Wed, 23 Sep 2026 14:21:26 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.28</link>
-            <sparkle:version>191</sparkle:version>
-            <sparkle:shortVersionString>0.3.28</sparkle:shortVersionString>
+            <title>0.3.29</title>
+            <pubDate>Wed, 23 Sep 2026 23:28:40 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.29</link>
+            <sparkle:version>194</sparkle:version>
+            <sparkle:shortVersionString>0.3.29</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Rebuild the Git review as one virtualized list: every file, hunk, and line shares a single scroll, the current file's header stays pinned until the next one pushes it away, and files fold open and shut with a short animation.</li>
-  <li>Add a split (side-by-side) layout and long-line wrapping, both remembered. Without wrapping, horizontal scrolling moves only the code, in sync across files and both columns, while line numbers stay in place.</li>
-  <li>Add line review comments: hover a line, press +, and send all comments to the agent's terminal as one prompt that is pasted but not submitted.</li>
-  <li>Add a Latest turn scope that shows what changed since an agent last started working in the repository, captured without touching the index, refs, or stash.</li>
-  <li>Highlight diffs with the whole old and new files as context, so block comments and strings opened outside a hunk color correctly.</li>
-  <li>Add a separate text size for the Git diff in Settings › Appearance.</li>
-  <li>Prevent stale Kitty key-release sequences from reaching the shell after an agent exits.</li>
-  <li>Harden workspace persistence, terminal input, automation, and release validation, and update GPUI's layout dependencies.</li>
+  <li>Fix a crash when expanding or collapsing a previously loaded Git diff in unified and split layouts.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.28/Vibra-0.3.28.dmg" length="13513185" type="application/octet-stream" sparkle:edSignature="0sbDQZw3xHeDuzh+4/Enu36A9eSDLAW2Wbj1oALP6y+xtIz8GA81UdD88jcbXUQXRfud6hXxVYbw4MeePj4/Bw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.29/Vibra-0.3.29.dmg" length="13516587" type="application/octet-stream" sparkle:edSignature="jmRK3U5t5f5azXHcOxJJgwVmMJGWUly32njr0wR8TPSY0R2S4QC8uL/diyTODBRMxUC1Nci3ZBIJ+CPK3VhoAg=="/>
         </item>
     </channel>
 </rss>
