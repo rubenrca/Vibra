@@ -176,6 +176,7 @@ mod tests {
             author: "t".into(),
             date: "2026-01-01".into(),
             parents: parents.iter().map(|parent| (*parent).to_owned()).collect(),
+            refs: Vec::new(),
         }
     }
 

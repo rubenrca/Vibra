@@ -1,4 +1,5 @@
 pub mod automation;
+pub mod commit_message;
 pub mod editor;
 pub mod files;
 pub mod ghostty;

@@ -14,9 +14,10 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
-    GitBranchChanges, GitBranchRef, GitBranchSummary, GitCommit, GitCommitChanges, GitDiff,
-    GitDiffRow, GitDiffRowKind, GitDiffSources, GitFileChange, GitFileStatus, GitHistory, GitPort,
-    GitRepositorySnapshot, GitWorktreeCapture,
+    GitBranchChanges, GitBranchRef, GitBranchSummary, GitCommit, GitCommitChanges,
+    GitCommitOptions, GitDiff, GitDiffRow, GitDiffRowKind, GitDiffSources, GitFileChange,
+    GitFileStatus, GitHistory, GitPort, GitRepositorySnapshot, GitSyncOperation,
+    GitWorktreeCapture,
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
@@ -225,6 +226,13 @@ impl GitCliPort {
         );
     }
 
+    fn forget_branch_summary(&self, root: &Path) {
+        self.branch_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(root);
+    }
+
     /// Fills `+N` for untracked text files so the list does not wait for the diff to open.
     fn fill_untracked_line_counts(&self, root: &Path, changes: &mut [GitFileChange]) {
         let mut cache = self
@@ -251,6 +259,167 @@ impl GitCliPort {
 }
 
 impl GitPort for GitCliPort {
+    fn commit(&self, root: &Path, message: &str, options: GitCommitOptions) -> Result<String> {
+        let Some(root) = repository_root(root)? else {
+            bail!("este proyecto no es un repositorio Git");
+        };
+        let message = message.trim();
+        if message.is_empty() && !options.amend {
+            bail!("escribe un mensaje para el commit");
+        }
+        let nothing_staged = git_write_command(&root)
+            .args(["diff", "--cached", "--quiet"])
+            .status()
+            .is_ok_and(|status| status.success());
+        if nothing_staged && !options.amend {
+            run_git_write(&root, &["add", "--all"], "git add")?;
+            let still_empty = git_write_command(&root)
+                .args(["diff", "--cached", "--quiet"])
+                .status()
+                .is_ok_and(|status| status.success());
+            if still_empty {
+                bail!("no hay cambios para hacer commit");
+            }
+        }
+        let mut arguments = vec!["commit"];
+        if options.amend {
+            arguments.push("--amend");
+            if message.is_empty() {
+                arguments.push("--no-edit");
+            }
+        }
+        if !message.is_empty() {
+            arguments.extend(["-m", message]);
+        }
+        run_git_write(&root, &arguments, "git commit")?;
+        self.forget_branch_summary(&root);
+        let short = run_git_write(&root, &["rev-parse", "--short", "HEAD"], "git rev-parse")?;
+        Ok(String::from_utf8_lossy(&short.stdout).trim().to_owned())
+    }
+
+    fn sync(&self, root: &Path, operation: GitSyncOperation) -> Result<()> {
+        let Some(root) = repository_root(root)? else {
+            bail!("este proyecto no es un repositorio Git");
+        };
+        match operation {
+            GitSyncOperation::Fetch => {
+                run_git_write(&root, &["fetch", "--prune"], "git fetch")?;
+            }
+            GitSyncOperation::Pull => {
+                run_git_write(&root, &["pull", "--ff-only"], "git pull")?;
+            }
+            GitSyncOperation::Push if has_upstream(&root) => {
+                run_git_write(&root, &["push"], "git push")?;
+            }
+            GitSyncOperation::Push => {
+                let remotes = run_git_write(&root, &["remote"], "git remote")?;
+                let remotes = String::from_utf8_lossy(&remotes.stdout);
+                let remote = remotes
+                    .lines()
+                    .find(|remote| *remote == "origin")
+                    .or_else(|| remotes.lines().next())
+                    .map(str::to_owned);
+                let Some(remote) = remote else {
+                    bail!("el repositorio no tiene un remoto configurado");
+                };
+                run_git_write(&root, &["push", "-u", &remote, "HEAD"], "git push")?;
+            }
+        }
+        self.forget_branch_summary(&root);
+        Ok(())
+    }
+
+    fn stage(&self, root: &Path, paths: &[String]) -> Result<()> {
+        let Some(root) = repository_root(root)? else {
+            bail!("este proyecto no es un repositorio Git");
+        };
+        if paths.is_empty() {
+            return Ok(());
+        }
+        for path in paths {
+            validate_relative_path(path)?;
+        }
+        let mut arguments = vec!["add", "--all", "--"];
+        arguments.extend(paths.iter().map(String::as_str));
+        run_git_write(&root, &arguments, "git add")?;
+        Ok(())
+    }
+
+    fn unstage(&self, root: &Path, paths: &[String]) -> Result<()> {
+        let Some(root) = repository_root(root)? else {
+            bail!("este proyecto no es un repositorio Git");
+        };
+        if paths.is_empty() {
+            return Ok(());
+        }
+        for path in paths {
+            validate_relative_path(path)?;
+        }
+        let has_head = rev_parse(&root, "HEAD")?.is_some();
+        let mut arguments = if has_head {
+            vec!["restore", "--staged", "--"]
+        } else {
+            vec!["rm", "--cached", "-r", "-q", "--"]
+        };
+        arguments.extend(paths.iter().map(String::as_str));
+        run_git_write(&root, &arguments, "git restore")?;
+        Ok(())
+    }
+
+    fn commit_message_context(&self, root: &Path) -> Result<String> {
+        const LIMIT: usize = 48 * 1024;
+        let Some(root) = repository_root(root)? else {
+            bail!("este proyecto no es un repositorio Git");
+        };
+        let has_head = rev_parse(&root, "HEAD")?.is_some();
+        let staged = !git_write_command(&root)
+            .args(["diff", "--cached", "--quiet"])
+            .status()
+            .is_ok_and(|status| status.success());
+        let range: Vec<&str> = if staged {
+            vec!["--cached"]
+        } else if has_head {
+            vec!["HEAD"]
+        } else {
+            vec!["--cached"]
+        };
+        let mut context = String::new();
+        if has_head {
+            let log = run_git(&root, ["log", "-8", "--format=%s"])?;
+            context.push_str("Recent commit subjects:\n");
+            context.push_str(&String::from_utf8_lossy(&log.stdout));
+            context.push('\n');
+        }
+        let mut stat = vec!["diff", "--stat"];
+        stat.extend(&range);
+        context.push_str("Changes:\n");
+        context.push_str(&String::from_utf8_lossy(&run_git(&root, &stat)?.stdout));
+        if !staged {
+            let untracked = untracked_paths(&root)?;
+            if !untracked.is_empty() {
+                context.push_str("\nNew files:\n");
+                for path in untracked.iter().take(50) {
+                    context.push_str(path);
+                    context.push('\n');
+                }
+            }
+        }
+        let mut patch = vec!["diff", "--no-color", "--no-ext-diff"];
+        patch.extend(&range);
+        let patch = run_git(&root, &patch)?;
+        context.push_str("\nPatch:\n");
+        context.push_str(&String::from_utf8_lossy(&patch.stdout));
+        if context.len() > LIMIT {
+            let mut end = LIMIT;
+            while !context.is_char_boundary(end) {
+                end -= 1;
+            }
+            context.truncate(end);
+            context.push_str("\n[patch truncated]\n");
+        }
+        Ok(context)
+    }
+
     fn snapshot(&self, root: &Path) -> Result<Option<GitRepositorySnapshot>> {
         let Some(root) = repository_root(root)? else {
             return Ok(None);
@@ -608,7 +777,8 @@ impl GitPort for GitCliPort {
                 &format!("-{limit}"),
                 "--topo-order",
                 "-z",
-                "--pretty=tformat:%H%x00%h%x00%s%x00%an%x00%as%x00%P",
+                "--decorate=short",
+                "--pretty=tformat:%H%x00%h%x00%s%x00%an%x00%as%x00%P%x00%D",
             ],
         )?;
         if !output.status.success() {
@@ -1804,14 +1974,14 @@ fn apply_numstat(stdout: &[u8], stats: &mut HashMap<String, (usize, usize)>) {
 
 fn parse_history(output: &[u8]) -> Vec<GitCommit> {
     // Git subjects and author names may contain newlines or control characters.
-    // A NUL-separated tformat record has six fields and a final separator.
+    // A NUL-separated tformat record has seven fields and a final separator.
     let mut commits = Vec::new();
     for fields in output
         .split(|byte| *byte == 0)
         .collect::<Vec<_>>()
-        .chunks_exact(6)
+        .chunks_exact(7)
     {
-        let [sha, short_sha, subject, author, date, parents] = fields else {
+        let [sha, short_sha, subject, author, date, parents, refs] = fields else {
             continue;
         };
         let text = |field: &&[u8]| String::from_utf8_lossy(field).into_owned();
@@ -1825,9 +1995,71 @@ fn parse_history(output: &[u8]) -> Vec<GitCommit> {
                 .split_whitespace()
                 .map(str::to_owned)
                 .collect(),
+            refs: parse_decorations(&String::from_utf8_lossy(refs)),
         });
     }
     commits
+}
+
+/// `HEAD -> main, origin/main, tag: v1` → `["main", "origin/main", "v1"]`.
+fn parse_decorations(decorations: &str) -> Vec<String> {
+    decorations
+        .split(", ")
+        .map(|name| {
+            name.trim()
+                .trim_start_matches("HEAD -> ")
+                .trim_start_matches("tag: ")
+        })
+        .filter(|name| !name.is_empty() && *name != "HEAD" && !name.ends_with("/HEAD"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Git environment for writes started from the UI: never wait on a terminal.
+fn git_write_command(root: &Path) -> Command {
+    let mut command = git_command();
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_EDITOR", "true")
+        .env("GIT_SEQUENCE_EDITOR", "true")
+        .env("GCM_INTERACTIVE", "never")
+        .arg("-C")
+        .arg(root)
+        .stdin(Stdio::null());
+    command
+}
+
+fn run_git_write(root: &Path, arguments: &[&str], operation: &str) -> Result<Output> {
+    let output = git_write_command(root)
+        .args(arguments)
+        .output()
+        .with_context(|| format!("failed to run Git in {}", root.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let message = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .find(|text| !text.is_empty())
+            .unwrap_or("sin detalles")
+            .lines()
+            .take(6)
+            .collect::<Vec<_>>()
+            .join(" ");
+        bail!("{operation}: {message}");
+    }
+    Ok(output)
+}
+
+fn has_upstream(root: &Path) -> bool {
+    git_write_command(root)
+        .args([
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ])
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 fn validate_relative_path(path: &str) -> Result<()> {

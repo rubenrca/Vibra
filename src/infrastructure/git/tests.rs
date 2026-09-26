@@ -1196,13 +1196,15 @@ fn selected_branches_compare_both_tips_and_pin_diffs_without_checkout() {
 #[test]
 fn parse_history_preserves_control_characters_in_subjects() {
     let commits = parse_history(
-        b"aaa\0aaa\0subject\x1fwith\ncontrols\0Ada\x002023-11-14\0bbb ccc\0\
-          bbb\0bbb\0root\0Ada\x002023-07-22\0\0",
+        b"aaa\0aaa\0subject\x1fwith\ncontrols\0Ada\x002023-11-14\0bbb ccc\0HEAD -> main, tag: v1\0\
+          bbb\0bbb\0root\0Ada\x002023-07-22\0\0origin/main, origin/HEAD\0",
     );
     assert_eq!(commits.len(), 2);
     assert_eq!(commits[0].subject, "subject\x1fwith\ncontrols");
     assert_eq!(commits[0].parents, vec!["bbb", "ccc"]);
     assert!(commits[1].parents.is_empty());
+    assert_eq!(commits[0].refs, vec!["main", "v1"]);
+    assert_eq!(commits[1].refs, vec!["origin/main"]);
 }
 
 #[test]
@@ -1358,5 +1360,107 @@ fn oversized_diffs_are_truncated_while_reading_git_output() {
     assert!(diff.rows.iter().any(|row| {
         row.kind == GitDiffRowKind::Notice && row.text.contains("truncated to 4 MiB")
     }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn commit_stages_everything_only_when_nothing_is_staged() {
+    let root = repository();
+    let port = GitCliPort::default();
+    fs::write(root.join("tracked.txt"), "one\nchanged\n").unwrap();
+    fs::write(root.join("new.txt"), "new\n").unwrap();
+    assert!(
+        port.commit(&root, "  ", GitCommitOptions::default())
+            .is_err()
+    );
+    let sha = port
+        .commit(&root, "Smart commit", GitCommitOptions::default())
+        .unwrap();
+    assert!(!sha.is_empty());
+    assert!(port.snapshot(&root).unwrap().unwrap().changes.is_empty());
+
+    // With something staged, the rest stays in the working tree.
+    fs::write(root.join("tracked.txt"), "staged\n").unwrap();
+    git(&root, &["add", "tracked.txt"]);
+    fs::write(root.join("new.txt"), "unstaged\n").unwrap();
+    port.commit(&root, "Only staged", GitCommitOptions::default())
+        .unwrap();
+    let remaining = port.snapshot(&root).unwrap().unwrap();
+    assert_eq!(remaining.changes.len(), 1);
+    assert_eq!(remaining.changes[0].path, "new.txt");
+
+    port.commit(&root, "", GitCommitOptions { amend: true })
+        .unwrap();
+    let history = port.history(&root, 10).unwrap().unwrap();
+    assert_eq!(history.commits.len(), 3, "amend rewrites the last commit");
+    assert_eq!(history.commits[0].subject, "Only staged");
+    assert!(
+        port.commit(&root, "Nothing", GitCommitOptions::default())
+            .is_ok()
+    );
+    assert!(
+        port.commit(&root, "Nothing left", GitCommitOptions::default())
+            .is_err()
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn push_sets_the_upstream_on_first_push_and_reports_missing_remotes() {
+    let root = repository();
+    let port = GitCliPort::default();
+    let error = port.sync(&root, GitSyncOperation::Push).unwrap_err();
+    assert!(error.to_string().contains("remoto"), "{error}");
+
+    let remote = std::env::temp_dir().join(format!("vibra-remote-{}", Uuid::new_v4()));
+    fs::create_dir_all(&remote).unwrap();
+    git(&remote, &["init", "-q", "--bare"]);
+    git(
+        &root,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    port.sync(&root, GitSyncOperation::Push).unwrap();
+    assert!(has_upstream(&root));
+    port.sync(&root, GitSyncOperation::Fetch).unwrap();
+    port.sync(&root, GitSyncOperation::Pull).unwrap();
+    let history = port.history(&root, 10).unwrap().unwrap();
+    assert!(
+        history.commits[0]
+            .refs
+            .iter()
+            .any(|name| name.starts_with("origin/"))
+    );
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(remote).unwrap();
+}
+
+#[test]
+fn stage_and_unstage_move_whole_files_between_groups() {
+    let root = repository();
+    let port = GitCliPort::default();
+    fs::write(root.join("tracked.txt"), "changed\n").unwrap();
+    fs::write(root.join("new.txt"), "new\n").unwrap();
+    port.stage(&root, &["new.txt".into(), "tracked.txt".into()])
+        .unwrap();
+    let snapshot = port.snapshot(&root).unwrap().unwrap();
+    assert!(
+        snapshot
+            .changes
+            .iter()
+            .all(|change| change.staged && !change.unstaged)
+    );
+    let context = port.commit_message_context(&root).unwrap();
+    assert!(context.contains("initial"), "{context}");
+    assert!(context.contains("+new"), "{context}");
+
+    port.unstage(&root, &["tracked.txt".into()]).unwrap();
+    let snapshot = port.snapshot(&root).unwrap().unwrap();
+    let tracked = snapshot
+        .changes
+        .iter()
+        .find(|change| change.path == "tracked.txt")
+        .unwrap();
+    assert!(!tracked.staged && tracked.unstaged);
+    assert!(port.stage(&root, &["../outside".into()]).is_err());
     fs::remove_dir_all(root).unwrap();
 }

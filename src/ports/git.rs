@@ -99,6 +99,8 @@ pub struct GitCommit {
     pub author: String,
     pub date: String,
     pub parents: Vec<String>,
+    /// Branch and tag names pointing at this commit (`HEAD -> main` becomes `main`).
+    pub refs: Vec<String>,
 }
 
 /// A saved commit compared with its first parent (or the empty tree for a root).
@@ -136,8 +138,34 @@ pub enum GitDiffRowKind {
     Notice,
 }
 
+/// Options for a commit made from the Changes panel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GitCommitOptions {
+    /// Rewrite the last commit instead of adding one.
+    pub amend: bool,
+}
+
+/// Network operations the Changes panel runs without an interactive prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitSyncOperation {
+    Push,
+    Pull,
+    Fetch,
+}
+
+impl GitSyncOperation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Push => "Push",
+            Self::Pull => "Pull",
+            Self::Fetch => "Fetch",
+        }
+    }
+}
+
 /// Boundary for repository inspection. `capture_worktree` writes Git objects;
-/// the other methods leave repository storage unchanged.
+/// `commit` and `sync` change the repository only when the user asks for it
+/// from the Changes panel; the other methods leave it unchanged.
 pub trait GitPort: Send + Sync {
     fn snapshot(&self, root: &Path) -> Result<Option<GitRepositorySnapshot>>;
     /// Fast branch + ahead/behind + dirty flag for sidebar tabs (no numstat/diff work).
@@ -172,4 +200,16 @@ pub trait GitPort: Send + Sync {
         head: Option<&str>,
         change: &GitFileChange,
     ) -> Result<GitDiff>;
+    /// Commits staged changes, or every change when nothing is staged.
+    /// Returns the new commit's short SHA.
+    fn commit(&self, root: &Path, message: &str, options: GitCommitOptions) -> Result<String>;
+    /// Push, pull (fast-forward only), or fetch without prompting for credentials.
+    fn sync(&self, root: &Path, operation: GitSyncOperation) -> Result<()>;
+    /// Adds whole files (new, modified, or deleted) to the index.
+    fn stage(&self, root: &Path, paths: &[String]) -> Result<()>;
+    /// Removes files from the index, keeping their working-tree contents.
+    fn unstage(&self, root: &Path, paths: &[String]) -> Result<()>;
+    /// What the next commit would contain, as a bounded patch with recent
+    /// subjects for style, for drafting its message.
+    fn commit_message_context(&self, root: &Path) -> Result<String>;
 }
