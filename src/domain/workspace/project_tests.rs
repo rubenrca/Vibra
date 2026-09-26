@@ -364,3 +364,69 @@ fn legacy_flat_order_and_spacers_preserve_all_sessions_once() {
     assert_eq!(snapshot.projects[0].name, "Espacio");
     assert_eq!(snapshot.selected_workspace().unwrap().id, second);
 }
+
+#[test]
+fn sessions_merge_into_one_row_of_tabs_per_project() {
+    let root = std::env::temp_dir();
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(&root);
+    snapshot.create_terminal_tab_with_options(true, None);
+    let first_tabs: Vec<_> = snapshot
+        .selected_workspace()
+        .unwrap()
+        .tabs
+        .iter()
+        .map(|tab| tab.id)
+        .collect();
+    let project = snapshot.selected_project_id.unwrap();
+    snapshot.create_workspace_in_project(project);
+    let second = snapshot.selected_workspace().unwrap().clone();
+    let selected_tab = second.selected_tab_id;
+
+    assert!(snapshot.consolidate_project_sessions());
+    let project = snapshot.selected_project().unwrap();
+    let workspaces = project.workspaces.as_ref().unwrap();
+    assert_eq!(workspaces.len(), 1);
+    let tabs: Vec<_> = workspaces[0].tabs.iter().map(|tab| tab.id).collect();
+    assert_eq!(tabs.len(), 3);
+    assert_eq!(workspaces[0].id, second.id, "the selected session stays");
+    assert_eq!(snapshot.selected_tab().map(|tab| tab.id), selected_tab);
+    assert!(first_tabs.iter().all(|tab| tabs.contains(tab)));
+    assert!(!snapshot.consolidate_project_sessions());
+}
+
+#[test]
+fn tabs_open_in_the_project_session_without_stealing_focus() {
+    let root = std::env::temp_dir();
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(&root);
+    let first_project = snapshot.selected_project_id.unwrap();
+    let selected_tab = snapshot.selected_tab().unwrap().id;
+    let other = snapshot.add_project(&root.join("vibra-other-project"));
+    snapshot.set_project_directory(other, &root);
+    snapshot.select_project(first_project);
+
+    // A project without a session gets one, in the background.
+    let (tab, _) = snapshot.open_tab_in_project(other, false).unwrap();
+    assert_eq!(snapshot.selected_project_id, Some(first_project));
+    assert_eq!(snapshot.selected_tab().unwrap().id, selected_tab);
+    let (second_tab, _) = snapshot.open_tab_in_project(other, false).unwrap();
+    let other_project = snapshot.projects.iter().find(|p| p.id == other).unwrap();
+    let workspaces = other_project.workspaces.as_ref().unwrap();
+    assert_eq!(workspaces.len(), 1, "tabs share the project's session");
+    assert_eq!(workspaces[0].tabs.len(), 2);
+
+    let (focused, _) = snapshot.open_tab_in_project(first_project, true).unwrap();
+    assert_eq!(snapshot.selected_tab().unwrap().id, focused);
+    assert_ne!(tab, second_tab);
+    assert_eq!(
+        snapshot
+            .selected_project()
+            .unwrap()
+            .workspaces
+            .as_ref()
+            .unwrap()
+            .len(),
+        1
+    );
+}

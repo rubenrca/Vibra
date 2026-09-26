@@ -81,6 +81,86 @@ impl WorkspaceSnapshot {
         Some(workspace_id)
     }
 
+    /// Opens a new terminal tab in the project's session, creating the
+    /// session when the project has none. With `focus` the project and the
+    /// new tab are selected; otherwise the user's current selection stays.
+    pub fn open_tab_in_project(&mut self, project_id: Uuid, focus: bool) -> Option<(Uuid, Uuid)> {
+        let project_index = self.projects.iter().position(|p| p.id == project_id)?;
+        let root = self.projects[project_index].directory()?.to_owned();
+        let has_session = self.projects[project_index]
+            .workspaces
+            .as_ref()
+            .is_some_and(|workspaces| !workspaces.is_empty());
+        if !has_session {
+            let previous_project = self.selected_project_id;
+            let workspace_id = self.create_workspace_in_project(project_id)?;
+            let project = &self.projects[project_index];
+            let workspace = project
+                .workspaces
+                .as_ref()?
+                .iter()
+                .find(|workspace| workspace.id == workspace_id)?;
+            let tab = workspace.tabs.first()?;
+            let ids = (tab.id, tab.selected_session_id?);
+            if !focus {
+                self.selected_project_id = previous_project;
+            }
+            return Some(ids);
+        }
+        let project = &mut self.projects[project_index];
+        let workspace_id = project
+            .selected_workspace_id
+            .or_else(|| project.workspaces.as_ref()?.first().map(|item| item.id))?;
+        let workspace = project
+            .workspaces
+            .as_mut()?
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)?;
+        let tab = TabSnapshot::with_session(SessionSnapshot::new(root));
+        let ids = (tab.id, tab.selected_session_id?);
+        workspace.tabs.push(tab);
+        if focus {
+            workspace.selected_tab_id = Some(ids.0);
+            project.selected_workspace_id = Some(workspace_id);
+            project.collapsed = false;
+            self.selected_project_id = Some(project_id);
+        }
+        self.normalize();
+        Some(ids)
+    }
+
+    /// Projects used to hold several sessions, each with its own tabs. The
+    /// app now shows one row of tabs per project, so earlier sessions are
+    /// merged into the selected one instead of staying out of reach.
+    pub fn consolidate_project_sessions(&mut self) -> bool {
+        let mut changed = false;
+        for project in &mut self.projects {
+            let Some(workspaces) = project.workspaces.as_mut() else {
+                continue;
+            };
+            if workspaces.len() < 2 {
+                continue;
+            }
+            let primary = project
+                .selected_workspace_id
+                .and_then(|id| workspaces.iter().position(|workspace| workspace.id == id))
+                .unwrap_or(0);
+            let mut merged = workspaces.remove(primary);
+            for workspace in workspaces.drain(..) {
+                merged.tabs.extend(workspace.tabs);
+            }
+            merged.name = project.name.clone();
+            merged.title_source = Some(WorkspaceTitleSource::Automatic);
+            project.selected_workspace_id = Some(merged.id);
+            workspaces.push(merged);
+            changed = true;
+        }
+        if changed {
+            self.normalize();
+        }
+        changed
+    }
+
     pub fn rename_project(&mut self, project_id: Uuid, name: &str) -> bool {
         let name = name.trim();
         if name.is_empty() || name.chars().count() > super::MAX_NAME_CHARS {
