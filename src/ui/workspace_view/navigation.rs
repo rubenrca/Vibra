@@ -65,10 +65,9 @@ pub(super) fn keycap(label: &'static str) -> Div {
         .child(label)
 }
 
-/// Small uppercase section label with an action revealed on hover.
-fn section_label(group: &'static str, label: &'static str) -> Div {
+/// Sidebar section heading with room for a trailing action.
+fn section_label(label: &'static str) -> Div {
     div()
-        .group(group)
         .h(px(28.0))
         .mt(px(10.0))
         .pl(px(8.0))
@@ -78,9 +77,9 @@ fn section_label(group: &'static str, label: &'static str) -> Div {
         .child(
             div()
                 .flex_1()
-                .text_size(px(11.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(colors().subtle)
+                .text_size(px(13.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(colors().muted)
                 .child(label),
         )
 }
@@ -228,7 +227,7 @@ impl WorkspaceView {
                         }),
                     )
                     .when(!pinned.is_empty(), |list| {
-                        list.child(section_label("section-pinned", "PINNED"))
+                        list.child(section_label("Pinned"))
                             .children(
                                 pinned
                                     .into_iter()
@@ -236,26 +235,34 @@ impl WorkspaceView {
                             )
                     })
                     .child(
-                        section_label("section-projects", "PROJECTS").child(
+                        section_label("Projects").child(
                             div()
                                 .id("add-global-project")
+                                .group("add-global-project")
                                 .size(px(22.0))
+                                .flex_none()
                                 .rounded(px(5.0))
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()
-                                .text_color(colors().subtle)
-                                .opacity(if has_projects { 0.0 } else { 1.0 })
-                                .group_hover("section-projects", |button| button.opacity(1.0))
                                 .hover(|button| {
-                                    button.bg(colors().hover).text_color(colors().foreground)
+                                    button.bg(surface_tint(colors().hover, colors().sidebar))
                                 })
                                 .tooltip(|_, cx| sidebar_tooltip("Agregar proyecto · ⇧⌘O", cx))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.choose_project_folder(None, false, window, cx)
                                 }))
-                                .child(svg().path("chrome-icons/plus.svg").size(px(13.0))),
+                                .child(
+                                    svg()
+                                        .path("chrome-icons/plus.svg")
+                                        .size(px(15.0))
+                                        .flex_none()
+                                        .text_color(colors().muted)
+                                        .group_hover("add-global-project", |icon| {
+                                            icon.text_color(colors().foreground)
+                                        }),
+                                ),
                         ),
                     )
                     .children(
