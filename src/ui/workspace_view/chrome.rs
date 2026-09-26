@@ -3,7 +3,8 @@ use std::path::Path;
 use gpui::{Div, SharedString, Stateful, div, prelude::*, px};
 
 use crate::domain::workspace::WorkspaceSplitAxis;
-use crate::ui::theme::{colors, popover_surface, surface};
+use crate::ui::menu::{menu_border, menu_surface};
+use crate::ui::theme::{colors, surface};
 
 pub(crate) const PANEL_GAP: f32 = 4.0;
 pub(crate) const PANEL_BORDER_WIDTH: f32 = 1.0;
@@ -234,18 +235,29 @@ struct SidebarTooltip(SharedString);
 
 impl gpui::Render for SidebarTooltip {
     fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        // "Label · ⌘K" draws the shortcut quieter than the label.
+        let (label, shortcut) = match self.0.rsplit_once(" · ") {
+            Some((label, shortcut)) => (label.to_owned(), Some(shortcut.to_owned())),
+            None => (self.0.to_string(), None),
+        };
         div()
             .max_w(px(420.0))
-            .px_3()
-            .py_2()
+            .px(px(8.0))
+            .py(px(5.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
             .rounded(px(7.0))
-            .bg(popover_surface())
+            .bg(menu_surface())
             .border_1()
-            .border_color(colors().border_subtle)
-            .shadow_sm()
-            .text_size(px(11.0))
+            .border_color(menu_border())
+            .shadow_md()
+            .text_size(px(12.0))
             .text_color(colors().foreground)
-            .child(self.0.clone())
+            .child(label)
+            .when_some(shortcut, |tooltip, shortcut| {
+                tooltip.child(div().text_color(colors().subtle).child(shortcut))
+            })
     }
 }
 

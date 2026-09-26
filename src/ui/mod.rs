@@ -4,6 +4,7 @@ mod diff_rows;
 pub mod diff_view;
 mod git_graph;
 pub mod idle;
+pub mod menu;
 pub mod syntax;
 pub mod terminal;
 mod text_edit;

@@ -62,6 +62,7 @@ use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
 use crate::ui::agent_marks::agent_compact_badge;
 use crate::ui::diff_view::{DiffFileIndexView, DiffView, DiffViewEvent};
+use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
 use crate::ui::terminal::{TerminalInsertStatus, TerminalView, TerminalViewEvent};
 use crate::ui::theme::{
     self, MONO_FONT, colors, popover_surface, surface, surface_tint, window_surface,
@@ -2190,36 +2191,97 @@ impl WorkspaceView {
             ContextMenuKind::Pane { session_id } => self.pane_identity_by_id(*session_id, cx),
             ContextMenuKind::Project { .. } | ContextMenuKind::SidebarBackground => None,
         };
-        let items: Vec<(&str, ContextMenuAction, bool)> = match &menu.kind {
-            ContextMenuKind::Project { project_id } => vec![
-                (
-                    if self.settings.pinned_project_ids.contains(project_id) {
-                        "Desfijar proyecto"
+        let row = |label: &'static str, icon: &'static str, action| {
+            Some((MenuRow::new(label).icon(icon), action))
+        };
+        let entries: Vec<Option<(MenuRow, ContextMenuAction)>> = match &menu.kind {
+            ContextMenuKind::Project { project_id } => {
+                let pinned = self.settings.pinned_project_ids.contains(project_id);
+                vec![
+                    row(
+                        "Nueva pestaña",
+                        "chrome-icons/plus.svg",
+                        ContextMenuAction::NewTab,
+                    )
+                    .map(|(item, action)| (item.shortcut("⌘T"), action)),
+                    row(
+                        "Renombrar proyecto",
+                        "chrome-icons/pencil.svg",
+                        ContextMenuAction::Rename,
+                    ),
+                    if pinned {
+                        row(
+                            "Desfijar proyecto",
+                            "chrome-icons/pin-off.svg",
+                            ContextMenuAction::ToggleProjectPin,
+                        )
                     } else {
-                        "Fijar proyecto"
+                        row(
+                            "Fijar proyecto",
+                            "chrome-icons/pin.svg",
+                            ContextMenuAction::ToggleProjectPin,
+                        )
                     },
-                    ContextMenuAction::ToggleProjectPin,
-                    false,
-                ),
-                ("Nueva pestaña", ContextMenuAction::NewTab, false),
-                ("Renombrar proyecto", ContextMenuAction::Rename, false),
-                (
-                    "Asociar carpeta…",
-                    ContextMenuAction::AssociateFolder,
-                    false,
-                ),
-                ("Mostrar en Finder", ContextMenuAction::RevealProject, false),
-                ("Quitar proyecto…", ContextMenuAction::RemoveProject, true),
-            ],
-            ContextMenuKind::SidebarBackground => {
-                vec![("Agregar proyecto…", ContextMenuAction::AddProject, false)]
+                    None,
+                    row(
+                        "Mostrar en Finder",
+                        "chrome-icons/folder-open.svg",
+                        ContextMenuAction::RevealProject,
+                    ),
+                    row(
+                        "Asociar carpeta…",
+                        "chrome-icons/folder.svg",
+                        ContextMenuAction::AssociateFolder,
+                    ),
+                    None,
+                    row(
+                        "Quitar proyecto…",
+                        "chrome-icons/trash.svg",
+                        ContextMenuAction::RemoveProject,
+                    )
+                    .map(|(item, action)| (item.danger(), action)),
+                ]
             }
+            ContextMenuKind::SidebarBackground => vec![
+                row(
+                    "Agregar proyecto…",
+                    "chrome-icons/folder-plus.svg",
+                    ContextMenuAction::AddProject,
+                )
+                .map(|(item, action)| (item.shortcut("⇧⌘O"), action)),
+            ],
             ContextMenuKind::Pane { .. } => vec![
-                ("Renombrar", ContextMenuAction::Rename, false),
-                ("Cerrar pane", ContextMenuAction::ClosePane, true),
-                ("Dividir a la derecha", ContextMenuAction::SplitRight, false),
-                ("Dividir abajo", ContextMenuAction::SplitDown, false),
-                ("Agrandar o restaurar", ContextMenuAction::ToggleZoom, false),
+                row(
+                    "Renombrar",
+                    "chrome-icons/pencil.svg",
+                    ContextMenuAction::Rename,
+                ),
+                None,
+                row(
+                    "Dividir a la derecha",
+                    "chrome-icons/split-view.svg",
+                    ContextMenuAction::SplitRight,
+                )
+                .map(|(item, action)| (item.shortcut("⌘D"), action)),
+                row(
+                    "Dividir abajo",
+                    "chrome-icons/rows.svg",
+                    ContextMenuAction::SplitDown,
+                )
+                .map(|(item, action)| (item.shortcut("⇧⌘D"), action)),
+                row(
+                    "Agrandar o restaurar",
+                    "chrome-icons/maximize.svg",
+                    ContextMenuAction::ToggleZoom,
+                )
+                .map(|(item, action)| (item.shortcut("⇧⌘↩"), action)),
+                None,
+                row(
+                    "Cerrar pane",
+                    "chrome-icons/close.svg",
+                    ContextMenuAction::ClosePane,
+                )
+                .map(|(item, action)| (item.danger(), action)),
             ],
         };
         Some(
@@ -2239,97 +2301,78 @@ impl WorkspaceView {
                     }),
                 )
                 .child(
-                    div()
-                        .id("context-menu")
-                        .absolute()
-                        .left(px(menu.x))
-                        .top(px(menu.y))
-                        .min_w(px(180.0))
-                        .py_1()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(popover_surface())
-                        .shadow_lg()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .on_mouse_down(MouseButton::Right, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .when_some(pane_identity, |menu, identity| {
-                            menu.child(
-                                div()
-                                    .min_w(px(220.0))
-                                    .max_w(px(320.0))
-                                    .px_3()
-                                    .py_2()
-                                    .mb_1()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .border_b_1()
-                                    .border_color(colors().border_subtle)
-                                    .child(agent_compact_badge(
-                                        identity.agent_kind.as_deref(),
-                                        identity.agent_state,
-                                        identity.agent_attention,
-                                        true,
-                                    ))
-                                    .child(
+                    gpui::anchored()
+                        .position(gpui::point(px(menu.x + 2.0), px(menu.y + 2.0)))
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(
+                            menu_panel()
+                                .id("context-menu")
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .when_some(pane_identity, |menu, identity| {
+                                    menu.child(
                                         div()
-                                            .min_w(px(0.0))
-                                            .flex_1()
+                                            .max_w(px(320.0))
+                                            .px(px(8.0))
+                                            .py(px(6.0))
                                             .flex()
-                                            .flex_col()
+                                            .items_center()
+                                            .gap(px(10.0))
+                                            .child(agent_compact_badge(
+                                                identity.agent_kind.as_deref(),
+                                                identity.agent_state,
+                                                identity.agent_attention,
+                                                true,
+                                            ))
                                             .child(
                                                 div()
-                                                    .truncate()
-                                                    .font_family(MONO_FONT)
-                                                    .text_size(px(10.5))
-                                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                                    .text_color(colors().foreground)
-                                                    .child(identity.title),
-                                            )
-                                            .when_some(identity.detail, |column, detail| {
-                                                column.child(
-                                                    div()
-                                                        .truncate()
-                                                        .font_family(MONO_FONT)
-                                                        .text_size(px(9.0))
-                                                        .text_color(colors().subtle)
-                                                        .child(detail),
-                                                )
-                                            }),
-                                    ),
-                            )
-                        })
-                        .children(items.into_iter().enumerate().map(
-                            |(index, (label, action, danger))| {
-                                div()
-                                    .id(SharedString::from(format!("context-menu-item-{index}")))
-                                    .h(px(30.0))
-                                    .mx_1()
-                                    .px_3()
-                                    .rounded(px(5.0))
-                                    .flex()
-                                    .items_center()
-                                    .cursor_pointer()
-                                    .text_size(px(11.0))
-                                    .text_color(if danger {
-                                        colors().danger
-                                    } else {
-                                        colors().foreground
-                                    })
-                                    .hover(|item| {
-                                        item.bg(surface_tint(colors().hover, colors().sidebar))
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.run_context_menu_action(action, window, cx);
-                                    }))
-                                    .child(label)
-                            },
-                        )),
+                                                    .min_w(px(0.0))
+                                                    .flex_1()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .child(
+                                                        div()
+                                                            .truncate()
+                                                            .text_size(px(12.5))
+                                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                                            .text_color(colors().foreground)
+                                                            .child(identity.title),
+                                                    )
+                                                    .when_some(
+                                                        identity.detail,
+                                                        |column, detail| {
+                                                            column.child(
+                                                                div()
+                                                                    .truncate()
+                                                                    .font_family(MONO_FONT)
+                                                                    .text_size(px(10.5))
+                                                                    .text_color(colors().subtle)
+                                                                    .child(detail),
+                                                            )
+                                                        },
+                                                    ),
+                                            ),
+                                    )
+                                    .child(menu_separator())
+                                })
+                                .children(entries.into_iter().enumerate().map(|(index, entry)| {
+                                    match entry {
+                                        Some((item, action)) => item
+                                            .render(SharedString::from(format!(
+                                                "context-menu-item-{index}"
+                                            )))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.run_context_menu_action(action, window, cx);
+                                            }))
+                                            .into_any_element(),
+                                        None => menu_separator().into_any_element(),
+                                    }
+                                })),
+                        ),
                 )
                 .into_any_element(),
         )

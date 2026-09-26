@@ -9,7 +9,8 @@ use gpui::{
 
 use crate::OpenIde;
 use crate::infrastructure::editor::InstalledEditor;
-use crate::ui::theme::{colors, popover_surface, surface, surface_tint};
+use crate::ui::menu::{menu_heading, menu_hover, menu_panel};
+use crate::ui::theme::{colors, surface, surface_tint};
 
 use super::{
     PaletteMode, RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT,
@@ -361,7 +362,7 @@ impl super::WorkspaceView {
 
     pub(super) fn ide_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.ide_menu_open.then(|| {
-            let right = 38.0;
+            let right = 8.0;
             div()
                 .absolute()
                 .inset_0()
@@ -373,34 +374,20 @@ impl super::WorkspaceView {
                     }),
                 )
                 .child(
-                    div()
+                    menu_panel()
                         .id("ide-menu")
                         .absolute()
-                        .top(px(34.0))
+                        .top(px(TITLEBAR_HEIGHT - 2.0))
                         .right(px(right))
-                        .min_w(px(190.0))
-                        .py_1()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(popover_surface())
-                        .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .text_size(px(9.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(colors().subtle)
-                                .child("ABRIR CARPETA EN"),
-                        )
+                        .child(menu_heading("Abrir carpeta en"))
                         .when(self.ide_discovering, |menu| {
                             menu.child(
                                 div()
-                                    .px_3()
-                                    .py_2()
-                                    .text_size(px(11.0))
+                                    .h(px(28.0))
+                                    .px(px(8.0))
+                                    .flex()
+                                    .items_center()
                                     .text_color(colors().muted)
                                     .child("Buscando editores…"),
                             )
@@ -410,34 +397,30 @@ impl super::WorkspaceView {
                                 let label = editor.name;
                                 let icon = self.ide_icons.get(editor.bundle_identifier).cloned();
                                 let icon = match icon {
-                                    Some(icon) => gpui::img(icon).size(px(16.0)).into_any_element(),
+                                    Some(icon) => gpui::img(icon).size(px(18.0)).into_any_element(),
                                     None => svg()
                                         .path("chrome-icons/open-external.svg")
-                                        .size(px(16.0))
-                                        .text_color(colors().subtle)
+                                        .size(px(15.0))
+                                        .text_color(colors().muted)
                                         .into_any_element(),
                                 };
                                 div()
                                     .id(SharedString::from(format!("ide-menu-item-{index}")))
-                                    .h(px(32.0))
-                                    .mx_1()
-                                    .px_3()
-                                    .rounded(px(5.0))
+                                    .h(px(30.0))
+                                    .px(px(8.0))
+                                    .rounded(px(6.0))
                                     .flex()
                                     .items_center()
-                                    .gap_2()
+                                    .gap(px(10.0))
                                     .cursor_pointer()
-                                    .text_size(px(11.0))
                                     .text_color(colors().foreground)
-                                    .hover(|item| {
-                                        item.bg(surface_tint(colors().hover, colors().sidebar))
-                                    })
+                                    .hover(|item| item.bg(menu_hover()))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.open_with_editor(editor.clone(), cx);
                                     }))
                                     .child(
                                         div()
-                                            .size(px(16.0))
+                                            .size(px(18.0))
                                             .flex_none()
                                             .flex()
                                             .items_center()

@@ -11,8 +11,9 @@ use gpui::{
 
 use super::{DiffView, DiffViewEvent, GitPanelMode};
 use crate::ports::git::{GitCommit, GitCommitOptions, GitSyncOperation};
+use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
 use crate::ui::text_edit::{TextKeyOutcome, apply_text_key};
-use crate::ui::theme::{colors, popover_surface, surface_tint};
+use crate::ui::theme::{colors, surface_tint};
 
 const GRAPH_ROW_HEIGHT: f32 = 26.0;
 /// The graph polls less often than the file list; commits change rarely.
@@ -933,42 +934,20 @@ impl DiffView {
                     })),
             )
             .child(
-                div()
+                menu_panel()
                     .absolute()
                     .top(px(top))
                     .right(px(10.0))
-                    .w(px(210.0))
                     .occlude()
-                    .rounded(px(10.0))
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(popover_surface())
-                    .shadow_lg()
-                    .p_1()
-                    .flex()
-                    .flex_col()
-                    .children(items.into_iter().enumerate().map(
+                    .children(items.into_iter().enumerate().flat_map(
                         |(index, (label, selected, action))| {
-                            let separator =
-                                matches!(action, MenuAction::Sync(GitSyncOperation::Fetch));
-                            div()
-                                .id(SharedString::from(format!("git-panel-menu-{index}")))
-                                .when(separator, |row| {
-                                    row.mt_1().border_t_1().border_color(colors().border_subtle)
-                                })
-                                .h(px(30.0))
-                                .px_3()
-                                .rounded(px(7.0))
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .text_size(px(12.5))
-                                .text_color(colors().foreground)
-                                .when(selected, |row| {
-                                    row.font_weight(gpui::FontWeight::MEDIUM)
-                                        .bg(surface_tint(colors().selection, colors().sidebar))
-                                })
-                                .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
+                            let separator = matches!(
+                                action,
+                                MenuAction::Sync(GitSyncOperation::Fetch) | MenuAction::Refresh
+                            );
+                            let row = MenuRow::new(label)
+                                .checked(selected)
+                                .render(SharedString::from(format!("git-panel-menu-{index}")))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.changes.menu = None;
@@ -985,8 +964,13 @@ impl DiffView {
                                         }
                                     }
                                     cx.notify();
-                                }))
-                                .child(label)
+                                }));
+                            [
+                                separator.then(|| menu_separator().into_any_element()),
+                                Some(row.into_any_element()),
+                            ]
+                            .into_iter()
+                            .flatten()
                         },
                     )),
             )
