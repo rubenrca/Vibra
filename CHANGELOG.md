@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Remove the obsolete session sidebar model, share project tab creation, and separate workspace menus and persistence coordination into focused modules.
+- Serialize notes and automation saves with workspace/settings writes, including final saves on close, and keep load errors separate from note actions.
+- Keep branch summaries and asynchronous Changes results scoped to their project; prevent notes and automations from falling through to another project's terminal, and pause automations when their project is removed.
+- Reveal Inbox panes hidden by another pane's zoom, clean up library editors when opening Explorer/Changes, and validate nested file creation through the filesystem port.
+
 - Show one row of tabs per project: ⌘N now opens a tab like ⌘T instead of a hidden session, earlier sessions are merged into the project's tabs on load, and automations and Create PR open tabs. ⌃⌘[ / ⌃⌘] move between projects, and the session commands and the Info panel are gone from the palette.
 - Keep the open review when opening tabs or switching terminal tabs, show the terminal before running pane commands from a full-tab review, keep the right panel as it was when choosing a project, and add a + button to the tab bar.
 

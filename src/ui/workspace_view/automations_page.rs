@@ -1,5 +1,5 @@
 //! Automations: a command line the user saved, run on demand or on a
-//! schedule. Each run opens a new session in the project and types the
+//! schedule. Each run opens a new tab in the project and types the
 //! command into its shell, so any CLI works and its output stays visible.
 
 use std::time::Duration;
@@ -218,7 +218,7 @@ impl WorkspaceView {
         }
     }
 
-    /// Opens a new session named after the automation and types its command.
+    /// Opens a new tab named after the automation and types its command.
     /// Scheduled runs keep the user's current selection; manual runs show it.
     pub(super) fn run_automation(
         &mut self,
@@ -234,13 +234,13 @@ impl WorkspaceView {
         self.persist_library(cx);
         let project_id = automation
             .project_id
+            .or(self.snapshot.selected_project_id)
             .filter(|id| {
                 self.snapshot
                     .projects
                     .iter()
                     .any(|project| project.id == *id)
-            })
-            .or(self.snapshot.selected_project_id);
+            });
         let Some(project_id) = project_id else {
             self.report_automation_failure(
                 &automation,

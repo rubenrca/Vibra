@@ -6,9 +6,10 @@ use super::*;
 
 fn session_ids(snapshot: &WorkspaceSnapshot) -> Vec<Uuid> {
     snapshot
-        .workspace_entries()
+        .projects
         .iter()
-        .map(|e| e.workspace_id)
+        .flat_map(|project| project.workspaces.iter().flatten())
+        .map(|workspace| workspace.id)
         .collect()
 }
 
@@ -29,20 +30,11 @@ fn projects_persist_without_sessions_and_reopening_selects_the_existing_project(
     assert_eq!(snapshot.projects.len(), 2);
     assert_eq!(snapshot.selected_project_id, Some(a));
     assert!(snapshot.rename_project(a, "Mi proyecto"));
-    assert!(snapshot.toggle_project(b));
     assert!(snapshot.move_project(b, Some(a)));
     assert!(!snapshot.move_project(b, Some(a)));
     assert_eq!(snapshot.projects[0].id, b);
     assert_eq!(round_trip(&snapshot), snapshot);
-    assert!(matches!(
-        snapshot.sidebar_entries()[0],
-        SidebarEntry::Project {
-            id,
-            workspace_count: 0,
-            collapsed: true,
-            ..
-        } if id == b
-    ));
+    assert!(snapshot.projects[0].workspaces.as_ref().unwrap().is_empty());
     assert!(snapshot.move_project(b, None));
     assert_eq!(snapshot.projects[1].id, b);
 }
@@ -59,38 +51,6 @@ fn project_and_workspace_names_have_a_persistable_limit() {
     assert!(!snapshot.rename_workspace(project_id, workspace_id, &too_long));
     assert!(snapshot.rename_project(project_id, &"é".repeat(MAX_NAME_CHARS)));
     assert!(snapshot.rename_workspace(project_id, workspace_id, &"é".repeat(MAX_NAME_CHARS)));
-}
-
-#[test]
-fn sidebar_entries_follow_project_and_workspace_order_and_collapse() {
-    let mut snapshot = WorkspaceSnapshot::default();
-    snapshot.create_workspace(Path::new("/projects/a"));
-    let a = snapshot.selected_project_id.unwrap();
-    snapshot.create_workspace(Path::new("/projects/b"));
-    let b = snapshot.selected_project_id.unwrap();
-    snapshot.create_workspace(Path::new("/projects/a"));
-    let workspace_entries = snapshot.workspace_entries();
-
-    let sidebar = snapshot.sidebar_entries();
-    assert_eq!(sidebar.len(), 5);
-    assert!(matches!(sidebar[0], SidebarEntry::Project { id, .. } if id == a));
-    assert!(matches!(sidebar[3], SidebarEntry::Project { id, .. } if id == b));
-    let shown: Vec<_> = sidebar
-        .into_iter()
-        .filter_map(|entry| match entry {
-            SidebarEntry::Workspace { entry } => Some(entry),
-            SidebarEntry::Project { .. } => None,
-        })
-        .collect();
-    assert_eq!(shown, workspace_entries);
-
-    assert!(snapshot.toggle_project(a));
-    let sidebar = snapshot.sidebar_entries();
-    assert_eq!(sidebar.len(), 3);
-    assert!(
-        matches!(sidebar[0], SidebarEntry::Project { id, collapsed: true, workspace_count: 2, .. } if id == a)
-    );
-    assert!(matches!(sidebar[1], SidebarEntry::Project { id, .. } if id == b));
 }
 
 #[test]
@@ -128,7 +88,7 @@ fn legacy_migration_preserves_containers_with_duplicate_ids() {
     snapshot.normalize();
 
     assert_eq!(snapshot.projects.len(), 2);
-    assert_eq!(snapshot.workspace_entries().len(), 2);
+    assert_eq!(session_ids(&snapshot).len(), 2);
     assert_eq!(snapshot.terminal_sessions().len(), 2);
     assert_ne!(snapshot.projects[0].id, snapshot.projects[1].id);
     // The old ID identified both projects; selection keeps the first match,
@@ -168,7 +128,7 @@ fn normalization_preserves_all_tabs_when_selected_tab_id_repeats() {
     snapshot.create_workspace(Path::new("/projects/a"));
     let first_tab_id = snapshot.selected_tab().unwrap().id;
     snapshot
-        .create_terminal_tab_with_options(true, None)
+        .open_tab_in_project(snapshot.selected_project_id.unwrap(), true)
         .unwrap();
     let workspace = &mut snapshot.projects[0].workspaces.as_mut().unwrap()[0];
     workspace.tabs[1].id = first_tab_id;
@@ -370,7 +330,7 @@ fn sessions_merge_into_one_row_of_tabs_per_project() {
     let root = std::env::temp_dir();
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(&root);
-    snapshot.create_terminal_tab_with_options(true, None);
+    snapshot.open_tab_in_project(snapshot.selected_project_id.unwrap(), true);
     let first_tabs: Vec<_> = snapshot
         .selected_workspace()
         .unwrap()

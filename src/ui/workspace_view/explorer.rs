@@ -1,6 +1,6 @@
 //! Explorer toolbar: create files and folders, collapse the tree, refresh.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use gpui::{AnyElement, Context, MouseButton, SharedString, div, prelude::*, px, svg};
 
@@ -8,51 +8,6 @@ use crate::ports::files::FileEntryKind;
 use crate::ui::theme::{colors, surface_tint};
 
 use super::{RenamePrompt, RenamePromptKind, WorkspaceView, sidebar_tooltip};
-
-/// Creates `name` inside `directory`, never outside `root` and never over an
-/// existing entry. Returns the new path.
-pub(super) fn create_project_entry(
-    root: &Path,
-    directory: &Path,
-    name: &str,
-    folder: bool,
-) -> Result<PathBuf, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("Escribe un nombre.".to_owned());
-    }
-    // Nested names (`src/lib.rs`) are allowed; escaping the project is not.
-    let relative = Path::new(name);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err("El nombre no puede salir de la carpeta del proyecto.".to_owned());
-    }
-    if !directory.starts_with(root) {
-        return Err("La carpeta está fuera del proyecto.".to_owned());
-    }
-    let path = directory.join(relative);
-    if path.symlink_metadata().is_ok() {
-        return Err(format!("Ya existe {}.", path.display()));
-    }
-    let result = if folder {
-        std::fs::create_dir_all(&path)
-    } else {
-        path.parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .map(|_| ())
-            })
-    };
-    result.map_err(|error| format!("No se pudo crear {}: {error}", path.display()))?;
-    Ok(path)
-}
 
 impl WorkspaceView {
     /// Folder that new entries go into: the selected folder, the selected
@@ -106,7 +61,10 @@ impl WorkspaceView {
         folder: bool,
         cx: &mut Context<Self>,
     ) {
-        match create_project_entry(&self.project_root(), &directory, name, folder) {
+        match self
+            .file_port
+            .create_entry(&self.project_root(), &directory, name, folder)
+        {
             Ok(path) => {
                 self.rename_prompt = None;
                 self.persistence_error = None;
@@ -124,7 +82,7 @@ impl WorkspaceView {
                 self.selected_file_path = Some(path);
                 self.refresh_project_files(cx);
             }
-            Err(error) => self.persistence_error = Some(error.into()),
+            Err(error) => self.persistence_error = Some(error.to_string().into()),
         }
         cx.notify();
     }
@@ -209,26 +167,5 @@ impl WorkspaceView {
                     .on_click(cx.listener(|this, _, _, cx| this.refresh_project_files(cx))),
             )
             .into_any_element()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn entries_are_created_inside_the_project_only() {
-        let root = std::env::temp_dir().join(format!("vibra-explorer-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let file = create_project_entry(&root, &root, "src/lib.rs", false).unwrap();
-        assert!(file.is_file());
-        let folder = create_project_entry(&root, &root.join("src"), "nested", true).unwrap();
-        assert!(folder.is_dir());
-        assert!(create_project_entry(&root, &root, "src/lib.rs", false).is_err());
-        assert!(create_project_entry(&root, &root, "../escape", false).is_err());
-        assert!(create_project_entry(&root, &root, "/tmp/abs", true).is_err());
-        assert!(create_project_entry(&root, &root, "  ", true).is_err());
-        assert!(create_project_entry(&root, Path::new("/tmp"), "x", true).is_err());
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

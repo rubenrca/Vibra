@@ -10,7 +10,6 @@ use uuid::Uuid;
 
 use crate::AddProject;
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
-use crate::domain::workspace::SidebarEntry;
 use crate::ui::agent_marks::agent_status_color;
 use crate::ui::theme::{colors, surface_tint};
 
@@ -145,13 +144,6 @@ impl WorkspaceView {
 
     pub(super) fn select_project(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.select_project(id) {
-            if self
-                .snapshot
-                .selected_project()
-                .is_some_and(|project| project.collapsed)
-            {
-                self.snapshot.toggle_project(id);
-            }
             // Keep the right panel as the user left it.
             self.apply_workspace_selection_change(window, cx);
         }
@@ -222,24 +214,17 @@ impl WorkspaceView {
 
     pub(super) fn project_sidebar_header(
         &self,
-        entry: SidebarEntry,
+        id: Uuid,
+        name: String,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let SidebarEntry::Project {
-            id,
-            name,
-            is_selected,
-            ..
-        } = entry
-        else {
-            unreachable!()
-        };
         let row_width = sidebar_row_width(self.left_sidebar_width());
         let controls_width = SIDEBAR_CONTROL_SIZE;
-        let selected = is_selected && self.workspace_section == WorkspaceSection::Workspace;
+        let selected = self.snapshot.selected_project_id == Some(id)
+            && self.workspace_section == WorkspaceSection::Workspace;
         let project_padding = 6.0;
         let avatar_size = 20.0;
-        // Avatar, two 10 px gaps, and the status/new-session slot.
+        // Avatar, two 10 px gaps, and the status/new-tab slot.
         let label_width = (row_width
             - project_padding
             - SIDEBAR_ROW_END_PADDING

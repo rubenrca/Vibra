@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use async_channel::Receiver;
 
+use crate::domain::library::Library;
 use crate::domain::workspace::WorkspaceSnapshot;
+use crate::infrastructure::library::LibraryRepository;
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{AppSettings, SettingsRepository};
 
@@ -23,6 +25,10 @@ pub(super) enum SaveResult {
         error: Option<String>,
     },
     Settings {
+        generation: u64,
+        error: Option<String>,
+    },
+    Library {
         generation: u64,
         error: Option<String>,
     },
@@ -39,6 +45,7 @@ enum Command {
     Finish {
         workspace: Box<Option<(u64, WorkspaceSnapshot)>>,
         settings: Option<(u64, AppSettings)>,
+        library: Option<(u64, Library)>,
         completed: mpsc::Sender<Vec<String>>,
     },
     #[cfg(test)]
@@ -50,6 +57,7 @@ enum Command {
 struct PendingWrites {
     workspace: Option<(u64, WorkspaceSnapshot)>,
     settings: Option<(u64, AppSettings)>,
+    library: Option<(u64, Library)>,
 }
 
 pub(super) struct PersistenceQueue {
@@ -63,6 +71,7 @@ impl PersistenceQueue {
     pub fn start(
         workspace_repository: WorkspaceRepository,
         settings_repository: SettingsRepository,
+        library_repository: Option<LibraryRepository>,
     ) -> io::Result<(Self, Receiver<SaveResult>)> {
         let (commands, receiver) = mpsc::channel();
         let (results, result_receiver) = async_channel::unbounded();
@@ -80,6 +89,7 @@ impl PersistenceQueue {
                     results,
                     workspace_repository,
                     settings_repository,
+                    library_repository,
                 )
             })?;
         Ok((
@@ -126,18 +136,29 @@ impl PersistenceQueue {
         Ok(())
     }
 
+    pub fn save_library(&self, generation: u64, library: Library) -> Result<(), String> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .library = Some((generation, library));
+        self.wake()
+            .map_err(|_| "el guardado de notas y automatizaciones ya no está disponible".into())
+    }
+
     /// Wait for the last state to reach disk before the process can exit. A
     /// deadline here would silently discard changes if storage was slow.
     pub fn finish(
         &self,
         workspace: Option<(u64, WorkspaceSnapshot)>,
         settings: Option<(u64, AppSettings)>,
+        library: Option<(u64, Library)>,
     ) -> Result<(), FinishError> {
         let (completed, reply) = mpsc::channel();
         self.commands
             .send(Command::Finish {
                 workspace: Box::new(workspace),
                 settings,
+                library,
                 completed,
             })
             .map_err(|_| FinishError::Unavailable)?;
@@ -170,8 +191,10 @@ impl Drop for PersistenceQueue {
 pub(super) fn save_final_blocking(
     workspace_repository: WorkspaceRepository,
     settings_repository: SettingsRepository,
+    library_repository: Option<LibraryRepository>,
     workspace: Option<WorkspaceSnapshot>,
     settings: Option<AppSettings>,
+    library: Option<Library>,
 ) -> Result<(), FinishError> {
     let mut errors = Vec::new();
     if let Some(workspace) = workspace
@@ -183,6 +206,14 @@ pub(super) fn save_final_blocking(
         && let Err(error) = settings_repository.save(&settings)
     {
         errors.push(format!("No se pudieron guardar settings: {error}"));
+    }
+    if let Some(library) = library
+        && let Some(repository) = library_repository
+        && let Err(error) = repository.save(&library)
+    {
+        errors.push(format!(
+            "No se pudieron guardar las notas y automatizaciones: {error}"
+        ));
     }
     if errors.is_empty() {
         Ok(())
@@ -198,6 +229,7 @@ fn run(
     results: async_channel::Sender<SaveResult>,
     workspace_repository: WorkspaceRepository,
     settings_repository: SettingsRepository,
+    library_repository: Option<LibraryRepository>,
 ) {
     while let Ok(command) = commands.recv() {
         if matches!(command, Command::Wake) {
@@ -205,21 +237,27 @@ fn run(
             // able to queue another wake while this batch is being written.
             wake_queued.store(false, Ordering::Release);
         }
-        let (mut workspace, mut settings) = {
+        let (mut workspace, mut settings, mut library) = {
             let mut pending = pending
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            (pending.workspace.take(), pending.settings.take())
+            (
+                pending.workspace.take(),
+                pending.settings.take(),
+                pending.library.take(),
+            )
         };
         let (completed, stop) = match command {
             Command::Wake => (None, false),
             Command::Finish {
                 workspace: final_workspace,
                 settings: final_settings,
+                library: final_library,
                 completed,
             } => {
                 workspace = (*final_workspace).or(workspace);
                 settings = final_settings.or(settings);
+                library = final_library.or(library);
                 (Some(completed), true)
             }
             #[cfg(test)]
@@ -227,8 +265,10 @@ fn run(
                 persist_batch(
                     workspace,
                     settings,
+                    library,
                     &workspace_repository,
                     &settings_repository,
+                    library_repository.as_ref(),
                     &results,
                 );
                 let _ = barrier.send(());
@@ -239,8 +279,10 @@ fn run(
         let errors = persist_batch(
             workspace,
             settings,
+            library,
             &workspace_repository,
             &settings_repository,
+            library_repository.as_ref(),
             &results,
         );
         if let Some(completed) = completed {
@@ -255,8 +297,10 @@ fn run(
 fn persist_batch(
     workspace: Option<(u64, WorkspaceSnapshot)>,
     settings: Option<(u64, AppSettings)>,
+    library: Option<(u64, Library)>,
     workspace_repository: &WorkspaceRepository,
     settings_repository: &SettingsRepository,
+    library_repository: Option<&LibraryRepository>,
     results: &async_channel::Sender<SaveResult>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
@@ -280,6 +324,18 @@ fn persist_batch(
         }
         let _ = results.try_send(SaveResult::Settings { generation, error });
     }
+    if let Some((generation, library)) = library {
+        let error = match library_repository {
+            Some(repository) => repository.save(&library).err().map(|error| {
+                format!("No se pudieron guardar las notas y automatizaciones: {error}")
+            }),
+            None => Some("El guardado de notas y automatizaciones no está disponible".into()),
+        };
+        if let Some(error) = &error {
+            errors.push(error.clone());
+        }
+        let _ = results.try_send(SaveResult::Library { generation, error });
+    }
     errors
 }
 
@@ -295,9 +351,13 @@ mod tests {
         let root = std::env::temp_dir().join(format!("vibra-persistence-{}", Uuid::new_v4()));
         let workspace_repository = WorkspaceRepository::at(root.join("workspace.json"));
         let settings_repository = SettingsRepository::at(root.join("settings.json"));
-        let (queue, _) =
-            PersistenceQueue::start(workspace_repository.clone(), settings_repository.clone())
-                .unwrap();
+        let library_repository = LibraryRepository::in_directory(&root);
+        let (queue, _) = PersistenceQueue::start(
+            workspace_repository.clone(),
+            settings_repository.clone(),
+            Some(library_repository.clone()),
+        )
+        .unwrap();
         let mut older = WorkspaceSnapshot::default();
         older.create_workspace(Path::new("/tmp/old"));
         let mut latest = older.clone();
@@ -310,17 +370,25 @@ mod tests {
             terminal_font_size: 19.0,
             ..AppSettings::default()
         };
+        let mut older_library = Library::default();
+        let note = older_library.create_note(None, 1);
+        older_library.set_note_body(note, "Earlier edit".into(), 1);
+        let mut latest_library = older_library.clone();
+        latest_library.set_note_body(note, "Last edit before close".into(), 2);
 
         queue.save_workspace(1, older).unwrap();
         queue.save_settings(1, older_settings).unwrap();
+        queue.save_library(1, older_library).unwrap();
         queue
             .finish(
                 Some((2, latest.clone())),
                 Some((2, latest_settings.clone())),
+                Some((2, latest_library.clone())),
             )
             .unwrap();
         assert_eq!(workspace_repository.load().unwrap().unwrap(), latest);
         assert_eq!(settings_repository.load().unwrap(), latest_settings);
+        assert_eq!(library_repository.load().unwrap(), latest_library);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -332,10 +400,11 @@ mod tests {
         std::fs::write(&blocker, b"blocker").unwrap();
         let repository = WorkspaceRepository::at(blocker.join("workspace.json"));
         let settings_repository = SettingsRepository::at(root.join("settings.json"));
-        let (queue, results) = PersistenceQueue::start(repository, settings_repository).unwrap();
+        let (queue, results) =
+            PersistenceQueue::start(repository, settings_repository, None).unwrap();
 
         let error = queue
-            .finish(Some((1, WorkspaceSnapshot::default())), None)
+            .finish(Some((1, WorkspaceSnapshot::default())), None, None)
             .unwrap_err();
         assert!(matches!(error, FinishError::Save(message) if message.contains("proyectos")));
         assert!(matches!(
@@ -368,9 +437,10 @@ mod tests {
         let workspace_repository = WorkspaceRepository::at(&path);
         let settings_repository = SettingsRepository::at(root.join("settings.json"));
         let (queue, _) =
-            PersistenceQueue::start(workspace_repository, settings_repository).unwrap();
-        let finish =
-            thread::spawn(move || queue.finish(Some((1, WorkspaceSnapshot::default())), None));
+            PersistenceQueue::start(workspace_repository, settings_repository, None).unwrap();
+        let finish = thread::spawn(move || {
+            queue.finish(Some((1, WorkspaceSnapshot::default())), None, None)
+        });
         thread::sleep(Duration::from_millis(2100));
         assert!(
             !finish.is_finished(),

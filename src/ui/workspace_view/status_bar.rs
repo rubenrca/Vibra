@@ -37,16 +37,14 @@ impl WorkspaceView {
                     Timer::after(STATUS_POLL).await;
                     continue;
                 };
-                let summary = cx
+                let (root, summary) = cx
                     .background_spawn(async move {
-                        port.branch_summary(&root)
-                            .ok()
-                            .flatten()
-                            .map(|summary| (root, summary))
+                        let summary = port.branch_summary(&root).ok().flatten();
+                        (root, summary)
                     })
                     .await;
                 if this
-                    .update(cx, |this, cx| this.apply_branch_summary(summary, cx))
+                    .update(cx, |this, cx| this.apply_branch_summary(root, summary, cx))
                     .is_err()
                 {
                     break;
@@ -56,19 +54,29 @@ impl WorkspaceView {
         }));
     }
 
-    fn apply_branch_summary(
+    pub(super) fn apply_branch_summary(
         &mut self,
-        summary: Option<(PathBuf, GitBranchSummary)>,
+        root: PathBuf,
+        summary: Option<GitBranchSummary>,
         cx: &mut Context<Self>,
     ) {
-        // Ignore a result for a project the user already left.
-        let summary = summary
-            .filter(|(root, _)| *root == self.project_root())
-            .map(|(_, summary)| summary);
+        // Keep the request's root even on failure. A late failed request must
+        // not erase the current project's successful result.
+        if !self.has_project_context() || root != self.project_root() {
+            return;
+        }
+        let summary = summary.map(|summary| (root, summary));
         if self.branch_summary != summary {
             self.branch_summary = summary;
             cx.notify();
         }
+    }
+
+    pub(super) fn current_branch_summary(&self) -> Option<&GitBranchSummary> {
+        self.branch_summary
+            .as_ref()
+            .filter(|(root, _)| self.has_project_context() && *root == self.project_root())
+            .map(|(_, summary)| summary)
     }
 
     pub(super) fn agent_counts(&self) -> AgentCounts {
@@ -124,30 +132,25 @@ impl WorkspaceView {
             .bg(surface(colors().titlebar))
             .text_size(px(12.0))
             .text_color(colors().muted)
-            .when_some(
-                self.branch_summary
-                    .clone()
-                    .filter(|_| self.has_project_context()),
-                |bar, summary| {
-                    bar.child(
-                        item("status-branch")
-                            .tooltip(|_, cx| sidebar_tooltip("Abrir Changes", cx))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.set_workspace_mode(RightSidebarMode::Diff, cx);
-                                this.focus_selected_terminal(window, cx);
-                            }))
-                            .child(icon("chrome-icons/git-branch.svg"))
-                            .child(summary.branch.clone())
-                            .when(summary.dirty, |item| item.child(dot(colors().warning)))
-                            .when(summary.ahead > 0, |item| {
-                                item.child(format!("↑{}", summary.ahead))
-                            })
-                            .when(summary.behind > 0, |item| {
-                                item.child(format!("↓{}", summary.behind))
-                            }),
-                    )
-                },
-            )
+            .when_some(self.current_branch_summary().cloned(), |bar, summary| {
+                bar.child(
+                    item("status-branch")
+                        .tooltip(|_, cx| sidebar_tooltip("Abrir Changes", cx))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_workspace_mode(RightSidebarMode::Diff, cx);
+                            this.focus_selected_terminal(window, cx);
+                        }))
+                        .child(icon("chrome-icons/git-branch.svg"))
+                        .child(summary.branch.clone())
+                        .when(summary.dirty, |item| item.child(dot(colors().warning)))
+                        .when(summary.ahead > 0, |item| {
+                            item.child(format!("↑{}", summary.ahead))
+                        })
+                        .when(summary.behind > 0, |item| {
+                            item.child(format!("↓{}", summary.behind))
+                        }),
+                )
+            })
             .child(
                 item("status-agents")
                     .tooltip(|_, cx| sidebar_tooltip("Ver agentes en el Inbox", cx))

@@ -404,6 +404,9 @@ impl Library {
         for automation in &mut self.automations {
             if automation.project_id == Some(project_id) {
                 automation.project_id = None;
+                // Its command was configured for the removed project. Keep it
+                // available, but don't schedule it in whichever project is next.
+                automation.enabled = false;
                 changed = true;
             }
         }
@@ -614,13 +617,16 @@ mod tests {
                 "Build",
                 "cargo build",
                 Some(project),
-                AutomationSchedule::Manual,
-                "",
+                AutomationSchedule::Hourly { minute: 30 },
+                "30",
             )
             .unwrap();
+        assert!(!library.due_automations(MONDAY_0930).is_empty());
         assert!(library.detach_project(project));
         assert_eq!(library.note(note).unwrap().project_id, None);
         assert_eq!(library.automation(automation).unwrap().project_id, None);
+        assert!(!library.automation(automation).unwrap().enabled);
+        assert!(library.due_automations(MONDAY_0930).is_empty());
         assert!(!library.detach_project(project));
     }
 }

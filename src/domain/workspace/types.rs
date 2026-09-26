@@ -184,32 +184,3 @@ pub struct SessionSnapshot {
     pub agent_task_title: Option<String>,
     pub working_directory: String,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceEntry {
-    pub project_id: Uuid,
-    pub workspace_id: Uuid,
-    pub project_name: String,
-    pub workspace_name: String,
-    /// `true` when the user renamed the tab; automatic titles follow the live cwd.
-    pub title_is_manual: bool,
-    /// Working directory of the selected (or first) session in this workspace.
-    pub working_directory: String,
-    pub session_count: usize,
-    pub is_selected: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SidebarEntry {
-    Workspace {
-        entry: WorkspaceEntry,
-    },
-    Project {
-        id: Uuid,
-        name: String,
-        root_path: String,
-        collapsed: bool,
-        workspace_count: usize,
-        is_selected: bool,
-    },
-}

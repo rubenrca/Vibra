@@ -16,8 +16,17 @@ pub struct FileEntry {
     pub kind: FileEntryKind,
 }
 
-/// Boundary for project-scoped file inspection.
+/// Boundary for project-scoped file inspection and creation.
 pub trait FileSystemPort: Send + Sync {
+    /// Create an entry without replacing existing content or escaping the project.
+    fn create_entry(
+        &self,
+        root: &Path,
+        directory: &Path,
+        name: &str,
+        folder: bool,
+    ) -> Result<PathBuf>;
+
     fn list_directory(
         &self,
         project_root: &Path,

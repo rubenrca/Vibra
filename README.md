@@ -67,7 +67,7 @@ sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
   ejecuciones programadas no cambian el tab que estás mirando y avisan en el
   Inbox. Solo corren mientras Vibra está abierta: una hora perdida por más de
   10 minutos (Mac dormido o app cerrada) se omite en lugar de ejecutarse tarde.
-  Se pueden pausar, editar y lanzar desde la paleta (`Automatización: Ejecutar …`).
+  Al quitar su proyecto quedan pausadas. Se pueden pausar, editar y lanzar desde la paleta (`Automatización: Ejecutar …`).
 
 Notas y automatizaciones se guardan en
 `~/Library/Application Support/Vibra/library.json`, junto a `settings.json`.
@@ -149,6 +149,9 @@ utiliza esta copia mediante `[patch.crates-io]`; el origen y el cambio están
 documentados en [VIBRA_PATCHES.md](third_party/gpui/VIBRA_PATCHES.md).
 
 ## Ejecutar durante desarrollo
+
+La [guía de arquitectura](docs/architecture.md) describe las responsabilidades del
+workspace y los contratos de navegación, aislamiento por proyecto y guardado.
 
 ```bash
 ./Scripts/fetch_ghostty.sh

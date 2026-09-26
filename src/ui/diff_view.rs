@@ -628,6 +628,7 @@ impl DiffView {
         self.clear_commit();
         self.clear_turn();
         self.forget_scroll();
+        self.changes.reset_project(cx);
         self.context_root = root;
         self.selected_review_path = None;
         self.comments.clear();

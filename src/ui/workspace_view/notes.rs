@@ -69,9 +69,11 @@ impl WorkspaceView {
         self.persist_library(cx);
     }
 
-    /// The terminal the user last used in a project, else the selected one.
+    /// Use the selected project only for unassigned notes. An assigned note
+    /// must never fall through to a terminal in another project.
     pub(super) fn project_active_session(&self, project_id: Option<Uuid>) -> Option<Uuid> {
-        let from_project = project_id
+        project_id
+            .or(self.snapshot.selected_project_id)
             .and_then(|id| {
                 self.snapshot
                     .projects
@@ -90,8 +92,7 @@ impl WorkspaceView {
                     .or_else(|| workspace.tabs.first())?;
                 tab.selected_session_id
                     .or_else(|| tab.sessions.first().map(|session| session.id))
-            });
-        from_project.or_else(|| self.snapshot.selected_session().map(|session| session.id))
+            })
     }
 
     pub(super) fn paste_note_into_terminal(
@@ -126,11 +127,7 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
-        if self.library_error.as_ref().is_some_and(|error| {
-            error.starts_with("No se pudo pegar la nota") || error.starts_with("Abre una terminal")
-        }) {
-            self.library_error = None;
-        }
+        self.library_error = None;
         self.open_pane(target, window, cx);
     }
 

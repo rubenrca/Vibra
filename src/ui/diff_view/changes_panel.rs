@@ -44,6 +44,7 @@ enum PanelMenu {
 }
 
 pub(super) struct ChangesPanelState {
+    generation: u64,
     pub(super) message: String,
     focus: FocusHandle,
     busy: Option<&'static str>,
@@ -60,6 +61,7 @@ pub(super) struct ChangesPanelState {
 impl ChangesPanelState {
     pub(super) fn new(cx: &mut Context<DiffView>) -> Self {
         Self {
+            generation: 0,
             message: String::new(),
             focus: cx.focus_handle(),
             busy: None,
@@ -71,6 +73,19 @@ impl ChangesPanelState {
             _task: None,
             _generate_task: None,
         }
+    }
+
+    pub(super) fn reset_project(&mut self, cx: &mut Context<DiffView>) {
+        // Let an accepted Git write finish for its original repository. Its
+        // completion must not update the new project's controls or draft.
+        if let Some(task) = self._task.take() {
+            task.detach();
+        }
+        let generation = self.generation.wrapping_add(1);
+        let graph_open = self.graph_open;
+        *self = Self::new(cx);
+        self.generation = generation;
+        self.graph_open = graph_open;
     }
 }
 
@@ -578,6 +593,7 @@ impl DiffView {
         self.changes.generating = true;
         self.changes.feedback = Some(("Generando el mensaje con tu agente…".into(), false));
         cx.notify();
+        let generation = self.changes.generation;
         let root = self.context_root.clone();
         let port = self.git_port.clone();
         let task = cx.background_spawn(async move {
@@ -587,6 +603,9 @@ impl DiffView {
         self.changes._generate_task = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
+                if this.changes.generation != generation {
+                    return;
+                }
                 this.changes.generating = false;
                 match result {
                     Ok(message) => {
@@ -655,6 +674,7 @@ impl DiffView {
             return;
         }
         let push = action == CommitAction::CommitAndPush;
+        let generation = self.changes.generation;
         let root = self.context_root.clone();
         let port = self.git_port.clone();
         self.changes.busy = Some(if push {
@@ -675,6 +695,9 @@ impl DiffView {
         self.changes._task = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
+                if this.changes.generation != generation {
+                    return;
+                }
                 this.changes.busy = None;
                 match result {
                     Ok(sha) => {
@@ -703,6 +726,7 @@ impl DiffView {
         if self.changes.busy.is_some() {
             return;
         }
+        let generation = self.changes.generation;
         let root = self.context_root.clone();
         let port = self.git_port.clone();
         self.changes.busy = Some(match operation {
@@ -716,6 +740,9 @@ impl DiffView {
         self.changes._task = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
+                if this.changes.generation != generation {
+                    return;
+                }
                 this.changes.busy = None;
                 this.changes.feedback = Some(match result {
                     Ok(()) => (format!("{} completado.", operation.label()).into(), false),
@@ -731,6 +758,10 @@ impl DiffView {
         if paths.is_empty() || self.changes.busy.is_some() {
             return;
         }
+        self.changes.busy = Some(if stage { "Stage…" } else { "Unstage…" });
+        self.changes.feedback = None;
+        cx.notify();
+        let generation = self.changes.generation;
         let root = self.context_root.clone();
         let port = self.git_port.clone();
         let task = cx.background_spawn(async move {
@@ -743,6 +774,10 @@ impl DiffView {
         self.changes._task = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
+                if this.changes.generation != generation {
+                    return;
+                }
+                this.changes.busy = None;
                 if let Err(error) = result {
                     this.changes.feedback = Some((format!("{error:#}").into(), true));
                 }

@@ -5,7 +5,6 @@ use gpui::{
 };
 use uuid::Uuid;
 
-use crate::domain::workspace::SidebarEntry;
 use crate::ui::theme::{colors, surface, surface_tint};
 
 use super::chrome::SIDEBAR_ROW_INSET;
@@ -109,6 +108,7 @@ impl WorkspaceView {
     }
 
     pub(super) fn set_workspace_mode(&mut self, mode: RightSidebarMode, cx: &mut Context<Self>) {
+        self.leave_library_section(WorkspaceSection::Workspace);
         self.workspace_section = WorkspaceSection::Workspace;
         self.right_sidebar_mode = mode;
         self.set_right_sidebar_visible(true, true, cx);
@@ -126,15 +126,12 @@ impl WorkspaceView {
     }
 
     pub(super) fn global_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let projects: Vec<_> = self
+        let (pinned, projects): (Vec<_>, Vec<_>) = self
             .snapshot
-            .sidebar_entries()
-            .into_iter()
-            .filter(|entry| matches!(entry, SidebarEntry::Project { .. }))
-            .collect();
-        let (pinned, projects): (Vec<_>, Vec<_>) = projects.into_iter().partition(|entry| {
-            matches!(entry, SidebarEntry::Project { id, .. } if self.settings.pinned_project_ids.contains(id))
-        });
+            .projects
+            .iter()
+            .map(|project| (project.id, project.name.clone()))
+            .partition(|(id, _)| self.settings.pinned_project_ids.contains(id));
         let nav_items = [
             (WorkspaceSection::Inbox, "Inbox", "chrome-icons/inbox.svg"),
             (WorkspaceSection::Notes, "Notes", "chrome-icons/notes.svg"),
@@ -231,7 +228,7 @@ impl WorkspaceView {
                             .children(
                                 pinned
                                     .into_iter()
-                                    .map(|entry| self.project_sidebar_header(entry, cx)),
+                                    .map(|(id, name)| self.project_sidebar_header(id, name, cx)),
                             )
                     })
                     .child(
@@ -268,7 +265,7 @@ impl WorkspaceView {
                     .children(
                         projects
                             .into_iter()
-                            .map(|entry| self.project_sidebar_header(entry, cx)),
+                            .map(|(id, name)| self.project_sidebar_header(id, name, cx)),
                     )
                     .when(self.snapshot.projects.len() > 1, |list| {
                         list.child(

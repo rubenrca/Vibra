@@ -57,6 +57,9 @@ impl LibraryRepository {
         }
         let mut bytes = Vec::new();
         file.take(MAX_LIBRARY_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_LIBRARY_BYTES {
+            bail!("{} supera el límite de 8 MiB", self.path.display());
+        }
         let mut library: Library = serde_json::from_slice(&bytes)
             .with_context(|| format!("JSON inválido en {}", self.path.display()))?;
         if library.schema_version > CURRENT_LIBRARY_SCHEMA_VERSION {

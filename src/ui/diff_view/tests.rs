@@ -690,3 +690,46 @@ fn changes_panel_stages_and_unstages_files(cx: &mut gpui::TestAppContext) {
     });
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[gpui::test]
+fn pending_commit_results_stay_with_their_original_repository(cx: &mut gpui::TestAppContext) {
+    use crate::infrastructure::git::GitCliPort;
+    let root = committed_repository();
+    let second = committed_repository();
+    std::fs::write(root.join("notes.txt"), "one\ntwo\n").unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut view = DiffView::new(root.clone(), Arc::new(GitCliPort::default()), cx);
+        view.set_panel_visible(true, cx);
+        view
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        view.changes.message = "Commit in first project".into();
+        view.run_commit(changes_panel::CommitAction::Commit, cx);
+        view.set_root(second.clone(), cx);
+        assert!(view.changes.message.is_empty());
+        assert!(view.changes.feedback.is_none());
+        view.changes.message = "Draft in second project".into();
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, _| {
+        assert_eq!(view.changes.message, "Draft in second project");
+        assert!(view.changes.feedback.is_none());
+        assert_eq!(
+            view.snapshot.as_ref().unwrap().root,
+            second.canonicalize().unwrap()
+        );
+    });
+    let subject = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["log", "-1", "--format=%s"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(subject.stdout).unwrap().trim(),
+        "Commit in first project"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(second).unwrap();
+}

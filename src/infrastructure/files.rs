@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -11,6 +11,16 @@ use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 pub struct LocalFileSystemPort;
 
 impl FileSystemPort for LocalFileSystemPort {
+    fn create_entry(
+        &self,
+        root: &Path,
+        directory: &Path,
+        name: &str,
+        folder: bool,
+    ) -> Result<PathBuf> {
+        create_project_entry(root, directory, name, folder).map_err(anyhow::Error::msg)
+    }
+
     fn list_directory(
         &self,
         project_root: &Path,
@@ -67,6 +77,61 @@ impl FileSystemPort for LocalFileSystemPort {
             .map(|entry| entry.0)
             .collect())
     }
+}
+
+/// Creates `name` inside `directory`, never outside `root` and never over an
+/// existing entry. Returns the new path.
+fn create_project_entry(
+    root: &Path,
+    directory: &Path,
+    name: &str,
+    folder: bool,
+) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Escribe un nombre.".to_owned());
+    }
+    // Nested names (`src/lib.rs`) are allowed; escaping the project is not.
+    let relative = Path::new(name);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("El nombre no puede salir de la carpeta del proyecto.".to_owned());
+    }
+    let canonical_root = canonical_root(root).map_err(|error| error.to_string())?;
+    canonical_directory(&canonical_root, directory).map_err(|error| error.to_string())?;
+    let path = directory.join(relative);
+    // Nested names may cross a symlink even when their lexical path stays
+    // inside the project. Resolve the closest existing parent before writing.
+    let existing_parent = path
+        .parent()
+        .and_then(|parent| {
+            parent
+                .ancestors()
+                .find(|ancestor| ancestor.symlink_metadata().is_ok())
+        })
+        .ok_or_else(|| "La carpeta no está disponible.".to_owned())?;
+    canonical_directory(&canonical_root, existing_parent).map_err(|error| error.to_string())?;
+    if path.symlink_metadata().is_ok() {
+        return Err(format!("Ya existe {}.", path.display()));
+    }
+    let result = if folder {
+        std::fs::create_dir_all(&path)
+    } else {
+        path.parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map(|_| ())
+            })
+    };
+    result.map_err(|error| format!("No se pudo crear {}: {error}", path.display()))?;
+    Ok(path)
 }
 
 struct SortedEntry(FileEntry);
@@ -157,5 +222,48 @@ mod tests {
             ["alpha", ".secret"]
         );
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn entries_are_created_inside_the_project_only() {
+        let root = std::env::temp_dir().join(format!("vibra-explorer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = create_project_entry(&root, &root, "src/lib.rs", false).unwrap();
+        assert!(file.is_file());
+        let folder = create_project_entry(&root, &root.join("src"), "nested", true).unwrap();
+        assert!(folder.is_dir());
+        assert!(create_project_entry(&root, &root, "src/lib.rs", false).is_err());
+        assert!(create_project_entry(&root, &root, "../escape", false).is_err());
+        assert!(create_project_entry(&root, &root, "/tmp/abs", true).is_err());
+        assert!(create_project_entry(&root, &root, "  ", true).is_err());
+        assert!(create_project_entry(&root, Path::new("/tmp"), "x", true).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_entry_creation_resolves_symlinks_before_writing() {
+        use std::os::unix::fs::symlink;
+
+        let root = temporary_root();
+        let outside = temporary_root();
+        let port = LocalFileSystemPort;
+        symlink(&outside, root.join("external")).unwrap();
+        for folder in [false, true] {
+            assert!(
+                port.create_entry(&root, &root, "external/nested/new", folder)
+                    .is_err()
+            );
+            assert!(
+                port.create_entry(&root, &root.join("external"), "new", folder)
+                    .is_err()
+            );
+        }
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        fs::create_dir(root.join("internal")).unwrap();
+        symlink(root.join("internal"), root.join("alias")).unwrap();
+        port.create_entry(&root, &root, "alias/nested/file.txt", false)
+            .unwrap();
+        assert!(root.join("internal/nested/file.txt").is_file());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 }

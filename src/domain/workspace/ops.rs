@@ -74,35 +74,6 @@ impl super::WorkspaceSnapshot {
         changed
     }
 
-    pub fn create_terminal_tab_with_options(
-        &mut self,
-        focus_new: bool,
-        working_directory: Option<String>,
-    ) -> Option<(Uuid, Uuid)> {
-        let (project_index, workspace_index) = self.selected_workspace_indices()?;
-        let working_directory = working_directory.unwrap_or_else(|| {
-            self.projects[project_index]
-                .directory()
-                .map(str::to_owned)
-                .or_else(|| {
-                    self.selected_session()
-                        .map(|session| session.working_directory.clone())
-                })
-                .unwrap_or_default()
-        });
-        let project = &mut self.projects[project_index];
-        let tab = TabSnapshot::with_session(SessionSnapshot::new(working_directory));
-        let tab_id = tab.id;
-        let session_id = tab.selected_session_id?;
-        let workspace = &mut project.workspaces.as_mut().expect("normalized")[workspace_index];
-        workspace.tabs.push(tab);
-        if focus_new {
-            workspace.selected_tab_id = Some(tab_id);
-        }
-        project.normalize();
-        Some((tab_id, session_id))
-    }
-
     pub fn split_selected_terminal(&mut self, direction: PaneSplitDirection) -> Option<Uuid> {
         self.split_selected_terminal_with_focus(direction, true)
     }
@@ -183,6 +154,12 @@ impl super::WorkspaceSnapshot {
                     continue;
                 };
                 tab.selected_session_id = Some(session_id);
+                if tab
+                    .zoomed_session_id
+                    .is_some_and(|zoomed| zoomed != session_id)
+                {
+                    tab.zoomed_session_id = None;
+                }
                 workspace.selected_tab_id = Some(tab.id);
                 project.selected_workspace_id = Some(workspace.id);
                 project.collapsed = false;
@@ -566,71 +543,6 @@ impl super::WorkspaceSnapshot {
         self.select_workspace(project_id, workspace_id)
     }
 
-    /// Sessions are merged into one per project in the app; kept for
-    /// fixtures that build older, multi-session snapshots.
-    #[cfg(test)]
-    pub fn workspace_entries(&self) -> Vec<WorkspaceEntry> {
-        self.projects
-            .iter()
-            .flat_map(|project| {
-                project
-                    .workspaces
-                    .iter()
-                    .flatten()
-                    .map(move |workspace| self.workspace_entry(project, workspace))
-            })
-            .collect()
-    }
-
-    pub fn sidebar_entries(&self) -> Vec<SidebarEntry> {
-        let capacity = self.projects.len()
-            + self
-                .projects
-                .iter()
-                .filter(|project| !project.collapsed)
-                .map(|project| project.workspaces.as_ref().map_or(0, Vec::len))
-                .sum::<usize>();
-        let mut entries = Vec::with_capacity(capacity);
-        for project in &self.projects {
-            entries.push(SidebarEntry::Project {
-                id: project.id,
-                name: project.name.clone(),
-                root_path: project.root_path.clone(),
-                collapsed: project.collapsed,
-                workspace_count: project.workspaces.as_ref().map_or(0, Vec::len),
-                is_selected: self.selected_project_id == Some(project.id),
-            });
-            if !project.collapsed {
-                entries.extend(project.workspaces.iter().flatten().map(|workspace| {
-                    SidebarEntry::Workspace {
-                        entry: self.workspace_entry(project, workspace),
-                    }
-                }));
-            }
-        }
-        entries
-    }
-
-    fn workspace_entry(
-        &self,
-        project: &ProjectSnapshot,
-        workspace: &TerminalWorkspaceSnapshot,
-    ) -> WorkspaceEntry {
-        WorkspaceEntry {
-            project_id: project.id,
-            workspace_id: workspace.id,
-            project_name: project.name.clone(),
-            workspace_name: workspace.name.clone(),
-            title_is_manual: workspace.title_source == Some(WorkspaceTitleSource::Manual),
-            working_directory: workspace
-                .primary_working_directory()
-                .unwrap_or_else(|| project.root_path.clone()),
-            session_count: workspace.tabs.iter().map(|tab| tab.sessions.len()).sum(),
-            is_selected: self.selected_project_id == Some(project.id)
-                && project.selected_workspace_id == Some(workspace.id),
-        }
-    }
-
     pub fn selected_workspace(&self) -> Option<&TerminalWorkspaceSnapshot> {
         let project = self
             .projects
@@ -816,13 +728,7 @@ impl TerminalWorkspaceSnapshot {
             .or_else(|| self.tabs.first())
     }
 
-    /// Working directory of the selected tab's selected session (or first available).
-    pub fn primary_working_directory(&self) -> Option<String> {
-        self.primary_session()
-            .map(|session| session.working_directory.clone())
-    }
-
-    /// Session that drives sidebar path/branch metadata for this workspace.
+    /// Selected terminal, with a fallback for legacy workspace snapshots.
     pub fn primary_session(&self) -> Option<&SessionSnapshot> {
         let tab = self.primary_tab()?;
         tab.sessions

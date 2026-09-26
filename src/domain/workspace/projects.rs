@@ -182,14 +182,6 @@ impl WorkspaceSnapshot {
         true
     }
 
-    pub fn toggle_project(&mut self, project_id: Uuid) -> bool {
-        let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
-            return false;
-        };
-        project.collapsed = !project.collapsed;
-        true
-    }
-
     /// Removes only app state; no folder or repository is deleted.
     pub fn remove_project(&mut self, project_id: Uuid) -> bool {
         let Some(index) = self.projects.iter().position(|p| p.id == project_id) else {

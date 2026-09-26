@@ -36,12 +36,13 @@ fn agent_task_titles_persist_and_survive_terminal_updates_without_renaming_manua
         .unwrap();
     assert_eq!(session.agent_task_title.as_deref(), Some("Corregir login"));
     let entry = restored
-        .workspace_entries()
-        .into_iter()
-        .find(|e| e.workspace_id == workspace)
+        .projects
+        .iter()
+        .flat_map(|project| project.workspaces.iter().flatten())
+        .find(|entry| entry.id == workspace)
         .unwrap();
-    assert!(entry.title_is_manual);
-    assert_eq!(entry.workspace_name, "Mi nombre");
+    assert_eq!(entry.title_source, Some(WorkspaceTitleSource::Manual));
+    assert_eq!(entry.name, "Mi nombre");
     let old = serde_json::json!({"id": first, "title": "Terminal", "workingDirectory": "/tmp"});
     assert!(
         serde_json::from_value::<SessionSnapshot>(old)
@@ -102,7 +103,7 @@ fn normalization_preserves_geometry_when_ids_collide_across_tabs() {
     snapshot.create_workspace(Path::new("/tmp/duplicate-tabs"));
     let first_id = snapshot.selected_session().unwrap().id;
     let (_, second_id) = snapshot
-        .create_terminal_tab_with_options(true, None)
+        .open_tab_in_project(snapshot.selected_project_id.unwrap(), true)
         .unwrap();
     let third_id = snapshot
         .split_selected_terminal(PaneSplitDirection::Right)
@@ -237,7 +238,7 @@ fn create_terminal_tab_starts_at_the_project_root_after_cd() {
     );
 
     let (_, created_id) = snapshot
-        .create_terminal_tab_with_options(true, None)
+        .open_tab_in_project(snapshot.selected_project_id.unwrap(), true)
         .unwrap();
     let created = snapshot
         .terminal_sessions()
@@ -253,9 +254,8 @@ fn create_workspace_opens_at_the_requested_directory() {
     snapshot.create_workspace(Path::new("/tmp/vibra-ws-root"));
     snapshot.create_workspace(Path::new("/tmp/vibra-ws-root/nested"));
 
-    let entries = snapshot.workspace_entries();
-    assert_eq!(entries.len(), 2);
-    assert_eq!(entries[1].working_directory, "/tmp/vibra-ws-root/nested");
+    assert_eq!(snapshot.projects.len(), 2);
+    assert_eq!(snapshot.projects[1].root_path, "/tmp/vibra-ws-root/nested");
     assert_eq!(
         snapshot.selected_session().unwrap().working_directory,
         "/tmp/vibra-ws-root/nested"
@@ -300,7 +300,7 @@ fn create_terminal_tab_without_focus_keeps_previous_tab() {
     snapshot.create_workspace(Path::new("/tmp/vibra-tab"));
     let original_tab = snapshot.selected_tab().unwrap().id;
     let (tab_id, session_id) = snapshot
-        .create_terminal_tab_with_options(false, None)
+        .open_tab_in_project(snapshot.selected_project_id.unwrap(), false)
         .unwrap();
     assert_ne!(tab_id, original_tab);
     assert_eq!(snapshot.selected_tab().unwrap().id, original_tab);
@@ -385,10 +385,10 @@ fn tabs_can_be_reordered_and_addressed_by_number() {
     snapshot.create_workspace(Path::new("/tmp/vibra-tab-order"));
     let first = snapshot.selected_tab().unwrap().id;
     let (second, _) = snapshot
-        .create_terminal_tab_with_options(true, None)
+        .open_tab_in_project(snapshot.selected_project_id.unwrap(), true)
         .unwrap();
     let (third, _) = snapshot
-        .create_terminal_tab_with_options(true, None)
+        .open_tab_in_project(snapshot.selected_project_id.unwrap(), true)
         .unwrap();
     assert_eq!(
         snapshot
@@ -517,7 +517,7 @@ fn legacy_sessions_migrate_without_data_loss() {
 }
 
 #[test]
-fn workspace_entries_surface_the_selected_session_working_directory() {
+fn primary_session_tracks_the_selected_terminal_working_directory() {
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/tmp/vibra-sidebar"));
     let session_id = snapshot.selected_session().unwrap().id;
@@ -526,11 +526,13 @@ fn workspace_entries_surface_the_selected_session_working_directory() {
             .update_session_working_directory(session_id, Path::new("/tmp/vibra-sidebar/nested"))
     );
 
-    let entries = snapshot.workspace_entries();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].working_directory, "/tmp/vibra-sidebar/nested");
-    // Automatic titles follow the primary session basename after `cd`.
-    assert_eq!(entries[0].workspace_name, "nested");
+    let workspace = snapshot.selected_workspace().unwrap();
+    assert_eq!(
+        workspace.primary_session().unwrap().working_directory,
+        "/tmp/vibra-sidebar/nested"
+    );
+    // Automatic legacy names still survive loading and directory updates.
+    assert_eq!(workspace.name, "nested");
     assert_eq!(
         snapshot.selected_workspace().unwrap().title_source,
         Some(WorkspaceTitleSource::Automatic)
@@ -560,7 +562,7 @@ fn manual_workspace_title_survives_working_directory_changes() {
 }
 
 #[test]
-fn terminal_title_updates_the_canonical_and_legacy_views() {
+fn terminal_title_updates_without_reintroducing_legacy_copies() {
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/tmp/vibra-title"));
     let session_id = snapshot.selected_session().unwrap().id;
@@ -596,7 +598,7 @@ fn global_session_operations_find_unselected_projects_workspaces_and_tabs() {
     snapshot.create_workspace(root);
     snapshot.create_workspace(root);
     let (tab_id, session_id) = snapshot
-        .create_terminal_tab_with_options(false, None)
+        .open_tab_in_project(snapshot.selected_project_id.unwrap(), false)
         .unwrap();
     let project_id = snapshot.selected_project_id;
     let workspace_id = snapshot.selected_workspace().unwrap().id;
@@ -662,7 +664,7 @@ fn painted_session_ids_follow_tab_workspace_and_zoom() {
     snapshot.create_workspace(Path::new("/tmp/vibra-paint-a"));
     let first_tab = snapshot.selected_tab().unwrap().id;
     let first_session = snapshot.selected_session().unwrap().id;
-    snapshot.create_terminal_tab_with_options(true, None);
+    snapshot.open_tab_in_project(snapshot.selected_project_id.unwrap(), true);
     let second_tab = snapshot.selected_tab().unwrap().id;
     let second_session = snapshot.selected_session().unwrap().id;
     assert_ne!(first_session, second_session);
@@ -721,7 +723,7 @@ fn accidental_root_workspace_relocates_every_session() {
     let target = std::env::temp_dir().join(format!("VibraDev-{}", Uuid::new_v4()));
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/"));
-    snapshot.create_terminal_tab_with_options(true, None);
+    snapshot.open_tab_in_project(snapshot.selected_project_id.unwrap(), true);
 
     assert!(snapshot.relocate_root(Path::new("/"), &target));
 
