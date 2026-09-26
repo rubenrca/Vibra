@@ -23,6 +23,9 @@ published in [warpdotdev/themes](https://github.com/warpdotdev/themes)
 (Apache-2.0) and their upstream schemes. Palette names remain trademarks of
 their respective authors.
 
+The interface icons in `Resources/ChromeIcons` follow the geometry of
+[Lucide](https://lucide.dev/) (ISC license, Copyright (c) Lucide Contributors).
+
 ## Agent marks
 
 The compatibility marks in `Resources/AgentMarks` identify the coding agents

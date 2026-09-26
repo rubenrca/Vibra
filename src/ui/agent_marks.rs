@@ -90,6 +90,14 @@ bundled_assets! {
     ("chrome-icons/collapse-all.svg", "ChromeIcons/collapse-all.svg"),
     ("chrome-icons/grip.svg", "ChromeIcons/grip.svg"),
     ("chrome-icons/split-view.svg", "ChromeIcons/split-view.svg"),
+    ("chrome-icons/panel-left.svg", "ChromeIcons/panel-left.svg"),
+    ("chrome-icons/panel-right.svg", "ChromeIcons/panel-right.svg"),
+    ("chrome-icons/pin.svg", "ChromeIcons/pin.svg"),
+    ("chrome-icons/pin-off.svg", "ChromeIcons/pin-off.svg"),
+    ("chrome-icons/pencil.svg", "ChromeIcons/pencil.svg"),
+    ("chrome-icons/folder-open.svg", "ChromeIcons/folder-open.svg"),
+    ("chrome-icons/trash.svg", "ChromeIcons/trash.svg"),
+    ("chrome-icons/rows.svg", "ChromeIcons/rows.svg"),
 
 }
 
@@ -163,6 +171,14 @@ fn brand_mark(kind: Option<&str>, mark_color: Rgba, size: f32) -> AnyElement {
     }
 }
 
+/// Marks whose identity is their color keep it in the chrome.
+fn brand_tint(kind: &str) -> Option<Rgba> {
+    match kind {
+        "Claude" => Some(gpui::rgb(0xd97757)),
+        _ => None,
+    }
+}
+
 fn badge_mark_color(selected: bool) -> Rgba {
     if selected {
         colors().foreground
@@ -178,7 +194,9 @@ pub fn agent_compact_badge(
     attention: Option<AgentAttention>,
     selected: bool,
 ) -> AnyElement {
-    let mark_color = badge_mark_color(selected);
+    let mark_color = kind
+        .and_then(brand_tint)
+        .unwrap_or_else(|| badge_mark_color(selected));
     let status = agent_status_color(state, attention);
 
     div()
