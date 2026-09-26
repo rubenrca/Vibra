@@ -27,12 +27,15 @@ pub struct AppSettings {
     pub show_hidden_files: bool,
     #[serde(default = "default_true")]
     pub left_sidebar_visible: bool,
-    #[serde(default, alias = "gitPanelVisible")]
+    #[serde(default = "default_true", alias = "gitPanelVisible")]
     pub right_sidebar_visible: bool,
     #[serde(default = "default_left_sidebar_width")]
     pub left_sidebar_width: f32,
     #[serde(default = "default_right_sidebar_width")]
     pub right_sidebar_width: f32,
+    /// Projects kept in the global sidebar’s Pinned section.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_project_ids: Vec<uuid::Uuid>,
     /// Palette id (`midnight`, `nord`, or `user:stem` from ~/.vibra/themes).
     #[serde(default = "default_theme_id")]
     pub theme_id: String,
@@ -55,6 +58,16 @@ pub struct AppSettings {
     /// Code size in the Git review, independent of the terminal.
     #[serde(default = "default_diff_font_size")]
     pub diff_font_size: f32,
+    /// Share of the center given to the terminal when a review sits beside it.
+    #[serde(default = "default_review_split")]
+    pub review_split: f32,
+}
+
+pub const MIN_REVIEW_SPLIT: f32 = 0.2;
+pub const MAX_REVIEW_SPLIT: f32 = 0.8;
+
+const fn default_review_split() -> f32 {
+    0.5
 }
 
 const fn default_terminal_font_size() -> f32 {
@@ -73,8 +86,8 @@ const fn default_true() -> bool {
     true
 }
 
-pub const DEFAULT_LEFT_SIDEBAR_WIDTH: f32 = 240.0;
-pub const DEFAULT_RIGHT_SIDEBAR_WIDTH: f32 = 420.0;
+pub const DEFAULT_LEFT_SIDEBAR_WIDTH: f32 = 220.0;
+pub const DEFAULT_RIGHT_SIDEBAR_WIDTH: f32 = 320.0;
 pub const DEFAULT_WINDOW_WIDTH: f32 = 1240.0;
 pub const DEFAULT_WINDOW_HEIGHT: f32 = 780.0;
 pub const MIN_LEFT_SIDEBAR_WIDTH: f32 = 188.0;
@@ -112,9 +125,10 @@ impl Default for AppSettings {
             terminal_font_size: default_terminal_font_size(),
             show_hidden_files: false,
             left_sidebar_visible: true,
-            right_sidebar_visible: false,
+            right_sidebar_visible: true,
             left_sidebar_width: DEFAULT_LEFT_SIDEBAR_WIDTH,
             right_sidebar_width: DEFAULT_RIGHT_SIDEBAR_WIDTH,
+            pinned_project_ids: Vec::new(),
             theme_id: default_theme_id(),
             appearance_mode: AppearanceMode::System,
             agent_notifications: true,
@@ -123,6 +137,7 @@ impl Default for AppSettings {
             diff_split: false,
             diff_wrap: false,
             diff_font_size: DEFAULT_DIFF_FONT_SIZE,
+            review_split: default_review_split(),
         }
     }
 }
@@ -163,6 +178,10 @@ impl AppSettings {
         self.window_height = self
             .window_height
             .clamp(MIN_WINDOW_HEIGHT, MAX_WINDOW_DIMENSION);
+        if !self.review_split.is_finite() {
+            self.review_split = default_review_split();
+        }
+        self.review_split = self.review_split.clamp(MIN_REVIEW_SPLIT, MAX_REVIEW_SPLIT);
         if self.theme_id.trim().is_empty() {
             self.theme_id = default_theme_id();
         }
@@ -218,6 +237,11 @@ impl SettingsRepository {
             preview_path: Some(preview_path.into()),
             revision: Arc::new(RevisionGuard::default()),
         }
+    }
+
+    /// Folder holding `settings.json`, shared with the other app-owned files.
+    pub fn directory(&self) -> Option<&std::path::Path> {
+        self.path.parent()
     }
 
     pub fn load(&self) -> Result<AppSettings> {
@@ -324,6 +348,8 @@ mod tests {
         assert_eq!(settings.terminal_font_size, 32.0);
         assert_eq!(settings.window_width, DEFAULT_WINDOW_WIDTH);
         assert_eq!(settings.window_height, DEFAULT_WINDOW_HEIGHT);
+        assert!(settings.pinned_project_ids.is_empty());
+        settings.pinned_project_ids.push(Uuid::new_v4());
         assert!(settings.set_window_size(1512.0, 864.0));
         repository.save(&settings).unwrap();
         assert_eq!(repository.load().unwrap(), settings);

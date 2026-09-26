@@ -901,8 +901,8 @@ impl WorkspaceView {
                     ))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
-                            label: "Lista de sesiones",
-                            description: "Muestra la lista de sesiones al abrir la aplicación.",
+                            label: "Navegación global",
+                            description: "Muestra proyectos y accesos globales al abrir la aplicación.",
                             enabled: self.settings.left_sidebar_visible,
                             divider: true,
                             id: "settings-sidebar-visible",
@@ -914,8 +914,8 @@ impl WorkspaceView {
                     ))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
-                            label: "Panel de archivos y Git",
-                            description: "Abre el panel derecho del proyecto al iniciar.",
+                            label: "Panel Workspace",
+                            description: "Muestra Explorer y Changes a la derecha.",
                             enabled: self.settings.right_sidebar_visible,
                             divider: false,
                             id: "settings-git-visible",

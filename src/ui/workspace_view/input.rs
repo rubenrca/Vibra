@@ -125,6 +125,10 @@ impl super::WorkspaceView {
                 _ => {}
             }
             cx.stop_propagation();
+            return;
+        }
+        if self.handle_note_key(event, cx) || self.handle_automation_form_key(event, cx) {
+            cx.stop_propagation();
         }
     }
 }

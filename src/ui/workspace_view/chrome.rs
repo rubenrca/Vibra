@@ -1,32 +1,25 @@
 use std::path::Path;
 
-use gpui::{Div, SharedString, Stateful, div, prelude::*, px, svg};
+use gpui::{Div, SharedString, Stateful, div, prelude::*, px};
 
 use crate::domain::workspace::WorkspaceSplitAxis;
-use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
-use crate::ui::agent_marks::{SIDEBAR_AGENT_MARK_SIZE, agent_sidebar_badge, agent_status_color};
-use crate::ui::theme::{MONO_FONT, colors, mix, popover_surface, surface, surface_tint};
-
-use super::SidebarWorkspaceMeta;
+use crate::ui::theme::{colors, popover_surface, surface};
 
 pub(crate) const PANEL_GAP: f32 = 4.0;
-pub(crate) const PANEL_RADIUS: f32 = 10.0;
 pub(crate) const PANEL_BORDER_WIDTH: f32 = 1.0;
 // Leave equal room for the status dot and shortcut so tab labels stay centered.
 pub(crate) const TAB_LABEL_INSET: f32 = 36.0;
-// Projects and sessions share the same horizontal bounds and leading edge.
-pub(crate) const SIDEBAR_ROW_INSET: f32 = 8.0;
-pub(crate) const SIDEBAR_ROW_PADDING: f32 = 6.0;
+// Keep project rows aligned with the global navigation.
+/// Horizontal inset of sidebar rows inside the panel border.
+pub(crate) const SIDEBAR_ROW_INSET: f32 = 10.0;
 pub(crate) const SIDEBAR_ROW_END_PADDING: f32 = 2.0;
-pub(crate) const SIDEBAR_ROW_RADIUS: f32 = 6.0;
 pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
-pub(crate) const SIDEBAR_SESSION_MENU_SPACE: f32 = SIDEBAR_CONTROL_SIZE + 4.0;
 
 pub(crate) fn sidebar_row_width(panel_width: f32) -> f32 {
     panel_width - 2.0 * (PANEL_BORDER_WIDTH + SIDEBAR_ROW_INSET)
 }
 
-/// Gutter between bento tiles. The window supplies its background; tiles own the borders.
+/// Keep a usable resize target between the flat split panes.
 pub(crate) fn split_gutter(id: impl Into<SharedString>, axis: WorkspaceSplitAxis) -> Stateful<Div> {
     div()
         .id(id.into())
@@ -38,30 +31,6 @@ pub(crate) fn split_gutter(id: impl Into<SharedString>, axis: WorkspaceSplitAxis
         .when(axis == WorkspaceSplitAxis::Vertical, |divider| {
             divider.h(px(PANEL_GAP)).w_full().cursor_ns_resize()
         })
-}
-
-pub(crate) fn sidebar_tab_line(
-    text: &str,
-    color: gpui::Rgba,
-    size: f32,
-    medium: bool,
-    mono: bool,
-) -> Div {
-    let mut row = div()
-        .w_full()
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_ellipsis()
-        .text_size(px(size))
-        .text_color(color)
-        .child(text.to_owned());
-    if medium {
-        row = row.font_weight(gpui::FontWeight::MEDIUM);
-    }
-    if mono {
-        row = row.font_family(MONO_FONT);
-    }
-    row
 }
 
 pub(crate) fn is_generic_tab_title(title: &str) -> bool {
@@ -227,22 +196,6 @@ pub(crate) fn format_sidebar_path(path: &str, home: Option<&Path>) -> String {
     }
 }
 
-/// Branch + dirty/ahead/behind for sidebar tabs (compact cmux-style).
-pub(crate) fn format_sidebar_branch(meta: &SidebarWorkspaceMeta) -> Option<String> {
-    let branch = meta.branch.as_ref()?;
-    let mut label = branch.clone();
-    if meta.dirty {
-        label.push('*');
-    }
-    if meta.ahead > 0 {
-        label.push_str(&format!(" ↑{}", meta.ahead));
-    }
-    if meta.behind > 0 {
-        label.push_str(&format!(" ↓{}", meta.behind));
-    }
-    Some(label)
-}
-
 /// Smooth ease-out for sidebar width (`t` in `0.0..=1.0`).
 pub(crate) fn ease_out_cubic(t: f32) -> f32 {
     let inv = 1.0 - t;
@@ -262,9 +215,9 @@ pub(crate) fn clipped_width_panel(
         .flex_none()
         .relative()
         .overflow_hidden()
-        .rounded(px(PANEL_RADIUS))
         .bg(surface(background))
-        .border_1()
+        .border_l_1()
+        .border_r_1()
         .border_color(colors().border_subtle)
         .child(
             div()
@@ -273,121 +226,8 @@ pub(crate) fn clipped_width_panel(
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                .rounded(px(PANEL_RADIUS))
                 .child(content),
         )
-}
-
-pub(crate) fn sidebar_agent_priority(
-    state: Option<AgentRuntimeState>,
-    attention: Option<AgentAttention>,
-) -> u8 {
-    match (state, attention) {
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Permission)) => 50,
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Question)) => 45,
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Plan)) => 40,
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Notification)) => 35,
-        (Some(AgentRuntimeState::Working), _) => 30,
-        (Some(AgentRuntimeState::Waiting), _) => 20,
-        (Some(AgentRuntimeState::Idle), _) => 10,
-        (None, _) => 0,
-    }
-}
-
-pub(crate) fn sidebar_agent_line(
-    kind: Option<&str>,
-    model: Option<&str>,
-    state: Option<AgentRuntimeState>,
-    attention: Option<AgentAttention>,
-) -> String {
-    let kind = kind.unwrap_or("Terminal");
-    let activity = sidebar_agent_activity(state, attention);
-    match model.map(str::trim).filter(|model| !model.is_empty()) {
-        Some(model) => format!("{kind} · {model} · {activity}"),
-        None => format!("{kind} · {activity}"),
-    }
-}
-
-fn sidebar_agent_activity(
-    state: Option<AgentRuntimeState>,
-    attention: Option<AgentAttention>,
-) -> &'static str {
-    match (state, attention) {
-        (_, Some(AgentAttention::Permission)) => "pide permiso",
-        (_, Some(AgentAttention::Question)) => "tiene una pregunta",
-        (_, Some(AgentAttention::Plan)) => "tiene un plan",
-        (_, Some(AgentAttention::Notification)) => "necesita atención",
-        (Some(AgentRuntimeState::Working), _) => "trabajando",
-        (Some(AgentRuntimeState::Waiting), _) => "esperando",
-        (Some(AgentRuntimeState::Idle), _) => "listo",
-        (None, _) => "shell",
-    }
-}
-
-pub(crate) fn sidebar_location_line(branch: Option<&str>, path: &str) -> String {
-    match branch {
-        Some(branch) => format!("{branch}  ·  {path}"),
-        None => path.to_owned(),
-    }
-}
-
-pub(crate) struct SidebarWorkspaceAppearance {
-    pub title: gpui::Rgba,
-    pub branch: gpui::Rgba,
-    pub background: gpui::Rgba,
-    pub hover: gpui::Rgba,
-}
-
-pub(crate) fn sidebar_workspace_appearance(
-    selected: bool,
-    dirty: bool,
-    behind: usize,
-) -> SidebarWorkspaceAppearance {
-    let theme = colors();
-    let selected_surface = mix(theme.sidebar, theme.foreground, 0.115);
-    SidebarWorkspaceAppearance {
-        title: if selected {
-            theme.foreground
-        } else {
-            mix(theme.foreground, theme.muted, 0.35)
-        },
-        branch: match (dirty, behind > 0) {
-            (true, _) => theme.warning,
-            (_, true) => theme.accent,
-            _ if selected => theme.muted,
-            _ => mix(theme.muted, theme.subtle, 0.6),
-        },
-        background: if selected {
-            surface_tint(selected_surface, theme.sidebar)
-        } else {
-            gpui::rgba(0x00000000)
-        },
-        hover: if selected {
-            surface_tint(
-                mix(selected_surface, theme.foreground, 0.025),
-                theme.sidebar,
-            )
-        } else {
-            surface_tint(mix(theme.sidebar, theme.foreground, 0.045), theme.sidebar)
-        },
-    }
-}
-
-/// The session row and its drag preview share the same typography and content.
-#[derive(Clone)]
-pub(crate) struct SidebarSessionCard {
-    pub context: String,
-    pub title: String,
-    pub branch: Option<String>,
-    pub path: String,
-    pub selected: bool,
-    pub dirty: bool,
-    pub behind: usize,
-    pub agent_kind: Option<String>,
-    pub agent_state: Option<AgentRuntimeState>,
-    pub agent_attention: Option<AgentAttention>,
-    pub agent_model: Option<String>,
-    pub width: f32,
 }
 
 struct SidebarTooltip(SharedString);
@@ -411,160 +251,4 @@ impl gpui::Render for SidebarTooltip {
 
 pub(crate) fn sidebar_tooltip(label: impl Into<SharedString>, cx: &mut gpui::App) -> gpui::AnyView {
     cx.new(|_| SidebarTooltip(label.into())).into()
-}
-
-pub(crate) fn sidebar_session_detail(card: &SidebarSessionCard, full_path: &str) -> String {
-    format!(
-        "{}\n{}\n{}",
-        card.title,
-        sidebar_agent_line(
-            card.agent_kind.as_deref(),
-            card.agent_model.as_deref(),
-            card.agent_state,
-            card.agent_attention,
-        ),
-        sidebar_location_line(card.branch.as_deref(), full_path),
-    )
-}
-
-pub(crate) fn sidebar_workspace_content(card: &SidebarSessionCard) -> Div {
-    let appearance = sidebar_workspace_appearance(card.selected, card.dirty, card.behind);
-    // Match the row padding, including in the drag preview.
-    let width = (card.width - 2.0 * SIDEBAR_ROW_PADDING).max(80.0);
-    let activity = match (card.agent_state, card.agent_attention) {
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Permission)) => Some("Permiso"),
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Question)) => Some("Pregunta"),
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Plan)) => Some("Plan"),
-        (Some(AgentRuntimeState::Waiting), Some(AgentAttention::Notification)) => Some("Atención"),
-        (Some(AgentRuntimeState::Waiting), _) => Some("En espera"),
-        (Some(AgentRuntimeState::Working), _) => Some("Trabajando"),
-        _ => None,
-    };
-    let status_width = activity.map_or(0.0, |label| label.chars().count() as f32 * 5.0 + 6.0);
-    let status_color =
-        agent_status_color(card.agent_state, card.agent_attention).unwrap_or(colors().muted);
-    let context_width = width
-        - SIDEBAR_AGENT_MARK_SIZE
-        - 6.0
-        - status_width
-        - if activity.is_some() { 6.0 } else { 0.0 };
-    let location = card.branch.as_deref().unwrap_or(&card.path);
-    let metadata_chrome = 10.0 + 3.0;
-    div()
-        .w(px(width))
-        .flex_none()
-        .flex()
-        .flex_col()
-        .gap(px(1.5))
-        .overflow_hidden()
-        .child(
-            div()
-                .h(px(14.0))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(agent_sidebar_badge(
-                    card.agent_kind.as_deref(),
-                    card.selected,
-                ))
-                .child(
-                    div()
-                        .w(px(context_width))
-                        .flex_none()
-                        .truncate()
-                        .text_size(px(9.5))
-                        .line_height(px(13.0))
-                        .text_color(colors().subtle)
-                        .child(card.context.clone()),
-                )
-                .when_some(activity, |row, activity| {
-                    row.child(
-                        div()
-                            .w(px(status_width))
-                            .h(px(13.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_end()
-                            .gap(px(3.0))
-                            .text_size(px(9.0))
-                            .line_height(px(13.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(status_color)
-                            .child(
-                                div()
-                                    .size(px(3.0))
-                                    .flex_none()
-                                    .rounded_full()
-                                    .bg(status_color),
-                            )
-                            .child(activity),
-                    )
-                }),
-        )
-        .child(
-            sidebar_tab_line(&card.title, appearance.title, 11.5, true, false)
-                .h(px(17.0))
-                .flex_none()
-                .line_height(px(17.0)),
-        )
-        .child(
-            div()
-                .h(px(13.0))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(3.0))
-                .child(
-                    svg()
-                        .path(if card.branch.is_some() {
-                            "chrome-icons/git-branch.svg"
-                        } else {
-                            "chrome-icons/folder.svg"
-                        })
-                        .size(px(10.0))
-                        .flex_none()
-                        .text_color(colors().subtle),
-                )
-                .child(
-                    div()
-                        .w(px(width - metadata_chrome))
-                        .group_hover("sidebar-session", move |style| {
-                            style.w(px(width - metadata_chrome - SIDEBAR_SESSION_MENU_SPACE))
-                        })
-                        .flex_none()
-                        .truncate()
-                        .text_size(px(9.5))
-                        .line_height(px(13.0))
-                        .text_color(appearance.branch)
-                        .child(location.to_owned()),
-                ),
-        )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sidebar_agent_line_includes_model_only_when_reported() {
-        assert_eq!(
-            sidebar_agent_line(Some("Codex"), None, Some(AgentRuntimeState::Working), None),
-            "Codex · trabajando"
-        );
-        assert_eq!(
-            sidebar_agent_line(
-                Some("Codex"),
-                Some("gpt-5"),
-                Some(AgentRuntimeState::Working),
-                None
-            ),
-            "Codex · gpt-5 · trabajando"
-        );
-        assert_eq!(
-            sidebar_location_line(Some("main"), "~/Dev/Vibra"),
-            "main  ·  ~/Dev/Vibra"
-        );
-    }
 }

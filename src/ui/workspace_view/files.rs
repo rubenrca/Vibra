@@ -455,11 +455,20 @@ fn run_files_watcher(root: PathBuf, events: async_channel::Sender<()>, stop: mps
 
 impl super::WorkspaceView {
     fn files_sidebar_active(&self) -> bool {
-        self.right_sidebar_visible && self.right_sidebar_mode == RightSidebarMode::Files
+        self.workspace_section == super::WorkspaceSection::Workspace
+            && self.right_sidebar_visible
+            && self.right_sidebar_mode == RightSidebarMode::Files
     }
 
     pub(super) fn sync_files_watcher(&mut self, cx: &mut Context<Self>) {
-        if !self.right_sidebar_visible || !self.has_project_context() {
+        if self.workspace_section != super::WorkspaceSection::Workspace
+            || !self.right_sidebar_visible
+            || !self.has_project_context()
+            || !matches!(
+                self.right_sidebar_mode,
+                RightSidebarMode::Files | RightSidebarMode::Diff
+            )
+        {
             self.files_watch = None;
             return;
         }

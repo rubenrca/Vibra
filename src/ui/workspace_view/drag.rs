@@ -1,4 +1,4 @@
-//! Drag payloads and floating previews for tabs, panes, and sidebar sessions.
+//! Drag payloads and floating previews for tabs, panes, and projects.
 
 use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, prelude::*, px};
 use uuid::Uuid;
@@ -7,11 +7,7 @@ use crate::domain::workspace::{PaneBranch, WorkspaceSplitAxis};
 use crate::ui::terminal::TerminalDragPreview;
 use crate::ui::theme::{MONO_FONT, colors};
 
-use super::SIDEBAR_WORKSPACE_HEIGHT;
-use super::chrome::{
-    SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarSessionCard, TAB_LABEL_INSET,
-    sidebar_workspace_appearance, sidebar_workspace_content,
-};
+use super::chrome::TAB_LABEL_INSET;
 
 #[derive(Clone)]
 pub(crate) struct PaneDividerDrag {
@@ -45,22 +41,10 @@ pub(crate) struct PaneDrag {
     pub preview: TerminalDragPreview,
 }
 
-#[derive(Clone)]
-pub(crate) struct SidebarWorkspaceDrag {
-    pub workspace_id: Uuid,
-    pub project_id: Uuid,
-    pub card: SidebarSessionCard,
-}
-
-pub(crate) struct SidebarWorkspaceDragView {
-    pub card: SidebarSessionCard,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReorderDrag {
     Tab(Uuid),
     Pane(Uuid),
-    SidebarWorkspace(Uuid),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,7 +80,7 @@ impl Render for TabDragView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected;
         div()
-            .h(px(26.0))
+            .h(px(30.0))
             .w(px(self.width))
             .relative()
             .flex()
@@ -104,17 +88,11 @@ impl Render for TabDragView {
             .justify_center()
             .px(px(TAB_LABEL_INSET))
             .overflow_hidden()
-            .rounded_full()
+            .rounded(px(6.0))
             .bg(if selected {
                 colors().selection
             } else {
                 gpui::rgba(0x00000000)
-            })
-            .border_1()
-            .border_color(if selected {
-                colors().muted
-            } else {
-                colors().border_subtle
             })
             .text_color(colors().foreground)
             .shadow_sm()
@@ -146,27 +124,6 @@ impl Render for TabDragView {
                         .child(shortcut),
                 )
             })
-    }
-}
-
-impl Render for SidebarWorkspaceDragView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let card = &self.card;
-        let appearance = sidebar_workspace_appearance(card.selected, card.dirty, card.behind);
-        div()
-            .h(px(SIDEBAR_WORKSPACE_HEIGHT))
-            .w(px(card.width))
-            .px(px(SIDEBAR_ROW_PADDING))
-            .rounded(px(SIDEBAR_ROW_RADIUS))
-            .flex()
-            .items_center()
-            .bg(if card.selected {
-                appearance.background
-            } else {
-                colors().sidebar
-            })
-            .shadow_sm()
-            .child(sidebar_workspace_content(card))
     }
 }
 

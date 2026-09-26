@@ -6,6 +6,7 @@ mod git_graph;
 pub mod idle;
 pub mod syntax;
 pub mod terminal;
+mod text_edit;
 pub mod theme;
 mod theme_import;
 pub mod workspace_view;

@@ -10,10 +10,6 @@ use crate::ui::theme::{MONO_FONT, colors};
 
 /// Glyph used when a pane has no detected agent mark.
 pub const TERMINAL_GLYPH: &str = ">_";
-// The slot includes room for optical scaling without clipping wider marks.
-pub(crate) const SIDEBAR_AGENT_MARK_SIZE: f32 = 12.0;
-const SIDEBAR_AGENT_ARTWORK_SIZE: f32 = 10.0;
-
 macro_rules! bundled_assets {
     ($(($key:literal, $rel:literal)),+ $(,)?) => {
         impl AssetSource for VibraAssets {
@@ -62,15 +58,39 @@ bundled_assets! {
     ("chrome-icons/git-branch.svg", "ChromeIcons/git-branch.svg"),
     ("chrome-icons/open-external.svg", "ChromeIcons/open-external.svg"),
     ("chrome-icons/chevron-down.svg", "ChromeIcons/chevron-down.svg"),
+    ("chrome-icons/chevron-up.svg", "ChromeIcons/chevron-up.svg"),
+    ("chrome-icons/fold-vertical.svg", "ChromeIcons/fold-vertical.svg"),
+    ("chrome-icons/unfold-vertical.svg", "ChromeIcons/unfold-vertical.svg"),
     ("chrome-icons/chevrons-left.svg", "ChromeIcons/chevrons-left.svg"),
     ("chrome-icons/chevrons-right.svg", "ChromeIcons/chevrons-right.svg"),
     ("chrome-icons/chevron-right.svg", "ChromeIcons/chevron-right.svg"),
+    ("chrome-icons/chevron-left.svg", "ChromeIcons/chevron-left.svg"),
     ("chrome-icons/diff-split.svg", "ChromeIcons/diff-split.svg"),
     ("chrome-icons/diff-unified.svg", "ChromeIcons/diff-unified.svg"),
     ("chrome-icons/wrap.svg", "ChromeIcons/wrap.svg"),
     ("chrome-icons/comment.svg", "ChromeIcons/comment.svg"),
     ("chrome-icons/send.svg", "ChromeIcons/send.svg"),
     ("chrome-icons/close.svg", "ChromeIcons/close.svg"),
+    ("chrome-icons/search.svg", "ChromeIcons/search.svg"),
+    ("chrome-icons/inbox.svg", "ChromeIcons/inbox.svg"),
+    ("chrome-icons/notes.svg", "ChromeIcons/notes.svg"),
+    ("chrome-icons/automations.svg", "ChromeIcons/automations.svg"),
+    ("chrome-icons/settings.svg", "ChromeIcons/settings.svg"),
+    ("chrome-icons/project.svg", "ChromeIcons/project.svg"),
+    ("chrome-icons/check.svg", "ChromeIcons/check.svg"),
+    ("chrome-icons/git-pull-request.svg", "ChromeIcons/git-pull-request.svg"),
+    ("chrome-icons/git-commit.svg", "ChromeIcons/git-commit.svg"),
+    ("chrome-icons/maximize.svg", "ChromeIcons/maximize.svg"),
+    ("chrome-icons/minimize.svg", "ChromeIcons/minimize.svg"),
+    ("chrome-icons/refresh.svg", "ChromeIcons/refresh.svg"),
+    ("chrome-icons/sparkles.svg", "ChromeIcons/sparkles.svg"),
+    ("chrome-icons/minus.svg", "ChromeIcons/minus.svg"),
+    ("chrome-icons/file-plus.svg", "ChromeIcons/file-plus.svg"),
+    ("chrome-icons/folder-plus.svg", "ChromeIcons/folder-plus.svg"),
+    ("chrome-icons/collapse-all.svg", "ChromeIcons/collapse-all.svg"),
+    ("chrome-icons/grip.svg", "ChromeIcons/grip.svg"),
+    ("chrome-icons/split-view.svg", "ChromeIcons/split-view.svg"),
+
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,19 +199,6 @@ pub fn agent_compact_badge(
         .when_some(status, |badge, color| {
             badge.child(div().size(px(5.0)).flex_none().rounded_full().bg(color))
         })
-        .into_any_element()
-}
-
-/// Unboxed agent identity for the context row, alongside the project and activity.
-pub fn agent_sidebar_badge(kind: Option<&str>, selected: bool) -> AnyElement {
-    let mark_color = badge_mark_color(selected);
-    div()
-        .size(px(SIDEBAR_AGENT_MARK_SIZE))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(brand_mark(kind, mark_color, SIDEBAR_AGENT_ARTWORK_SIZE))
         .into_any_element()
 }
 

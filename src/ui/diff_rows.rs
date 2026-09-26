@@ -5,8 +5,57 @@
 //! flat model Zed's project diff uses). Only the visible slice materializes, a
 //! collapsed file's body rows are absent rather than hidden, and the split
 //! layout is a re-flatten of the same prepared rows.
+//!
+//! When the whole new file is known, unchanged stretches between hunks are
+//! part of the prepared rows as [`ContextFold`]s: they collapse into one
+//! "N unmodified lines" row that reveals [`FOLD_STEP`] lines per click from
+//! either edge, or everything at once.
+
+use std::collections::HashMap;
 
 use crate::ports::git::{GitDiffRow, GitDiffRowKind};
+
+/// Lines one fold arrow reveals.
+pub const FOLD_STEP: usize = 20;
+
+/// A run of unchanged context rows hidden by default, as prepared-row indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextFold {
+    pub start: usize,
+    pub len: usize,
+}
+
+/// How far a fold has been opened from its top and bottom edges.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FoldReveal {
+    pub head: usize,
+    pub tail: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldDirection {
+    /// Grow the revealed tail upward from the hunk below.
+    Up,
+    /// Grow the revealed head downward from the hunk above.
+    Down,
+    All,
+}
+
+impl FoldReveal {
+    pub fn expand(self, len: usize, direction: FoldDirection) -> Self {
+        match direction {
+            FoldDirection::All => Self { head: len, tail: 0 },
+            FoldDirection::Down => Self {
+                head: self.head + FOLD_STEP,
+                ..self
+            },
+            FoldDirection::Up => Self {
+                tail: self.tail + FOLD_STEP,
+                ..self
+            },
+        }
+    }
+}
 
 /// How changed lines are laid out. Persisted in settings (`diffSplit`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -61,6 +110,12 @@ pub enum BodyRow {
         left: Option<usize>,
         right: Option<usize>,
     },
+    /// The still-hidden middle of `fold`: prepared rows `start..start + hidden`.
+    Fold {
+        fold: usize,
+        start: usize,
+        hidden: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +169,8 @@ pub struct FlattenFile<'a> {
     pub folding: bool,
     /// Prepared diff rows, once loaded.
     pub rows: Option<&'a [GitDiffRow]>,
+    pub folds: &'a [ContextFold],
+    pub reveals: Option<&'a HashMap<usize, FoldReveal>>,
 }
 
 pub fn flatten(
@@ -145,9 +202,25 @@ pub fn flatten(
             .filter(|(_, comment)| comment.anchor.path == entry.path)
             .collect();
         let file_draft = draft.filter(|anchor| anchor.path == entry.path);
-        for row in body_rows(rows, layout) {
+        let no_reveals = HashMap::new();
+        let reveals = entry.reveals.unwrap_or(&no_reveals);
+        for row in body_rows(rows, layout, entry.folds, reveals) {
             out.push(ReviewRow::Body { file, row });
-            for (side, line) in body_row_anchors(rows, row).into_iter().flatten() {
+            // Comments on lines a fold hides still show, right below it.
+            let hidden: Vec<_> = match row {
+                BodyRow::Fold { start, hidden, .. } => rows
+                    .get(start..start + hidden)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(line_anchor)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for (side, line) in body_row_anchors(rows, row)
+                .into_iter()
+                .flatten()
+                .chain(hidden)
+            {
                 for (index, comment) in &file_comments {
                     if comment.anchor.side == side && comment.anchor.line == line {
                         out.push(ReviewRow::Comment {
@@ -165,48 +238,125 @@ pub fn flatten(
     out
 }
 
-pub fn body_rows(rows: &[GitDiffRow], layout: DiffLayout) -> Vec<BodyRow> {
+pub fn body_rows(
+    rows: &[GitDiffRow],
+    layout: DiffLayout,
+    folds: &[ContextFold],
+    reveals: &HashMap<usize, FoldReveal>,
+) -> Vec<BodyRow> {
+    let visible = visible_rows(rows.len(), folds, reveals);
     match layout {
-        DiffLayout::Unified => (0..rows.len()).map(BodyRow::Line).collect(),
-        DiffLayout::Split => split_rows(rows),
+        DiffLayout::Unified => visible
+            .into_iter()
+            .map(|item| match item {
+                Visible::Row(index) => BodyRow::Line(index),
+                Visible::Fold(row) => row,
+            })
+            .collect(),
+        DiffLayout::Split => split_visible(rows, &visible),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Visible {
+    Row(usize),
+    /// Always a [`BodyRow::Fold`].
+    Fold(BodyRow),
+}
+
+/// Prepared rows in order, with each fold's unrevealed middle collapsed.
+fn visible_rows(
+    len: usize,
+    folds: &[ContextFold],
+    reveals: &HashMap<usize, FoldReveal>,
+) -> Vec<Visible> {
+    let mut out = Vec::with_capacity(len);
+    let mut folds = folds.iter().enumerate().peekable();
+    let mut index = 0;
+    while index < len {
+        let Some(&(fold_ix, fold)) = folds.peek().filter(|(_, fold)| fold.start == index) else {
+            out.push(Visible::Row(index));
+            index += 1;
+            continue;
+        };
+        folds.next();
+        let end = (fold.start + fold.len).min(len);
+        let span = end - fold.start;
+        let reveal = reveals.get(&fold_ix).copied().unwrap_or_default();
+        let head = reveal.head.min(span);
+        let tail = reveal.tail.min(span - head);
+        out.extend((fold.start..fold.start + head).map(Visible::Row));
+        let hidden = span - head - tail;
+        if hidden > 0 {
+            out.push(Visible::Fold(BodyRow::Fold {
+                fold: fold_ix,
+                start: fold.start + head,
+                hidden,
+            }));
+        }
+        out.extend((end - tail..end).map(Visible::Row));
+        index = end;
+    }
+    out
 }
 
 /// Pair each run of deletions with the additions that follow it, row by row;
 /// the longer side continues against blank cells. Context shows on both sides.
+#[cfg(test)]
 pub fn split_rows(rows: &[GitDiffRow]) -> Vec<BodyRow> {
-    let mut out = Vec::with_capacity(rows.len());
-    let mut index = 0;
-    while index < rows.len() {
+    let visible: Vec<_> = (0..rows.len()).map(Visible::Row).collect();
+    split_visible(rows, &visible)
+}
+
+fn split_visible(rows: &[GitDiffRow], visible: &[Visible]) -> Vec<BodyRow> {
+    let kind_at = |at: usize| match visible.get(at) {
+        Some(Visible::Row(index)) => rows.get(*index).map(|row| row.kind),
+        _ => None,
+    };
+    let row_at = |at: usize| match visible[at] {
+        Visible::Row(index) => index,
+        Visible::Fold(_) => unreachable!("folds are never part of a change run"),
+    };
+    let mut out = Vec::with_capacity(visible.len());
+    let mut at = 0;
+    while at < visible.len() {
+        let index = match visible[at] {
+            Visible::Fold(row) => {
+                out.push(row);
+                at += 1;
+                continue;
+            }
+            Visible::Row(index) => index,
+        };
         match rows[index].kind {
             GitDiffRowKind::Context => {
                 out.push(BodyRow::Split {
                     left: Some(index),
                     right: Some(index),
                 });
-                index += 1;
+                at += 1;
             }
             GitDiffRowKind::Deletion | GitDiffRowKind::Addition => {
-                let deletions_start = index;
-                while index < rows.len() && rows[index].kind == GitDiffRowKind::Deletion {
-                    index += 1;
+                let deletions_start = at;
+                while kind_at(at) == Some(GitDiffRowKind::Deletion) {
+                    at += 1;
                 }
-                let additions_start = index;
-                while index < rows.len() && rows[index].kind == GitDiffRowKind::Addition {
-                    index += 1;
+                let additions_start = at;
+                while kind_at(at) == Some(GitDiffRowKind::Addition) {
+                    at += 1;
                 }
                 let deletions = deletions_start..additions_start;
-                let additions = additions_start..index;
+                let additions = additions_start..at;
                 for offset in 0..deletions.len().max(additions.len()) {
                     out.push(BodyRow::Split {
-                        left: (offset < deletions.len()).then(|| deletions.start + offset),
-                        right: (offset < additions.len()).then(|| additions.start + offset),
+                        left: (offset < deletions.len()).then(|| row_at(deletions.start + offset)),
+                        right: (offset < additions.len()).then(|| row_at(additions.start + offset)),
                     });
                 }
             }
             GitDiffRowKind::Hunk | GitDiffRowKind::Section | GitDiffRowKind::Notice => {
                 out.push(BodyRow::Line(index));
-                index += 1;
+                at += 1;
             }
         }
     }
@@ -239,6 +389,7 @@ pub fn body_row_anchors(rows: &[GitDiffRow], row: BodyRow) -> [Option<(CommentSi
                 .and_then(|index| rows.get(index))
                 .and_then(line_anchor),
         ],
+        BodyRow::Fold { .. } => [None, None],
     }
 }
 
@@ -334,6 +485,8 @@ mod tests {
                 expanded: false,
                 folding: false,
                 rows: Some(&rows),
+                folds: &[],
+                reveals: None,
             },
             FlattenFile {
                 path: "b.rs",
@@ -341,6 +494,8 @@ mod tests {
                 expanded: true,
                 folding: false,
                 rows: None,
+                folds: &[],
+                reveals: None,
             },
             FlattenFile {
                 path: "c.rs",
@@ -348,6 +503,8 @@ mod tests {
                 expanded: true,
                 folding: true,
                 rows: Some(&rows),
+                folds: &[],
+                reveals: None,
             },
         ];
         assert_eq!(
@@ -372,6 +529,8 @@ mod tests {
             expanded: true,
             folding: false,
             rows: Some(&rows),
+            folds: &[],
+            reveals: None,
         }];
         let comment = |id, side, line| ReviewComment {
             id,
@@ -501,5 +660,120 @@ mod tests {
         assert!(prompt.contains("1. src/main.rs:7 (removed line)\n"));
         assert!(prompt.contains("   > let x = 1;\n"));
         assert!(prompt.contains("   Why was this removed?\n   It is used below.\n"));
+    }
+
+    fn context_rows(len: usize) -> Vec<GitDiffRow> {
+        (1..=len)
+            .map(|line| row(GitDiffRowKind::Context, Some(line), Some(line)))
+            .collect()
+    }
+
+    #[test]
+    fn folds_hide_their_middle_until_revealed_from_either_edge() {
+        let rows = context_rows(50);
+        let folds = [ContextFold { start: 0, len: 50 }];
+        let mut reveals = HashMap::new();
+        assert_eq!(
+            body_rows(&rows, DiffLayout::Unified, &folds, &reveals),
+            vec![BodyRow::Fold {
+                fold: 0,
+                start: 0,
+                hidden: 50
+            }]
+        );
+
+        let reveal = FoldReveal::default()
+            .expand(50, FoldDirection::Down)
+            .expand(50, FoldDirection::Up);
+        reveals.insert(0, reveal);
+        let shown = body_rows(&rows, DiffLayout::Unified, &folds, &reveals);
+        assert_eq!(shown.len(), FOLD_STEP * 2 + 1);
+        assert_eq!(shown[FOLD_STEP - 1], BodyRow::Line(FOLD_STEP - 1));
+        assert_eq!(
+            shown[FOLD_STEP],
+            BodyRow::Fold {
+                fold: 0,
+                start: FOLD_STEP,
+                hidden: 50 - FOLD_STEP * 2
+            }
+        );
+        assert_eq!(shown[FOLD_STEP + 1], BodyRow::Line(50 - FOLD_STEP));
+
+        // Overlapping reveals open the fold without showing a line twice.
+        reveals.insert(0, reveal.expand(50, FoldDirection::Down));
+        assert_eq!(
+            body_rows(&rows, DiffLayout::Unified, &folds, &reveals),
+            (0..50).map(BodyRow::Line).collect::<Vec<_>>()
+        );
+        reveals.insert(0, FoldReveal::default().expand(50, FoldDirection::All));
+        assert_eq!(
+            body_rows(&rows, DiffLayout::Split, &folds, &reveals).len(),
+            50
+        );
+    }
+
+    #[test]
+    fn split_rows_keep_folds_between_change_runs() {
+        let mut rows = context_rows(3);
+        rows.push(row(GitDiffRowKind::Deletion, Some(4), None));
+        rows.push(row(GitDiffRowKind::Addition, None, Some(4)));
+        let folds = [ContextFold { start: 0, len: 3 }];
+        assert_eq!(
+            body_rows(&rows, DiffLayout::Split, &folds, &HashMap::new()),
+            vec![
+                BodyRow::Fold {
+                    fold: 0,
+                    start: 0,
+                    hidden: 3
+                },
+                BodyRow::Split {
+                    left: Some(3),
+                    right: Some(4)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn comments_on_folded_lines_stay_visible_below_the_fold() {
+        let rows = context_rows(5);
+        let folds = [ContextFold { start: 0, len: 5 }];
+        let files = [FlattenFile {
+            path: "a.rs",
+            starts_staged_section: false,
+            expanded: true,
+            folding: false,
+            rows: Some(&rows),
+            folds: &folds,
+            reveals: None,
+        }];
+        let comments = [ReviewComment {
+            id: 1,
+            anchor: CommentAnchor {
+                path: "a.rs".into(),
+                side: CommentSide::New,
+                line: 3,
+            },
+            excerpt: String::new(),
+            body: "Why?".into(),
+        }];
+        assert_eq!(
+            flatten(&files, DiffLayout::Unified, &comments, None),
+            vec![
+                ReviewRow::FileHeader { file: 0 },
+                ReviewRow::Body {
+                    file: 0,
+                    row: BodyRow::Fold {
+                        fold: 0,
+                        start: 0,
+                        hidden: 5
+                    }
+                },
+                ReviewRow::Comment {
+                    file: 0,
+                    comment: 0
+                },
+            ]
+        );
     }
 }

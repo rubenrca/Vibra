@@ -209,6 +209,7 @@ fn review_list_is_one_flat_list_with_pinned_headers_and_comments(cx: &mut gpui::
 
     let (view, cx) = cx.add_window_view(|_, cx| {
         let mut view = DiffView::new(root.clone(), Arc::new(GitCliPort::default()), cx);
+        view.set_review_expanded(true, cx);
         view.set_panel_visible(true, cx);
         view
     });
@@ -370,12 +371,168 @@ fn review_list_is_one_flat_list_with_pinned_headers_and_comments(cx: &mut gpui::
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[gpui::test]
+fn opening_a_review_file_preserves_comments_and_cached_diff_when_reopened(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::infrastructure::git::GitCliPort;
+    use crate::ports::git::GitDiff;
+
+    let path = "src/main.rs";
+    let change = GitFileChange {
+        path: path.into(),
+        old_path: None,
+        status: GitFileStatus::Modified,
+        staged: false,
+        unstaged: true,
+        untracked: false,
+        additions: Some(1),
+        deletions: Some(0),
+    };
+    let snapshot = GitRepositorySnapshot {
+        root: std::env::temp_dir().join(format!("vibra-review-reopen-{}", uuid::Uuid::new_v4())),
+        branch: "main".into(),
+        changes: vec![change.clone()],
+        additions: 1,
+        deletions: 0,
+    };
+    let document = Arc::new(DiffDocument::prepare(GitDiff {
+        path: path.into(),
+        rows: vec![GitDiffRow {
+            old_line: None,
+            new_line: Some(1),
+            kind: GitDiffRowKind::Addition,
+            text: "fn main() {}".into(),
+        }],
+        additions: 1,
+        deletions: 0,
+        binary: false,
+        truncated: false,
+    }));
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut view = DiffView::new(snapshot.root.clone(), Arc::new(GitCliPort::default()), cx);
+        view.documents.insert(
+            path.into(),
+            CachedDiffDocument {
+                source: DiffSource::new(&snapshot, &change, None, None),
+                document: document.clone(),
+            },
+        );
+        view.snapshot = Some(snapshot.clone());
+        view
+    });
+
+    let returned_to_terminal = std::rc::Rc::new(std::cell::Cell::new(false));
+    let returned = returned_to_terminal.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event: &DiffViewEvent, _| {
+            if matches!(event, DiffViewEvent::ReturnToTerminal) {
+                returned.set(true);
+            }
+        })
+        .detach();
+    });
+    view.update_in(cx, |view, window, cx| {
+        assert!(!view.review_expanded());
+        assert!(view.expanded.is_empty());
+        view.open_review_path(path.into(), window, cx);
+        assert!(view.review_expanded());
+        assert_eq!(view.selected_review_path.as_deref(), Some(path));
+        assert_eq!(view.pending_reveal.as_deref(), Some(path));
+        assert!(view.expanded.contains(path));
+        assert!(view.focus_handle.is_focused(window));
+
+        view.open_draft(
+            CommentAnchor {
+                path: path.into(),
+                side: CommentSide::New,
+                line: 1,
+            },
+            "fn main() {}".into(),
+            window,
+            cx,
+        );
+        view.draft.as_mut().unwrap().body = "Keep this entry point.".into();
+        view.commit_draft();
+        let comments = view.comments.clone();
+
+        view.on_key_down(
+            &gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                is_held: false,
+            },
+            window,
+            cx,
+        );
+        assert!(!view.review_expanded());
+        view.open_review_path(path.into(), window, cx);
+        assert!(view.review_expanded());
+        assert_eq!(view.comments, comments);
+        assert_eq!(view.snapshot, Some(snapshot));
+        assert!(Arc::ptr_eq(view.document(path).unwrap(), &document));
+        assert!(
+            view.pending_loads.is_empty(),
+            "reopening reuses the prepared diff"
+        );
+        view.sync_rows();
+        assert!(
+            view.rows
+                .iter()
+                .any(|row| matches!(row, ReviewRow::Comment { .. }))
+        );
+    });
+    assert!(
+        returned_to_terminal.get(),
+        "Escape must request terminal focus"
+    );
+}
+
+#[gpui::test]
+fn changing_review_scope_keeps_central_review_open(cx: &mut gpui::TestAppContext) {
+    use crate::infrastructure::git::GitCliPort;
+
+    let root = std::env::temp_dir().join(format!("vibra-review-scope-{}", uuid::Uuid::new_v4()));
+    let (view, cx) =
+        cx.add_window_view(|_, cx| DiffView::new(root, Arc::new(GitCliPort::default()), cx));
+    view.update(cx, |view, cx| view.set_review_expanded(true, cx));
+
+    let changed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let observed = changed.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event: &DiffViewEvent, _| {
+            if matches!(event, DiffViewEvent::Changed) {
+                observed.set(true);
+            }
+        })
+        .detach();
+    });
+
+    for mode in [
+        GitPanelMode::Branch,
+        GitPanelMode::LatestTurn,
+        GitPanelMode::History,
+        GitPanelMode::Worktree,
+    ] {
+        changed.set(false);
+        view.update(cx, |view, cx| {
+            view.set_mode(mode, cx);
+            assert!(
+                view.review_expanded(),
+                "switching scope must keep the review open"
+            );
+            assert_eq!(view.review_title(), mode.label());
+        });
+        assert!(changed.get(), "scope changes must update the workspace tab");
+    }
+}
+
 #[test]
 fn gutters_grow_with_line_numbers_and_font() {
     let metrics = RowMetrics {
         font_size: 12.0,
         line_height: 22.0,
         hunk_height: 28.0,
+        fold_height: 38.0,
         char_width: 7.0,
         wrap: false,
         h_offset: 0.0,
@@ -400,4 +557,136 @@ fn elapsed_labels_stay_short() {
         elapsed_label(Duration::from_secs(3 * 3600)),
         "started 3 h ago"
     );
+}
+
+fn committed_repository() -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "vibra-changes-panel-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    for arguments in [
+        &["init", "-q"][..],
+        &["config", "user.name", "Vibra Test"],
+        &["config", "user.email", "vibra@example.invalid"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(arguments)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::write(root.join("notes.txt"), "one\n").unwrap();
+    for arguments in [&["add", "."][..], &["commit", "-qm", "initial"]] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(arguments)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    root
+}
+
+#[gpui::test]
+fn changes_panel_commits_and_reviews_commits_from_the_graph(cx: &mut gpui::TestAppContext) {
+    use crate::infrastructure::git::GitCliPort;
+
+    let root = committed_repository();
+    std::fs::write(root.join("notes.txt"), "one\ntwo\n").unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut view = DiffView::new(root.clone(), Arc::new(GitCliPort::default()), cx);
+        view.set_panel_visible(true, cx);
+        view
+    });
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        assert_eq!(view.snapshot.as_ref().unwrap().changes.len(), 1);
+        assert_eq!(view.history.as_ref().unwrap().commits.len(), 1);
+        view.changes.message = "Add a second line".into();
+        view.run_commit(changes_panel::CommitAction::Commit, cx);
+    });
+    cx.run_until_parked();
+
+    let second = view.update(cx, |view, _| {
+        assert!(view.changes.message.is_empty());
+        let (feedback, failed) = view.changes.feedback.clone().unwrap();
+        assert!(!failed, "{feedback}");
+        assert!(view.snapshot.as_ref().unwrap().changes.is_empty());
+        let history = view.history.as_ref().unwrap();
+        assert_eq!(history.commits[0].subject, "Add a second line");
+        history.commits[0].clone()
+    });
+
+    view.update(cx, |view, cx| {
+        view.open_commit_from_graph(second.clone(), cx);
+        assert_eq!(view.mode, GitPanelMode::History);
+        assert!(view.review_expanded());
+        assert!(view.review_focused(), "reviews open as a full tab");
+        assert_eq!(view.review_title(), "Add a second line");
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.commit_changes.as_ref().unwrap().snapshot.changes.len(),
+            1
+        );
+        view.set_review_expanded(false, cx);
+        assert_eq!(view.mode, GitPanelMode::Worktree);
+        assert!(view.selected_commit.is_none());
+    });
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn changes_panel_stages_and_unstages_files(cx: &mut gpui::TestAppContext) {
+    use crate::infrastructure::git::GitCliPort;
+
+    let root = committed_repository();
+    std::fs::write(root.join("notes.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(root.join("new.txt"), "new\n").unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let mut view = DiffView::new(root.clone(), Arc::new(GitCliPort::default()), cx);
+        view.set_panel_visible(true, cx);
+        view
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        view.stage_paths(vec!["notes.txt".into()], true, cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        let changes = &view.snapshot.as_ref().unwrap().changes;
+        let notes = changes
+            .iter()
+            .find(|change| change.path == "notes.txt")
+            .unwrap();
+        let new = changes
+            .iter()
+            .find(|change| change.path == "new.txt")
+            .unwrap();
+        assert!(notes.staged);
+        assert!(!new.staged);
+        view.stage_paths(vec!["notes.txt".into()], false, cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, _| {
+        assert!(
+            view.snapshot
+                .as_ref()
+                .unwrap()
+                .changes
+                .iter()
+                .all(|change| !change.staged)
+        );
+    });
+    std::fs::remove_dir_all(root).unwrap();
 }

@@ -7,7 +7,7 @@ use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface_tint};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
 use super::{
-    LeftSidebarMode, PaletteAction, PaletteItem, PaletteMode, RightSidebarMode,
+    PaletteAction, PaletteItem, PaletteMode, RightSidebarMode, WorkspaceSection,
     collect_search_files,
 };
 
@@ -79,6 +79,31 @@ impl super::WorkspaceView {
         let mut items = match mode {
             PaletteMode::Commands => vec![
                 PaletteItem {
+                    label: "Inbox: Open".into(),
+                    detail: "Actividad de los agentes".into(),
+                    action: PaletteAction::ShowSection(WorkspaceSection::Inbox),
+                },
+                PaletteItem {
+                    label: "Notes: Open".into(),
+                    detail: "Notas por proyecto".into(),
+                    action: PaletteAction::ShowSection(WorkspaceSection::Notes),
+                },
+                PaletteItem {
+                    label: "Automations: Open".into(),
+                    detail: "Comandos guardados y programados".into(),
+                    action: PaletteAction::ShowSection(WorkspaceSection::Automations),
+                },
+                PaletteItem {
+                    label: "Notes: Nueva nota".into(),
+                    detail: String::new(),
+                    action: PaletteAction::NewNote,
+                },
+                PaletteItem {
+                    label: "Automations: Nueva automatización".into(),
+                    detail: String::new(),
+                    action: PaletteAction::NewAutomation,
+                },
+                PaletteItem {
                     label: "Proyecto: Agregar carpeta…".into(),
                     detail: "⇧⌘O".into(),
                     action: PaletteAction::AddProject,
@@ -129,22 +154,27 @@ impl super::WorkspaceView {
                     action: PaletteAction::TogglePaneZoom,
                 },
                 PaletteItem {
-                    label: "Sidebar: Toggle Sessions".into(),
-                    detail: "⌘B".into(),
-                    action: PaletteAction::ShowSessions,
+                    label: "Sesión: Renombrar actual".into(),
+                    detail: String::new(),
+                    action: PaletteAction::RenameWorkspace,
                 },
                 PaletteItem {
-                    label: "Sidebar: Toggle Files / Git".into(),
+                    label: "Sesión: Cerrar actual".into(),
+                    detail: String::new(),
+                    action: PaletteAction::CloseWorkspace,
+                },
+                PaletteItem {
+                    label: "Workspace: Toggle sidebar".into(),
                     detail: "⌥⌘B".into(),
                     action: PaletteAction::ToggleGit,
                 },
                 PaletteItem {
-                    label: "Sidebar: Files".into(),
+                    label: "Workspace: Explorer".into(),
                     detail: String::new(),
                     action: PaletteAction::ShowFiles,
                 },
                 PaletteItem {
-                    label: "Sidebar: Info".into(),
+                    label: "Workspace: Info".into(),
                     detail: String::new(),
                     action: PaletteAction::ShowInfo,
                 },
@@ -186,6 +216,16 @@ impl super::WorkspaceView {
             }
         };
         if mode == PaletteMode::Commands {
+            items.extend(
+                self.library
+                    .automations
+                    .iter()
+                    .map(|automation| PaletteItem {
+                        label: format!("Automatización: Ejecutar {}", automation.name),
+                        detail: automation.command.clone(),
+                        action: PaletteAction::RunAutomation(automation.id),
+                    }),
+            );
             items.extend(self.snapshot.projects.iter().map(|project| PaletteItem {
                 label: format!("Proyecto: {}", project.name),
                 detail: project.root_path.clone(),
@@ -205,7 +245,7 @@ impl super::WorkspaceView {
                     }),
             );
         }
-        if mode == PaletteMode::Commands {
+        if mode != PaletteMode::Files {
             let query = self.palette_query.to_lowercase();
             if !query.is_empty() {
                 let tokens: Vec<_> = query.split_whitespace().collect();
@@ -236,36 +276,61 @@ impl super::WorkspaceView {
             PaletteAction::NewWorkspace => {
                 self.open_workspace_in_project(window, cx);
             }
+            PaletteAction::RenameWorkspace => {
+                if let (Some(project), Some(workspace)) = (
+                    self.snapshot.selected_project(),
+                    self.snapshot.selected_workspace(),
+                ) {
+                    self.begin_rename_prompt(
+                        super::RenamePromptKind::Workspace {
+                            project_id: project.id,
+                            workspace_id: workspace.id,
+                        },
+                        cx,
+                    );
+                }
+            }
+            PaletteAction::CloseWorkspace => {
+                let selected = self
+                    .snapshot
+                    .selected_project()
+                    .zip(self.snapshot.selected_workspace())
+                    .map(|(project, workspace)| (project.id, workspace.id));
+                if let Some((project_id, workspace_id)) = selected
+                    && self.snapshot.close_workspace(project_id, workspace_id)
+                {
+                    self.reconcile_terminal_views(cx);
+                    self.apply_workspace_selection_change(window, cx);
+                }
+            }
             PaletteAction::Split(direction) => self.split_pane(direction, window, cx),
             PaletteAction::EqualizePanes => {
+                self.select_section(WorkspaceSection::Workspace, window, cx);
                 if self.snapshot.equalize_selected_panes() {
                     self.persist(cx);
                 }
             }
             PaletteAction::TogglePaneZoom => {
+                self.select_section(WorkspaceSection::Workspace, window, cx);
                 if self.snapshot.toggle_selected_pane_zoom() {
                     self.sync_terminal_surface_visibility(cx);
                     self.persist(cx);
                 }
             }
-            PaletteAction::ToggleGit => self.toggle_diff_panel(cx),
-            PaletteAction::ShowSessions => {
-                if self.left_sidebar_visible && self.left_sidebar_mode == LeftSidebarMode::Sessions
-                {
-                    self.set_left_sidebar_visible(false, true, cx);
-                } else {
-                    self.left_sidebar_mode = LeftSidebarMode::Sessions;
-                    self.set_left_sidebar_visible(true, true, cx);
-                }
-            }
+            PaletteAction::ToggleGit => self.toggle_diff_panel(window, cx),
             PaletteAction::ShowFiles => {
-                self.right_sidebar_mode = RightSidebarMode::Files;
-                self.refresh_project_files(cx);
-                self.set_right_sidebar_visible(true, true, cx);
+                self.set_workspace_mode(RightSidebarMode::Files, cx);
+                self.focus_selected_terminal(window, cx);
             }
             PaletteAction::ShowInfo => {
-                self.left_sidebar_mode = LeftSidebarMode::Info;
-                self.set_left_sidebar_visible(true, true, cx);
+                self.set_workspace_mode(RightSidebarMode::Info, cx);
+                self.focus_selected_terminal(window, cx);
+            }
+            PaletteAction::ShowSection(section) => self.select_section(section, window, cx),
+            PaletteAction::NewNote => self.create_note(window, cx),
+            PaletteAction::NewAutomation => self.open_automation_form(None, window, cx),
+            PaletteAction::RunAutomation(id) => {
+                self.run_automation(id, None, true, cx);
             }
             PaletteAction::ShowSettings => {
                 self.open_settings(cx);
@@ -276,8 +341,8 @@ impl super::WorkspaceView {
             } => self.select_workspace(project_id, workspace_id, window, cx),
             PaletteAction::OpenFile(path) => {
                 self.select_file_path(path, cx);
-                self.right_sidebar_mode = RightSidebarMode::Files;
-                self.set_right_sidebar_visible(true, true, cx);
+                self.set_workspace_mode(RightSidebarMode::Files, cx);
+                self.focus_selected_terminal(window, cx);
             }
         }
     }

@@ -12,23 +12,31 @@ use crate::infrastructure::editor::InstalledEditor;
 use crate::ui::theme::{colors, popover_surface, surface, surface_tint};
 
 use super::{
-    LeftSidebarMode, PANEL_GAP, RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT,
-    TITLEBAR_RIGHT_CHROME_COLLAPSED,
+    PaletteMode, RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT,
+    TITLEBAR_RIGHT_CHROME_COLLAPSED, WorkspaceSection, sidebar_tooltip,
 };
 
 impl super::WorkspaceView {
+    /// Width of the titlebar chrome above the left sidebar.
+    pub(super) fn titlebar_left_width(&self) -> f32 {
+        let progress = self.left_sidebar_progress;
+        let expanded = self.left_sidebar_width();
+        if progress > 0.99 {
+            expanded
+        } else {
+            TITLEBAR_CHROME_COLLAPSED + (expanded - TITLEBAR_CHROME_COLLAPSED) * progress
+        }
+    }
+
     pub(super) fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let left_progress = self.left_sidebar_progress;
-        let right_progress = self.right_sidebar_progress;
-        // Keep titlebar controls aligned with the framed panels below.
-        let left_expanded_width = self.left_sidebar_width() + 2.0 * PANEL_GAP;
-        let right_expanded_width = self.right_sidebar_width() + PANEL_GAP;
-        let left_chrome_width = if left_progress > 0.99 {
-            left_expanded_width
+        let right_progress = if self.workspace_section == WorkspaceSection::Workspace {
+            self.right_sidebar_progress
         } else {
-            TITLEBAR_CHROME_COLLAPSED
-                + (left_expanded_width - TITLEBAR_CHROME_COLLAPSED) * left_progress
+            0.0
         };
+        let right_expanded_width = self.right_sidebar_width();
+        let left_chrome_width = self.titlebar_left_width();
         let right_chrome_width = if right_progress > 0.99 {
             right_expanded_width
         } else {
@@ -45,37 +53,41 @@ impl super::WorkspaceView {
             .snapshot
             .selected_workspace()
             .and_then(|workspace| workspace.selected_tab_id);
-        let show_tab_selector = tabs.len() > 1;
-        let right_chrome_content = if right_open {
-            self.utility_mode_tabs(cx)
-        } else {
-            div()
-                .h_full()
-                .flex_1()
-                .window_control_area(WindowControlArea::Drag)
-                .on_mouse_down(MouseButton::Left, |_, _, _| {
-                    crate::infrastructure::window::start_drag();
-                })
-                .into_any_element()
-        };
-
+        let show_tab_selector =
+            self.workspace_section == WorkspaceSection::Workspace && !tabs.is_empty();
+        let section_label = match self.workspace_section {
+            WorkspaceSection::Workspace => self
+                .snapshot
+                .selected_project()
+                .map(|project| project.name.as_str())
+                .unwrap_or("Vibra"),
+            WorkspaceSection::Inbox => "Inbox",
+            WorkspaceSection::Notes => "Notes",
+            WorkspaceSection::Automations => "Automations",
+        }
+        .to_owned();
         let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
         } else {
             center_chrome = center_chrome
+                .px_4()
+                .text_size(px(13.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
                 .window_control_area(WindowControlArea::Drag)
                 .on_mouse_down(MouseButton::Left, |_, _, _| {
                     crate::infrastructure::window::start_drag();
-                });
+                })
+                .child(section_label);
         }
-
         div()
             .h(px(TITLEBAR_HEIGHT))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
+            .border_b_1()
+            .border_color(colors().border_subtle)
             .bg(surface(colors().titlebar))
             .child(
                 div()
@@ -85,15 +97,13 @@ impl super::WorkspaceView {
                     .flex()
                     .items_center()
                     .pl(px(86.0))
-                    .gap_1()
-                    .child(
-                        self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
-                            if !this.left_sidebar_visible {
-                                this.left_sidebar_mode = LeftSidebarMode::Sessions;
-                            }
-                            this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
-                        }),
-                    )
+                    .pr_2()
+                    .when(left_progress > 0.001, |chrome| {
+                        chrome
+                            .border_r_1()
+                            .border_color(colors().border_subtle)
+                            .bg(surface_tint(colors().sidebar, colors().titlebar))
+                    })
                     .child(
                         div()
                             .h_full()
@@ -102,7 +112,13 @@ impl super::WorkspaceView {
                             .on_mouse_down(MouseButton::Left, |_, _, _| {
                                 crate::infrastructure::window::start_drag();
                             }),
-                    ),
+                    )
+                    .child(
+                        self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
+                            this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
+                        }),
+                    )
+                    .child(self.navigation_buttons(cx)),
             )
             .child(center_chrome)
             .child(
@@ -114,13 +130,50 @@ impl super::WorkspaceView {
                     .items_center()
                     .pr_2()
                     .overflow_hidden()
-                    .child(right_chrome_content)
+                    .when(right_open, |chrome| {
+                        chrome
+                            .border_l_1()
+                            .border_color(colors().border_subtle)
+                            .bg(surface_tint(colors().panel, colors().titlebar))
+                            .child(
+                                div()
+                                    .h_full()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .pl_3()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .window_control_area(WindowControlArea::Drag)
+                                    .on_mouse_down(MouseButton::Left, |_, _, _| {
+                                        crate::infrastructure::window::start_drag();
+                                    })
+                                    .child("Workspace"),
+                            )
+                            .child(self.workspace_title_action(
+                                "workspace-file-search",
+                                "chrome-icons/search.svg",
+                                "Buscar archivo · ⌘P",
+                                cx,
+                                |this, _, cx| this.open_palette(PaletteMode::Files, cx),
+                            ))
+                            .child(self.workspace_title_action(
+                                "workspace-new-session",
+                                "chrome-icons/plus.svg",
+                                "Nueva sesión · ⌘N",
+                                cx,
+                                |this, window, cx| this.open_workspace_in_project(window, cx),
+                            ))
+                            .child(self.ide_button(cx))
+                    })
+                    .when(!right_open, |chrome| chrome.child(div().flex_1()))
                     .child(self.sidebar_button(
                         "toggle-right-sidebar",
                         false,
                         cx,
-                        |this, _, cx| {
-                            this.toggle_diff_panel(cx);
+                        |this, window, cx| {
+                            this.toggle_diff_panel(window, cx);
                         },
                     )),
             )
@@ -129,78 +182,88 @@ impl super::WorkspaceView {
     pub(super) fn utility_mode_tabs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.right_sidebar_mode;
         let modes = [
-            (RightSidebarMode::Files, "Files", "chrome-icons/files.svg"),
-            (RightSidebarMode::Diff, "Git", "chrome-icons/git-branch.svg"),
+            (RightSidebarMode::Files, "Explorer"),
+            (RightSidebarMode::Diff, "Changes"),
         ];
 
         div()
-            .h_full()
-            .flex_1()
-            .min_w(px(0.0))
+            .h(px(36.0))
+            .w_full()
+            .flex_none()
             .flex()
             .items_center()
-            .pl_3()
-            .child(div().flex().items_center().children(modes.into_iter().map(
-                |(item_mode, label, icon)| {
-                    let selected = item_mode == mode;
-                    div()
-                        .id(SharedString::from(format!("utility-mode-{label}")))
-                        .h(px(26.0))
-                        .relative()
-                        .w(px(32.0))
-                        .flex_none()
-                        .mr_2()
-                        .rounded(px(7.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .bg(if selected {
-                            surface_tint(colors().selection, colors().titlebar)
-                        } else {
-                            gpui::rgba(0x00000000)
-                        })
-                        .text_color(if selected {
-                            colors().foreground
-                        } else {
-                            colors().subtle
-                        })
-                        .hover(|tab| {
-                            tab.bg(surface_tint(colors().hover, colors().titlebar))
-                                .text_color(colors().foreground)
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.right_sidebar_mode = item_mode;
-                            match item_mode {
-                                RightSidebarMode::Files => this.refresh_project_files(cx),
-                                RightSidebarMode::Diff => {
-                                    this.sync_diff_root(cx);
-                                    this.diff_view.update(cx, |diff_view, cx| {
-                                        diff_view.refresh_now(cx);
-                                    });
-                                }
-                            }
-                            this.sync_files_watcher(cx);
-                            cx.notify();
-                        }))
-                        .child(svg().path(icon).size(px(15.0)).text_color(if selected {
-                            colors().foreground
-                        } else {
-                            colors().subtle
-                        }))
-                },
-            )))
-            .child(self.ide_button(cx))
-            .child(
+            .px_2()
+            .gap(px(1.0))
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .children(modes.into_iter().map(|(item_mode, label)| {
+                let selected = item_mode == mode;
                 div()
-                    .h_full()
+                    .id(SharedString::from(format!("utility-mode-{label}")))
+                    .h(px(24.0))
+                    .min_w(px(0.0))
                     .flex_1()
-                    .window_control_area(WindowControlArea::Drag)
-                    .on_mouse_down(MouseButton::Left, |_, _, _| {
-                        crate::infrastructure::window::start_drag();
-                    }),
-            )
+                    .rounded(px(6.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .bg(if selected {
+                        surface_tint(colors().selection, colors().panel)
+                    } else {
+                        gpui::rgba(0x00000000)
+                    })
+                    .text_color(if selected {
+                        colors().foreground
+                    } else {
+                        colors().muted
+                    })
+                    .hover(move |tab| {
+                        if selected {
+                            tab
+                        } else {
+                            tab.bg(surface_tint(colors().hover, colors().panel))
+                                .text_color(colors().foreground)
+                        }
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_workspace_mode(item_mode, cx);
+                        this.focus_selected_terminal(window, cx);
+                    }))
+                    .child(label)
+            }))
             .into_any_element()
+    }
+
+    fn workspace_title_action(
+        &self,
+        id: &'static str,
+        icon: &'static str,
+        label: &'static str,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .size(px(24.0))
+            .flex_none()
+            .rounded(px(5.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_color(colors().subtle)
+            .hover(|button| {
+                button
+                    .bg(surface_tint(colors().hover, colors().titlebar))
+                    .text_color(colors().foreground)
+            })
+            .tooltip(move |_, cx| sidebar_tooltip(label, cx))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
+            .child(svg().path(icon).size(px(14.0)))
     }
 
     pub(super) fn sidebar_close_button(
@@ -273,12 +336,11 @@ impl super::WorkspaceView {
     pub(super) fn ide_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         div()
             .id("open-ide")
-            .h(px(26.0))
+            .h(px(24.0))
             .relative()
-            .w(px(32.0))
+            .w(px(24.0))
             .flex_none()
-            .mr_2()
-            .rounded(px(7.0))
+            .rounded(px(5.0))
             .flex()
             .items_center()
             .justify_center()
@@ -299,7 +361,7 @@ impl super::WorkspaceView {
 
     pub(super) fn ide_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.ide_menu_open.then(|| {
-            let right = (self.right_sidebar_width() - 164.0).max(8.0);
+            let right = 38.0;
             div()
                 .absolute()
                 .inset_0()

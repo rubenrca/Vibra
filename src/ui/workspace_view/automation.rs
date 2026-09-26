@@ -8,11 +8,12 @@ use crate::infrastructure::automation::{
     AutomationResponse,
 };
 use crate::infrastructure::notifications::{
-    AgentActivitySnapshot, AgentNotificationDelivery, agent_notification_copy, should_notify_agent,
+    AgentActivitySnapshot, AgentNotificationDelivery, agent_activity_event,
+    agent_notification_copy, should_notify_agent,
 };
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
 
-use super::WorkspaceView;
+use super::{WorkspaceSection, WorkspaceView};
 
 const HOOK_OBSERVATION_TTL: Duration = Duration::from_secs(15 * 60);
 
@@ -226,10 +227,13 @@ impl WorkspaceView {
         })
     }
 
-    fn session_is_selected(&self, pane_id: Uuid) -> bool {
-        self.snapshot
-            .selected_session()
-            .is_some_and(|session| session.id == pane_id)
+    fn session_is_selected(&self, pane_id: Uuid, cx: &Context<Self>) -> bool {
+        self.workspace_section == WorkspaceSection::Workspace
+            && !self.review_covers_terminal(cx)
+            && self
+                .snapshot
+                .selected_session()
+                .is_some_and(|session| session.id == pane_id)
     }
 
     /// An agent going from idle (or absent) to working starts a new turn:
@@ -269,10 +273,20 @@ impl WorkspaceView {
         let previous = self.agent_activity_seen.get(&pane_id);
         self.capture_turn_start(pane_id, previous, current.as_ref(), cx);
         let previous = self.agent_activity_seen.get(&pane_id);
+        if let Some(event) = agent_activity_event(previous, current.as_ref()) {
+            let agent = current
+                .as_ref()
+                .or(previous)
+                .map(|snapshot| snapshot.kind.clone())
+                .unwrap_or_else(|| "Agente".to_owned());
+            let seen = self.window_is_active && self.session_is_selected(pane_id, cx);
+            self.record_agent_event(pane_id, event, &agent, seen);
+        }
+        let previous = self.agent_activity_seen.get(&pane_id);
         if let Some(notification) = should_notify_agent(
             previous,
             current.as_ref(),
-            self.session_is_selected(pane_id),
+            self.session_is_selected(pane_id, cx),
             self.window_is_active,
             self.settings.agent_notifications,
         ) {

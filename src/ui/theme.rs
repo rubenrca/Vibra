@@ -16,8 +16,7 @@ use crate::ui::theme_import::{self, ImportedScheme};
 /// Family name of the bundled JetBrains Mono Variable font.
 pub const MONO_FONT: &str = "JetBrains Mono";
 
-/// Use the theme background across the window so gaps and rounded cutouts
-/// share the same translucent fill.
+/// Use the theme background across the window as one continuous translucent fill.
 pub fn window_surface() -> Hsla {
     floating_surface(colors().background)
 }
@@ -444,30 +443,30 @@ const DEFAULT_THEME_ID: &str = "midnight";
 
 fn midnight_dark() -> Theme {
     Theme {
-        background: rgb(0x101011),
-        terminal: rgb(0x101011),
-        titlebar: rgb(0x101011),
-        sidebar: rgb(0x141415),
-        panel: rgb(0x18181a),
-        elevated: rgb(0x1c1c1f),
-        hover: rgb(0x222226),
-        selection: rgb(0x2a2a2e),
-        border_subtle: rgb(0x29292b),
-        foreground: rgb(0xd4d4d8),
-        muted: rgb(0x9898a0),
-        subtle: rgb(0x6c6c74),
+        background: rgb(0x171717),
+        terminal: rgb(0x171717),
+        titlebar: rgb(0x171717),
+        sidebar: rgb(0x171717),
+        panel: rgb(0x171717),
+        elevated: rgb(0x282828),
+        hover: rgb(0x252525),
+        selection: rgb(0x303030),
+        border_subtle: rgb(0x262626),
+        foreground: rgb(0xebebeb),
+        muted: rgb(0x939393),
+        subtle: rgb(0x7c7c7c),
         success: rgb(0x58b87a),
         danger: rgb(0xdd6b6b),
         warning: rgb(0xd7ad61),
-        accent: rgb(0x82aaff),
-        diff_added: rgb(0x6bcf8e),
-        diff_added_bg: rgba(0x1a3322ff),
-        diff_deleted: rgb(0xe06c75),
-        diff_deleted_bg: rgba(0x3a1c20ff),
-        diff_hunk_bg: rgba(0x161b26ff),
-        gutter: rgb(0x121213),
-        indent_guide: rgba(0x3a3a3e55),
-        folder: rgb(0x8b8ba3),
+        accent: rgb(0x459bfa),
+        diff_added: rgb(0x6ee7b7),
+        diff_added_bg: rgb(0x162f2b),
+        diff_deleted: rgb(0xfda4af),
+        diff_deleted_bg: rgb(0x381d22),
+        diff_hunk_bg: rgb(0x222222),
+        gutter: rgb(0x171717),
+        indent_guide: rgba(0x42424255),
+        folder: rgb(0x999999),
         git_modified: rgb(0xdcb67a),
         git_added: rgb(0x6bcf8e),
         git_deleted: rgb(0xe06c75),

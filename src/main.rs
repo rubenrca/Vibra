@@ -33,6 +33,8 @@ actions!(
         ToggleRightSidebar,
         PreviousWorkspace,
         NextWorkspace,
+        NavigateBack,
+        NavigateForward,
         CopyTerminal,
         PasteTerminal,
         SearchTerminal,
@@ -142,6 +144,8 @@ fn run() -> Result<()> {
                 KeyBinding::new("alt-cmd-b", ToggleRightSidebar, None),
                 KeyBinding::new("ctrl-cmd-[", PreviousWorkspace, None),
                 KeyBinding::new("ctrl-cmd-]", NextWorkspace, None),
+                KeyBinding::new("ctrl-cmd-left", NavigateBack, None),
+                KeyBinding::new("ctrl-cmd-right", NavigateForward, None),
                 KeyBinding::new("cmd-c", CopyTerminal, Some("Terminal")),
                 KeyBinding::new("cmd-v", PasteTerminal, Some("Terminal")),
                 KeyBinding::new("cmd-f", SearchTerminal, Some("Terminal")),
@@ -225,8 +229,8 @@ fn run() -> Result<()> {
                 Menu {
                     name: "View".into(),
                     items: vec![
-                        MenuItem::action("Toggle Sessions Sidebar", ToggleLeftSidebar),
-                        MenuItem::action("Toggle Files / Git", ToggleRightSidebar),
+                        MenuItem::action("Toggle Navigation Sidebar", ToggleLeftSidebar),
+                        MenuItem::action("Toggle Workspace Sidebar", ToggleRightSidebar),
                         MenuItem::separator(),
                         MenuItem::action("Command Palette", ToggleCommandPalette),
                         MenuItem::action("Quick Open", QuickOpen),
@@ -237,6 +241,8 @@ fn run() -> Result<()> {
                     items: vec![
                         MenuItem::action("Previous Workspace", PreviousWorkspace),
                         MenuItem::action("Next Workspace", NextWorkspace),
+                        MenuItem::action("Back", NavigateBack),
+                        MenuItem::action("Forward", NavigateForward),
                         MenuItem::separator(),
                         MenuItem::action("Go to Tab 1", GoToTab { index: 1 }),
                         MenuItem::action("Go to Tab 2", GoToTab { index: 2 }),

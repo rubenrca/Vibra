@@ -1,4 +1,4 @@
-//! The right-pane Git review.
+//! Compact Changes navigation and the central Git review.
 //!
 //! - The review is one virtualized `list()` at line granularity (see
 //!   [`crate::ui::diff_rows`]): one scroll for every file, only the visible
@@ -15,6 +15,10 @@
 //! - Syntax highlighting uses both whole files when available, so state
 //!   opened outside a hunk (block comments, strings) still colors correctly.
 
+mod changes_panel;
+mod sidebar;
+pub(crate) use sidebar::DiffFileIndexView;
+
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -30,18 +34,20 @@ use gpui::{
     WhiteSpace, Window, canvas, div, ease_out_quint, list, point, prelude::*, px, uniform_list,
 };
 
+use crate::ports::files::FileEntryKind;
 use crate::ports::git::{
     GitBranchChanges, GitBranchRef, GitCommit, GitCommitChanges, GitDiffRow, GitDiffRowKind,
     GitFileChange, GitFileStatus, GitHistory, GitPort, GitRepositorySnapshot,
 };
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::diff_rows::{
-    BodyRow, CommentAnchor, CommentSide, DiffLayout, FlattenFile, ReviewComment, ReviewRow,
-    body_row_anchors, body_rows, flatten, review_prompt,
+    BodyRow, CommentAnchor, CommentSide, DiffLayout, FlattenFile, FoldDirection, FoldReveal,
+    ReviewComment, ReviewRow, body_row_anchors, body_rows, flatten, review_prompt,
 };
 use crate::ui::git_graph::{GitGraphRow, assign_commit_lanes};
 use crate::ui::syntax::SyntaxSpan;
-use crate::ui::theme::{MONO_FONT, colors, floating_surface, popover_surface, surface_tint};
+use crate::ui::theme::{MONO_FONT, colors, floating_surface, mix, surface_tint};
+use crate::ui::workspace_view::{file_tree_icon, file_tree_icon_color};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
 const HISTORY_ROW_HEIGHT: f32 = 36.0;
@@ -52,12 +58,12 @@ const HISTORY_DATE_WIDTH: f32 = 88.0;
 const HISTORY_SHA_WIDTH: f32 = 64.0;
 const HISTORY_PAGE: usize = 250;
 
-const FILE_HEADER_HEIGHT: f32 = 42.0;
+const FILE_HEADER_HEIGHT: f32 = 32.0;
 const SECTION_HEIGHT: f32 = 32.0;
 /// Row height at the default code size; other sizes keep the proportion.
 const BASE_DIFF_FONT_SIZE: f32 = 12.0;
-const BASE_DIFF_ROW_HEIGHT: f32 = 22.0;
-const MARKER_WIDTH: f32 = 20.0;
+const BASE_DIFF_ROW_HEIGHT: f32 = 20.0;
+const COMMENT_ACTION_WIDTH: f32 = 20.0;
 const SPLIT_DIVIDER_WIDTH: f32 = 1.0;
 const CODE_PADDING_LEFT: f32 = 8.0;
 /// Breathing room after the widest line when scrolled fully right.
@@ -123,6 +129,7 @@ enum RowKey {
     Header(String),
     Loading(String),
     Body(String, usize),
+    ContextFold(String, usize),
     Comment(u64),
     Draft,
     Folding(String),
@@ -134,6 +141,7 @@ struct RowMetrics {
     font_size: f32,
     line_height: f32,
     hunk_height: f32,
+    fold_height: f32,
     char_width: f32,
     wrap: bool,
     h_offset: f32,
@@ -142,7 +150,7 @@ struct RowMetrics {
 impl RowMetrics {
     fn gutter_width(&self, max_line_number: usize) -> f32 {
         let digits = max_line_number.max(1).to_string().len().max(3) as f32;
-        (digits * self.char_width * 0.9 + 14.0).ceil()
+        (digits * self.char_width * 0.9 + 28.0).ceil()
     }
 
     /// Analytic height of one body row without wrapping (drives the fold tween).
@@ -154,6 +162,7 @@ impl RowMetrics {
                 _ => self.line_height,
             },
             BodyRow::Split { .. } => self.line_height,
+            BodyRow::Fold { .. } => self.fold_height,
         }
     }
 }
@@ -197,6 +206,7 @@ pub struct DiffView {
     status_index: Arc<HashMap<String, GitFileStatus>>,
     panel_visible: bool,
     review_expanded: bool,
+    selected_review_path: Option<String>,
     focus_handle: FocusHandle,
     refreshing: bool,
     /// First snapshot for the current root has finished (success, none, or error).
@@ -234,10 +244,30 @@ pub struct DiffView {
     h_max: f32,
     folds: HashMap<String, FileFold>,
     fold_generation: u64,
+    /// Path → how far each of its unchanged-line folds has been opened.
+    /// Reset whenever the file's diff is reloaded.
+    fold_reveals: HashMap<String, HashMap<usize, FoldReveal>>,
     comments: Vec<ReviewComment>,
     review_delivery_pending: bool,
     next_comment_id: u64,
     draft: Option<CommentDraft>,
+    /// The review fills its tab (the default); off, it shares the center
+    /// with the terminal.
+    review_focused: bool,
+    /// Set when a commit was opened from the Changes graph; closing its
+    /// review returns the panel to the working tree.
+    return_to_worktree: bool,
+    changes: changes_panel::ChangesPanelState,
+}
+
+/// What a live fold bar needs to reveal its lines.
+#[derive(Debug, Clone)]
+struct FoldActions {
+    /// List row, for unique element ids.
+    ix: usize,
+    path: String,
+    fold: usize,
+    len: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,6 +331,8 @@ struct PendingDiffLoad {
 pub enum DiffViewEvent {
     /// Status, layout, or expansion changed; the workspace repaints.
     Changed,
+    /// The user closed the central review and expects keyboard input in the terminal.
+    ReturnToTerminal,
     /// The toolbar changed a persisted preference.
     PreferencesChanged { split: bool, wrap: bool },
     /// Review comments to paste into the agent's terminal.
@@ -308,6 +340,10 @@ pub enum DiffViewEvent {
         prompt: String,
         comment_ids: Vec<u64>,
     },
+    /// A file or commit was opened for review; show its tab.
+    ReviewOpened,
+    /// Open a terminal session that runs this command in the repository.
+    RunInTerminal { title: String, command: String },
 }
 
 impl EventEmitter<DiffViewEvent> for DiffView {}
@@ -364,6 +400,7 @@ impl DiffView {
             status_index: Arc::new(HashMap::new()),
             panel_visible: false,
             review_expanded: false,
+            selected_review_path: None,
             focus_handle: cx.focus_handle(),
             refreshing: false,
             snapshot_settled: false,
@@ -394,10 +431,14 @@ impl DiffView {
             h_max: 0.0,
             folds: HashMap::new(),
             fold_generation: 0,
+            fold_reveals: HashMap::new(),
             comments: Vec::new(),
             review_delivery_pending: false,
             next_comment_id: 1,
             draft: None,
+            review_focused: true,
+            return_to_worktree: false,
+            changes: changes_panel::ChangesPanelState::new(cx),
         }
     }
 
@@ -431,9 +472,45 @@ impl DiffView {
         self.review_expanded
     }
 
+    /// The review hides the terminal; otherwise the two share the center.
+    pub fn review_focused(&self) -> bool {
+        self.review_expanded && self.review_focused
+    }
+
+    pub fn review_is_commit(&self) -> bool {
+        self.mode == GitPanelMode::History && self.selected_commit.is_some()
+    }
+
+    pub fn review_title(&self) -> String {
+        self.selected_commit
+            .as_ref()
+            .filter(|_| self.mode == GitPanelMode::History)
+            .map(|commit| commit.subject.clone())
+            .unwrap_or_else(|| self.mode.label().to_owned())
+    }
+
+    pub fn focus_review(&self, window: &mut Window) {
+        self.focus_handle.focus(window);
+    }
+
+    fn open_review_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_review_path = Some(path.clone());
+        self.pending_reveal = Some(path.clone());
+        self.expand_path(path, cx);
+        self.set_review_expanded(true, cx);
+        self.focus_handle.focus(window);
+        cx.emit(DiffViewEvent::ReviewOpened);
+        cx.emit(DiffViewEvent::Changed);
+        cx.notify();
+    }
+
     pub fn toggle_review_expanded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.set_review_expanded(!self.review_expanded, cx);
-        self.focus_handle.focus(window);
+        if self.review_expanded {
+            self.focus_handle.focus(window);
+        } else {
+            cx.emit(DiffViewEvent::ReturnToTerminal);
+        }
     }
 
     pub fn set_review_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
@@ -442,6 +519,14 @@ impl DiffView {
         }
         self.review_expanded = expanded;
         self.mode_menu_open = false;
+        if expanded {
+            cx.emit(DiffViewEvent::ReviewOpened);
+        } else {
+            self.review_focused = true;
+            if std::mem::take(&mut self.return_to_worktree) {
+                self.set_mode(GitPanelMode::Worktree, cx);
+            }
+        }
         cx.emit(DiffViewEvent::Changed);
         cx.notify();
     }
@@ -483,8 +568,11 @@ impl DiffView {
             return false;
         }
         self.set_mode(GitPanelMode::Worktree, cx);
+        self.selected_review_path = Some(relative_path.clone());
         self.pending_reveal = Some(relative_path.clone());
         self.expand_path(relative_path, cx);
+        self.set_review_expanded(true, cx);
+        cx.emit(DiffViewEvent::ReviewOpened);
         cx.notify();
         true
     }
@@ -541,6 +629,7 @@ impl DiffView {
         self.clear_turn();
         self.forget_scroll();
         self.context_root = root;
+        self.selected_review_path = None;
         self.comments.clear();
         self.review_delivery_pending = false;
         self.draft = None;
@@ -591,7 +680,7 @@ impl DiffView {
     fn refresh_visible_sources(&mut self, notify_loading: bool, cx: &mut Context<Self>) {
         self.refresh(notify_loading, cx);
         match self.mode {
-            GitPanelMode::Worktree => {}
+            GitPanelMode::Worktree => self.refresh_graph(notify_loading, cx),
             GitPanelMode::Branch => self.refresh_branch(notify_loading, cx),
             GitPanelMode::LatestTurn => self.refresh_turn(notify_loading, cx),
             GitPanelMode::History => {
@@ -605,6 +694,9 @@ impl DiffView {
     }
 
     fn set_mode(&mut self, mode: GitPanelMode, cx: &mut Context<Self>) {
+        if self.mode != mode {
+            self.selected_review_path = None;
+        }
         self.mode_menu_open = false;
         self.branch_picker = None;
         if self.mode == mode {
@@ -614,7 +706,6 @@ impl DiffView {
             cx.notify();
             return;
         }
-        self.set_review_expanded(false, cx);
         self.clear_commit();
         self.clear_turn();
         self.forget_scroll();
@@ -629,6 +720,7 @@ impl DiffView {
             GitPanelMode::LatestTurn => self.refresh_turn(true, cx),
             GitPanelMode::History => self.refresh_history(true, cx),
         }
+        cx.emit(DiffViewEvent::Changed);
         cx.notify();
     }
 
@@ -1037,6 +1129,7 @@ impl DiffView {
         self.draft = None;
         self.clear_commit();
         self.refresh_history(false, cx);
+        cx.emit(DiffViewEvent::Changed);
         cx.notify();
     }
 
@@ -1047,7 +1140,10 @@ impl DiffView {
         self.clear_commit();
         self.forget_scroll();
         self.selected_commit = Some(commit);
+        self.set_review_expanded(true, cx);
         self.refresh_commit(cx);
+        cx.emit(DiffViewEvent::ReviewOpened);
+        cx.emit(DiffViewEvent::Changed);
     }
 
     fn refresh_commit(&mut self, cx: &mut Context<Self>) {
@@ -1115,6 +1211,13 @@ impl DiffView {
             .collect();
 
         self.expanded.retain(|path| sources.contains_key(path));
+        if self
+            .selected_review_path
+            .as_ref()
+            .is_some_and(|path| !sources.contains_key(path))
+        {
+            self.selected_review_path = None;
+        }
         self.expanded_order
             .retain(|path| self.expanded.contains(path));
         self.documents.retain(|path, cached| {
@@ -1128,6 +1231,8 @@ impl DiffView {
                 .is_some_and(|source| source == &pending.source)
         });
         self.folds.retain(|path, _| sources.contains_key(path));
+        self.fold_reveals
+            .retain(|path, _| self.documents.contains_key(path));
         self.evict_diff_caches();
     }
 
@@ -1217,6 +1322,30 @@ impl DiffView {
             self.start_fold(path.clone(), true, cx);
         }
         self.expand_path(path, cx);
+    }
+
+    /// Open every file (up to the cap on simultaneously prepared diffs).
+    fn expand_all(&mut self, cx: &mut Context<Self>) {
+        let paths: Vec<String> = self
+            .ordered_file_refs()
+            .map(|change| change.path.clone())
+            .take(MAX_EXPANDED_DIFFS)
+            .collect();
+        for path in paths {
+            self.expand_path(path, cx);
+        }
+    }
+
+    fn collapse_all(&mut self, cx: &mut Context<Self>) {
+        if self.expanded.is_empty() {
+            return;
+        }
+        self.expanded.clear();
+        self.expanded_order.clear();
+        self.pending_loads.clear();
+        self.folds.clear();
+        cx.emit(DiffViewEvent::Changed);
+        cx.notify();
     }
 
     fn start_fold(&mut self, path: String, expanding: bool, cx: &mut Context<Self>) {
@@ -1372,6 +1501,7 @@ impl DiffView {
                 this.pending_loads.remove(&path_for_task);
                 match result {
                     Ok(document) => {
+                        this.fold_reveals.remove(&path_for_task);
                         this.documents.insert(
                             path_for_task,
                             CachedDiffDocument {
@@ -1570,6 +1700,7 @@ impl DiffView {
         let Some(draft) = self.draft.as_mut() else {
             if self.review_expanded && matches!(key, "escape" | "esc") {
                 self.set_review_expanded(false, cx);
+                cx.emit(DiffViewEvent::ReturnToTerminal);
                 cx.stop_propagation();
             }
             return;
@@ -1667,6 +1798,11 @@ impl DiffView {
             self.document(&change.path)
                 .map(|document| Arc::as_ptr(document) as usize)
                 .hash(&mut hasher);
+            if let Some(reveals) = self.fold_reveals.get(&change.path) {
+                let mut reveals: Vec<_> = reveals.iter().collect();
+                reveals.sort_unstable();
+                reveals.hash(&mut hasher);
+            }
         }
         for comment in &self.comments {
             (comment.id, &comment.anchor).hash(&mut hasher);
@@ -1695,6 +1831,10 @@ impl DiffView {
                 rows: self
                     .document(&change.path)
                     .map(|document| document.diff.rows.as_slice()),
+                folds: self
+                    .document(&change.path)
+                    .map_or(&[][..], |document| document.folds.as_slice()),
+                reveals: self.fold_reveals.get(&change.path),
             })
             .collect();
         let rows = flatten(
@@ -1766,13 +1906,13 @@ impl DiffView {
             ReviewRow::Comment { comment, .. } => {
                 RowKey::Comment(self.comments.get(comment).map_or(0, |comment| comment.id))
             }
-            ReviewRow::Body { file, row } => {
-                let index = match row {
-                    BodyRow::Line(index) => index,
-                    BodyRow::Split { left, right } => right.or(left).unwrap_or(0),
-                };
-                RowKey::Body(path(file), index)
-            }
+            ReviewRow::Body { file, row } => match row {
+                BodyRow::Line(index) => RowKey::Body(path(file), index),
+                BodyRow::Split { left, right } => {
+                    RowKey::Body(path(file), right.or(left).unwrap_or(0))
+                }
+                BodyRow::Fold { fold, .. } => RowKey::ContextFold(path(file), fold),
+            },
         }
     }
 
@@ -1781,6 +1921,7 @@ impl DiffView {
             RowKey::Header(path)
             | RowKey::Loading(path)
             | RowKey::Body(path, _)
+            | RowKey::ContextFold(path, _)
             | RowKey::Folding(path) => Some(path),
             _ => None,
         }
@@ -1791,7 +1932,8 @@ impl DiffView {
         RowMetrics {
             font_size: self.font_size,
             line_height,
-            hunk_height: line_height + 6.0,
+            hunk_height: line_height + 2.0,
+            fold_height: line_height + 12.0,
             char_width: self.char_width,
             wrap: self.wrap,
             h_offset: if self.wrap { 0.0 } else { self.h_offset },
@@ -1824,9 +1966,9 @@ impl DiffView {
         let viewport = f32::from(self.list_state.viewport_bounds().size.width);
         let gutter = metrics.gutter_width(max_line);
         let code_width = if self.layout.is_split() {
-            (viewport - SPLIT_DIVIDER_WIDTH) / 2.0 - gutter - MARKER_WIDTH
+            (viewport - SPLIT_DIVIDER_WIDTH) / 2.0 - gutter
         } else {
-            viewport - 2.0 * gutter - MARKER_WIDTH
+            viewport - gutter
         };
         let content = widest as f32 * self.char_width + CODE_PADDING_LEFT + CODE_PADDING_RIGHT;
         self.h_max = if viewport > 0.0 {
@@ -1978,8 +2120,7 @@ impl DiffView {
         let path = change.path.clone();
         let expanded = self.expanded.contains(&path);
         let document = self.document(&path);
-        let color = Self::status_color(change.status);
-        let (name, parent) = Self::path_parts(&change.path);
+
         let additions = change
             .additions
             .or_else(|| document.map(|d| d.diff.additions))
@@ -2002,17 +2143,13 @@ impl DiffView {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(8.0))
             .px_3()
             .border_b_1()
             .border_color(colors().border_subtle)
             .bg(surface_tint(
-                if expanded {
-                    colors().elevated
-                } else {
-                    colors().panel
-                },
-                colors().panel,
+                mix(colors().background, colors().foreground, 0.02),
+                colors().background,
             ))
             .cursor_pointer()
             .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
@@ -2037,54 +2174,35 @@ impl DiffView {
                             } else {
                                 "chrome-icons/chevron-right.svg"
                             })
-                            .size(px(9.0))
+                            .size(px(14.0))
                             .flex_none()
                             .text_color(colors().subtle),
                     ),
             )
-            .child(
+            .child({
+                let name = change.path.rsplit('/').next().unwrap_or(&change.path);
                 div()
-                    .w(px(18.0))
-                    .h(px(18.0))
+                    .w(px(16.0))
                     .flex_none()
-                    .rounded(px(4.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(colors().selection)
-                    .font_family(MONO_FONT)
-                    .text_size(px(9.0))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(color)
-                    .child(git_status_badge(change.status)),
-            )
+                    .child(file_tree_icon(
+                        FileEntryKind::File,
+                        false,
+                        name,
+                        file_tree_icon_color(FileEntryKind::File, name),
+                    ))
+            })
             .child(
                 div()
                     .min_w(px(0.0))
                     .flex_1()
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .gap(px(1.0))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(12.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(colors().foreground)
-                            .child(name),
-                    )
-                    .when(!parent.is_empty(), |row| {
-                        row.child(
-                            div()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .text_size(px(9.0))
-                                .text_color(colors().subtle)
-                                .child(parent),
-                        )
-                    }),
+                    .truncate()
+                    .font_family(MONO_FONT)
+                    .text_size(px(12.0))
+                    .text_color(mix(colors().foreground, colors().background, 0.15))
+                    .child(change.path.clone()),
             )
             .when(comments > 0, |row| {
                 row.child(
@@ -2122,13 +2240,9 @@ impl DiffView {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap_1()
-                        .px_1()
-                        .py_0()
-                        .rounded(px(4.0))
-                        .bg(colors().selection)
-                        .font_family(MONO_FONT)
-                        .text_size(px(10.0))
+                        .gap(px(6.0))
+                        .text_size(px(11.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
                         .when(additions > 0, |stats| {
                             stats.child(
                                 div()
@@ -2140,7 +2254,7 @@ impl DiffView {
                             stats.child(
                                 div()
                                     .text_color(colors().diff_deleted)
-                                    .child(format!("−{deletions}")),
+                                    .child(format!("-{deletions}")),
                             )
                         }),
                 )
@@ -2168,6 +2282,7 @@ impl DiffView {
             let index = match row {
                 BodyRow::Line(index) => index,
                 BodyRow::Split { left, right } => if slot == 0 { left } else { right }?,
+                BodyRow::Fold { .. } => return None,
             };
             let excerpt = document.display_lines.get(index)?.to_string();
             let anchor = CommentAnchor {
@@ -2176,7 +2291,7 @@ impl DiffView {
                 line,
             };
             let group = match (row, slot) {
-                (BodyRow::Line(_), _) => "diff-line",
+                (BodyRow::Line(_) | BodyRow::Fold { .. }, _) => "diff-line",
                 (_, 0) => "diff-cell-left",
                 _ => "diff-cell-right",
             };
@@ -2233,7 +2348,146 @@ impl DiffView {
                     ))
                     .into_any_element()
             }
+            BodyRow::Fold { fold, hidden, .. } => {
+                let edges = document.folds.get(fold).map(|context| {
+                    (
+                        context.start == 0,
+                        context.start + context.len >= rows.len(),
+                    )
+                });
+                let (leading, trailing) = edges.unwrap_or_default();
+                let actions = FoldActions {
+                    ix,
+                    path: path.to_owned(),
+                    fold,
+                    len: document
+                        .folds
+                        .get(fold)
+                        .map_or(hidden, |context| context.len),
+                };
+                Self::fold_bar(hidden, leading, trailing, metrics, Some((actions, cx)))
+                    .into_any_element()
+            }
         }
+    }
+
+    fn reveal_fold(
+        &mut self,
+        path: String,
+        fold: usize,
+        len: usize,
+        direction: FoldDirection,
+        cx: &mut Context<Self>,
+    ) {
+        let reveals = self.fold_reveals.entry(path).or_default();
+        let reveal = reveals.entry(fold).or_default();
+        *reveal = reveal.expand(len, direction);
+        cx.notify();
+    }
+
+    /// Unchanged lines hidden between hunks: arrows reveal `FOLD_STEP` lines
+    /// from the adjacent hunk; the label reveals them all. `actions` is absent
+    /// on the inert copy drawn inside a folding animation.
+    fn fold_bar(
+        hidden: usize,
+        leading: bool,
+        trailing: bool,
+        metrics: RowMetrics,
+        actions: Option<(FoldActions, &mut Context<Self>)>,
+    ) -> Div {
+        let mut bar = div()
+            .w_full()
+            .h(px(metrics.fold_height))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .bg(surface_tint(
+                mix(colors().background, colors().foreground, 0.08),
+                colors().background,
+            ));
+        let (actions, mut cx) = match actions {
+            Some((actions, cx)) => (Some(actions), Some(cx)),
+            None => (None, None),
+        };
+        let mut arrow = |icon: &'static str, direction: FoldDirection| {
+            let group = SharedString::from(format!(
+                "diff-fold-{icon}-{}",
+                actions.as_ref().map_or(0, |actions| actions.ix)
+            ));
+            let button = div()
+                .id(group.clone())
+                .group(group.clone())
+                .size(px(20.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.0))
+                .hover(|button| button.bg(surface_tint(colors().hover, colors().background)))
+                .child(
+                    gpui::svg()
+                        .path(icon)
+                        .size(px(12.0))
+                        .text_color(colors().subtle)
+                        .group_hover(group, |icon| icon.text_color(colors().foreground)),
+                );
+            match (&actions, cx.as_deref_mut()) {
+                (Some(actions), Some(cx)) => {
+                    let FoldActions {
+                        path, fold, len, ..
+                    } = actions.clone();
+                    button
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.reveal_fold(path.clone(), fold, len, direction, cx);
+                        }))
+                }
+                _ => button,
+            }
+        };
+        if !leading {
+            bar = bar.child(arrow("chrome-icons/chevron-down.svg", FoldDirection::Down));
+        }
+        if !trailing {
+            bar = bar.child(arrow("chrome-icons/chevron-up.svg", FoldDirection::Up));
+        }
+        let label = div()
+            .id(SharedString::from(format!(
+                "diff-fold-all-{}",
+                actions.as_ref().map_or(0, |actions| actions.ix)
+            )))
+            .min_w(px(0.0))
+            .flex_1()
+            .h_full()
+            .flex()
+            .items_center()
+            .pl_1()
+            .truncate()
+            .font_family(MONO_FONT)
+            .text_size(px(metrics.font_size - 1.0))
+            .text_color(colors().subtle)
+            .hover(|label| label.text_color(colors().muted))
+            .child(format!(
+                "{hidden} unmodified line{}",
+                if hidden == 1 { "" } else { "s" }
+            ));
+        bar.child(match (actions, cx) {
+            (
+                Some(FoldActions {
+                    path, fold, len, ..
+                }),
+                Some(cx),
+            ) => label
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.reveal_fold(path.clone(), fold, len, FoldDirection::All, cx);
+                })),
+            _ => label,
+        })
     }
 
     fn line_colors(kind: GitDiffRowKind) -> (Rgba, Rgba) {
@@ -2242,9 +2496,12 @@ impl DiffView {
             GitDiffRowKind::Deletion => colors().diff_deleted_bg,
             _ => colors().background,
         };
+        // Changed lines tint their number more strongly than their code;
+        // unchanged numbers sit directly on the page, without a gutter strip.
         let gutter = match kind {
-            GitDiffRowKind::Addition | GitDiffRowKind::Deletion => background,
-            _ => colors().gutter,
+            GitDiffRowKind::Addition => mix(background, colors().diff_added, 0.22),
+            GitDiffRowKind::Deletion => mix(background, colors().diff_deleted, 0.22),
+            _ => background,
         };
         (
             surface_tint(background, colors().background),
@@ -2274,18 +2531,17 @@ impl DiffView {
             })
             .bg(background)
             .child(Self::gutter_cell(
-                row.old_line,
+                if row.kind == GitDiffRowKind::Deletion {
+                    row.old_line
+                } else {
+                    row.new_line
+                },
                 gutter,
                 gutter_background,
+                row.kind,
                 metrics,
+                button,
             ))
-            .child(Self::gutter_cell(
-                row.new_line,
-                gutter,
-                gutter_background,
-                metrics,
-            ))
-            .child(Self::marker_cell(row.kind, metrics, button))
             .child(Self::code_cell(
                 &document.display_lines[index],
                 document
@@ -2328,9 +2584,10 @@ impl DiffView {
                 number,
                 gutter,
                 gutter_background,
+                kind,
                 metrics,
+                button,
             ))
-            .child(Self::marker_cell(kind, metrics, button))
             .child(Self::code_cell(
                 &document.display_lines[index],
                 document
@@ -2346,40 +2603,28 @@ impl DiffView {
         number: Option<usize>,
         width: f32,
         background: Rgba,
+        kind: GitDiffRowKind,
         metrics: RowMetrics,
+        button: Option<AnyElement>,
     ) -> Div {
+        let color = match kind {
+            GitDiffRowKind::Addition => colors().diff_added,
+            GitDiffRowKind::Deletion => colors().diff_deleted,
+            _ => colors().subtle,
+        };
         div()
+            .relative()
             .w(px(width))
             .flex_none()
             .flex()
             .justify_end()
             .pr_2()
             .bg(background)
-            .border_r_1()
-            .border_color(colors().border_subtle)
             .font_family(MONO_FONT)
-            .text_size(px(metrics.font_size - 1.5))
-            .line_height(px(metrics.line_height))
-            .text_color(colors().muted)
-            .child(number.map(|line| line.to_string()).unwrap_or_default())
-    }
-
-    fn marker_cell(kind: GitDiffRowKind, metrics: RowMetrics, button: Option<AnyElement>) -> Div {
-        let (marker, color) = match kind {
-            GitDiffRowKind::Addition => ("+", colors().diff_added),
-            GitDiffRowKind::Deletion => ("−", colors().diff_deleted),
-            _ => ("", colors().subtle),
-        };
-        div()
-            .relative()
-            .w(px(MARKER_WIDTH))
-            .flex_none()
-            .text_center()
-            .font_family(MONO_FONT)
-            .text_size(px(metrics.font_size))
+            .text_size(px(metrics.font_size - 1.0))
             .line_height(px(metrics.line_height))
             .text_color(color)
-            .child(marker)
+            .child(number.map(|line| line.to_string()).unwrap_or_default())
             .children(button)
     }
 
@@ -2398,7 +2643,7 @@ impl DiffView {
             .top(px(
                 ((metrics.line_height - COMMENT_BUTTON_SIZE) / 2.0).max(0.0)
             ))
-            .left(px((MARKER_WIDTH - COMMENT_BUTTON_SIZE) / 2.0))
+            .left(px((COMMENT_ACTION_WIDTH - COMMENT_BUTTON_SIZE) / 2.0))
             .size(px(COMMENT_BUTTON_SIZE))
             .rounded(px(4.0))
             .flex()
@@ -2432,13 +2677,15 @@ impl DiffView {
             .min_w(px(0.0))
             .font_family(MONO_FONT)
             .text_size(px(metrics.font_size))
-            .line_height(px(metrics.line_height));
+            .line_height(px(metrics.line_height))
+            // Unchanged code recedes so the changes read first.
+            .when(kind == GitDiffRowKind::Context, |cell| cell.opacity(0.72));
         if metrics.wrap {
             cell.pl(px(CODE_PADDING_LEFT))
                 .pr(px(CODE_PADDING_LEFT))
                 .child(code)
         } else {
-            // Only the code plane moves; gutters and markers stay fixed.
+            // Only the code plane moves; line numbers and comment actions stay fixed.
             cell.h_full().overflow_hidden().child(
                 div()
                     .relative()
@@ -2453,7 +2700,7 @@ impl DiffView {
     /// Hunk, section, and notice rows span the full width in both layouts.
     fn banner_row(row: &GitDiffRow, text: &SharedString, gutter: f32, metrics: RowMetrics) -> Div {
         let (height, background, color) = match row.kind {
-            GitDiffRowKind::Hunk => (metrics.hunk_height, colors().diff_hunk_bg, colors().muted),
+            GitDiffRowKind::Hunk => (metrics.hunk_height, colors().diff_hunk_bg, colors().subtle),
             GitDiffRowKind::Section => (SECTION_HEIGHT - 4.0, colors().elevated, colors().subtle),
             _ => (metrics.line_height, colors().background, colors().warning),
         };
@@ -2465,7 +2712,7 @@ impl DiffView {
             .overflow_hidden()
             .bg(surface_tint(background, colors().background))
             .pl(px(if row.kind == GitDiffRowKind::Hunk {
-                2.0 * gutter + MARKER_WIDTH + CODE_PADDING_LEFT
+                gutter + CODE_PADDING_LEFT
             } else {
                 12.0
             }))
@@ -2491,6 +2738,7 @@ impl DiffView {
         metrics: RowMetrics,
     ) -> StyledText {
         let default_style = TextStyle {
+            // Context dims through its cell's opacity, syntax colors included.
             color: colors().foreground.into(),
             font_family: MONO_FONT.into(),
             font_size: px(metrics.font_size).into(),
@@ -2536,7 +2784,9 @@ impl DiffView {
         let gutter = metrics.gutter_width(document.max_line_number);
         let mut height = 0.0;
         let mut children = Vec::new();
-        for row in body_rows(rows, self.layout) {
+        let no_reveals = HashMap::new();
+        let reveals = self.fold_reveals.get(path).unwrap_or(&no_reveals);
+        for row in body_rows(rows, self.layout, &document.folds, reveals) {
             if height >= viewport {
                 break;
             }
@@ -2569,6 +2819,7 @@ impl DiffView {
                     .child(Self::split_cell(
                         document, right, false, gutter, metrics, None,
                     )),
+                BodyRow::Fold { hidden, .. } => Self::fold_bar(hidden, false, false, metrics, None),
             });
         }
         let height = height.min(viewport);
@@ -2598,7 +2849,7 @@ impl DiffView {
         if self.layout.is_split() {
             12.0
         } else {
-            2.0 * metrics.gutter_width(99) + MARKER_WIDTH
+            metrics.gutter_width(99)
         }
     }
 
@@ -2789,90 +3040,6 @@ impl DiffView {
     // Chrome
     // -----------------------------------------------------------------------
 
-    fn header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let loading = match self.mode {
-            GitPanelMode::Worktree => self.refreshing && !self.snapshot_settled,
-            GitPanelMode::Branch => self.branch_refreshing,
-            GitPanelMode::LatestTurn => self.turn_refreshing && !self.turn_settled,
-            GitPanelMode::History if self.selected_commit.is_some() => self.commit_refreshing,
-            GitPanelMode::History => {
-                self.history_refreshing || (self.refreshing && !self.snapshot_settled)
-            }
-        };
-        let (branch, mut meta) = self.header_meta(loading);
-        if self.mode == GitPanelMode::History {
-            meta.insert(
-                0,
-                div()
-                    .text_size(px(11.0))
-                    .text_color(colors().muted)
-                    .child(branch),
-            );
-        }
-
-        div()
-            .w_full()
-            .flex_none()
-            .min_h(px(44.0))
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .border_b_1()
-            .border_color(colors().border_subtle)
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .id("git-header-expand")
-                            .flex_none()
-                            .w(px(24.0))
-                            .h(px(26.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(5.0))
-                            .cursor_pointer()
-                            .hover(|button| button.bg(colors().hover))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.toggle_review_expanded(window, cx);
-                            }))
-                            .child(
-                                gpui::svg()
-                                    .path(if self.review_expanded {
-                                        "chrome-icons/chevrons-right.svg"
-                                    } else {
-                                        "chrome-icons/chevrons-left.svg"
-                                    })
-                                    .size(px(16.0))
-                                    .text_color(colors().muted),
-                            ),
-                    )
-                    .child(self.mode_trigger(cx)),
-            )
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .max_w_full()
-                    .overflow_hidden()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .children(
-                        meta.into_iter()
-                            .map(|item| item.flex_none().whitespace_nowrap()),
-                    ),
-            )
-    }
-
     fn header_meta(&self, loading: bool) -> (String, Vec<Div>) {
         let mut meta = Vec::new();
         let branch = match self.mode {
@@ -3029,13 +3196,15 @@ impl DiffView {
         div()
             .w_full()
             .flex_none()
-            .h(px(34.0))
+            .h(px(32.0))
             .flex()
             .items_center()
             .gap_1()
             .px_2()
             .border_b_1()
             .border_color(colors().border_subtle)
+            .child(self.review_summary())
+            .child(div().w(px(8.0)).flex_none())
             .child(
                 div()
                     .flex_none()
@@ -3044,7 +3213,6 @@ impl DiffView {
                     .p(px(2.0))
                     .gap(px(2.0))
                     .rounded(px(6.0))
-                    .bg(colors().elevated)
                     .child(Self::segment_button(
                         "diff-layout-unified",
                         "chrome-icons/diff-unified.svg",
@@ -3068,6 +3236,26 @@ impl DiffView {
                 cx.listener(|this, _, _, cx| this.toggle_wrap(cx)),
             ))
             .child(div().flex_1())
+            .child(Self::toolbar_icon_button(
+                "diff-expand-all",
+                "chrome-icons/unfold-vertical.svg",
+                true,
+                cx.listener(|this, _, _, cx| this.expand_all(cx)),
+            ))
+            .child(Self::toolbar_icon_button(
+                "diff-collapse-all",
+                "chrome-icons/fold-vertical.svg",
+                !self.expanded.is_empty(),
+                cx.listener(|this, _, _, cx| this.collapse_all(cx)),
+            ))
+            .when(self.review_focused, |bar| {
+                bar.child(Self::toolbar_icon_button(
+                    "review-show-beside-terminal",
+                    "chrome-icons/split-view.svg",
+                    true,
+                    cx.listener(|this, _, _, cx| this.set_review_focused(false, cx)),
+                ))
+            })
             .when(comments > 0, |bar| {
                 bar.child(
                     div()
@@ -3123,6 +3311,39 @@ impl DiffView {
             })
     }
 
+    fn toolbar_icon_button(
+        id: &'static str,
+        icon: &'static str,
+        enabled: bool,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .group(id)
+            .flex_none()
+            .size(px(26.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .when(!enabled, |button| button.opacity(0.4))
+            .when(enabled, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(|button| button.bg(colors().hover))
+                    .on_click(on_click)
+            })
+            .child(
+                gpui::svg()
+                    .path(icon)
+                    .size(px(14.0))
+                    .text_color(colors().subtle)
+                    .when(enabled, |icon| {
+                        icon.group_hover(id, |icon| icon.text_color(colors().foreground))
+                    }),
+            )
+    }
+
     fn segment_button(
         id: &'static str,
         icon: &'static str,
@@ -3157,117 +3378,18 @@ impl DiffView {
             .on_click(on_click)
     }
 
-    fn mode_trigger(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let open = self.mode_menu_open;
-        div()
-            .id("git-mode-trigger")
-            .flex_none()
-            .h(px(26.0))
-            .px_2()
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(if open {
-                colors().muted
-            } else {
-                colors().border_subtle
-            })
-            .bg(if open {
-                colors().selection
-            } else {
-                colors().elevated
-            })
-            .flex()
-            .items_center()
-            .gap_1()
-            .cursor_pointer()
-            .hover(|button| button.bg(colors().hover))
-            .on_click(cx.listener(|this, _, _, cx| {
-                cx.stop_propagation();
-                this.mode_menu_open = !this.mode_menu_open;
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().foreground)
-                    .child(self.mode.label()),
-            )
-            .child(
-                gpui::svg()
-                    .path("chrome-icons/chevron-down.svg")
-                    .ml_1()
-                    .size(px(10.0))
-                    .text_color(colors().muted),
-            )
-    }
-
-    fn mode_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .absolute()
-            .inset_0()
-            .child(
-                div()
-                    .id("git-mode-dismiss")
-                    .absolute()
-                    .inset_0()
-                    .occlude()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        // Consume the dismissal so this click cannot reopen the trigger below.
-                        cx.stop_propagation();
-                        this.mode_menu_open = false;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(42.0))
-                    .left(px(40.0))
-                    .w(px(200.0))
-                    .occlude()
-                    .rounded(px(12.0))
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(popover_surface())
-                    .shadow_lg()
-                    .p_1()
-                    .flex()
-                    .flex_col()
-                    .children(GitPanelMode::ALL.into_iter().map(|mode| {
-                        let selected = mode == self.mode;
-                        div()
-                            .id(SharedString::from(format!("git-mode-{}", mode.label())))
-                            .h(px(32.0))
-                            .px_3()
-                            .rounded(px(8.0))
-                            .flex()
-                            .items_center()
-                            .cursor_pointer()
-                            .when(selected, |row| {
-                                row.bg(surface_tint(colors().selection, colors().sidebar))
-                            })
-                            .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.set_mode(mode, cx);
-                            }))
-                            .child(
-                                div()
-                                    .text_size(px(12.5))
-                                    .font_weight(if selected {
-                                        gpui::FontWeight::MEDIUM
-                                    } else {
-                                        gpui::FontWeight::NORMAL
-                                    })
-                                    .text_color(colors().foreground)
-                                    .child(mode.label()),
-                            )
-                    })),
-            )
-    }
-
     fn message(&self, text: &'static str) -> Div {
+        if !self.review_expanded {
+            return div()
+                .flex_1()
+                .min_h(px(0.0))
+                .px_3()
+                .py_3()
+                .text_size(px(12.0))
+                .line_height(px(18.0))
+                .text_color(colors().subtle)
+                .child(text);
+        }
         div()
             .flex_1()
             .min_h(px(0.0))
@@ -3303,7 +3425,6 @@ impl DiffView {
                     .left_0()
                     .right_0()
                     .bg(floating_surface(colors().panel))
-                    .shadow_sm()
                     .child(self.file_header(&change, true, cx)),
             )
         });
@@ -3357,6 +3478,8 @@ impl DiffView {
 }
 
 impl Render for DiffView {
+    /// The central review. The Changes sidebar is rendered by
+    /// [`DiffFileIndexView`] through [`DiffView::changes_panel`].
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let error = match self.mode {
             GitPanelMode::Branch => self.branch_error.clone().or_else(|| self.error.clone()),
@@ -3364,17 +3487,10 @@ impl Render for DiffView {
             GitPanelMode::History => self.commit_error.clone().or_else(|| self.error.clone()),
             GitPanelMode::Worktree => self.error.clone(),
         };
-        let selected_commit = self.selected_commit.clone();
-        let menu_open = self.mode_menu_open;
-        let empty_message = self.empty_message();
-        let show_history = empty_message.is_none()
-            && self.mode == GitPanelMode::History
-            && selected_commit.is_none();
-        let show_files = empty_message.is_none()
-            && (matches!(
-                self.mode,
-                GitPanelMode::Worktree | GitPanelMode::Branch | GitPanelMode::LatestTurn
-            ) || selected_commit.is_some());
+        let empty_message = self.empty_message().or_else(|| {
+            (self.mode == GitPanelMode::History && self.selected_commit.is_none())
+                .then_some("Select a commit to browse its changes.")
+        });
         div()
             .id("git-review")
             .track_focus(&self.focus_handle)
@@ -3384,12 +3500,9 @@ impl Render for DiffView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(self.header(cx))
-            .when(self.mode == GitPanelMode::Branch, |view| {
-                view.child(self.branch_controls(cx))
-            })
-            .when_some(selected_commit, |view, commit| {
-                view.child(self.commit_controls(&commit, cx))
+            // Full-tab reviews are titled and closed by their tab.
+            .when(!self.review_focused, |view| {
+                view.child(self.review_pane_header(cx))
             })
             .when_some(error, |view, error| {
                 view.child(
@@ -3400,19 +3513,18 @@ impl Render for DiffView {
                         .bg(colors().diff_deleted_bg)
                         .border_b_1()
                         .border_color(colors().danger)
-                        .text_size(px(9.0))
-                        .line_height(px(14.0))
+                        .text_size(px(11.0))
+                        .line_height(px(16.0))
                         .text_color(colors().danger)
                         .child(error),
                 )
             })
-            .when_some(empty_message, |view, text| view.child(self.message(text)))
-            .when(show_history, |view| view.child(self.history_list(cx)))
-            .when(show_files, |view| {
-                view.child(self.review_toolbar(cx))
-                    .child(self.review_list(window, cx))
+            .map(|view| match empty_message {
+                Some(text) => view.child(self.message(text)),
+                None => view
+                    .child(self.review_toolbar(cx))
+                    .child(self.review_list(window, cx)),
             })
-            .when(menu_open, |view| view.child(self.mode_menu(cx)))
     }
 }
 
@@ -3562,8 +3674,18 @@ impl DiffView {
                             .text_color(colors().muted)
                             .cursor_pointer()
                             .hover(|button| button.bg(colors().hover))
-                            .child("← Back to history")
-                            .on_click(cx.listener(|this, _, _, cx| this.back_to_history(cx))),
+                            .child(if self.return_to_worktree {
+                                "← Back to changes"
+                            } else {
+                                "← Back to history"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.return_to_worktree {
+                                    this.set_review_expanded(false, cx);
+                                } else {
+                                    this.back_to_history(cx);
+                                }
+                            })),
                     )
                     .when(self.commit_error.is_some(), |view| {
                         view.child(
@@ -3789,7 +3911,12 @@ impl DiffView {
             .border_b_1()
             .border_color(colors().border_subtle)
             .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
-            .child(Self::graph_column(graph, graph_width, is_head))
+            .child(Self::graph_column(
+                graph,
+                graph_width,
+                is_head,
+                HISTORY_ROW_HEIGHT,
+            ))
             .child(Self::history_flex_cell(
                 commit.subject.clone(),
                 is_head,
@@ -3819,7 +3946,12 @@ impl DiffView {
             ))
     }
 
-    fn graph_column(graph: Option<&GitGraphRow>, width: f32, is_head: bool) -> Div {
+    fn graph_column(
+        graph: Option<&GitGraphRow>,
+        width: f32,
+        is_head: bool,
+        row_height: f32,
+    ) -> Div {
         let Some(graph) = graph else {
             return div().w(px(width)).h_full().flex_none();
         };
@@ -3839,7 +3971,7 @@ impl DiffView {
             .collect::<Vec<_>>();
         let active_color = lane_color(graph.color);
         let continues = graph.continues;
-        let mid = HISTORY_ROW_HEIGHT / 2.0;
+        let mid = row_height / 2.0;
         let lane_x = lane as f32 * GRAPH_LANE_WIDTH + 6.0;
         let node_size = if is_head { 10.0 } else { 6.0 };
 

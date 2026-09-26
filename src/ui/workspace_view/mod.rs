@@ -3,21 +3,30 @@
 //! None of them introduces a second workspace model.
 
 mod automation;
+mod automations_page;
 mod chrome;
 mod drag;
+mod explorer;
 mod files;
+mod inbox;
 mod input;
+mod navigation;
+mod notes;
 mod palette;
 mod panes;
 mod persistence;
 mod projects;
 mod settings;
+mod status_bar;
+mod tabs;
 mod titlebar;
 
 use automation::HookAgentPresence;
+use automations_page::AutomationForm;
 use chrome::*;
 pub(crate) use drag::*;
 use files::*;
+pub(crate) use files::{file_tree_icon, file_tree_icon_color};
 use persistence::{FinishError, PersistenceQueue, SaveResult, save_final_blocking};
 use settings::SettingsPage;
 
@@ -33,13 +42,14 @@ use gpui::{
 };
 use uuid::Uuid;
 
-use crate::domain::workspace::{
-    PaneSplitDirection, SessionSnapshot, SidebarEntry, WorkspaceEntry, WorkspaceSnapshot,
-};
+use crate::domain::inbox::Inbox;
+use crate::domain::library::Library;
+use crate::domain::workspace::{PaneSplitDirection, SessionSnapshot, WorkspaceSnapshot};
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentRuntimeState, AutomationServer, agent_hook_status,
 };
 use crate::infrastructure::editor::InstalledEditor;
+use crate::infrastructure::library::LibraryRepository;
 use crate::infrastructure::notifications::AgentActivitySnapshot;
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{
@@ -47,43 +57,29 @@ use crate::infrastructure::settings::{
     MIN_RIGHT_SIDEBAR_WIDTH, SettingsRepository,
 };
 use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
-use crate::ports::git::{GitBranchSummary, GitPort};
+use crate::ports::git::GitPort;
 use crate::ports::terminal::TerminalPort;
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
-use crate::ui::agent_marks::{TERMINAL_GLYPH, agent_compact_badge};
-use crate::ui::diff_view::{DiffView, DiffViewEvent};
+use crate::ui::agent_marks::agent_compact_badge;
+use crate::ui::diff_view::{DiffFileIndexView, DiffView, DiffViewEvent};
 use crate::ui::terminal::{TerminalInsertStatus, TerminalView, TerminalViewEvent};
 use crate::ui::theme::{
     self, MONO_FONT, colors, popover_surface, surface, surface_tint, window_surface,
 };
 use crate::{
-    CloseTerminal, GoToTab, NewTerminalTab, NewWorkspace, NextWorkspace, PreviousWorkspace,
-    ShowSettings, ToggleLeftSidebar, ToggleRightSidebar,
+    CloseTerminal, NewTerminalTab, NewWorkspace, NextWorkspace, PreviousWorkspace, ShowSettings,
+    ToggleLeftSidebar, ToggleRightSidebar,
 };
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
-const TITLEBAR_CHROME_COLLAPSED: f32 = 148.0;
+const TITLEBAR_CHROME_COLLAPSED: f32 = 204.0;
 /// Titlebar chrome width when the right sidebar is fully collapsed (toggle only).
 const TITLEBAR_RIGHT_CHROME_COLLAPSED: f32 = 40.0;
-const TITLEBAR_HEIGHT: f32 = 38.0;
-const SIDEBAR_WORKSPACE_HEIGHT: f32 = 60.0;
+const TITLEBAR_HEIGHT: f32 = 40.0;
 /// Open/close duration — short enough to feel snappy, long enough to read as motion.
 const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(160);
 /// ~60 fps ticks; only runs while a sidebar is mid-animation.
 const SIDEBAR_ANIM_FRAME: Duration = Duration::from_millis(16);
-/// How often to refresh per-workspace branch/path metadata in the sessions sidebar.
-const SIDEBAR_GIT_POLL_INTERVAL: Duration = Duration::from_secs(3);
-
-/// Cached git metadata for a workspace sidebar tab (cmux-style).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SidebarWorkspaceMeta {
-    cwd: String,
-    branch: Option<String>,
-    ahead: usize,
-    behind: usize,
-    dirty: bool,
-}
-
 #[derive(Clone)]
 struct PaneIdentity {
     title: String,
@@ -91,55 +87,21 @@ struct PaneIdentity {
     agent_kind: Option<String>,
     agent_state: Option<AgentRuntimeState>,
     agent_attention: Option<AgentAttention>,
-    agent_model: Option<String>,
-}
-
-fn sidebar_card(
-    entry: &WorkspaceEntry,
-    primary: Option<&PaneIdentity>,
-    active_agent: Option<&PaneIdentity>,
-    meta: Option<&SidebarWorkspaceMeta>,
-    home_directory: Option<&Path>,
-    width: f32,
-) -> (SidebarSessionCard, String) {
-    let cwd = meta
-        .map(|meta| meta.cwd.as_str())
-        .unwrap_or(&entry.working_directory);
-    let agent = active_agent.or(primary);
-    let title = if entry.title_is_manual {
-        entry.workspace_name.clone()
-    } else {
-        primary
-            .map(|identity| identity.title.clone())
-            .unwrap_or_else(|| entry.workspace_name.clone())
-    };
-    let card = SidebarSessionCard {
-        context: entry.project_name.clone(),
-        title,
-        branch: meta.and_then(format_sidebar_branch),
-        path: format_sidebar_path(cwd, home_directory),
-        selected: entry.is_selected,
-        dirty: meta.is_some_and(|meta| meta.dirty),
-        behind: meta.map_or(0, |meta| meta.behind),
-        agent_kind: agent.and_then(|identity| identity.agent_kind.clone()),
-        agent_state: agent.and_then(|identity| identity.agent_state),
-        agent_attention: agent.and_then(|identity| identity.agent_attention),
-        agent_model: agent.and_then(|identity| identity.agent_model.clone()),
-        width,
-    };
-    (card, cwd.to_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LeftSidebarMode {
-    Sessions,
-    Info,
+enum WorkspaceSection {
+    Workspace,
+    Inbox,
+    Notes,
+    Automations,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RightSidebarMode {
     Files,
     Diff,
+    Info,
 }
 
 #[derive(Debug, Clone)]
@@ -162,14 +124,19 @@ enum PaletteAction {
     NewTerminalTab,
     OpenIde,
     NewWorkspace,
+    RenameWorkspace,
+    CloseWorkspace,
     Split(PaneSplitDirection),
     EqualizePanes,
     TogglePaneZoom,
     ToggleGit,
-    ShowSessions,
     ShowFiles,
     ShowInfo,
     ShowSettings,
+    ShowSection(WorkspaceSection),
+    NewNote,
+    NewAutomation,
+    RunAutomation(Uuid),
     SelectWorkspace {
         project_id: Uuid,
         workspace_id: Uuid,
@@ -186,16 +153,8 @@ struct PaletteItem {
 
 #[derive(Debug, Clone)]
 enum ContextMenuKind {
-    Workspace {
-        project_id: Uuid,
-        workspace_id: Uuid,
-    },
-    Pane {
-        session_id: Uuid,
-    },
-    Project {
-        project_id: Uuid,
-    },
+    Pane { session_id: Uuid },
+    Project { project_id: Uuid },
     SidebarBackground,
 }
 
@@ -218,6 +177,12 @@ enum RenamePromptKind {
     Project {
         project_id: Uuid,
     },
+    NewFile {
+        directory: PathBuf,
+    },
+    NewFolder {
+        directory: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -229,12 +194,12 @@ struct RenamePrompt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextMenuAction {
     Rename,
-    Delete,
     AddProject,
     NewSession,
     AssociateFolder,
     RevealProject,
     RemoveProject,
+    ToggleProjectPin,
     ClosePane,
     SplitRight,
     SplitDown,
@@ -250,7 +215,10 @@ pub struct WorkspaceView {
     terminal_port: Arc<dyn TerminalPort>,
     file_port: Arc<dyn FileSystemPort>,
     git_port: Arc<dyn GitPort>,
+    branch_summary: Option<crate::ports::git::GitBranchSummary>,
+    _status_task: Option<Task<()>>,
     diff_view: Entity<DiffView>,
+    diff_file_index: Entity<DiffFileIndexView>,
     _diff_subscription: Subscription,
     pending_focus_session: Option<Uuid>,
     terminals: HashMap<Uuid, Entity<TerminalView>>,
@@ -272,14 +240,23 @@ pub struct WorkspaceView {
     left_sidebar_visible: bool,
     /// Visual open amount for the left sidebar (`0.0` closed … `1.0` open).
     left_sidebar_progress: f32,
-    left_sidebar_mode: LeftSidebarMode,
-    /// Per-workspace path/branch metadata shown in the sessions sidebar.
-    sidebar_workspace_meta: HashMap<Uuid, SidebarWorkspaceMeta>,
-    sidebar_git_request_id: u64,
-    sidebar_git_in_flight: bool,
-    sidebar_git_needs_refresh: bool,
-    _sidebar_git_task: Option<Task<()>>,
-    _sidebar_git_poll_task: Option<Task<()>>,
+    workspace_section: WorkspaceSection,
+    /// The open review's tab is in front of the terminal tabs.
+    review_tab_active: bool,
+    navigation: tabs::Navigation,
+    /// Agent and automation events, newest last; lives only while the app runs.
+    inbox: Inbox,
+    /// Notes and automations, saved to `library.json`.
+    library: Library,
+    library_repository: Option<LibraryRepository>,
+    library_error: Option<SharedString>,
+    library_generation: u64,
+    library_saved_generation: u64,
+    _library_task: Option<Task<()>>,
+    selected_note_id: Option<Uuid>,
+    note_editing: bool,
+    automation_form: Option<AutomationForm>,
+    _automation_scheduler: Option<Task<()>>,
     expanded_directories: HashSet<PathBuf>,
     project_files: Arc<Vec<ProjectFileRow>>,
     selected_file_path: Option<PathBuf>,
@@ -343,38 +320,6 @@ pub struct WorkspaceDependencies {
     pub git_port: Arc<dyn GitPort>,
 }
 
-fn lookup_sidebar_branch_summaries(
-    port: Arc<dyn GitPort>,
-    targets: Vec<(Uuid, PathBuf)>,
-) -> Vec<(Uuid, PathBuf, Option<GitBranchSummary>)> {
-    const MAX_CONCURRENT_GIT_LOOKUPS: usize = 4;
-    let mut by_cwd: HashMap<PathBuf, Vec<Uuid>> = HashMap::new();
-    for (workspace_id, cwd) in targets {
-        by_cwd.entry(cwd).or_default().push(workspace_id);
-    }
-    let groups: Vec<_> = by_cwd.into_iter().collect();
-    let mut results = Vec::new();
-    for batch in groups.chunks(MAX_CONCURRENT_GIT_LOOKUPS) {
-        let handles: Vec<_> = batch
-            .iter()
-            .map(|(cwd, _)| {
-                let port = port.clone();
-                let cwd = cwd.clone();
-                std::thread::spawn(move || port.branch_summary(&cwd).ok().flatten())
-            })
-            .collect();
-        for ((cwd, workspace_ids), handle) in batch.iter().zip(handles) {
-            let summary = handle.join().ok().flatten();
-            results.extend(
-                workspace_ids
-                    .iter()
-                    .map(|workspace_id| (*workspace_id, cwd.clone(), summary.clone())),
-            );
-        }
-    }
-    results
-}
-
 impl WorkspaceView {
     pub fn new(
         dependencies: WorkspaceDependencies,
@@ -415,6 +360,19 @@ impl WorkspaceView {
                 .into();
                 (AppSettings::default(), Some(message))
             }
+        };
+        let library_repository = settings_repository
+            .directory()
+            .map(LibraryRepository::in_directory);
+        let (library, library_error) = match library_repository.as_ref().map(|repo| repo.load()) {
+            Some(Ok(library)) => (library, None),
+            Some(Err(error)) => (
+                Library::default(),
+                Some(SharedString::from(format!(
+                    "No se pudieron cargar las notas y automatizaciones: {error}. No se guardarán cambios hasta reparar el archivo."
+                ))),
+            ),
+            None => (Library::default(), None),
         };
         let mut snapshot_changed =
             launch_directory.is_dir() && snapshot.relocate_root(Path::new("/"), &launch_directory);
@@ -471,10 +429,39 @@ impl WorkspaceView {
             );
             view
         });
+        let diff_file_index = cx.new(|cx| DiffFileIndexView::new(diff_view.clone(), cx));
         let diff_subscription = cx.subscribe(
             &diff_view,
             |this, _diff_view, event: &DiffViewEvent, cx| match event {
-                DiffViewEvent::Changed => cx.notify(),
+                DiffViewEvent::ReviewOpened => {
+                    this.review_tab_active = true;
+                    this.sync_terminal_surface_visibility(cx);
+                    cx.notify();
+                }
+                DiffViewEvent::Changed => {
+                    if !this.diff_view.read(cx).review_expanded() {
+                        this.review_tab_active = false;
+                    }
+                    this.sync_terminal_surface_visibility(cx);
+                    this.sync_git_panel_visibility(cx);
+                    cx.notify();
+                }
+                DiffViewEvent::ReturnToTerminal => {
+                    if this.workspace_section == WorkspaceSection::Workspace {
+                        this.pending_focus_session =
+                            this.snapshot.selected_session().map(|session| session.id);
+                        cx.notify();
+                    }
+                }
+                DiffViewEvent::RunInTerminal { title, command } => {
+                    if let Some(project_id) = this.snapshot.selected_project_id
+                        && let Err(reason) =
+                            this.run_in_new_session(project_id, title, command, true, cx)
+                    {
+                        this.persistence_error = Some(reason.into());
+                    }
+                    cx.notify();
+                }
                 DiffViewEvent::PreferencesChanged { split, wrap } => {
                     this.settings.diff_split = *split;
                     this.settings.diff_wrap = *wrap;
@@ -510,24 +497,6 @@ impl WorkspaceView {
                 Some(format!("No se pudo consultar las integraciones: {error}").into()),
             ),
         };
-        let sidebar_git_poll_task = cx.spawn(async move |this, cx| {
-            loop {
-                Timer::after(SIDEBAR_GIT_POLL_INTERVAL).await;
-                if this
-                    .update(cx, |this, cx| {
-                        if crate::ui::idle::should_poll_sidebar_git(
-                            this.left_sidebar_visible,
-                            this.left_sidebar_mode == LeftSidebarMode::Sessions,
-                        ) {
-                            this.refresh_sidebar_workspace_meta(cx);
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
         let (persistence_queue, persistence_result_task) =
             match PersistenceQueue::start(repository.clone(), settings_repository.clone()) {
                 Ok((queue, results)) => {
@@ -553,6 +522,7 @@ impl WorkspaceView {
                 }
             };
         let release_subscription = cx.on_release(|this, _| {
+            this.save_library_blocking();
             let workspace = (this.persist_generation > 0 && this.workspace_load_error.is_none())
                 .then(|| (this.persist_generation, this.snapshot.clone()));
             let settings = ((this.settings_generation > 0
@@ -578,7 +548,10 @@ impl WorkspaceView {
             terminal_port,
             file_port,
             git_port,
+            branch_summary: None,
+            _status_task: None,
             diff_view,
+            diff_file_index,
             _diff_subscription: diff_subscription,
             pending_focus_session: None,
             terminals: HashMap::new(),
@@ -602,13 +575,20 @@ impl WorkspaceView {
             } else {
                 0.0
             },
-            left_sidebar_mode: LeftSidebarMode::Sessions,
-            sidebar_workspace_meta: HashMap::new(),
-            sidebar_git_request_id: 0,
-            sidebar_git_in_flight: false,
-            sidebar_git_needs_refresh: false,
-            _sidebar_git_task: None,
-            _sidebar_git_poll_task: Some(sidebar_git_poll_task),
+            workspace_section: WorkspaceSection::Workspace,
+            review_tab_active: false,
+            navigation: tabs::Navigation::default(),
+            inbox: Inbox::default(),
+            library,
+            library_repository,
+            library_error,
+            library_generation: 0,
+            library_saved_generation: 0,
+            _library_task: None,
+            selected_note_id: None,
+            note_editing: false,
+            automation_form: None,
+            _automation_scheduler: None,
             expanded_directories: HashSet::new(),
             project_files: Arc::new(Vec::new()),
             selected_file_path: None,
@@ -634,7 +614,7 @@ impl WorkspaceView {
             } else {
                 0.0
             },
-            right_sidebar_mode: RightSidebarMode::Diff,
+            right_sidebar_mode: RightSidebarMode::Files,
             sidebar_anim_token: 0,
             _sidebar_anim_task: None,
             initial_terminal_focus_pending: true,
@@ -673,19 +653,20 @@ impl WorkspaceView {
         view.reconcile_terminal_views(cx);
         view.sync_diff_root(cx);
         view.refresh_project_files(cx);
-        if crate::ui::idle::should_poll_sidebar_git(
-            view.left_sidebar_visible,
-            view.left_sidebar_mode == LeftSidebarMode::Sessions,
-        ) {
-            view.refresh_sidebar_workspace_meta(cx);
-        }
         view.sync_git_panel_visibility(cx);
+        view.start_automation_scheduler(cx);
+        view.start_status_poll(cx);
         view
     }
 
     fn sync_git_panel_visibility(&self, cx: &mut Context<Self>) {
         let visible = self.has_project_context()
-            && (self.right_sidebar_visible || self.right_sidebar_progress > 0.001);
+            && self.workspace_section == WorkspaceSection::Workspace
+            && (self.diff_view.read(cx).review_expanded()
+                || (matches!(
+                    self.right_sidebar_mode,
+                    RightSidebarMode::Files | RightSidebarMode::Diff
+                ) && (self.right_sidebar_visible || self.right_sidebar_progress > 0.001)));
         self.diff_view
             .update(cx, |diff_view, cx| diff_view.set_panel_visible(visible, cx));
     }
@@ -714,7 +695,6 @@ impl WorkspaceView {
             agent_kind: presence.as_ref().map(|presence| presence.kind.clone()),
             agent_state: presence.as_ref().map(|presence| presence.state),
             agent_attention: presence.as_ref().and_then(|presence| presence.attention),
-            agent_model: presence.and_then(|presence| presence.model),
         }
     }
 
@@ -795,144 +775,6 @@ impl WorkspaceView {
     }
 
     /// Live cwd for a workspace tab: prefers the terminal process, falls back to snapshot.
-    fn workspace_live_cwd(&self, workspace_id: Uuid, cx: &Context<Self>) -> Option<PathBuf> {
-        let workspace = self
-            .snapshot
-            .projects
-            .iter()
-            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-            .find(|workspace| workspace.id == workspace_id)?;
-        let session = workspace.primary_session()?;
-        if let Some(terminal) = self.terminals.get(&session.id) {
-            return Some(terminal.read(cx).current_working_directory());
-        }
-        Some(PathBuf::from(&session.working_directory))
-    }
-
-    /// Collects (workspace_id, cwd) for every open workspace, using live terminal cwd when available.
-    fn sidebar_workspace_targets(&self, cx: &Context<Self>) -> Vec<(Uuid, PathBuf)> {
-        self.snapshot
-            .projects
-            .iter()
-            .flat_map(|project| {
-                project
-                    .workspaces
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|workspace| {
-                        let cwd = self
-                            .workspace_live_cwd(workspace.id, cx)
-                            .or_else(|| workspace.primary_working_directory().map(PathBuf::from))
-                            .unwrap_or_else(|| PathBuf::from(&project.root_path));
-                        (workspace.id, cwd)
-                    })
-            })
-            .collect()
-    }
-
-    /// Refreshes path + branch metadata for sidebar tabs (async, non-blocking).
-    fn refresh_sidebar_workspace_meta(&mut self, cx: &mut Context<Self>) {
-        let targets = self.sidebar_workspace_targets(cx);
-        let live_ids: HashSet<Uuid> = targets.iter().map(|(id, _)| *id).collect();
-        self.sidebar_workspace_meta
-            .retain(|id, _| live_ids.contains(id));
-
-        // Apply paths immediately so `cd` updates the label without waiting for git.
-        // Keep the previous branch label until the async lookup finishes (avoids flicker).
-        let mut path_changed = false;
-        for (workspace_id, cwd) in &targets {
-            let cwd_str = cwd.to_string_lossy().into_owned();
-            match self.sidebar_workspace_meta.get_mut(workspace_id) {
-                Some(meta) if meta.cwd != cwd_str => {
-                    meta.cwd = cwd_str;
-                    path_changed = true;
-                }
-                Some(_) => {}
-                None => {
-                    self.sidebar_workspace_meta.insert(
-                        *workspace_id,
-                        SidebarWorkspaceMeta {
-                            cwd: cwd_str,
-                            branch: None,
-                            ahead: 0,
-                            behind: 0,
-                            dirty: false,
-                        },
-                    );
-                    path_changed = true;
-                }
-            }
-        }
-        if path_changed {
-            cx.notify();
-        }
-
-        if self.sidebar_git_in_flight {
-            self.sidebar_git_needs_refresh = true;
-            return;
-        }
-
-        self.sidebar_git_in_flight = true;
-        self.sidebar_git_needs_refresh = false;
-        self.sidebar_git_request_id = self.sidebar_git_request_id.wrapping_add(1);
-        let request_id = self.sidebar_git_request_id;
-        let port = self.git_port.clone();
-        let task =
-            cx.background_spawn(async move { lookup_sidebar_branch_summaries(port, targets) });
-        self._sidebar_git_task = Some(cx.spawn(async move |this, cx| {
-            let results = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.sidebar_git_in_flight = false;
-                if request_id != this.sidebar_git_request_id {
-                    return;
-                }
-                let mut changed = false;
-                for (workspace_id, cwd, summary) in results {
-                    let cwd_str = cwd.to_string_lossy().into_owned();
-                    // Drop stale results if the workspace already moved again.
-                    let Some(current) = this.sidebar_workspace_meta.get(&workspace_id) else {
-                        continue;
-                    };
-                    if current.cwd != cwd_str {
-                        continue;
-                    }
-                    let next = match summary {
-                        Some(GitBranchSummary {
-                            branch,
-                            ahead,
-                            behind,
-                            dirty,
-                        }) => SidebarWorkspaceMeta {
-                            cwd: cwd_str,
-                            branch: Some(branch),
-                            ahead,
-                            behind,
-                            dirty,
-                        },
-                        None => SidebarWorkspaceMeta {
-                            cwd: cwd_str,
-                            branch: None,
-                            ahead: 0,
-                            behind: 0,
-                            dirty: false,
-                        },
-                    };
-                    if this.sidebar_workspace_meta.get(&workspace_id) != Some(&next) {
-                        this.sidebar_workspace_meta.insert(workspace_id, next);
-                        changed = true;
-                    }
-                }
-                if changed {
-                    cx.notify();
-                }
-                if this.sidebar_git_needs_refresh {
-                    this.refresh_sidebar_workspace_meta(cx);
-                }
-            });
-        }));
-    }
-
     fn refresh_project_files(&mut self, cx: &mut Context<Self>) {
         self.files_request_id = self.files_request_id.wrapping_add(1);
         if !self.has_project_context() {
@@ -1060,6 +902,7 @@ impl WorkspaceView {
                 .find(|project| project.id == project_id)
                 .map(|project| project.name.clone())
                 .unwrap_or_default(),
+            RenamePromptKind::NewFile { .. } | RenamePromptKind::NewFolder { .. } => String::new(),
         };
         self.context_menu = None;
         self.rename_prompt = Some(RenamePrompt { kind, value });
@@ -1073,6 +916,17 @@ impl WorkspaceView {
             return;
         };
         let name = prompt.value.trim().to_owned();
+        match prompt.kind {
+            RenamePromptKind::NewFile { directory } => {
+                self.confirm_new_entry(directory, &name, false, cx);
+                return;
+            }
+            RenamePromptKind::NewFolder { directory } => {
+                self.confirm_new_entry(directory, &name, true, cx);
+                return;
+            }
+            _ => {}
+        }
         if name.is_empty() {
             self.persistence_error = Some("El nombre no puede estar vacío".into());
             cx.notify();
@@ -1141,6 +995,7 @@ impl WorkspaceView {
                     self.persist(cx);
                 }
             }
+            RenamePromptKind::NewFile { .. } | RenamePromptKind::NewFolder { .. } => {}
         }
         cx.notify();
     }
@@ -1156,36 +1011,6 @@ impl WorkspaceView {
         };
         self.context_menu = None;
         match (menu.kind, action) {
-            (
-                ContextMenuKind::Workspace {
-                    project_id,
-                    workspace_id,
-                },
-                ContextMenuAction::Rename,
-            ) => {
-                self.begin_rename_prompt(
-                    RenamePromptKind::Workspace {
-                        project_id,
-                        workspace_id,
-                    },
-                    cx,
-                );
-            }
-            (
-                ContextMenuKind::Workspace {
-                    project_id,
-                    workspace_id,
-                },
-                ContextMenuAction::Delete,
-            ) => {
-                if self.snapshot.close_workspace(project_id, workspace_id) {
-                    self.reconcile_terminal_views(cx);
-                    self.sync_diff_root(cx);
-                    self.refresh_project_files(cx);
-                    self.persist(cx);
-                    self.focus_selected_terminal(window, cx);
-                }
-            }
             (ContextMenuKind::SidebarBackground, ContextMenuAction::AddProject) => {
                 self.choose_project_folder(None, false, window, cx);
             }
@@ -1209,6 +1034,16 @@ impl WorkspaceView {
                     cx.reveal_path(Path::new(path));
                 }
             }
+            (ContextMenuKind::Project { project_id }, ContextMenuAction::ToggleProjectPin) => {
+                if self.settings.pinned_project_ids.contains(&project_id) {
+                    self.settings
+                        .pinned_project_ids
+                        .retain(|id| *id != project_id);
+                } else {
+                    self.settings.pinned_project_ids.push(project_id);
+                }
+                self.persist_settings(cx);
+            }
             (ContextMenuKind::Project { project_id }, ContextMenuAction::RemoveProject) => {
                 self.confirm_remove_project(project_id, window, cx);
             }
@@ -1216,14 +1051,7 @@ impl WorkspaceView {
                 self.begin_rename_prompt(RenamePromptKind::Pane { session_id }, cx);
             }
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::ClosePane) => {
-                if self.snapshot.close_terminal(session_id) {
-                    self.agent_names.remove(&session_id);
-                    self.reconcile_terminal_views(cx);
-                    self.sync_diff_root(cx);
-                    self.refresh_project_files(cx);
-                    self.persist(cx);
-                    self.focus_selected_terminal(window, cx);
-                }
+                self.close_pane(session_id, window, cx);
             }
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::SplitRight) => {
                 if self.snapshot.select_terminal_global(session_id) {
@@ -1236,20 +1064,18 @@ impl WorkspaceView {
                 }
             }
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::ToggleZoom) => {
-                if self.snapshot.select_terminal_global(session_id)
-                    && self.snapshot.toggle_selected_pane_zoom()
-                {
-                    self.sync_terminal_surface_visibility(cx);
-                    self.persist(cx);
-                    self.focus_selected_terminal(window, cx);
-                    cx.notify();
-                }
+                self.toggle_pane_zoom_for(session_id, window, cx);
             }
             _ => cx.notify(),
         }
     }
 
-    fn toggle_diff_panel(&mut self, cx: &mut Context<Self>) {
+    fn toggle_diff_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace_section != WorkspaceSection::Workspace {
+            self.set_workspace_mode(self.right_sidebar_mode, cx);
+            self.focus_selected_terminal(window, cx);
+            return;
+        }
         self.set_right_sidebar_visible(!self.right_sidebar_visible, true, cx);
         if self.right_sidebar_visible {
             self.sync_diff_root(cx);
@@ -1273,10 +1099,6 @@ impl WorkspaceView {
 
     /// Desired open/closed state for the right sidebar, with a light width animation.
     fn set_right_sidebar_visible(&mut self, visible: bool, persist: bool, cx: &mut Context<Self>) {
-        if !visible {
-            self.diff_view
-                .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
-        }
         if self.right_sidebar_visible == visible {
             self.sync_files_watcher(cx);
             cx.notify();
@@ -1367,6 +1189,7 @@ impl WorkspaceView {
             self.agent_names.remove(&session_id);
             self.agent_activity_seen.remove(&session_id);
         }
+        self.inbox.forget_closed_panes(&live_ids);
 
         for session in sessions {
             if self.terminals.contains_key(&session.id) {
@@ -1420,12 +1243,17 @@ impl WorkspaceView {
         self.sync_terminal_surface_visibility(cx);
     }
 
-    fn visible_terminal_ids(&self) -> HashSet<Uuid> {
-        self.snapshot.painted_session_ids()
+    fn visible_terminal_ids(&self, cx: &Context<Self>) -> HashSet<Uuid> {
+        if self.workspace_section == WorkspaceSection::Workspace && !self.review_covers_terminal(cx)
+        {
+            self.snapshot.painted_session_ids()
+        } else {
+            HashSet::new()
+        }
     }
 
     fn sync_terminal_surface_visibility(&self, cx: &mut Context<Self>) {
-        let visible = self.visible_terminal_ids();
+        let visible = self.visible_terminal_ids(cx);
         for (session_id, terminal) in &self.terminals {
             let shown = visible.contains(session_id);
             terminal.update(cx, |terminal, _| terminal.set_surface_visible(shown));
@@ -1483,8 +1311,6 @@ impl WorkspaceView {
                         self.refresh_project_files(cx);
                     }
                 }
-                // Path/branch/title in the sessions sidebar follow the live cwd.
-                self.refresh_sidebar_workspace_meta(cx);
                 if changed {
                     self.persist(cx);
                 } else {
@@ -1512,17 +1338,16 @@ impl WorkspaceView {
                     self.sync_terminal_surface_visibility(cx);
                     self.sync_diff_root(cx);
                     self.refresh_project_files(cx);
-                    self.refresh_sidebar_workspace_meta(cx);
                     self.persist(cx);
                 }
                 self.open_context_menu(ContextMenuKind::Pane { session_id }, *x, *y, cx);
             }
             TerminalViewEvent::Activated { session_id } => {
+                self.inbox.mark_pane_read(*session_id);
                 if self.snapshot.select_terminal(*session_id) {
                     self.sync_terminal_surface_visibility(cx);
                     self.sync_diff_root(cx);
                     self.refresh_project_files(cx);
-                    self.refresh_sidebar_workspace_meta(cx);
                     self.persist(cx);
                 }
                 cx.notify();
@@ -1590,7 +1415,24 @@ impl WorkspaceView {
         })
     }
 
+    fn close_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.diff_view
+            .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
+        self.sync_terminal_surface_visibility(cx);
+        self.sync_git_panel_visibility(cx);
+        self.focus_selected_terminal(window, cx);
+        cx.notify();
+    }
+
     fn focus_selected_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace_section != WorkspaceSection::Workspace {
+            self.focus_handle.focus(window);
+            return;
+        }
+        if self.review_covers_terminal(cx) {
+            self.diff_view.read(cx).focus_review(window);
+            return;
+        }
         if let Some(terminal) = self
             .snapshot
             .selected_session()
@@ -1667,6 +1509,9 @@ impl WorkspaceView {
             self.sync_terminal_surface_visibility(cx);
             self.persist(cx);
         }
+        self.diff_view
+            .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
+        self.sync_terminal_surface_visibility(cx);
         self.pending_focus_session = Some(target);
         cx.notify();
         status
@@ -1683,7 +1528,6 @@ impl WorkspaceView {
             self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
             self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
         }
         self.focus_terminal(session_id, window, cx);
@@ -1701,20 +1545,6 @@ impl WorkspaceView {
             .update_session_working_directory(session_id, &path);
     }
 
-    fn go_to_tab(&mut self, action: &GoToTab, window: &mut Window, cx: &mut Context<Self>) {
-        if self.palette_mode.is_some() || self.settings_open || self.rename_prompt.is_some() {
-            return;
-        }
-        if self.snapshot.select_tab_number(action.index) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
-            self.persist(cx);
-        }
-        self.focus_selected_terminal(window, cx);
-    }
-
     fn reorder_tab(
         &mut self,
         tab_id: Uuid,
@@ -1727,44 +1557,8 @@ impl WorkspaceView {
             self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
             self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
-        }
-        cx.notify();
-    }
-
-    fn reorder_sidebar_workspace(
-        &mut self,
-        workspace_id: Uuid,
-        before_workspace_id: Option<Uuid>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.reorder_drag = None;
-        if self
-            .snapshot
-            .move_workspace(workspace_id, before_workspace_id)
-        {
-            self.apply_workspace_selection_change(window, cx);
-        }
-        cx.notify();
-    }
-
-    fn reorder_sidebar_workspace_relative(
-        &mut self,
-        workspace_id: Uuid,
-        target_id: Uuid,
-        place_after: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.reorder_drag = None;
-        if self
-            .snapshot
-            .move_workspace_relative(workspace_id, target_id, place_after)
-        {
-            self.apply_workspace_selection_change(window, cx);
         }
         cx.notify();
     }
@@ -1897,6 +1691,59 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Saves notes and automations shortly after the last edit, off the UI thread.
+    fn persist_library(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+        let Some(repository) = self.library_repository.clone() else {
+            return;
+        };
+        if self
+            .library_error
+            .as_ref()
+            .is_some_and(|error| error.starts_with("No se pudieron cargar"))
+        {
+            return;
+        }
+        self.library_generation = self.library_generation.wrapping_add(1);
+        let generation = self.library_generation;
+        self._library_task = Some(cx.spawn(async move |this, cx| {
+            Timer::after(Duration::from_millis(400)).await;
+            let Ok(library) = this.update(cx, |this, _| this.library.clone()) else {
+                return;
+            };
+            let result = cx
+                .background_spawn(async move { repository.save(&library) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.library_saved_generation =
+                            this.library_saved_generation.max(generation);
+                        this.library_error = None;
+                    }
+                    Err(error) => {
+                        this.library_error = Some(
+                            format!("No se pudieron guardar las notas y automatizaciones: {error}")
+                                .into(),
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn save_library_blocking(&mut self) {
+        if self.library_saved_generation == self.library_generation {
+            return;
+        }
+        if let Some(repository) = &self.library_repository
+            && let Err(error) = repository.save(&self.library)
+        {
+            eprintln!("No se pudieron guardar las notas y automatizaciones: {error}");
+        }
+    }
+
     fn apply_persistence_result(&mut self, result: SaveResult, cx: &mut Context<Self>) {
         match result {
             SaveResult::Workspace { generation, error } => {
@@ -2011,11 +1858,18 @@ impl WorkspaceView {
     }
 
     fn close_terminal(&mut self, _: &CloseTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace_section != WorkspaceSection::Workspace {
+            self.select_section(WorkspaceSection::Workspace, window, cx);
+            return;
+        }
+        if self.review_visible(cx) {
+            self.close_review(window, cx);
+            return;
+        }
         if self.snapshot.close_selected_terminal() {
             self.reconcile_terminal_views(cx);
             self.sync_diff_root(cx);
             self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
         }
@@ -2027,9 +1881,6 @@ impl WorkspaceView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.left_sidebar_visible {
-            self.left_sidebar_mode = LeftSidebarMode::Sessions;
-        }
         self.set_left_sidebar_visible(!self.left_sidebar_visible, true, cx);
     }
 
@@ -2044,10 +1895,10 @@ impl WorkspaceView {
     fn toggle_right_sidebar(
         &mut self,
         _: &ToggleRightSidebar,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_diff_panel(cx);
+        self.toggle_diff_panel(window, cx);
     }
 
     fn previous_workspace(
@@ -2080,26 +1931,26 @@ impl WorkspaceView {
     }
 
     fn select_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        if self.snapshot.select_tab(tab_id) {
-            self.apply_workspace_selection_change(window, cx);
+        if self.snapshot.select_tab(tab_id) || self.review_tab_active {
+            self.show_terminal_tab(window, cx);
         }
     }
 
     fn apply_workspace_selection_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_library_section(WorkspaceSection::Workspace);
+        self.workspace_section = WorkspaceSection::Workspace;
+        self.diff_view
+            .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
         self.sync_terminal_surface_visibility(cx);
         self.sync_diff_root(cx);
         self.sync_git_panel_visibility(cx);
         self.refresh_project_files(cx);
-        self.refresh_sidebar_workspace_meta(cx);
         self.persist(cx);
         self.focus_selected_terminal(window, cx);
     }
 
     fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = match self.left_sidebar_mode {
-            LeftSidebarMode::Sessions => self.sessions_sidebar_content(cx),
-            LeftSidebarMode::Info => self.info_sidebar_content(cx),
-        };
+        let content = self.global_sidebar_content(cx);
         let full_width = self.left_sidebar_width();
         let width = full_width * self.left_sidebar_progress;
         let show_handle = self.left_sidebar_progress > 0.99;
@@ -2114,346 +1965,6 @@ impl WorkspaceView {
                 ))
             },
         )
-    }
-
-    fn sessions_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let sidebar_entries = self.snapshot.sidebar_entries();
-        let workspace_count = self.snapshot.workspace_entries().len();
-        let can_reorder = workspace_count > 1 || self.snapshot.projects.len() > 1;
-        let dragging_workspace = match self.reorder_drag {
-            Some(ReorderDrag::SidebarWorkspace(id)) if cx.has_active_drag() => Some(id),
-            _ => None,
-        };
-        let sidebar_identities: HashMap<Uuid, (Option<PaneIdentity>, Option<PaneIdentity>)> = self
-            .snapshot
-            .projects
-            .iter()
-            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-            .map(|workspace| {
-                let primary = workspace
-                    .primary_session()
-                    .map(|session| self.pane_identity(session, 0, cx));
-                let active_agent = workspace
-                    .tabs
-                    .iter()
-                    .flat_map(|tab| tab.sessions.iter().enumerate())
-                    .filter_map(|(index, session)| {
-                        let identity = self.pane_identity(session, index, cx);
-                        identity.agent_kind.is_some().then(|| {
-                            (
-                                sidebar_agent_priority(
-                                    identity.agent_state,
-                                    identity.agent_attention,
-                                ),
-                                identity,
-                            )
-                        })
-                    })
-                    .max_by_key(|(priority, _)| *priority)
-                    .map(|(_, identity)| identity);
-                (workspace.id, (primary, active_agent))
-            })
-            .collect();
-        let meta_by_workspace = self.sidebar_workspace_meta.clone();
-        let mut panel = div()
-            .flex_1()
-            .min_h(px(0.0))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    let x: f32 = event.position.x.into();
-                    let y: f32 = event.position.y.into();
-                    this.open_context_menu(ContextMenuKind::SidebarBackground, x, y, cx);
-                    cx.stop_propagation();
-                }),
-            );
-
-        if self.snapshot.projects.is_empty() {
-            panel = panel.child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .px_4()
-                    .gap_2()
-                    .child(
-                        div()
-                            .size(px(32.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(6.0))
-                            .bg(colors().elevated)
-                            .font_family(MONO_FONT)
-                            .text_size(px(11.0))
-                            .text_color(colors().muted)
-                            .child(TERMINAL_GLYPH),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(colors().muted)
-                            .child("Sin proyectos"),
-                    )
-                    .child(
-                        div()
-                            .text_center()
-                            .text_size(px(10.0))
-                            .text_color(colors().subtle)
-                            .child("Agrega una carpeta para empezar"),
-                    ),
-            );
-        } else {
-            panel = panel.child(
-                div()
-                    .id("workspace-list")
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .overflow_y_scroll()
-                    .px(px(SIDEBAR_ROW_INSET))
-                    .py_2()
-                    .children(sidebar_entries.into_iter().map(|sidebar_entry| {
-                        let entry = match sidebar_entry {
-                            SidebarEntry::Workspace { entry } => entry,
-                            project @ SidebarEntry::Project { .. } => {
-                                return self.project_sidebar_header(project, cx);
-                            }
-                        };
-                        let item_width = chrome::sidebar_row_width(self.left_sidebar_width());
-                        let project_id = entry.project_id;
-                        let workspace_id = entry.workspace_id;
-                        let selected = entry.is_selected;
-                        let (primary_identity, active_agent_identity) = sidebar_identities
-                            .get(&workspace_id)
-                            .map(|(primary, active)| (primary.as_ref(), active.as_ref()))
-                            .unwrap_or((None, None));
-                        let meta = meta_by_workspace.get(&workspace_id);
-                        let (card, cwd) = sidebar_card(
-                            &entry,
-                            primary_identity,
-                            active_agent_identity,
-                            meta,
-                            self.home_directory.as_deref(),
-                            item_width,
-                        );
-                        let appearance =
-                            sidebar_workspace_appearance(selected, card.dirty, card.behind);
-                        let content = sidebar_workspace_content(&card);
-                        let detail = sidebar_session_detail(&card, &cwd);
-                        let drag = SidebarWorkspaceDrag {
-                            workspace_id,
-                            project_id,
-                            card,
-                        };
-                        let is_source = dragging_workspace == Some(workspace_id);
-                        // Explicit text width avoids flex+truncate collapsing labels to "…".
-                        div()
-                            .id(SharedString::from(format!("workspace-{workspace_id}")))
-                            .group("sidebar-session")
-                            .h(px(SIDEBAR_WORKSPACE_HEIGHT))
-                            .w(px(item_width))
-                            .relative()
-                            .mb(px(2.0))
-                            .px(px(SIDEBAR_ROW_PADDING))
-                            .flex()
-                            .items_center()
-                            .rounded(px(SIDEBAR_ROW_RADIUS))
-                            .cursor_pointer()
-                            .bg(appearance.background)
-                            .hover(move |item| item.bg(appearance.hover))
-                            .tooltip(move |_, cx| sidebar_tooltip(detail.clone(), cx))
-                            .when(is_source, |item| item.opacity(0.65))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| {
-                                    if can_reorder {
-                                        this.reorder_drag =
-                                            Some(ReorderDrag::SidebarWorkspace(workspace_id));
-                                    }
-                                    this.close_context_menu(cx);
-                                    this.select_workspace(project_id, workspace_id, window, cx);
-                                }),
-                            )
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                    let x: f32 = event.position.x.into();
-                                    let y: f32 = event.position.y.into();
-                                    this.open_context_menu(
-                                        ContextMenuKind::Workspace {
-                                            project_id,
-                                            workspace_id,
-                                        },
-                                        x,
-                                        y,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .when(can_reorder, |item| {
-                                item.on_drag(drag, |drag, _, _, cx| {
-                                    cx.new(|_| SidebarWorkspaceDragView {
-                                        card: drag.card.clone(),
-                                    })
-                                })
-                            })
-                            .child(content)
-                            .when(can_reorder, |item| {
-                                item.child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "workspace-drop-before-{workspace_id}"
-                                        )))
-                                        .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .right_0()
-                                        .h(px(SIDEBAR_WORKSPACE_HEIGHT / 2.0))
-                                        .can_drop(move |value, _, _| {
-                                            value
-                                                .downcast_ref::<SidebarWorkspaceDrag>()
-                                                .is_some_and(|drag| {
-                                                    drag.workspace_id != workspace_id
-                                                })
-                                        })
-                                        .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
-                                            style.border_t_2().border_color(colors().accent)
-                                        })
-                                        .on_drop(cx.listener(
-                                            move |this, drag: &SidebarWorkspaceDrag, window, cx| {
-                                                this.reorder_sidebar_workspace_relative(
-                                                    drag.workspace_id,
-                                                    workspace_id,
-                                                    false,
-                                                    window,
-                                                    cx,
-                                                );
-                                            },
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!(
-                                            "workspace-drop-after-{workspace_id}"
-                                        )))
-                                        .absolute()
-                                        .bottom_0()
-                                        .left_0()
-                                        .right_0()
-                                        .h(px(SIDEBAR_WORKSPACE_HEIGHT / 2.0))
-                                        .can_drop(move |value, _, _| {
-                                            value
-                                                .downcast_ref::<SidebarWorkspaceDrag>()
-                                                .is_some_and(|drag| {
-                                                    drag.workspace_id != workspace_id
-                                                })
-                                        })
-                                        .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
-                                            style.border_b_2().border_color(colors().accent)
-                                        })
-                                        .on_drop(cx.listener(
-                                            move |this, drag: &SidebarWorkspaceDrag, window, cx| {
-                                                this.reorder_sidebar_workspace_relative(
-                                                    drag.workspace_id,
-                                                    workspace_id,
-                                                    true,
-                                                    window,
-                                                    cx,
-                                                );
-                                            },
-                                        )),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("session-menu-{workspace_id}")))
-                                    .absolute()
-                                    .right(px(SIDEBAR_ROW_END_PADDING))
-                                    // Center on the 13px metadata line at the foot of the card.
-                                    .bottom(px(3.0))
-                                    .size(px(SIDEBAR_CONTROL_SIZE))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(4.0))
-                                    .cursor_pointer()
-                                    .text_color(colors().muted)
-                                    .opacity(0.0)
-                                    .group_hover("sidebar-session", |style| style.opacity(1.0))
-                                    .hover(|style| {
-                                        style.bg(colors().hover).text_color(colors().foreground)
-                                    })
-                                    .tooltip(|_, cx| sidebar_tooltip("Opciones de sesión", cx))
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_click(cx.listener(
-                                        move |this, event: &gpui::ClickEvent, _, cx| {
-                                            this.open_context_menu(
-                                                ContextMenuKind::Workspace {
-                                                    project_id,
-                                                    workspace_id,
-                                                },
-                                                event.position().x.into(),
-                                                event.position().y.into(),
-                                                cx,
-                                            );
-                                            cx.stop_propagation();
-                                        },
-                                    ))
-                                    .child(
-                                        gpui::svg()
-                                            .path("chrome-icons/ellipsis.svg")
-                                            .size(px(12.0)),
-                                    ),
-                            )
-                            .into_any_element()
-                    }))
-                    .when(can_reorder || self.snapshot.projects.len() > 1, |list| {
-                        list.child(
-                            div()
-                                .id("workspace-drop-end")
-                                .flex_1()
-                                .min_h(px(36.0))
-                                .w_full()
-                                .can_drop(|value, _, _| {
-                                    value.downcast_ref::<SidebarWorkspaceDrag>().is_some()
-                                        || value.downcast_ref::<ProjectDrag>().is_some()
-                                })
-                                .drag_over::<ProjectDrag>(|style, _, _, _| {
-                                    style.border_t_2().border_color(colors().accent)
-                                })
-                                .on_drop(cx.listener(|this, drag: &ProjectDrag, _, cx| {
-                                    if this.snapshot.move_project(drag.project_id, None) {
-                                        this.persist(cx);
-                                    }
-                                }))
-                                .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
-                                    style.border_t_2().border_color(colors().accent)
-                                })
-                                .on_drop(cx.listener(
-                                    |this, drag: &SidebarWorkspaceDrag, window, cx| {
-                                        this.reorder_sidebar_workspace(
-                                            drag.workspace_id,
-                                            None,
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                )),
-                        )
-                    }),
-            );
-        }
-
-        panel.into_any_element()
     }
 
     fn files_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -2475,6 +1986,7 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .child(self.explorer_toolbar(cx))
             // File tree
             .child(
                 div()
@@ -2548,7 +2060,7 @@ impl WorkspaceView {
                             .hover(|item| item.bg(surface_tint(colors().hover, colors().panel)))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                     if is_directory {
                                         if event.click_count == 1 {
                                             this.toggle_directory(&path, cx);
@@ -2565,6 +2077,7 @@ impl WorkspaceView {
                                         if selected {
                                             this.right_sidebar_mode = RightSidebarMode::Diff;
                                             this.set_right_sidebar_visible(true, true, cx);
+                                            this.diff_view.read(cx).focus_review(window);
                                         }
                                     }
                                 }),
@@ -2720,7 +2233,7 @@ impl WorkspaceView {
             .gap_3()
             .child(
                 div()
-                    .id("sidebar-back-sessions")
+                    .id("sidebar-back-explorer")
                     .px_1()
                     .py_1()
                     .rounded(px(4.0))
@@ -2729,10 +2242,9 @@ impl WorkspaceView {
                     .text_color(colors().subtle)
                     .hover(|back| back.text_color(colors().foreground).bg(colors().hover))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.left_sidebar_mode = LeftSidebarMode::Sessions;
-                        cx.notify();
+                        this.set_workspace_mode(RightSidebarMode::Files, cx);
                     }))
-                    .child("← Sessions"),
+                    .child("← Explorer"),
             )
             .child(
                 div()
@@ -2824,11 +2336,18 @@ impl WorkspaceView {
         } else {
             match mode {
                 RightSidebarMode::Files => self.files_sidebar_content(cx),
-                RightSidebarMode::Diff => self.diff_view.clone().into_any_element(),
+                RightSidebarMode::Diff => self.diff_file_index.clone().into_any_element(),
+                RightSidebarMode::Info => self.info_sidebar_content(cx),
             }
         };
 
-        clipped_width_panel(width, full_width, colors().panel, content).when(
+        let content = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.utility_mode_tabs(cx))
+            .child(content);
+        clipped_width_panel(width, full_width, colors().sidebar, content).when(
             show_handle,
             |sidebar| {
                 sidebar.child(self.sidebar_resize_handle(
@@ -2844,16 +2363,19 @@ impl WorkspaceView {
         let menu = self.context_menu.clone()?;
         let pane_identity = match &menu.kind {
             ContextMenuKind::Pane { session_id } => self.pane_identity_by_id(*session_id, cx),
-            ContextMenuKind::Workspace { .. }
-            | ContextMenuKind::Project { .. }
-            | ContextMenuKind::SidebarBackground => None,
+            ContextMenuKind::Project { .. } | ContextMenuKind::SidebarBackground => None,
         };
         let items: Vec<(&str, ContextMenuAction, bool)> = match &menu.kind {
-            ContextMenuKind::Workspace { .. } => vec![
-                ("Renombrar", ContextMenuAction::Rename, false),
-                ("Eliminar", ContextMenuAction::Delete, true),
-            ],
-            ContextMenuKind::Project { .. } => vec![
+            ContextMenuKind::Project { project_id } => vec![
+                (
+                    if self.settings.pinned_project_ids.contains(project_id) {
+                        "Desfijar proyecto"
+                    } else {
+                        "Fijar proyecto"
+                    },
+                    ContextMenuAction::ToggleProjectPin,
+                    false,
+                ),
                 ("Nueva sesión", ContextMenuAction::NewSession, false),
                 ("Renombrar proyecto", ContextMenuAction::Rename, false),
                 (
@@ -2994,6 +2516,8 @@ impl WorkspaceView {
             RenamePromptKind::Workspace { .. } => "Renombrar sesión",
             RenamePromptKind::Pane { .. } => "Renombrar pane",
             RenamePromptKind::Project { .. } => "Renombrar proyecto",
+            RenamePromptKind::NewFile { .. } => "Nuevo archivo",
+            RenamePromptKind::NewFolder { .. } => "Nueva carpeta",
         };
         let value = if prompt.value.is_empty() {
             "Escribe un nombre…".to_owned()
@@ -3101,6 +2625,7 @@ impl WorkspaceView {
             self.persistence_error.as_ref(),
             self.workspace_save_error.as_ref(),
             self.settings_save_error.as_ref(),
+            self.library_error.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -3161,6 +2686,8 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::previous_workspace))
             .on_action(cx.listener(Self::next_workspace))
             .on_action(cx.listener(Self::go_to_tab))
+            .on_action(cx.listener(Self::navigate_back))
+            .on_action(cx.listener(Self::navigate_forward))
             .on_action(cx.listener(Self::split_pane_left))
             .on_action(cx.listener(Self::split_pane_right))
             .on_action(cx.listener(Self::split_pane_up))
@@ -3198,45 +2725,49 @@ impl Render for WorkspaceView {
             body = body.child(banner);
         }
 
-        let expanded_review = self.has_project_context()
-            && self.right_sidebar_visible
-            && self.right_sidebar_mode == RightSidebarMode::Diff
-            && self.diff_view.read(cx).review_expanded();
+        self.record_navigation(cx);
+        let expanded_review = self.has_project_context() && self.review_visible(cx);
         let mut layout = div()
             .id("workspace-columns")
             .relative()
             .flex_1()
             .min_h(px(0.0))
             .flex()
-            .gap(px(PANEL_GAP))
-            .px(px(PANEL_GAP))
-            .pb(px(PANEL_GAP))
             .on_drag_move(cx.listener(Self::on_sidebar_resize_move));
-        if expanded_review {
-            layout = layout.child(
+        // Keep both navigators visible while reviewing code in the center.
+        if self.left_sidebar_progress > 0.001 {
+            layout = layout.child(self.sidebar(cx));
+        }
+        if self.workspace_section == WorkspaceSection::Workspace {
+            let review_pane = || {
                 div()
                     .flex_1()
                     .min_w(px(0.0))
                     .h_full()
                     .overflow_hidden()
-                    .rounded(px(PANEL_RADIUS))
-                    .border_1()
-                    .border_color(colors().border_subtle)
                     .bg(surface(colors().panel))
-                    .child(self.diff_view.clone()),
-            );
-        } else {
-            // Keep sidebars mounted while progress > 0 so close animations can finish.
-            if self.left_sidebar_progress > 0.001 {
-                layout = layout.child(self.sidebar(cx));
+            };
+            if expanded_review && self.diff_view.read(cx).review_focused() {
+                layout = layout.child(review_pane().child(self.diff_view.clone()));
+            } else if expanded_review {
+                // The review opens beside the terminal, like an editor split.
+                let terminal = self.center_panel(window, cx).into_any_element();
+                let review = review_pane()
+                    .child(self.diff_view.clone())
+                    .into_any_element();
+                layout = layout.child(self.review_split(terminal, review, cx));
+            } else {
+                layout = layout.child(self.center_panel(window, cx));
             }
-            layout = layout.child(self.center_panel(window, cx));
             if self.right_sidebar_progress > 0.001 {
                 layout = layout.child(self.right_sidebar(cx));
             }
+        } else {
+            layout = layout.child(self.global_section_content(cx));
         }
 
         body = body.child(layout);
+        body = body.child(self.status_bar(cx));
         if let Some(modal) = self.palette_modal(cx) {
             body = body.child(modal);
         } else if let Some(modal) = self.rename_modal(cx) {

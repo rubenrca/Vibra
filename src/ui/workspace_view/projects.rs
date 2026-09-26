@@ -9,13 +9,15 @@ use gpui::{
 use uuid::Uuid;
 
 use crate::AddProject;
+use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 use crate::domain::workspace::SidebarEntry;
+use crate::ui::agent_marks::agent_status_color;
 use crate::ui::theme::{colors, surface_tint};
 
 use super::chrome::sidebar_row_width;
 use super::{
-    ContextMenuKind, LeftSidebarMode, ProjectDrag, SIDEBAR_CONTROL_SIZE, SIDEBAR_ROW_END_PADDING,
-    SIDEBAR_ROW_PADDING, SIDEBAR_ROW_RADIUS, SidebarWorkspaceDrag, WorkspaceView, sidebar_tooltip,
+    ContextMenuKind, ProjectDrag, RightSidebarMode, SIDEBAR_CONTROL_SIZE, SIDEBAR_ROW_END_PADDING,
+    WorkspaceSection, WorkspaceView, sidebar_tooltip,
 };
 
 impl WorkspaceView {
@@ -107,7 +109,8 @@ impl WorkspaceView {
                     this.snapshot.create_workspace_in_project(id);
                 }
                 this.persistence_error = None;
-                this.left_sidebar_mode = LeftSidebarMode::Sessions;
+                this.right_sidebar_mode = RightSidebarMode::Files;
+                this.set_right_sidebar_visible(true, true, cx);
                 this.set_left_sidebar_visible(true, true, cx);
                 this.reconcile_terminal_views(cx);
                 this.apply_workspace_selection_change(window, cx);
@@ -133,6 +136,8 @@ impl WorkspaceView {
             return;
         }
         if self.snapshot.create_workspace_in_project(id).is_some() {
+            self.right_sidebar_mode = RightSidebarMode::Files;
+            self.set_right_sidebar_visible(true, true, cx);
             self.reconcile_terminal_views(cx);
             self.apply_workspace_selection_change(window, cx);
         }
@@ -140,6 +145,15 @@ impl WorkspaceView {
 
     pub(super) fn select_project(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.select_project(id) {
+            if self
+                .snapshot
+                .selected_project()
+                .is_some_and(|project| project.collapsed)
+            {
+                self.snapshot.toggle_project(id);
+            }
+            self.right_sidebar_mode = RightSidebarMode::Files;
+            self.set_right_sidebar_visible(true, true, cx);
             self.apply_workspace_selection_change(window, cx);
         }
     }
@@ -165,12 +179,46 @@ impl WorkspaceView {
             }
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.snapshot.remove_project(id) {
+                    if this.library.detach_project(id) {
+                        this.persist_library(cx);
+                    }
                     this.reconcile_terminal_views(cx);
                     this.apply_workspace_selection_change(window, cx);
                 }
             });
         })
         .detach();
+    }
+
+    /// The most urgent agent state in a project, as a status color, and how
+    /// many agents are running there.
+    fn project_agent_activity(&self, project_id: Uuid) -> Option<(gpui::Rgba, usize)> {
+        let project = self
+            .snapshot
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)?;
+        let presences: Vec<_> = project
+            .workspaces
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| &tab.sessions)
+            .filter_map(|session| self.resolved_agent_presence(session.id))
+            .filter(|presence| presence.state != AgentRuntimeState::Idle)
+            .collect();
+        // Permission beats waiting, which beats working.
+        let urgent =
+            presences
+                .iter()
+                .max_by_key(|presence| match (presence.state, presence.attention) {
+                    (AgentRuntimeState::Waiting, Some(AgentAttention::Permission)) => 2,
+                    (AgentRuntimeState::Waiting, _) => 1,
+                    _ => 0,
+                })?;
+        let color = agent_status_color(Some(urgent.state), urgent.attention)?;
+        Some((color, presences.len()))
     }
 
     pub(super) fn project_sidebar_header(
@@ -181,7 +229,6 @@ impl WorkspaceView {
         let SidebarEntry::Project {
             id,
             name,
-            collapsed,
             is_selected,
             ..
         } = entry
@@ -189,37 +236,54 @@ impl WorkspaceView {
             unreachable!()
         };
         let row_width = sidebar_row_width(self.left_sidebar_width());
-        let controls_width = 2.0 * SIDEBAR_CONTROL_SIZE + 2.0;
-        // Folder icon, the gap around the label, and the plus + chevron group.
+        let controls_width = SIDEBAR_CONTROL_SIZE;
+        let selected = is_selected && self.workspace_section == WorkspaceSection::Workspace;
+        let project_padding = 6.0;
+        let avatar_size = 20.0;
+        // Avatar, two 10 px gaps, and the status/new-session slot.
         let label_width = (row_width
-            - SIDEBAR_ROW_PADDING
+            - project_padding
             - SIDEBAR_ROW_END_PADDING
-            - 16.0
-            - 12.0
+            - avatar_size
+            - 20.0
             - controls_width)
             .max(48.0);
+        let color = super::navigation::project_color(id);
+        let initial = name
+            .chars()
+            .find(|character| character.is_alphanumeric())
+            .map(|character| character.to_uppercase().collect::<String>())
+            .unwrap_or_else(|| "·".to_owned());
+        let activity = self.project_agent_activity(id);
         let drag = ProjectDrag {
             project_id: id,
             name: name.clone(),
         };
         div()
             .id(SharedString::from(format!("project-{id}")))
+            .group("global-project")
             .w(px(row_width))
-            .mt(px(4.0))
-            .mb(px(3.0))
+            .mb(px(2.0))
             .h(px(30.0))
-            .pl(px(SIDEBAR_ROW_PADDING))
+            .pl(px(project_padding))
             .pr(px(SIDEBAR_ROW_END_PADDING))
-            .rounded(px(SIDEBAR_ROW_RADIUS))
+            .rounded(px(7.0))
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .hover(|s| s.bg(surface_tint(colors().hover, colors().sidebar)))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if this.snapshot.toggle_project(id) {
-                    this.persist(cx);
+            .gap(px(10.0))
+            .when(selected, |row| {
+                row.bg(surface_tint(colors().selection, colors().sidebar))
+            })
+            .hover(move |row| {
+                if selected {
+                    row
+                } else {
+                    row.bg(surface_tint(colors().hover, colors().sidebar))
                 }
+            })
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_project(id, window, cx);
                 cx.stop_propagation();
             }))
             .on_mouse_down(
@@ -237,75 +301,94 @@ impl WorkspaceView {
             .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
             .can_drop(move |value, _, _| {
                 value
-                    .downcast_ref::<SidebarWorkspaceDrag>()
+                    .downcast_ref::<ProjectDrag>()
                     .is_some_and(|drag| drag.project_id != id)
-                    || value
-                        .downcast_ref::<ProjectDrag>()
-                        .is_some_and(|drag| drag.project_id != id)
             })
             .drag_over::<ProjectDrag>(|style, _, _, _| {
                 style.border_t_2().border_color(colors().accent)
-            })
-            .drag_over::<SidebarWorkspaceDrag>(|style, _, _, _| {
-                style.bg(surface_tint(colors().selection, colors().sidebar))
             })
             .on_drop(cx.listener(move |this, drag: &ProjectDrag, _, cx| {
                 if this.snapshot.move_project(drag.project_id, Some(id)) {
                     this.persist(cx);
                 }
             }))
-            .on_drop(
-                cx.listener(move |this, drag: &SidebarWorkspaceDrag, window, cx| {
-                    this.reorder_drag = None;
-                    if this
-                        .snapshot
-                        .move_workspace_to_project(drag.workspace_id, id)
-                    {
-                        this.apply_workspace_selection_change(window, cx);
-                    }
-                }),
-            )
             .child(
-                svg()
-                    .path("chrome-icons/folder.svg")
-                    .size(px(16.0))
+                div()
+                    .size(px(avatar_size))
                     .flex_none()
-                    .text_color(colors().muted),
+                    .rounded(px(5.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::Rgba { a: 0.18, ..color })
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(color)
+                    .child(initial),
             )
             .child(
                 div()
                     .w(px(label_width))
                     .flex_none()
                     .truncate()
-                    .text_size(px(11.5))
-                    .line_height(px(16.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(if is_selected {
+                    .text_size(px(13.0))
+                    .line_height(px(18.0))
+                    .font_weight(if selected {
+                        gpui::FontWeight::SEMIBOLD
+                    } else {
+                        gpui::FontWeight::MEDIUM
+                    })
+                    .text_color(if selected {
                         colors().foreground
                     } else {
                         colors().muted
+                    })
+                    .group_hover("global-project", |label| {
+                        label.text_color(colors().foreground)
                     })
                     .child(name),
             )
             .child(
                 div()
                     .w(px(controls_width))
+                    .h(px(SIDEBAR_CONTROL_SIZE))
                     .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(2.0))
+                    .relative()
+                    // Agent activity, replaced by the new-session button on hover.
+                    .when_some(activity, |slot, (dot, count)| {
+                        slot.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap(px(3.0))
+                                .group_hover("global-project", |style| style.opacity(0.0))
+                                .when(count > 1, |slot| {
+                                    slot.child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(colors().subtle)
+                                            .child(count.to_string()),
+                                    )
+                                })
+                                .child(div().size(px(7.0)).rounded_full().bg(dot)),
+                        )
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!("project-new-session-{id}")))
-                            .tooltip(|_, cx| sidebar_tooltip("Nuevo tab en esta carpeta", cx))
-                            .size(px(SIDEBAR_CONTROL_SIZE))
-                            .flex_none()
+                            .absolute()
+                            .inset_0()
+                            .tooltip(|_, cx| sidebar_tooltip("Nueva sesión · ⌘N", cx))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(4.0))
+                            .rounded(px(5.0))
                             .cursor_pointer()
+                            .opacity(0.0)
+                            .group_hover("global-project", |style| style.opacity(1.0))
                             .hover(|s| s.bg(colors().hover))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -315,29 +398,8 @@ impl WorkspaceView {
                             .child(
                                 svg()
                                     .path("chrome-icons/plus.svg")
-                                    .size(px(9.0))
-                                    .text_color(colors().subtle),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("project-collapse-{id}")))
-                            .size(px(SIDEBAR_CONTROL_SIZE))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(4.0))
-                            .hover(|s| s.bg(colors().hover).text_color(colors().foreground))
-                            .child(
-                                svg()
-                                    .path(if collapsed {
-                                        "chrome-icons/chevron-right.svg"
-                                    } else {
-                                        "chrome-icons/chevron-down.svg"
-                                    })
-                                    .size(px(9.0))
-                                    .text_color(colors().subtle),
+                                    .size(px(12.0))
+                                    .text_color(colors().muted),
                             ),
                     ),
             )

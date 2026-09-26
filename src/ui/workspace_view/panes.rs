@@ -2,7 +2,7 @@
 
 use gpui::{
     AnyElement, Context, DragMoveEvent, Focusable, MouseButton, MouseDownEvent, MouseUpEvent,
-    SharedString, Window, WindowControlArea, div, prelude::*, px, relative,
+    SharedString, Window, WindowControlArea, div, prelude::*, px, relative, svg,
 };
 use uuid::Uuid;
 
@@ -10,7 +10,7 @@ use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
     TabSnapshot, WorkspaceSplitAxis,
 };
-use crate::ui::agent_marks::agent_status_color;
+use crate::ui::agent_marks::agent_compact_badge;
 use crate::ui::terminal::TerminalDragPreview;
 use crate::ui::theme::{MONO_FONT, colors, surface, surface_tint};
 use crate::{
@@ -19,14 +19,13 @@ use crate::{
     SplitPaneLeft, SplitPaneRight, SplitPaneUp, TogglePaneZoom,
 };
 
-use super::chrome::TAB_LABEL_INSET;
 use super::{
-    ContextMenuKind, PANEL_RADIUS, PaneDividerDrag, PaneDividerDragView, PaneDrag, ReorderDrag,
-    TabDrag, TabDragView, split_gutter,
+    ContextMenuKind, PaneDividerDrag, PaneDividerDragView, PaneDrag, ReorderDrag, TabDrag,
+    TabDragView, WorkspaceSection, split_gutter,
 };
 
 impl super::WorkspaceView {
-    fn center_is_bento(&self) -> bool {
+    fn center_has_splits(&self) -> bool {
         self.snapshot
             .selected_tab()
             .is_some_and(|tab| tab.sessions.len() > 1 && tab.zoomed_session_id.is_none())
@@ -38,7 +37,6 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let canvas = self.terminal_canvas(window, cx).into_any_element();
-        let bento = self.center_is_bento();
         div()
             .id("center-panel")
             .flex_1()
@@ -48,12 +46,6 @@ impl super::WorkspaceView {
             .flex_col()
             .min_h(px(0.0))
             .overflow_hidden()
-            .when(!bento, |panel| {
-                panel
-                    .rounded(px(PANEL_RADIUS))
-                    .border_1()
-                    .border_color(colors().border_subtle)
-            })
             .child(canvas)
     }
 
@@ -65,6 +57,11 @@ impl super::WorkspaceView {
     ) -> impl IntoElement {
         let can_reorder = tabs.len() > 1;
         let tab_count = tabs.len();
+        // A tab is highlighted while its content is on screen, so a review
+        // shown beside the terminal highlights both tabs.
+        let terminal_hidden = self.review_covers_terminal(cx);
+        let review_tab_number = tab_count + 1;
+        let show_review_tab = self.diff_view.read(cx).review_expanded();
         let dragging_tab = match self.reorder_drag {
             Some(ReorderDrag::Tab(id)) if cx.has_active_drag() => Some(id),
             _ => None,
@@ -76,17 +73,14 @@ impl super::WorkspaceView {
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .justify_center()
+            .justify_start()
             .gap(px(4.0))
             .overflow_x_hidden()
-            .when(can_reorder, |list| {
-                list.child(div().w(px(24.0)).flex_none())
-            })
             .children(tabs.into_iter().enumerate().map(|(index, tab)| {
                 let tab_id = tab.id;
                 let after_tab_id = tab_ids.get(index + 1).copied();
                 let tab_order = tab_ids.clone();
-                let selected = Some(tab_id) == selected_tab_id;
+                let selected = Some(tab_id) == selected_tab_id && !terminal_hidden;
                 let session = tab
                     .sessions
                     .iter()
@@ -105,11 +99,6 @@ impl super::WorkspaceView {
                 };
                 let shortcut = (index < 9).then(|| format!("⌘{}", index + 1));
                 let pane_count = tab.sessions.len();
-                // A tab identifies its focused pane. Background agents keep their state in
-                // their own pane headers instead of changing an unrelated tab dot.
-                let agent_color = identity.as_ref().and_then(|identity| {
-                    agent_status_color(identity.agent_state, identity.agent_attention)
-                });
                 let drag = TabDrag {
                     tab_id,
                     title: title.clone(),
@@ -120,28 +109,24 @@ impl super::WorkspaceView {
                 let is_source = dragging_tab == Some(tab_id);
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
-                    .h(px(26.0))
+                    .h(px(30.0))
                     .min_w(px(0.0))
+                    .max_w(px(300.0))
                     .flex_1()
                     .relative()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .px(px(10.0))
+                    .justify_start()
+                    .px_2()
+                    .gap(px(6.0))
                     .overflow_hidden()
-                    .rounded_full()
+                    .rounded(px(6.0))
                     .when(can_reorder, |tab| tab.cursor_move())
                     .when(!can_reorder, |tab| tab.cursor_pointer())
                     .bg(if selected {
-                        colors().selection
+                        surface_tint(colors().selection, colors().terminal)
                     } else {
                         gpui::rgba(0x00000000)
-                    })
-                    .border_1()
-                    .border_color(if selected {
-                        colors().muted
-                    } else {
-                        colors().border_subtle
                     })
                     .text_color(if selected {
                         colors().foreground
@@ -190,11 +175,10 @@ impl super::WorkspaceView {
                     })
                     .when(can_reorder, |tab| {
                         tab.on_drag(drag, |drag, _, window, cx| {
-                            // Tabs fill the central chrome, so derive the preview width from the
-                            // live window and tab count instead of rendering a compact chip.
+                            // Keep the preview close to the visible tab width.
                             let window_width: f32 = window.bounds().size.width.into();
                             let width =
-                                (window_width * (0.52 / drag.tab_count as f32)).clamp(160.0, 420.0);
+                                (window_width * (0.52 / drag.tab_count as f32)).clamp(160.0, 300.0);
                             cx.new(|_| TabDragView {
                                 title: drag.title.clone(),
                                 selected: drag.selected,
@@ -221,36 +205,31 @@ impl super::WorkspaceView {
                         }))
                         .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().hover))
                     })
-                    .when_some(agent_color, |tab, color| {
-                        tab.child(
-                            div()
-                                .absolute()
-                                .left(px(12.0))
-                                .size(px(6.0))
-                                .rounded_full()
-                                .bg(color),
-                        )
-                    })
+                    .child(agent_compact_badge(
+                        identity
+                            .as_ref()
+                            .and_then(|identity| identity.agent_kind.as_deref()),
+                        identity.as_ref().and_then(|identity| identity.agent_state),
+                        identity
+                            .as_ref()
+                            .and_then(|identity| identity.agent_attention),
+                        selected,
+                    ))
                     .child(
                         div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(px(TAB_LABEL_INSET))
-                            .right(px(TAB_LABEL_INSET))
+                            .flex_1()
                             .min_w(px(0.0))
                             .overflow_hidden()
                             .flex()
                             .items_center()
-                            .justify_center()
+                            .justify_start()
                             .gap(px(6.0))
                             .child(
                                 div()
                                     .min_w(px(0.0))
                                     .flex_shrink()
                                     .truncate()
-                                    .text_center()
-                                    .text_size(px(12.0))
+                                    .text_size(px(13.0))
                                     .font_weight(if selected {
                                         gpui::FontWeight::MEDIUM
                                     } else {
@@ -267,7 +246,7 @@ impl super::WorkspaceView {
                                         .rounded(px(4.0))
                                         .bg(colors().elevated)
                                         .font_family(MONO_FONT)
-                                        .text_size(px(8.5))
+                                        .text_size(px(10.0))
                                         .text_color(colors().subtle)
                                         .child(format!("{pane_count} panes")),
                                 )
@@ -276,10 +255,9 @@ impl super::WorkspaceView {
                     .when_some(shortcut, |tab, shortcut| {
                         tab.child(
                             div()
-                                .absolute()
-                                .right(px(10.0))
+                                .flex_none()
                                 .font_family(MONO_FONT)
-                                .text_size(px(9.5))
+                                .text_size(px(10.0))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(if selected {
                                     colors().muted
@@ -290,6 +268,9 @@ impl super::WorkspaceView {
                         )
                     })
             }))
+            .when(show_review_tab, |list| {
+                list.child(self.review_tab(review_tab_number, cx))
+            })
             .when(can_reorder, |list| {
                 list.child(
                     div()
@@ -307,11 +288,11 @@ impl super::WorkspaceView {
 
         div()
             .h_full()
-            .w_full()
-            .flex_none()
+            .flex_1()
+            .min_w(px(0.0))
             .flex()
             .items_center()
-            .px(px(12.0))
+            .px(px(8.0))
             .bg(surface_tint(colors().terminal, colors().titlebar))
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -340,7 +321,7 @@ impl super::WorkspaceView {
                     .snapshot
                     .selected_tab()
                     .map_or(1, |tab| tab.sessions.len());
-                let framed = self.center_is_bento();
+                let framed = self.center_has_splits();
                 let highlighted = terminal
                     .as_ref()
                     .is_some_and(|terminal| terminal.read(cx).focus_handle(cx).is_focused(window));
@@ -357,6 +338,14 @@ impl super::WorkspaceView {
                     session_id,
                     preview: drag_preview,
                 };
+                // Split panes get a header: grip to reorder, title, zoom, close.
+                let show_header = pane_count > 1;
+                let zoomed = self
+                    .snapshot
+                    .selected_tab()
+                    .is_some_and(|tab| tab.zoomed_session_id == Some(session_id));
+                let header = show_header
+                    .then(|| self.pane_header(session_id, highlighted, zoomed, can_drag, drag, cx));
                 div()
                     .id(SharedString::from(format!("pane-{session_id}")))
                     .size_full()
@@ -370,25 +359,16 @@ impl super::WorkspaceView {
                         pane.bg(surface(colors().terminal))
                     })
                     .when(framed, |pane| {
-                        pane.rounded(px(PANEL_RADIUS))
-                            .border_1()
-                            .border_color(if highlighted {
-                                colors().accent
-                            } else {
-                                colors().border_subtle
-                            })
+                        pane.border_1().border_color(if highlighted {
+                            colors().muted
+                        } else {
+                            colors().border_subtle
+                        })
                     })
                     .when(is_source, |pane| pane.opacity(0.55))
-                    .when(can_drag, |pane| {
-                        pane.cursor_move()
-                            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.preview.clone()))
-                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
-                            if can_drag {
-                                this.reorder_drag = Some(ReorderDrag::Pane(session_id));
-                            }
                             this.close_context_menu(cx);
                             this.select_terminal(session_id, window, cx);
                         }),
@@ -403,6 +383,7 @@ impl super::WorkspaceView {
                             cx.stop_propagation();
                         }),
                     )
+                    .children(header)
                     .when_some(terminal, |pane, terminal| {
                         pane.child(
                             div()
@@ -530,6 +511,168 @@ impl super::WorkspaceView {
         }
     }
 
+    fn pane_header(
+        &self,
+        session_id: Uuid,
+        highlighted: bool,
+        zoomed: bool,
+        can_drag: bool,
+        drag: PaneDrag,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let identity = self.pane_identity_by_id(session_id, cx);
+        let title = identity
+            .as_ref()
+            .map(|identity| identity.title.clone())
+            .unwrap_or_else(|| "Terminal".to_owned());
+        let button = |id: String, icon: &'static str, label: &'static str| {
+            div()
+                .id(SharedString::from(id))
+                .size(px(22.0))
+                .flex_none()
+                .rounded(px(4.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_color(colors().subtle)
+                .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+                .tooltip(move |_, cx| super::sidebar_tooltip(label, cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(svg().path(icon).size(px(12.0)))
+        };
+        div()
+            .id(SharedString::from(format!("pane-header-{session_id}")))
+            .h(px(30.0))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .pl_1()
+            .pr_1()
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .bg(surface(colors().terminal))
+            .text_color(if highlighted {
+                colors().foreground
+            } else {
+                colors().muted
+            })
+            .when(can_drag, |header| {
+                header
+                    .cursor_move()
+                    .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.preview.clone()))
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    if can_drag {
+                        this.reorder_drag = Some(ReorderDrag::Pane(session_id));
+                    }
+                    if event.click_count == 2 {
+                        this.toggle_pane_zoom_for(session_id, window, cx);
+                    }
+                }),
+            )
+            .child(
+                div()
+                    .size(px(20.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(colors().subtle)
+                    .when(!can_drag, |grip| grip.opacity(0.4))
+                    .child(svg().path("chrome-icons/grip.svg").size(px(14.0))),
+            )
+            .child(agent_compact_badge(
+                identity
+                    .as_ref()
+                    .and_then(|identity| identity.agent_kind.as_deref()),
+                identity.as_ref().and_then(|identity| identity.agent_state),
+                identity
+                    .as_ref()
+                    .and_then(|identity| identity.agent_attention),
+                highlighted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(12.5))
+                    .font_weight(if highlighted {
+                        gpui::FontWeight::MEDIUM
+                    } else {
+                        gpui::FontWeight::NORMAL
+                    })
+                    .child(title),
+            )
+            .child(
+                button(
+                    format!("pane-zoom-{session_id}"),
+                    if zoomed {
+                        "chrome-icons/minimize.svg"
+                    } else {
+                        "chrome-icons/maximize.svg"
+                    },
+                    if zoomed {
+                        "Restaurar pane · ⇧⌘↵"
+                    } else {
+                        "Agrandar pane · ⇧⌘↵"
+                    },
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.toggle_pane_zoom_for(session_id, window, cx);
+                })),
+            )
+            .child(
+                button(
+                    format!("pane-close-{session_id}"),
+                    "chrome-icons/close.svg",
+                    "Cerrar pane",
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_pane(session_id, window, cx);
+                })),
+            )
+            .into_any_element()
+    }
+
+    /// Enlarges a pane to fill its tab, or restores the split.
+    pub(super) fn toggle_pane_zoom_for(
+        &mut self,
+        session_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.snapshot.select_terminal_global(session_id)
+            && self.snapshot.toggle_selected_pane_zoom()
+        {
+            self.sync_terminal_surface_visibility(cx);
+            self.persist(cx);
+            self.focus_selected_terminal(window, cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn close_pane(
+        &mut self,
+        session_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.snapshot.close_terminal(session_id) {
+            self.agent_names.remove(&session_id);
+            self.reconcile_terminal_views(cx);
+            self.sync_diff_root(cx);
+            self.refresh_project_files(cx);
+            self.persist(cx);
+            self.focus_selected_terminal(window, cx);
+        }
+    }
+
     pub(super) fn terminal_canvas(
         &mut self,
         window: &mut Window,
@@ -550,8 +693,8 @@ impl super::WorkspaceView {
         });
         let is_empty = panes.is_none();
         let zoomed = tab.as_ref().and_then(|tab| tab.zoomed_session_id).is_some();
-        // One terminal fills the center card. Split panes drop
-        // that outer frame and each pane paints its own bento border.
+        // Terminals share the continuous workspace surface; split panes keep
+        // thin boundaries so focus and resize targets remain legible.
         div()
             .flex_1()
             .min_h(px(0.0))
@@ -585,6 +728,7 @@ impl super::WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select_section(WorkspaceSection::Workspace, window, cx);
         self.capture_selected_working_directory(cx);
         if let Some(session_id) = self.snapshot.split_selected_terminal(direction) {
             self.reconcile_terminal_views(cx);
@@ -600,6 +744,7 @@ impl super::WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select_section(WorkspaceSection::Workspace, window, cx);
         if self.snapshot.focus_terminal(direction) {
             self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
@@ -615,6 +760,7 @@ impl super::WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select_section(WorkspaceSection::Workspace, window, cx);
         if self.snapshot.cycle_terminal(offset) {
             self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
@@ -625,7 +771,9 @@ impl super::WorkspaceView {
     }
 
     pub(super) fn resize_pane(&mut self, direction: PaneResizeDirection, cx: &mut Context<Self>) {
-        if self.snapshot.resize_selected_pane(direction) {
+        if self.workspace_section == WorkspaceSection::Workspace
+            && self.snapshot.resize_selected_pane(direction)
+        {
             self.persist(cx);
         }
     }
@@ -661,7 +809,6 @@ impl super::WorkspaceView {
             self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
             self.refresh_project_files(cx);
-            self.refresh_sidebar_workspace_meta(cx);
             self.persist(cx);
             self.focus_terminal(from, window, cx);
         }
@@ -795,7 +942,9 @@ impl super::WorkspaceView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.snapshot.equalize_selected_panes() {
+        if self.workspace_section == WorkspaceSection::Workspace
+            && self.snapshot.equalize_selected_panes()
+        {
             self.persist(cx);
         }
     }
@@ -806,6 +955,7 @@ impl super::WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select_section(WorkspaceSection::Workspace, window, cx);
         if self.snapshot.toggle_selected_pane_zoom() {
             self.sync_terminal_surface_visibility(cx);
             self.persist(cx);

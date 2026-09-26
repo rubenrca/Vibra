@@ -587,6 +587,18 @@ impl TerminalView {
         self.record_input_result(handle.send_input(input), cx)
     }
 
+    /// Types a command line into the shell and submits it, as the user would.
+    /// A freshly spawned shell reads it once its prompt is ready.
+    pub fn run_command(&mut self, command: &str, cx: &mut Context<Self>) -> bool {
+        let command = command.trim();
+        if command.is_empty() || command.contains(['\n', '\r']) {
+            return false;
+        }
+        let mut input = command.as_bytes().to_vec();
+        input.push(b'\r');
+        self.send(input, cx)
+    }
+
     fn send_protocol(&mut self, input: Vec<u8>, cx: &mut Context<Self>) -> bool {
         let Some(handle) = &self.handle else {
             return false;

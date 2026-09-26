@@ -37,7 +37,7 @@ pub(super) enum FinishError {
 enum Command {
     Wake,
     Finish {
-        workspace: Option<(u64, WorkspaceSnapshot)>,
+        workspace: Box<Option<(u64, WorkspaceSnapshot)>>,
         settings: Option<(u64, AppSettings)>,
         completed: mpsc::Sender<Vec<String>>,
     },
@@ -136,7 +136,7 @@ impl PersistenceQueue {
         let (completed, reply) = mpsc::channel();
         self.commands
             .send(Command::Finish {
-                workspace,
+                workspace: Box::new(workspace),
                 settings,
                 completed,
             })
@@ -218,7 +218,7 @@ fn run(
                 settings: final_settings,
                 completed,
             } => {
-                workspace = final_workspace.or(workspace);
+                workspace = (*final_workspace).or(workspace);
                 settings = final_settings.or(settings);
                 (Some(completed), true)
             }
