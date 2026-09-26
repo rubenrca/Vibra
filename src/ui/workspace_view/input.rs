@@ -88,8 +88,7 @@ impl super::WorkspaceView {
         if self.palette_mode.is_some() {
             match key.as_str() {
                 "escape" | "esc" => {
-                    self.palette_mode = None;
-                    cx.notify();
+                    self.close_palette(cx);
                 }
                 "up" => {
                     self.palette_selected = self.palette_selected.saturating_sub(1);

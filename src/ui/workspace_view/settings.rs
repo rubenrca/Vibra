@@ -391,8 +391,7 @@ impl WorkspaceView {
 
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_open = true;
-        self.palette_mode = None;
-        self.palette_files.clear();
+        self.close_palette(cx);
         self.context_menu = None;
         self.ide_menu_open = false;
         self.rename_prompt = None;

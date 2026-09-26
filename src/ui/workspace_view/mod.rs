@@ -21,13 +21,13 @@ mod settings;
 mod status_bar;
 mod storage;
 mod tabs;
+mod terminals;
 mod titlebar;
 
 use automation::HookAgentPresence;
 use automations_page::AutomationForm;
 use chrome::*;
 pub(crate) use drag::*;
-use files::*;
 pub(crate) use files::{file_tree_icon, file_tree_icon_color};
 use persistence::{FinishError, PersistenceQueue};
 use settings::SettingsPage;
@@ -38,15 +38,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, Context, DragMoveEvent, Entity, FocusHandle, Focusable, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Task, Timer, Window,
-    div, prelude::*, px, uniform_list,
+    Context, DragMoveEvent, Entity, FocusHandle, IntoElement, MouseButton, ParentElement, Render,
+    SharedString, Styled, Subscription, Task, Timer, Window, div, prelude::*, px,
 };
 use uuid::Uuid;
 
 use crate::domain::inbox::Inbox;
 use crate::domain::library::Library;
-use crate::domain::workspace::{PaneSplitDirection, SessionSnapshot, WorkspaceSnapshot};
+use crate::domain::workspace::{PaneSplitDirection, WorkspaceSnapshot};
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentRuntimeState, AutomationServer, agent_hook_status,
 };
@@ -58,13 +57,13 @@ use crate::infrastructure::settings::{
     AppSettings, MAX_LEFT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH, MIN_LEFT_SIDEBAR_WIDTH,
     MIN_RIGHT_SIDEBAR_WIDTH, SettingsRepository,
 };
-use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
+use crate::ports::files::{FileEntry, FileSystemPort};
 use crate::ports::git::GitPort;
+use crate::ports::terminal::TerminalAgentPresence;
 use crate::ports::terminal::TerminalPort;
-use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
 use crate::ui::diff_view::{DiffFileIndexView, DiffView, DiffViewEvent};
-use crate::ui::terminal::{TerminalInsertStatus, TerminalView, TerminalViewEvent};
-use crate::ui::theme::{self, colors, surface, surface_tint, window_surface};
+use crate::ui::terminal::{TerminalInsertStatus, TerminalView};
+use crate::ui::theme::{self, colors, surface, window_surface};
 use crate::{
     CloseTerminal, NewTerminalTab, NextProject, PreviousProject, ShowSettings, ToggleLeftSidebar,
     ToggleRightSidebar,
@@ -124,7 +123,7 @@ enum PaletteAction {
     Split(PaneSplitDirection),
     EqualizePanes,
     TogglePaneZoom,
-    ToggleGit,
+    ToggleWorkspacePanel,
     ShowFiles,
     ShowSettings,
     ShowSection(WorkspaceSection),
@@ -201,15 +200,17 @@ pub struct WorkspaceView {
     pending_focus_session: Option<Uuid>,
     terminals: HashMap<Uuid, Entity<TerminalView>>,
     terminal_subscriptions: HashMap<Uuid, Subscription>,
-    pending_review_pastes: HashMap<Uuid, (Uuid, Vec<u64>)>,
+    /// External paste token → destination pane. DiffView owns the comments.
+    pending_review_pastes: HashMap<Uuid, Uuid>,
     automation_tokens: HashMap<Uuid, Uuid>,
     automation_socket: Option<PathBuf>,
     _automation_server: Option<AutomationServer>,
     _automation_task: Option<gpui::Task<()>>,
     agent_presence: HashMap<Uuid, TerminalAgentPresence>,
     hook_agent_presence: HashMap<Uuid, HookAgentPresence>,
-    /// Optional names assigned to panes from the pane context menu.
-    agent_names: HashMap<Uuid, String>,
+    /// Display names assigned by the user or an automation. Agent identity
+    /// and process lifetime do not own these names; closing the pane does.
+    pane_names: HashMap<Uuid, String>,
     agent_activity_seen: HashMap<Uuid, AgentActivitySnapshot>,
     agent_hook_status: Option<AgentHookStatus>,
     agent_hook_error: Option<SharedString>,
@@ -237,6 +238,7 @@ pub struct WorkspaceView {
     automation_form: Option<AutomationForm>,
     _automation_scheduler: Option<Task<()>>,
     expanded_directories: HashSet<PathBuf>,
+    project_files_root: Option<PathBuf>,
     project_files: Arc<Vec<ProjectFileRow>>,
     selected_file_path: Option<PathBuf>,
     file_error: Option<SharedString>,
@@ -364,7 +366,8 @@ impl WorkspaceView {
             launch_directory.is_dir() && snapshot.relocate_root(Path::new("/"), &launch_directory);
         let mut snapshot_changed = consolidated || relocated;
         if first_launch {
-            snapshot.create_workspace(&launch_directory);
+            let project = snapshot.add_project(&launch_directory);
+            snapshot.open_tab_in_project(project, true);
             snapshot_changed = true;
         }
         if snapshot_changed
@@ -456,21 +459,21 @@ impl WorkspaceView {
                 }
                 DiffViewEvent::SendReview {
                     prompt,
-                    comment_ids,
+                    delivery_id,
                 } => {
-                    let status = this.send_review_to_agent(prompt, comment_ids, cx);
+                    let status = this.send_review_to_agent(prompt, *delivery_id, cx);
                     if status == TerminalInsertStatus::Pending {
                         return;
                     }
                     let diff_view = this.diff_view.clone();
-                    let comment_ids = comment_ids.clone();
+                    let delivery_id = *delivery_id;
                     cx.spawn(async move |_, cx| {
                         let _ = diff_view.update(cx, |view, cx| {
-                            if status == TerminalInsertStatus::Accepted {
-                                view.confirm_review_sent(&comment_ids, cx);
-                            } else {
-                                view.review_delivery_failed(cx);
-                            }
+                            view.resolve_review_delivery(
+                                delivery_id,
+                                status == TerminalInsertStatus::Accepted,
+                                cx,
+                            );
                         });
                     })
                     .detach();
@@ -553,7 +556,7 @@ impl WorkspaceView {
             _automation_task: automation_task,
             agent_presence: HashMap::new(),
             hook_agent_presence: HashMap::new(),
-            agent_names: HashMap::new(),
+            pane_names: HashMap::new(),
             agent_activity_seen: HashMap::new(),
             agent_hook_status,
             agent_hook_error,
@@ -581,6 +584,7 @@ impl WorkspaceView {
             automation_form: None,
             _automation_scheduler: None,
             expanded_directories: HashSet::new(),
+            project_files_root: None,
             project_files: Arc::new(Vec::new()),
             selected_file_path: None,
             file_error: None,
@@ -660,65 +664,6 @@ impl WorkspaceView {
             .update(cx, |diff_view, cx| diff_view.set_panel_visible(visible, cx));
     }
 
-    fn pane_identity_with_cwd(
-        &self,
-        session: &SessionSnapshot,
-        index: usize,
-        working_directory: &str,
-    ) -> PaneIdentity {
-        let alias = self.agent_names.get(&session.id).map(String::as_str);
-        let presence = self.resolved_agent_presence(session.id);
-        PaneIdentity {
-            title: tab_display_title(
-                alias.or(session.agent_task_title.as_deref()),
-                Some(session.title.as_str()),
-                Some(working_directory),
-                index,
-            ),
-            detail: pane_detail_title(
-                alias,
-                Some(session.title.as_str()),
-                Some(working_directory),
-                self.home_directory.as_deref(),
-            ),
-            agent_kind: presence.as_ref().map(|presence| presence.kind.clone()),
-            agent_state: presence.as_ref().map(|presence| presence.state),
-            agent_attention: presence.as_ref().and_then(|presence| presence.attention),
-        }
-    }
-
-    fn pane_identity(
-        &self,
-        session: &SessionSnapshot,
-        index: usize,
-        cx: &Context<Self>,
-    ) -> PaneIdentity {
-        let live_cwd = self
-            .terminals
-            .get(&session.id)
-            .map(|terminal| {
-                terminal
-                    .read(cx)
-                    .cached_working_directory()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .unwrap_or_else(|| session.working_directory.clone());
-        self.pane_identity_with_cwd(session, index, &live_cwd)
-    }
-
-    fn pane_identity_by_id(&self, session_id: Uuid, cx: &Context<Self>) -> Option<PaneIdentity> {
-        let session = self
-            .snapshot
-            .projects
-            .iter()
-            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-            .flat_map(|workspace| &workspace.tabs)
-            .flat_map(|tab| &tab.sessions)
-            .find(|session| session.id == session_id)?;
-        Some(self.pane_identity(session, 0, cx))
-    }
-
     fn sync_diff_root(&self, cx: &mut Context<Self>) {
         if !self.has_project_context() {
             self.diff_view
@@ -729,20 +674,6 @@ impl WorkspaceView {
         let root = self.project_root();
         self.diff_view
             .update(cx, |diff_view, cx| diff_view.set_root(root, cx));
-    }
-
-    /// Active console directory: live PTY cwd when available, else snapshot / launch dir.
-    fn selected_live_cwd(&self, cx: &Context<Self>) -> PathBuf {
-        if let Some(session) = self.snapshot.selected_session() {
-            if let Some(terminal) = self.terminals.get(&session.id) {
-                return terminal.read(cx).current_working_directory();
-            }
-            return PathBuf::from(&session.working_directory);
-        }
-        self.snapshot
-            .selected_project()
-            .and_then(|project| project.directory().map(PathBuf::from))
-            .unwrap_or_else(|| self.launch_directory.clone())
     }
 
     /// The project folder is stable even when a terminal changes its cwd.
@@ -765,84 +696,7 @@ impl WorkspaceView {
         })
     }
 
-    /// Refresh the Explorer from the stable project root.
-    fn refresh_project_files(&mut self, cx: &mut Context<Self>) {
-        self.files_request_id = self.files_request_id.wrapping_add(1);
-        if !self.has_project_context() {
-            self._files_task = None;
-            self.files_watch = None;
-            self.project_files = Arc::new(Vec::new());
-            self.selected_file_path = None;
-            self.file_error = None;
-            return;
-        }
-        let root = self.project_root();
-        self.expanded_directories.insert(root.clone());
-        if self
-            .selected_file_path
-            .as_ref()
-            .is_some_and(|path| !path.starts_with(&root))
-        {
-            self.selected_file_path = None;
-        }
-        let request_id = self.files_request_id;
-        let expanded = self.expanded_directories.clone();
-        let show_hidden = self.settings.show_hidden_files;
-        let port = self.file_port.clone();
-        let selected = self.selected_file_path.clone();
-        self.sync_files_watcher(cx);
-        let task = cx.background_spawn(async move {
-            let mut rows = Vec::new();
-            let result = collect_project_files(
-                port.as_ref(),
-                &root,
-                &root,
-                0,
-                &expanded,
-                show_hidden,
-                &mut rows,
-            );
-            (result, rows, selected)
-        });
-        self._files_task = Some(cx.spawn(async move |this, cx| {
-            let (result, rows, selected) = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if request_id != this.files_request_id {
-                    return;
-                }
-                match result {
-                    Ok(()) => {
-                        this.project_files = Arc::new(rows);
-                        this.file_error = None;
-                        if selected.as_ref().is_some_and(|path| !path.exists()) {
-                            this.selected_file_path = None;
-                        }
-                    }
-                    Err(error) => {
-                        this.project_files = Arc::new(rows);
-                        this.file_error = Some(error.to_string().into());
-                    }
-                }
-                cx.notify();
-            });
-        }));
-    }
-
-    fn toggle_directory(&mut self, path: &Path, cx: &mut Context<Self>) {
-        if !self.expanded_directories.remove(path) {
-            self.expanded_directories.insert(path.to_path_buf());
-        }
-        self.selected_file_path = Some(path.to_path_buf());
-        self.refresh_project_files(cx);
-        cx.notify();
-    }
-
-    fn select_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.selected_file_path = Some(path);
-        cx.notify();
-    }
-
-    fn toggle_diff_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_workspace_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.workspace_section != WorkspaceSection::Workspace {
             self.set_workspace_mode(self.right_sidebar_mode, cx);
             self.focus_selected_terminal(window, cx);
@@ -872,6 +726,7 @@ impl WorkspaceView {
     /// Desired open/closed state for the right sidebar, with a light width animation.
     fn set_right_sidebar_visible(&mut self, visible: bool, persist: bool, cx: &mut Context<Self>) {
         if self.right_sidebar_visible == visible {
+            self.sync_git_panel_visibility(cx);
             self.sync_files_watcher(cx);
             cx.notify();
             return;
@@ -924,6 +779,7 @@ impl WorkspaceView {
                             this.left_sidebar_progress = left_to;
                             this.right_sidebar_progress = right_to;
                             this._sidebar_anim_task = None;
+                            this.sync_git_panel_visibility(cx);
                             cx.notify();
                             return false;
                         }
@@ -939,254 +795,6 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn reconcile_terminal_views(&mut self, cx: &mut Context<Self>) {
-        let sessions = self.snapshot.terminal_sessions();
-        let live_ids: HashSet<_> = sessions.iter().map(|session| session.id).collect();
-
-        let stale_ids: Vec<_> = self
-            .terminals
-            .keys()
-            .filter(|session_id| !live_ids.contains(session_id))
-            .copied()
-            .collect();
-        for session_id in stale_ids {
-            self.fail_pending_review_for_session(session_id, cx);
-            if let Some(terminal) = self.terminals.remove(&session_id) {
-                terminal.read(cx).shutdown();
-            }
-            self.terminal_subscriptions.remove(&session_id);
-            self.automation_tokens.remove(&session_id);
-            self.agent_presence.remove(&session_id);
-            self.hook_agent_presence.remove(&session_id);
-            self.agent_names.remove(&session_id);
-            self.agent_activity_seen.remove(&session_id);
-        }
-        self.inbox.forget_closed_panes(&live_ids);
-
-        for session in sessions {
-            if self.terminals.contains_key(&session.id) {
-                continue;
-            }
-            let session_id = session.id;
-            let terminal_port = self.terminal_port.clone();
-            let working_directory = PathBuf::from(session.working_directory);
-            let title = session.title;
-            let token = *self
-                .automation_tokens
-                .entry(session_id)
-                .or_insert_with(Uuid::new_v4);
-            let mut environment = HashMap::new();
-            environment.insert("VIBRA_PANE_ID".into(), session_id.to_string());
-            environment.insert("VIBRA_AUTOMATION_TOKEN".into(), token.to_string());
-            if let Ok(executable) = std::env::current_exe() {
-                environment.insert(
-                    "VIBRA_CLI".into(),
-                    executable.to_string_lossy().into_owned(),
-                );
-            }
-            if let Some(socket) = &self.automation_socket {
-                environment.insert(
-                    "VIBRA_AUTOMATION_SOCKET".into(),
-                    socket.to_string_lossy().into_owned(),
-                );
-            }
-            let terminal = cx.new(|cx| {
-                TerminalView::new_with_environment(
-                    session_id,
-                    title,
-                    Path::new(&working_directory),
-                    terminal_port,
-                    environment,
-                    cx,
-                )
-            });
-            terminal.update(cx, |terminal, cx| {
-                terminal.apply_font_size(self.settings.terminal_font_size, cx);
-            });
-            let subscription = cx.subscribe(
-                &terminal,
-                |this, _terminal, event: &TerminalViewEvent, cx| {
-                    this.handle_terminal_view_event(event, cx);
-                },
-            );
-            self.terminals.insert(session_id, terminal);
-            self.terminal_subscriptions.insert(session_id, subscription);
-        }
-        self.sync_terminal_surface_visibility(cx);
-    }
-
-    fn visible_terminal_ids(&self, cx: &Context<Self>) -> HashSet<Uuid> {
-        if self.workspace_section == WorkspaceSection::Workspace && !self.review_covers_terminal(cx)
-        {
-            self.snapshot.painted_session_ids()
-        } else {
-            HashSet::new()
-        }
-    }
-
-    fn sync_terminal_surface_visibility(&self, cx: &mut Context<Self>) {
-        let visible = self.visible_terminal_ids(cx);
-        for (session_id, terminal) in &self.terminals {
-            let shown = visible.contains(session_id);
-            terminal.update(cx, |terminal, _| terminal.set_surface_visible(shown));
-        }
-    }
-
-    fn handle_terminal_view_event(&mut self, event: &TerminalViewEvent, cx: &mut Context<Self>) {
-        match event {
-            TerminalViewEvent::ExternalPasteResolved {
-                session_id,
-                token,
-                accepted,
-            } => {
-                if self
-                    .pending_review_pastes
-                    .get(token)
-                    .is_some_and(|(target, _)| target == session_id)
-                {
-                    let (_, comment_ids) = self
-                        .pending_review_pastes
-                        .remove(token)
-                        .expect("pending review token was checked above");
-                    self.diff_view.update(cx, |view, cx| {
-                        if *accepted {
-                            view.confirm_review_sent(&comment_ids, cx);
-                        } else {
-                            view.review_delivery_failed(cx);
-                        }
-                    });
-                }
-            }
-            TerminalViewEvent::TitleChanged { session_id, title } => {
-                if self.snapshot.update_session_title(*session_id, title) {
-                    self.persist(cx);
-                }
-            }
-            TerminalViewEvent::WorkingDirectoryChanged { session_id, path } => {
-                let is_selected = self
-                    .snapshot
-                    .selected_session()
-                    .is_some_and(|session| session.id == *session_id);
-                let previous_files_root = is_selected.then(|| self.project_root());
-                let changed = self
-                    .snapshot
-                    .update_session_working_directory(*session_id, path);
-                if is_selected {
-                    self.sync_diff_root(cx);
-                    // Unassociated legacy spaces temporarily follow their existing terminal.
-                    let new_root = self.project_root();
-                    if previous_files_root.as_ref() != Some(&new_root) {
-                        self.expanded_directories.retain(|entry| {
-                            entry.starts_with(&new_root) || new_root.starts_with(entry)
-                        });
-                        self.expanded_directories.insert(new_root);
-                        self.refresh_project_files(cx);
-                    }
-                }
-                if changed {
-                    self.persist(cx);
-                } else {
-                    cx.notify();
-                }
-            }
-            TerminalViewEvent::Exited {
-                session_id,
-                code: _code,
-            } => {
-                self.fail_pending_review_for_session(*session_id, cx);
-                self.agent_presence.remove(session_id);
-                self.hook_agent_presence.remove(session_id);
-                self.agent_names.remove(session_id);
-                self.publish_agent_activity(*session_id, cx);
-                cx.notify();
-            }
-            TerminalViewEvent::ContextMenuRequested { session_id, x, y } => {
-                let session_id = *session_id;
-                let was_selected = self
-                    .snapshot
-                    .selected_session()
-                    .is_some_and(|session| session.id == session_id);
-                if self.snapshot.select_terminal_global(session_id) && !was_selected {
-                    self.sync_terminal_surface_visibility(cx);
-                    self.sync_diff_root(cx);
-                    self.refresh_project_files(cx);
-                    self.persist(cx);
-                }
-                self.open_context_menu(ContextMenuKind::Pane { session_id }, *x, *y, cx);
-            }
-            TerminalViewEvent::Activated { session_id } => {
-                self.inbox.mark_pane_read(*session_id);
-                if self.snapshot.select_terminal(*session_id) {
-                    self.sync_terminal_surface_visibility(cx);
-                    self.sync_diff_root(cx);
-                    self.refresh_project_files(cx);
-                    self.persist(cx);
-                }
-                cx.notify();
-            }
-            TerminalViewEvent::AgentPresenceChanged {
-                session_id,
-                presence,
-            } => {
-                let previous = self.agent_presence.get(session_id);
-                let occupant_changed = match (previous, presence) {
-                    (Some(previous), Some(current)) => {
-                        !previous.kind.eq_ignore_ascii_case(&current.kind)
-                            || (previous.kind_source == TerminalAgentKindSource::Process
-                                && current.kind_source != TerminalAgentKindSource::Process)
-                            || matches!(
-                                (previous.process_id, current.process_id),
-                                (Some(left), Some(right)) if left != right
-                            )
-                    }
-                    (Some(_), None) => true,
-                    _ => false,
-                };
-                let definitive_exit = previous.is_some_and(|previous| {
-                    previous.kind_source == TerminalAgentKindSource::Process
-                }) || !self.hook_agent_presence.contains_key(session_id);
-                if occupant_changed && (presence.is_some() || definitive_exit) {
-                    self.agent_names.remove(session_id);
-                    self.hook_agent_presence.remove(session_id);
-                }
-                if let Some(presence) = presence {
-                    self.agent_presence.insert(*session_id, presence.clone());
-                } else {
-                    self.agent_presence.remove(session_id);
-                }
-                self.publish_agent_activity(*session_id, cx);
-                cx.notify();
-            }
-            TerminalViewEvent::FontSizeChanged { size } => {
-                self.set_terminal_font_size(*size, cx);
-            }
-        }
-    }
-
-    fn fail_pending_review_for_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
-        let previous = self.pending_review_pastes.len();
-        self.pending_review_pastes
-            .retain(|_, (target, _)| *target != session_id);
-        if self.pending_review_pastes.len() != previous {
-            self.diff_view
-                .update(cx, |view, cx| view.review_delivery_failed(cx));
-        }
-    }
-
-    fn project_id_for_session(&self, session_id: Uuid) -> Option<Uuid> {
-        self.snapshot.projects.iter().find_map(|project| {
-            project
-                .workspaces
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .flat_map(|workspace| &workspace.tabs)
-                .flat_map(|tab| &tab.sessions)
-                .any(|session| session.id == session_id)
-                .then_some(project.id)
-        })
-    }
-
     fn close_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.diff_view
             .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
@@ -1194,127 +802,6 @@ impl WorkspaceView {
         self.sync_git_panel_visibility(cx);
         self.focus_selected_terminal(window, cx);
         cx.notify();
-    }
-
-    fn focus_selected_terminal(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.workspace_section != WorkspaceSection::Workspace {
-            self.focus_handle.focus(window);
-            return;
-        }
-        if self.review_covers_terminal(cx) {
-            self.diff_view.read(cx).focus_review(window);
-            return;
-        }
-        if let Some(terminal) = self
-            .snapshot
-            .selected_session()
-            .and_then(|session| self.terminals.get(&session.id))
-        {
-            terminal.read(cx).focus_handle(cx).focus(window);
-        } else {
-            self.focus_handle.focus(window);
-        }
-    }
-
-    /// Paste Git review comments into the agent that should act on them: the
-    /// selected pane when it runs an agent, else a visible pane that does.
-    /// The prompt is pasted, never submitted, so it can still be edited.
-    fn send_review_to_agent(
-        &mut self,
-        prompt: &str,
-        comment_ids: &[u64],
-        cx: &mut Context<Self>,
-    ) -> TerminalInsertStatus {
-        let selected = self.snapshot.selected_session().map(|session| session.id);
-        let has_agent = |this: &Self, id: Uuid| this.resolved_agent_presence(id).is_some();
-        let target = selected
-            .filter(|id| has_agent(self, *id))
-            .or_else(|| {
-                self.snapshot.selected_tab().and_then(|tab| {
-                    tab.sessions
-                        .iter()
-                        .map(|session| session.id)
-                        .find(|id| has_agent(self, *id))
-                })
-            })
-            .or(selected);
-        let Some(target) = target else {
-            self.persistence_error =
-                Some("Abre una terminal con un agente para enviarle la revisión.".into());
-            cx.notify();
-            return TerminalInsertStatus::Rejected;
-        };
-        let Some(terminal) = self.terminals.get(&target).cloned() else {
-            self.persistence_error =
-                Some("No se pudo encontrar la terminal para enviarle la revisión.".into());
-            cx.notify();
-            return TerminalInsertStatus::Rejected;
-        };
-        let token = Uuid::new_v4();
-        let status = terminal.update(cx, |terminal, cx| {
-            terminal.insert_external_text(prompt, token, cx)
-        });
-        if status == TerminalInsertStatus::Rejected {
-            self.persistence_error = Some(
-                concat!(
-                    "No se pudo pegar la revisión: la terminal está ocupada o rechazó el texto. ",
-                    "Los comentarios siguen disponibles."
-                )
-                .into(),
-            );
-            cx.notify();
-            return status;
-        }
-        if status == TerminalInsertStatus::Pending {
-            self.pending_review_pastes
-                .insert(token, (target, comment_ids.to_vec()));
-        }
-        if self.persistence_error.as_ref().is_some_and(|error| {
-            let error = error.to_string();
-            error.starts_with("No se pudo pegar la revisión:")
-                || error.starts_with("Abre una terminal con un agente")
-                || error.starts_with("No se pudo encontrar la terminal para enviarle la revisión")
-        }) {
-            self.persistence_error = None;
-        }
-        if selected != Some(target) && self.snapshot.select_terminal(target) {
-            self.sync_terminal_surface_visibility(cx);
-            self.persist(cx);
-        }
-        self.diff_view
-            .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
-        self.sync_terminal_surface_visibility(cx);
-        self.pending_focus_session = Some(target);
-        cx.notify();
-        status
-    }
-
-    fn focus_terminal(&self, session_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(terminal) = self.terminals.get(&session_id) {
-            terminal.read(cx).focus_handle(cx).focus(window);
-        }
-    }
-
-    fn select_terminal(&mut self, session_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        if self.snapshot.select_terminal(session_id) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
-        }
-        self.focus_terminal(session_id, window, cx);
-    }
-
-    fn capture_selected_working_directory(&mut self, cx: &mut Context<Self>) {
-        let Some(session_id) = self.snapshot.selected_session().map(|session| session.id) else {
-            return;
-        };
-        let Some(terminal) = self.terminals.get(&session_id) else {
-            return;
-        };
-        let path = terminal.read(cx).current_working_directory();
-        self.snapshot
-            .update_session_working_directory(session_id, &path);
     }
 
     fn reorder_tab(
@@ -1326,11 +813,7 @@ impl WorkspaceView {
     ) {
         self.reorder_drag = None;
         if self.snapshot.move_tab(tab_id, before_tab_id) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
+            self.show_terminal_tab(window, cx);
         }
         cx.notify();
     }
@@ -1500,7 +983,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_diff_panel(window, cx);
+        self.toggle_workspace_panel(window, cx);
     }
 
     fn previous_project(
@@ -1538,16 +1021,9 @@ impl WorkspaceView {
     }
 
     fn select_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        if self.snapshot.select_tab(tab_id) || self.review_tab_active {
+        if self.snapshot.select_tab(tab_id) {
             self.show_terminal_tab(window, cx);
         }
-    }
-
-    /// Shows the selected terminal after a tab, project, or pane change. An
-    /// open review stays as a tab of its project; switching to another
-    /// project closes it when the repository root changes.
-    fn apply_workspace_selection_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_terminal_tab(window, cx);
     }
 
     fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1566,229 +1042,6 @@ impl WorkspaceView {
                 ))
             },
         )
-    }
-
-    fn files_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let rows = Arc::clone(&self.project_files);
-        let selected_path = self.selected_file_path.clone();
-        let file_error = self.file_error.clone();
-        let project_root = self.project_root();
-        let (git_root, git_statuses) = self.diff_view.read(cx).status_index();
-        let status_root = git_root.unwrap_or_else(|| project_root.clone());
-        let dir_statuses: HashMap<String, _> = aggregate_dir_statuses(&git_statuses)
-            .into_iter()
-            .map(|(path, status)| (path.to_owned(), status))
-            .collect();
-
-        div()
-            .id("project-files-content")
-            .flex_1()
-            .min_h(px(0.0))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .child(self.explorer_toolbar(cx))
-            // File tree
-            .child(
-                div()
-                    .id("project-file-tree")
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .flex()
-                    .flex_col()
-                    .px_1()
-                    .pt_1()
-                    .pb_2()
-                    .child(
-                        uniform_list(
-                            "project-file-rows",
-                            rows.len(),
-                            cx.processor(
-                                move |_this, range: std::ops::Range<usize>, _window, cx| {
-                                    range
-                                        .map(|index| {
-                                            let row = &rows[index];
-                                            let path = row.entry.path.clone();
-                                            let selected = selected_path.as_ref() == Some(&path);
-                                            let is_directory =
-                                                row.entry.kind == FileEntryKind::Directory;
-                                            let rel = relative_repo_path(&path, &status_root);
-                                            let status = if is_directory {
-                                                rel.as_deref()
-                                                    .and_then(|rel| dir_statuses.get(rel).copied())
-                                            } else {
-                                                rel.as_ref()
-                                                    .and_then(|rel| git_statuses.get(rel).copied())
-                                            };
-                                            let icon_color = if is_directory {
-                                                status
-                                                    .map(git_status_color)
-                                                    .unwrap_or(colors().folder)
-                                            } else {
-                                                file_tree_icon_color(
-                                                    row.entry.kind,
-                                                    &row.entry.name,
-                                                )
-                                            };
-                                            let name_color = status
-                                                .map(git_status_color)
-                                                .unwrap_or(if is_directory {
-                                                    colors().foreground
-                                                } else {
-                                                    colors().muted
-                                                });
-                                            let depth = row.depth;
-                                            let expanded = row.expanded;
-                                            let rel_for_click = rel.clone();
-                                            div()
-                            .id(SharedString::from(format!(
-                                "file-row-{}",
-                                path.to_string_lossy()
-                            )))
-                            .h(px(26.0))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .pr_2()
-                            .mb(px(1.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .bg(if selected {
-                                surface_tint(colors().elevated, colors().panel)
-                            } else {
-                                gpui::rgba(0x00000000)
-                            })
-                            .hover(|item| item.bg(surface_tint(colors().hover, colors().panel)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                    if is_directory {
-                                        if event.click_count == 1 {
-                                            this.toggle_directory(&path, cx);
-                                        }
-                                        return;
-                                    }
-                                    this.select_file_path(path.clone(), cx);
-                                    if let Some(rel) = rel_for_click.as_ref() {
-                                        // Selecting any changed file peeks it in Git; documents
-                                        // never replace the terminal surface.
-                                        let selected = this.diff_view.update(cx, |diff, cx| {
-                                            diff.select_path_if_changed(rel, cx)
-                                        });
-                                        if selected {
-                                            this.right_sidebar_mode = RightSidebarMode::Diff;
-                                            this.set_right_sidebar_visible(true, true, cx);
-                                            this.diff_view.read(cx).focus_review(window);
-                                        }
-                                    }
-                                }),
-                            )
-                            // Indent + soft guide for nested rows.
-                            .child(
-                                div()
-                                    .w(px(6.0 + depth as f32 * 12.0))
-                                    .h_full()
-                                    .flex_none()
-                                    .relative()
-                                    .when(depth > 0, |indent| {
-                                        indent.child(
-                                            div()
-                                                .absolute()
-                                                .left(px(6.0 + (depth as f32 - 1.0) * 12.0 + 5.0))
-                                                .top_0()
-                                                .bottom_0()
-                                                .w(px(1.0))
-                                                .bg(colors().indent_guide),
-                                        )
-                                    }),
-                            )
-                            // Expand chevron (folders) or spacer (files).
-                            .child(
-                                div()
-                                    .w(px(12.0))
-                                    .h(px(16.0))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .when(is_directory, |slot| {
-                                        slot.child(
-                                            gpui::svg()
-                                                .path(if expanded {
-                                                    "chrome-icons/chevron-down.svg"
-                                                } else {
-                                                    "chrome-icons/chevron-right.svg"
-                                                })
-                                                .size(px(9.0))
-                                                .flex_none()
-                                                .text_color(colors().subtle),
-                                        )
-                                    }),
-                            )
-                            // Folder / file icon.
-                            .child(
-                                div()
-                                    .w(px(16.0))
-                                    .h(px(16.0))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_color(icon_color)
-                                    .child(file_tree_icon(
-                                        row.entry.kind,
-                                        expanded,
-                                        &row.entry.name,
-                                        icon_color,
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .flex_1()
-                                    .truncate()
-                                    .pl_1()
-                                    .text_size(px(12.0))
-                                    .font_weight(if selected || is_directory {
-                                        gpui::FontWeight::MEDIUM
-                                    } else {
-                                        gpui::FontWeight::NORMAL
-                                    })
-                                    .text_color(if selected && status.is_none() {
-                                        colors().foreground
-                                    } else {
-                                        name_color
-                                    })
-                                    .child(row.entry.name.clone()),
-                            )
-                            .when_some(status.map(git_status_trailing), |row, trailing| {
-                                row.child(trailing)
-                            })
-                            .into_any_element()
-                                        })
-                                        .collect()
-                                },
-                            ),
-                        )
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .w_full(),
-                    ),
-            )
-            .when_some(file_error, |panel, error| {
-                panel.child(
-                    div()
-                        .mx_2()
-                        .mb_1()
-                        .p_2()
-                        .rounded(px(5.0))
-                        .bg(colors().diff_deleted_bg)
-                        .text_size(px(9.0))
-                        .text_color(colors().danger)
-                        .child(error),
-                )
-            })
-            .into_any_element()
     }
 
     fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1932,13 +1185,13 @@ impl Render for WorkspaceView {
             .text_color(colors().foreground)
             .bg(window_surface());
 
+        self.record_navigation(cx);
         body = body.child(self.titlebar(cx));
 
         if let Some(banner) = self.error_banner() {
             body = body.child(banner);
         }
 
-        self.record_navigation(cx);
         let expanded_review = self.has_project_context() && self.review_visible(cx);
         let mut layout = div()
             .id("workspace-columns")

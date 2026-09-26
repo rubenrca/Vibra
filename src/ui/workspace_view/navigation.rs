@@ -93,6 +93,7 @@ impl WorkspaceView {
         self.leave_library_section(section);
         self.workspace_section = section;
         if section == WorkspaceSection::Workspace
+            && !self.review_covers_terminal(cx)
             && let Some(session) = self.snapshot.selected_session()
         {
             self.inbox.mark_pane_read(session.id);

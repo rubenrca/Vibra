@@ -6,24 +6,17 @@ use crate::domain::workspace::PaneSplitDirection;
 use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface_tint};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
-use super::{
-    PaletteAction, PaletteItem, PaletteMode, RightSidebarMode, WorkspaceSection,
-    collect_search_files,
-};
+use super::files::collect_search_files;
+use super::{PaletteAction, PaletteItem, PaletteMode, RightSidebarMode, WorkspaceSection};
 
 impl super::WorkspaceView {
     pub(super) fn open_palette(&mut self, mode: PaletteMode, cx: &mut Context<Self>) {
+        self.close_palette(cx);
         self.palette_mode = Some(mode);
-        self.palette_request_id = self.palette_request_id.wrapping_add(1);
-        self.palette_query.clear();
-        self.palette_selected = 0;
         self.settings_open = false;
         self.context_menu = None;
         self.ide_menu_open = false;
         self.rename_prompt = None;
-        self.palette_files.clear();
-        self.palette_loading = false;
-        self.palette_error = None;
         if mode == PaletteMode::Files && self.has_project_context() {
             self.palette_loading = true;
             let request_id = self.palette_request_id;
@@ -52,6 +45,22 @@ impl super::WorkspaceView {
         cx.notify();
     }
 
+    /// Every dismissal cancels its file search, including Escape and clicks
+    /// outside the modal. Late results cannot repopulate a closed palette.
+    pub(super) fn close_palette(&mut self, cx: &mut Context<Self>) {
+        let was_open = self.palette_mode.take().is_some();
+        self.palette_request_id = self.palette_request_id.wrapping_add(1);
+        self._palette_task = None;
+        self.palette_query.clear();
+        self.palette_selected = 0;
+        self.palette_files.clear();
+        self.palette_loading = false;
+        self.palette_error = None;
+        if was_open {
+            cx.notify();
+        }
+    }
+
     pub(super) fn toggle_command_palette(
         &mut self,
         _: &ToggleCommandPalette,
@@ -59,10 +68,7 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.palette_mode.is_some() {
-            self.palette_mode = None;
-            self.palette_request_id = self.palette_request_id.wrapping_add(1);
-            self.palette_files.clear();
-            cx.notify();
+            self.close_palette(cx);
         } else {
             self.open_palette(PaletteMode::Commands, cx);
         }
@@ -126,7 +132,7 @@ impl super::WorkspaceView {
                 PaletteItem {
                     label: "Workspace: Mostrar u ocultar panel".into(),
                     detail: "⌥⌘B".into(),
-                    action: PaletteAction::ToggleGit,
+                    action: PaletteAction::ToggleWorkspacePanel,
                 },
                 PaletteItem {
                     label: "Workspace: Explorer".into(),
@@ -232,7 +238,7 @@ impl super::WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.palette_mode = None;
+        self.close_palette(cx);
         match action {
             PaletteAction::AddProject => self.choose_project_folder(None, false, window, cx),
             PaletteAction::SelectProject(id) => self.select_project(id, window, cx),
@@ -248,7 +254,7 @@ impl super::WorkspaceView {
             PaletteAction::TogglePaneZoom => {
                 self.toggle_pane_zoom(&crate::TogglePaneZoom, window, cx);
             }
-            PaletteAction::ToggleGit => self.toggle_diff_panel(window, cx),
+            PaletteAction::ToggleWorkspacePanel => self.toggle_workspace_panel(window, cx),
             PaletteAction::ShowFiles => {
                 self.set_workspace_mode(RightSidebarMode::Files, cx);
                 self.focus_selected_terminal(window, cx);
@@ -299,8 +305,7 @@ impl super::WorkspaceView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
-                        this.palette_mode = None;
-                        this.palette_files.clear();
+                        this.close_palette(cx);
                         cx.stop_propagation();
                         cx.notify();
                     }),

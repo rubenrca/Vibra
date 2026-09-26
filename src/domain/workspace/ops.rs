@@ -6,11 +6,6 @@ use uuid::Uuid;
 use super::types::*;
 
 impl super::WorkspaceSnapshot {
-    pub fn create_workspace(&mut self, root: &Path) {
-        let project_id = self.add_project(root);
-        self.create_workspace_in_project(project_id);
-    }
-
     /// Relocates workspaces created from an unsafe launcher fallback (typically `/`).
     /// The caller validates `to` before relocating. Only exact path matches are
     /// changed, so intentionally configured subdirectories and sessions that have
@@ -139,6 +134,13 @@ impl super::WorkspaceSnapshot {
             return false;
         }
         tab.selected_session_id = Some(session_id);
+        // Keyboard navigation must reveal the pane it will send input to.
+        if tab
+            .zoomed_session_id
+            .is_some_and(|zoomed| zoomed != session_id)
+        {
+            tab.zoomed_session_id = None;
+        }
         project.normalize();
         true
     }
@@ -352,68 +354,6 @@ impl super::WorkspaceSnapshot {
         true
     }
 
-    /// Sessions are merged into one per project in the app; kept for
-    /// fixtures that build older, multi-session snapshots.
-    #[cfg(test)]
-    pub fn rename_workspace(&mut self, project_id: Uuid, workspace_id: Uuid, name: &str) -> bool {
-        let name = name.trim();
-        if name.is_empty() || name.chars().count() > super::MAX_NAME_CHARS {
-            return false;
-        }
-        let Some(project) = self
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        else {
-            return false;
-        };
-        let Some(workspace) = project
-            .workspaces
-            .as_mut()
-            .and_then(|workspaces| workspaces.iter_mut().find(|item| item.id == workspace_id))
-        else {
-            return false;
-        };
-        if workspace.name == name && workspace.title_source == Some(WorkspaceTitleSource::Manual) {
-            return false;
-        }
-        workspace.name = name.to_owned();
-        workspace.title_source = Some(WorkspaceTitleSource::Manual);
-        true
-    }
-
-    /// Sessions are merged into one per project in the app; kept for
-    /// fixtures that build older, multi-session snapshots.
-    #[cfg(test)]
-    pub fn close_workspace(&mut self, project_id: Uuid, workspace_id: Uuid) -> bool {
-        let Some(project_index) = self
-            .projects
-            .iter()
-            .position(|project| project.id == project_id)
-        else {
-            return false;
-        };
-        let Some(workspace_index) =
-            self.projects[project_index]
-                .workspaces
-                .as_ref()
-                .and_then(|workspaces| {
-                    workspaces
-                        .iter()
-                        .position(|workspace| workspace.id == workspace_id)
-                })
-        else {
-            return false;
-        };
-        let workspaces = self.projects[project_index]
-            .workspaces
-            .as_mut()
-            .expect("checked above");
-        workspaces.remove(workspace_index);
-        self.normalize();
-        true
-    }
-
     pub fn select_workspace(&mut self, project_id: Uuid, workspace_id: Uuid) -> bool {
         let Some(project) = self
             .projects
@@ -451,34 +391,6 @@ impl super::WorkspaceSnapshot {
         }
     }
 
-    /// Selects a tab by Ghostty-style number: `1..=8` go to that index (or the
-    /// last tab if there aren't enough), and `9` always goes to the last tab.
-    pub fn select_tab_number(&mut self, number: usize) -> bool {
-        if number == 0 {
-            return false;
-        }
-        let Some((project_index, workspace_index)) = self.selected_workspace_indices() else {
-            return false;
-        };
-        let workspace = &self.projects[project_index]
-            .workspaces
-            .as_ref()
-            .expect("normalized")[workspace_index];
-        if workspace.tabs.is_empty() {
-            return false;
-        }
-        let index = if number >= 9 {
-            workspace.tabs.len() - 1
-        } else {
-            number.saturating_sub(1).min(workspace.tabs.len() - 1)
-        };
-        let tab_id = workspace.tabs[index].id;
-        if workspace.selected_tab_id == Some(tab_id) {
-            return false;
-        }
-        self.select_tab(tab_id)
-    }
-
     /// Moves `tab_id` so it sits before `before_tab_id`, or at the end when
     /// `before_tab_id` is `None`.
     pub fn move_tab(&mut self, tab_id: Uuid, before_tab_id: Option<Uuid>) -> bool {
@@ -511,36 +423,6 @@ impl super::WorkspaceSnapshot {
         workspace.selected_tab_id = Some(tab_id);
         project.normalize();
         true
-    }
-
-    /// Sessions are merged into one per project in the app; kept for
-    /// fixtures that build older, multi-session snapshots.
-    #[cfg(test)]
-    pub fn cycle_workspace(&mut self, offset: isize) -> bool {
-        let entries: Vec<_> = self
-            .projects
-            .iter()
-            .flat_map(|project| {
-                project.workspaces.iter().flatten().map(|workspace| {
-                    (
-                        project.id,
-                        workspace.id,
-                        self.selected_project_id == Some(project.id)
-                            && project.selected_workspace_id == Some(workspace.id),
-                    )
-                })
-            })
-            .collect();
-        if entries.is_empty() || offset == 0 {
-            return false;
-        }
-        let current = entries
-            .iter()
-            .position(|(_, _, selected)| *selected)
-            .unwrap_or(0);
-        let next = (current + offset.rem_euclid(entries.len() as isize) as usize) % entries.len();
-        let (project_id, workspace_id, _) = entries[next];
-        self.select_workspace(project_id, workspace_id)
     }
 
     pub fn selected_workspace(&self) -> Option<&TerminalWorkspaceSnapshot> {
@@ -588,13 +470,18 @@ impl super::WorkspaceSnapshot {
             .find(|session| Some(session.id) == tab.selected_session_id)
     }
 
-    pub fn terminal_sessions(&self) -> Vec<SessionSnapshot> {
+    pub fn terminal_sessions(&self) -> impl Iterator<Item = &SessionSnapshot> {
         self.projects
             .iter()
-            .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-            .flat_map(|workspace| &workspace.tabs)
-            .flat_map(|tab| tab.sessions.iter().cloned())
-            .collect()
+            .flat_map(ProjectSnapshot::terminal_sessions)
+    }
+
+    pub fn project_for_session(&self, session_id: Uuid) -> Option<&ProjectSnapshot> {
+        self.projects.iter().find(|project| {
+            project
+                .terminal_sessions()
+                .any(|session| session.id == session_id)
+        })
     }
 
     pub fn update_agent_task_title(&mut self, session_id: Uuid, title: &str) -> bool {
@@ -647,47 +534,22 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn update_session_working_directory(&mut self, session_id: Uuid, path: &Path) -> bool {
-        let directory_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("Terminal")
-            .to_owned();
         let path = path.to_string_lossy().into_owned();
-
-        for project in &mut self.projects {
-            for workspace in project.workspaces.iter_mut().flatten() {
-                let Some(session) = workspace
-                    .tabs
-                    .iter_mut()
-                    .flat_map(|tab| &mut tab.sessions)
-                    .find(|session| session.id == session_id)
-                else {
-                    continue;
-                };
-                let path_changed = session.working_directory != path;
-                if path_changed {
-                    session.working_directory = path.clone();
-                }
-
-                // Automatic workspace titles track the primary session cwd.
-                let is_primary = workspace
-                    .primary_session()
-                    .is_some_and(|session| session.id == session_id);
-                let auto_title = workspace.title_source != Some(WorkspaceTitleSource::Manual);
-                let name_changed = is_primary && auto_title && workspace.name != directory_name;
-                if name_changed {
-                    workspace.name = directory_name;
-                    workspace.title_source = Some(WorkspaceTitleSource::Automatic);
-                }
-
-                if path_changed || name_changed {
-                    return true;
-                }
-                return false;
-            }
+        let Some(session) = self
+            .projects
+            .iter_mut()
+            .flat_map(|project| project.workspaces.iter_mut().flatten())
+            .flat_map(|workspace| &mut workspace.tabs)
+            .flat_map(|tab| &mut tab.sessions)
+            .find(|session| session.id == session_id)
+        else {
+            return false;
+        };
+        if session.working_directory == path {
+            return false;
         }
-        false
+        session.working_directory = path;
+        true
     }
 
     fn selected_workspace_indices(&self) -> Option<(usize, usize)> {

@@ -31,7 +31,6 @@ fn agent_task_titles_persist_and_survive_terminal_updates_without_renaming_manua
     let restored: WorkspaceSnapshot = serde_json::from_str(&json).unwrap();
     let session = restored
         .terminal_sessions()
-        .into_iter()
         .find(|s| s.id == first)
         .unwrap();
     assert_eq!(session.agent_task_title.as_deref(), Some("Corregir login"));
@@ -242,7 +241,6 @@ fn create_terminal_tab_starts_at_the_project_root_after_cd() {
         .unwrap();
     let created = snapshot
         .terminal_sessions()
-        .into_iter()
         .find(|session| session.id == created_id)
         .unwrap();
     assert_eq!(created.working_directory, "/tmp/vibra-tab-root");
@@ -286,7 +284,6 @@ fn new_sessions_and_splits_stay_in_the_project_after_cd() {
     assert_eq!(
         snapshot
             .terminal_sessions()
-            .iter()
             .find(|s| s.id == first)
             .unwrap()
             .working_directory,
@@ -425,15 +422,6 @@ fn tabs_can_be_reordered_and_addressed_by_number() {
             .collect::<Vec<_>>(),
         vec![first, second, third]
     );
-
-    assert!(snapshot.select_tab_number(1));
-    assert_eq!(snapshot.selected_tab().unwrap().id, first);
-    assert!(!snapshot.select_tab_number(1));
-    assert!(snapshot.select_tab_number(8));
-    assert_eq!(snapshot.selected_tab().unwrap().id, third);
-    assert!(snapshot.select_tab(first));
-    assert!(snapshot.select_tab_number(9));
-    assert_eq!(snapshot.selected_tab().unwrap().id, third);
 }
 
 #[test]
@@ -517,7 +505,7 @@ fn legacy_sessions_migrate_without_data_loss() {
 }
 
 #[test]
-fn primary_session_tracks_the_selected_terminal_working_directory() {
+fn terminal_directory_updates_leave_legacy_container_names_unchanged() {
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/tmp/vibra-sidebar"));
     let session_id = snapshot.selected_session().unwrap().id;
@@ -531,8 +519,7 @@ fn primary_session_tracks_the_selected_terminal_working_directory() {
         workspace.primary_session().unwrap().working_directory,
         "/tmp/vibra-sidebar/nested"
     );
-    // Automatic legacy names still survive loading and directory updates.
-    assert_eq!(workspace.name, "nested");
+    assert_eq!(workspace.name, "vibra-sidebar");
     assert_eq!(
         snapshot.selected_workspace().unwrap().title_source,
         Some(WorkspaceTitleSource::Automatic)
@@ -733,7 +720,6 @@ fn accidental_root_workspace_relocates_every_session() {
     assert!(
         snapshot
             .terminal_sessions()
-            .iter()
             .all(|session| { session.working_directory == target.to_string_lossy() })
     );
     assert!(!snapshot.relocate_root(Path::new("/"), &target));

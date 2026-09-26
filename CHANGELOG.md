@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep pane focus visible through zoom and full-tab reviews; restore the workspace from numbered tab shortcuts and show ⌘9 only on the actual last tab.
+- Clear stale Explorer rows on project changes, cancel dismissed quick-open searches, and isolate review delivery acknowledgements so late results cannot unlock another send.
+- Preserve manual pane names and automation labels across agent restarts; remove obsolete CLI alias restrictions from display names.
+- Separate terminal lifecycle and Explorer rendering from workspace coordination, isolate legacy session constructors in test fixtures, and avoid cloning sessions during status/Inbox rendering.
+
 - Remove the obsolete session sidebar model, share project tab creation, and separate workspace menus and persistence coordination into focused modules.
 - Serialize notes and automation saves with workspace/settings writes, including final saves on close, and keep load errors separate from note actions.
 - Keep branch summaries and asynchronous Changes results scoped to their project; prevent notes and automations from falling through to another project's terminal, and pause automations when their project is removed.

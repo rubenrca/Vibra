@@ -302,7 +302,7 @@ impl WorkspaceView {
             .open_tab_in_project(project_id, reveal)
             .ok_or("El proyecto no tiene una carpeta asociada.")?;
         // The tab keeps the automation's name while its shell runs.
-        self.agent_names.insert(session_id, title.to_owned());
+        self.pane_names.insert(session_id, title.to_owned());
         self.reconcile_terminal_views(cx);
         let started = self
             .terminals
@@ -312,13 +312,7 @@ impl WorkspaceView {
                 terminal.update(cx, |terminal, cx| terminal.run_command(command, cx))
             });
         if reveal {
-            self.leave_library_section(WorkspaceSection::Workspace);
-            self.workspace_section = WorkspaceSection::Workspace;
-            self.review_tab_active = false;
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.sync_git_panel_visibility(cx);
-            self.refresh_project_files(cx);
+            self.prepare_terminal_tab(cx);
             self.pending_focus_session = Some(session_id);
         }
         self.persist(cx);

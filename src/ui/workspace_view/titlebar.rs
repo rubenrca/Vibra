@@ -211,7 +211,7 @@ impl super::WorkspaceView {
                         false,
                         cx,
                         |this, window, cx| {
-                            this.toggle_diff_panel(window, cx);
+                            this.toggle_workspace_panel(window, cx);
                         },
                     )),
             )

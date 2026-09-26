@@ -419,7 +419,7 @@ impl TabSnapshot {
         }
         if self
             .zoomed_session_id
-            .is_some_and(|id| !session_ids.contains(&id))
+            .is_some_and(|id| Some(id) != self.selected_session_id)
         {
             self.zoomed_session_id = None;
         }

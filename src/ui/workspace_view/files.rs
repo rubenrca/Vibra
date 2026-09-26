@@ -464,10 +464,6 @@ impl super::WorkspaceView {
         if self.workspace_section != super::WorkspaceSection::Workspace
             || !self.right_sidebar_visible
             || !self.has_project_context()
-            || !matches!(
-                self.right_sidebar_mode,
-                RightSidebarMode::Files | RightSidebarMode::Diff
-            )
         {
             self.files_watch = None;
             return;

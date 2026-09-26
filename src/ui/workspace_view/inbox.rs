@@ -56,19 +56,10 @@ impl WorkspaceView {
 
     /// The project a terminal belongs to, or an empty string once it is gone.
     pub(super) fn session_location_label(&self, pane_id: Uuid) -> String {
-        let Some(project) = self.snapshot.projects.iter().find(|project| {
-            project
-                .workspaces
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .flat_map(|workspace| &workspace.tabs)
-                .flat_map(|tab| &tab.sessions)
-                .any(|session| session.id == pane_id)
-        }) else {
-            return String::new();
-        };
-        project.name.clone()
+        self.snapshot
+            .project_for_session(pane_id)
+            .map(|project| project.name.clone())
+            .unwrap_or_default()
     }
 
     /// Shows a terminal from anywhere in the app and acknowledges its events.
@@ -77,7 +68,7 @@ impl WorkspaceView {
             return;
         }
         self.inbox.mark_pane_read(pane_id);
-        self.apply_workspace_selection_change(window, cx);
+        self.show_terminal_tab(window, cx);
         self.pending_focus_session = Some(pane_id);
         cx.notify();
     }
@@ -96,7 +87,6 @@ impl WorkspaceView {
         let agents: Vec<_> = self
             .snapshot
             .terminal_sessions()
-            .into_iter()
             .filter_map(|session| {
                 self.resolved_agent_presence(session.id)
                     .map(|presence| (session.id, presence))

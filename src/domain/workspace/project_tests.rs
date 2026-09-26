@@ -89,7 +89,7 @@ fn legacy_migration_preserves_containers_with_duplicate_ids() {
 
     assert_eq!(snapshot.projects.len(), 2);
     assert_eq!(session_ids(&snapshot).len(), 2);
-    assert_eq!(snapshot.terminal_sessions().len(), 2);
+    assert_eq!(snapshot.terminal_sessions().count(), 2);
     assert_ne!(snapshot.projects[0].id, snapshot.projects[1].id);
     // The old ID identified both projects; selection keeps the first match,
     // which is what reads before normalization could access.
@@ -119,7 +119,7 @@ fn normalization_preserves_all_workspaces_when_ids_repeat_within_a_project() {
     assert_eq!(workspaces.len(), 2);
     assert_ne!(workspaces[0].id, workspaces[1].id);
     assert_eq!(snapshot.selected_workspace().unwrap().id, workspaces[0].id);
-    assert_eq!(snapshot.terminal_sessions().len(), 2);
+    assert_eq!(snapshot.terminal_sessions().count(), 2);
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn normalization_preserves_all_tabs_when_selected_tab_id_repeats() {
     assert_eq!(workspace.tabs.len(), 2);
     assert_ne!(workspace.tabs[0].id, workspace.tabs[1].id);
     assert_eq!(snapshot.selected_tab().unwrap().id, workspace.tabs[0].id);
-    assert_eq!(snapshot.terminal_sessions().len(), 2);
+    assert_eq!(snapshot.terminal_sessions().count(), 2);
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn closing_the_last_session_or_pane_keeps_the_project() {
         assert_eq!(snapshot.projects.len(), 1);
         assert_eq!(snapshot.selected_project_id, Some(project_id));
         assert!(snapshot.selected_workspace().is_none());
-        assert!(snapshot.terminal_sessions().is_empty());
+        assert!(snapshot.terminal_sessions().next().is_none());
         assert_eq!(round_trip(&snapshot), snapshot);
         snapshot.create_workspace_in_project(project_id).unwrap();
         assert_eq!(
@@ -257,7 +257,7 @@ fn mixed_and_empty_legacy_spaces_require_a_folder_without_changing_existing_cwds
     let first = snapshot.selected_workspace().unwrap().id;
     snapshot.create_workspace(Path::new("/projects/b"));
     let second = snapshot.selected_workspace().unwrap().id;
-    let sessions = snapshot.terminal_sessions();
+    let sessions: Vec<_> = snapshot.terminal_sessions().cloned().collect();
     let mixed = Uuid::new_v4();
     let empty = Uuid::new_v4();
     snapshot.schema_version = 6;
@@ -278,10 +278,16 @@ fn mixed_and_empty_legacy_spaces_require_a_folder_without_changing_existing_cwds
     snapshot.normalize();
     assert_eq!(snapshot.projects.len(), 2);
     assert!(snapshot.projects.iter().all(|p| p.directory().is_none()));
-    assert_eq!(snapshot.terminal_sessions(), sessions);
+    assert_eq!(
+        snapshot.terminal_sessions().cloned().collect::<Vec<_>>(),
+        sessions
+    );
     assert!(snapshot.create_workspace_in_project(mixed).is_none());
     assert!(snapshot.set_project_directory(mixed, Path::new("/projects/chosen")));
-    assert_eq!(snapshot.terminal_sessions(), sessions);
+    assert_eq!(
+        snapshot.terminal_sessions().cloned().collect::<Vec<_>>(),
+        sessions
+    );
     snapshot.create_workspace_in_project(mixed).unwrap();
     assert_eq!(
         snapshot.selected_session().unwrap().working_directory,

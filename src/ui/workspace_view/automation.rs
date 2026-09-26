@@ -176,9 +176,6 @@ impl WorkspaceView {
             .and_then(|presence| presence.session_id.as_deref())
             .zip(session_id.as_deref())
             .is_some_and(|(previous, current)| previous != current);
-        if session_changed {
-            self.agent_names.remove(&pane_id);
-        }
         let entry = self
             .hook_agent_presence
             .entry(pane_id)

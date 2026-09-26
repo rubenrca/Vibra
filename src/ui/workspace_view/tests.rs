@@ -1,4 +1,7 @@
 use super::*;
+use crate::ports::terminal::TerminalAgentKindSource;
+use crate::ui::terminal::TerminalViewEvent;
+use gpui::Focusable;
 use std::path::Path;
 
 use crate::domain::workspace::WorkspaceSnapshot;
@@ -496,7 +499,7 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
                     .close_workspace(first_project, second_workspace)
             );
             view.reconcile_terminal_views(cx);
-            view.apply_workspace_selection_change(window, cx);
+            view.show_terminal_tab(window, cx);
             assert!(view.terminals.is_empty());
             assert_eq!(view.project_root(), root);
             assert!(view.has_project_context());
@@ -508,7 +511,7 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
             assert_eq!(view.repository.load().unwrap().unwrap(), view.snapshot);
 
             assert!(view.snapshot.remove_project(first_project));
-            view.apply_workspace_selection_change(window, cx);
+            view.show_terminal_tab(window, cx);
             assert!(!view.has_project_context());
             assert!(view.project_files.is_empty());
             assert!(view.files_watch.is_none());
@@ -812,7 +815,7 @@ fn scheduled_automations_run_in_a_new_tab_without_stealing_focus(cx: &mut gpui::
                     .any(|tab| tab.sessions.iter().any(|pane| pane.id == session))
             );
             assert_eq!(
-                view.agent_names.get(&session).map(String::as_str),
+                view.pane_names.get(&session).map(String::as_str),
                 Some("Resumen")
             );
             assert!(view.terminals.contains_key(&session));
@@ -1262,5 +1265,246 @@ fn closing_the_window_saves_library_edits_before_the_debounce(cx: &mut gpui::Tes
     cx.run_until_parked();
     let saved = LibraryRepository::in_directory(&root).load().unwrap();
     assert_eq!(saved.note(id).unwrap().body, "Last edit before closing");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn pane_navigation_never_focuses_a_terminal_hidden_by_zoom(cx: &mut gpui::TestAppContext) {
+    use crate::domain::workspace::PaneFocusDirection;
+
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "zoom-navigation");
+    let panes: Vec<_> = snapshot
+        .selected_tab()
+        .unwrap()
+        .sessions
+        .iter()
+        .map(|s| s.id)
+        .collect();
+    window
+        .update(cx, |view, window, cx| {
+            view.toggle_pane_zoom_for(panes[0], window, cx);
+            view.focus_pane(PaneFocusDirection::Right, window, cx);
+            assert_eq!(view.snapshot.selected_session().unwrap().id, panes[1]);
+            assert!(view.terminals[&panes[1]].read(cx).is_surface_visible());
+            assert!(
+                view.terminals[&panes[1]]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+
+            view.toggle_pane_zoom_for(panes[1], window, cx);
+            view.cycle_pane(1, window, cx);
+            assert_eq!(view.snapshot.selected_session().unwrap().id, panes[0]);
+            assert!(view.terminals[&panes[0]].read(cx).is_surface_visible());
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn tab_shortcuts_return_from_global_pages_even_when_the_tab_is_selected(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "tab-shortcut");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            for section in [
+                WorkspaceSection::Inbox,
+                WorkspaceSection::Notes,
+                WorkspaceSection::Automations,
+            ] {
+                view.select_section(section, window, cx);
+                view.go_to_tab(&crate::GoToTab { index: 1 }, window, cx);
+                assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
+                assert!(view.terminals[&pane].read(cx).is_surface_visible());
+                assert!(
+                    view.terminals[&pane]
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                );
+            }
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn numbered_tabs_include_the_review_when_clamping_to_the_last_tab(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "review-shortcut");
+    window
+        .update(cx, |view, _, cx| {
+            view.diff_view
+                .update(cx, |diff, cx| diff.set_review_expanded(true, cx));
+        })
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            let tab = snapshot.selected_tab().unwrap().id;
+            view.select_tab(tab, window, cx);
+            view.go_to_tab(&crate::GoToTab { index: 8 }, window, cx);
+            assert!(
+                view.review_visible(cx),
+                "out-of-range shortcuts select the last visible tab, including review"
+            );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn revealing_a_single_pane_from_review_restores_keyboard_focus(cx: &mut gpui::TestAppContext) {
+    let (root, _, _, window) = open_recording_workspace(cx, "review-focus");
+    window
+        .update(cx, |view, window, cx| {
+            view.close_terminal(&CloseTerminal, window, cx);
+            view.diff_view
+                .update(cx, |diff, cx| diff.set_review_expanded(true, cx));
+        })
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.activate_review_tab(window, cx);
+            view.cycle_pane(1, window, cx);
+            let pane = view.snapshot.selected_session().unwrap().id;
+            assert!(!view.review_visible(cx));
+            assert!(
+                view.terminals[&pane]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn explorer_discards_previous_project_rows_before_loading_the_next(cx: &mut gpui::TestAppContext) {
+    let (root, _, _, window) = open_recording_workspace(cx, "explorer-root");
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(!view.project_files.is_empty());
+            view.file_error = Some("old error".into());
+            let next_root = root.join("second");
+            std::fs::create_dir(&next_root).unwrap();
+            let next = view.snapshot.add_project(&next_root);
+            view.select_project(next, window, cx);
+            assert!(
+                view.project_files.is_empty(),
+                "the previous project's rows must disappear synchronously"
+            );
+            assert!(view.file_error.is_none());
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn manual_pane_names_survive_agent_restarts_and_terminal_exit(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "pane-name");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.begin_rename_prompt(RenamePromptKind::Pane { session_id: pane }, cx);
+            view.rename_prompt.as_mut().unwrap().value = "Mi revisión".into();
+            view.confirm_rename_prompt(cx);
+            for process_id in [7, 8] {
+                view.handle_terminal_view_event(
+                    &TerminalViewEvent::AgentPresenceChanged {
+                        session_id: pane,
+                        presence: Some(TerminalAgentPresence {
+                            kind: "Codex".into(),
+                            kind_source: TerminalAgentKindSource::Process,
+                            state: AgentRuntimeState::Working,
+                            process_id: Some(process_id),
+                        }),
+                    },
+                    cx,
+                );
+                assert_eq!(
+                    view.pane_identity_by_id(pane, cx).unwrap().title,
+                    "Mi revisión"
+                );
+            }
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::Exited {
+                    session_id: pane,
+                    code: Some(0),
+                },
+                cx,
+            );
+            assert_eq!(
+                view.pane_identity_by_id(pane, cx).unwrap().title,
+                "Mi revisión"
+            );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn delayed_focus_cannot_return_to_a_hidden_tab_or_cover_a_global_page(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "stale-focus");
+    let previous = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.open_terminal_tab_in_project(window, cx);
+            let current = view.snapshot.selected_session().unwrap().id;
+            // A deferred callback was queued before the user changed tabs.
+            view.focus_terminal(previous, window, cx);
+            assert!(
+                view.terminals[&current]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+
+            view.select_section(WorkspaceSection::Notes, window, cx);
+            view.focus_terminal(current, window, cx);
+            assert!(view.focus_handle.is_focused(window));
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn dismissing_quick_open_cancels_pending_results(cx: &mut gpui::TestAppContext) {
+    let (root, _, _, window) = open_recording_workspace(cx, "palette-cancel");
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_palette(PaletteMode::Files, cx);
+            view.on_workspace_key_down(
+                &gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                    is_held: false,
+                },
+                window,
+                cx,
+            );
+            assert!(view.palette_mode.is_none());
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, _| {
+            assert!(view.palette_files.is_empty());
+            assert!(!view.palette_loading);
+            window.remove_window();
+        })
+        .unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -36,15 +36,14 @@ impl WorkspaceView {
     pub(super) fn begin_rename_prompt(&mut self, kind: RenamePromptKind, cx: &mut Context<Self>) {
         let value = match kind {
             RenamePromptKind::Pane { session_id } => self
-                .agent_names
+                .pane_names
                 .get(&session_id)
                 .cloned()
                 .or_else(|| {
                     self.snapshot
                         .terminal_sessions()
-                        .into_iter()
                         .find(|session| session.id == session_id)
-                        .map(|session| session.title)
+                        .map(|session| session.title.clone())
                 })
                 .unwrap_or_default(),
             RenamePromptKind::Project { project_id } => self
@@ -58,7 +57,7 @@ impl WorkspaceView {
         };
         self.context_menu = None;
         self.rename_prompt = Some(RenamePrompt { kind, value });
-        self.palette_mode = None;
+        self.close_palette(cx);
         self.settings_open = false;
         cx.notify();
     }
@@ -97,31 +96,12 @@ impl WorkspaceView {
         }
         match prompt.kind {
             RenamePromptKind::Pane { session_id } => {
-                // Pane labels are intentionally independent from agent hook identity.
-                let project_id = self.project_id_for_session(session_id);
-                if name.len() > 48 {
-                    self.persistence_error =
-                        Some("El nombre del pane es demasiado largo (máx. 48)".into());
-                    cx.notify();
+                // Names are display labels, not CLI addressing aliases.
+                if self.snapshot.project_for_session(session_id).is_none() {
+                    self.rename_prompt = None;
                     return;
                 }
-                if let Some(project_id) = project_id
-                    && let Some((existing, _)) =
-                        self.agent_names.iter().find(|(other_id, other_name)| {
-                            *other_name == &name
-                                && **other_id != session_id
-                                && self
-                                    .project_id_for_session(**other_id)
-                                    .is_some_and(|id| id == project_id)
-                        })
-                {
-                    self.persistence_error = Some(
-                        format!("El nombre '{name}' ya está en uso por el pane {existing}").into(),
-                    );
-                    cx.notify();
-                    return;
-                }
-                self.agent_names.insert(session_id, name);
+                self.pane_names.insert(session_id, name);
                 self.rename_prompt = None;
                 self.persistence_error = None;
             }

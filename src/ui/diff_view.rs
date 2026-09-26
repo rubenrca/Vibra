@@ -34,6 +34,8 @@ use gpui::{
     WhiteSpace, Window, canvas, div, ease_out_quint, list, point, prelude::*, px, uniform_list,
 };
 
+use uuid::Uuid;
+
 use crate::ports::files::FileEntryKind;
 use crate::ports::git::{
     GitBranchChanges, GitBranchRef, GitCommit, GitCommitChanges, GitDiffRow, GitDiffRowKind,
@@ -248,7 +250,7 @@ pub struct DiffView {
     /// Reset whenever the file's diff is reloaded.
     fold_reveals: HashMap<String, HashMap<usize, FoldReveal>>,
     comments: Vec<ReviewComment>,
-    review_delivery_pending: bool,
+    review_delivery: Option<PendingReviewDelivery>,
     next_comment_id: u64,
     draft: Option<CommentDraft>,
     /// The review fills its tab (the default); off, it shares the center
@@ -328,6 +330,11 @@ struct PendingDiffLoad {
     source: DiffSource,
 }
 
+struct PendingReviewDelivery {
+    id: Uuid,
+    comment_ids: Vec<u64>,
+}
+
 pub enum DiffViewEvent {
     /// Status, layout, or expansion changed; the workspace repaints.
     Changed,
@@ -336,10 +343,7 @@ pub enum DiffViewEvent {
     /// The toolbar changed a persisted preference.
     PreferencesChanged { split: bool, wrap: bool },
     /// Review comments to paste into the agent's terminal.
-    SendReview {
-        prompt: String,
-        comment_ids: Vec<u64>,
-    },
+    SendReview { prompt: String, delivery_id: Uuid },
     /// A file or commit was opened for review; show its tab.
     ReviewOpened,
     /// Open a terminal session that runs this command in the repository.
@@ -433,7 +437,7 @@ impl DiffView {
             fold_generation: 0,
             fold_reveals: HashMap::new(),
             comments: Vec::new(),
-            review_delivery_pending: false,
+            review_delivery: None,
             next_comment_id: 1,
             draft: None,
             review_focused: true,
@@ -632,7 +636,7 @@ impl DiffView {
         self.context_root = root;
         self.selected_review_path = None;
         self.comments.clear();
-        self.review_delivery_pending = false;
+        self.review_delivery = None;
         self.draft = None;
         // A hidden panel can stay hidden indefinitely. Drop the previous
         // repository immediately so file selection and status colors never
@@ -712,7 +716,7 @@ impl DiffView {
         self.forget_scroll();
         self.mode = mode;
         self.comments.clear();
-        self.review_delivery_pending = false;
+        self.review_delivery = None;
         self.draft = None;
         self.h_offset = 0.0;
         match mode {
@@ -789,7 +793,7 @@ impl DiffView {
         cx: &mut Context<Self>,
     ) {
         self.comments.clear();
-        self.review_delivery_pending = false;
+        self.review_delivery = None;
         self.draft = None;
         if is_base {
             self.selected_base = reference;
@@ -1126,7 +1130,7 @@ impl DiffView {
 
     fn back_to_history(&mut self, cx: &mut Context<Self>) {
         self.comments.clear();
-        self.review_delivery_pending = false;
+        self.review_delivery = None;
         self.draft = None;
         self.clear_commit();
         self.refresh_history(false, cx);
@@ -1136,7 +1140,7 @@ impl DiffView {
 
     fn select_commit(&mut self, commit: GitCommit, cx: &mut Context<Self>) {
         self.comments.clear();
-        self.review_delivery_pending = false;
+        self.review_delivery = None;
         self.draft = None;
         self.clear_commit();
         self.forget_scroll();
@@ -1668,30 +1672,43 @@ impl DiffView {
 
     fn send_review(&mut self, cx: &mut Context<Self>) {
         self.commit_draft();
-        if self.comments.is_empty() || self.review_delivery_pending {
+        if self.comments.is_empty() || self.review_delivery.is_some() {
             return;
         }
         let prompt = review_prompt(&self.comments);
         let comment_ids = self.comments.iter().map(|comment| comment.id).collect();
-        self.review_delivery_pending = true;
+        let delivery_id = Uuid::new_v4();
+        self.review_delivery = Some(PendingReviewDelivery {
+            id: delivery_id,
+            comment_ids,
+        });
         cx.emit(DiffViewEvent::SendReview {
             prompt,
-            comment_ids,
+            delivery_id,
         });
         cx.notify();
     }
 
-    /// Retire only comments included in a review that reached a terminal.
-    /// A new comment added while delivery was queued must remain available.
-    pub fn confirm_review_sent(&mut self, comment_ids: &[u64], cx: &mut Context<Self>) {
-        self.comments
-            .retain(|comment| !comment_ids.contains(&comment.id));
-        self.review_delivery_pending = false;
-        cx.notify();
-    }
-
-    pub fn review_delivery_failed(&mut self, cx: &mut Context<Self>) {
-        self.review_delivery_pending = false;
+    /// A late acknowledgement belongs only to its original delivery. Changing
+    /// repository or review scope invalidates it, even if a new send is pending.
+    pub fn resolve_review_delivery(
+        &mut self,
+        delivery_id: Uuid,
+        accepted: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .review_delivery
+            .as_ref()
+            .is_none_or(|delivery| delivery.id != delivery_id)
+        {
+            return;
+        }
+        let delivery = self.review_delivery.take().expect("delivery checked above");
+        if accepted {
+            self.comments
+                .retain(|comment| !delivery.comment_ids.contains(&comment.id));
+        }
         cx.notify();
     }
 
@@ -3277,7 +3294,7 @@ impl DiffView {
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.comments.clear();
-                            this.review_delivery_pending = false;
+                            this.review_delivery = None;
                             this.draft = None;
                             cx.notify();
                         })),

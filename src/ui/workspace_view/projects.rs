@@ -112,7 +112,7 @@ impl WorkspaceView {
                 this.set_right_sidebar_visible(true, true, cx);
                 this.set_left_sidebar_visible(true, true, cx);
                 this.reconcile_terminal_views(cx);
-                this.apply_workspace_selection_change(window, cx);
+                this.show_terminal_tab(window, cx);
             });
         })
         .detach();
@@ -138,14 +138,14 @@ impl WorkspaceView {
         }
         if self.snapshot.open_tab_in_project(id, true).is_some() {
             self.reconcile_terminal_views(cx);
-            self.apply_workspace_selection_change(window, cx);
+            self.show_terminal_tab(window, cx);
         }
     }
 
     pub(super) fn select_project(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.select_project(id) {
             // Keep the right panel as the user left it.
-            self.apply_workspace_selection_change(window, cx);
+            self.show_terminal_tab(window, cx);
         }
     }
 
@@ -174,7 +174,7 @@ impl WorkspaceView {
                         this.persist_library(cx);
                     }
                     this.reconcile_terminal_views(cx);
-                    this.apply_workspace_selection_change(window, cx);
+                    this.show_terminal_tab(window, cx);
                 }
             });
         })
@@ -190,12 +190,7 @@ impl WorkspaceView {
             .iter()
             .find(|project| project.id == project_id)?;
         let presences: Vec<_> = project
-            .workspaces
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .flat_map(|workspace| &workspace.tabs)
-            .flat_map(|tab| &tab.sessions)
+            .terminal_sessions()
             .filter_map(|session| self.resolved_agent_presence(session.id))
             .filter(|presence| presence.state != AgentRuntimeState::Idle)
             .collect();
@@ -338,7 +333,7 @@ impl WorkspaceView {
                     .h(px(SIDEBAR_CONTROL_SIZE))
                     .flex_none()
                     .relative()
-                    // Agent activity, replaced by the new-session button on hover.
+                    // Agent activity, replaced by the new-tab button on hover.
                     .when_some(activity, |slot, (dot, count)| {
                         slot.child(
                             div()
@@ -362,7 +357,7 @@ impl WorkspaceView {
                     })
                     .child(
                         div()
-                            .id(SharedString::from(format!("project-new-session-{id}")))
+                            .id(SharedString::from(format!("project-new-tab-{id}")))
                             .absolute()
                             .inset_0()
                             .tooltip(|_, cx| sidebar_tooltip("Nueva pestaña · ⌘T", cx))
@@ -430,7 +425,7 @@ impl WorkspaceView {
             )
             .child(
                 div()
-                    .id("empty-project-new-session")
+                    .id("empty-project-new-tab")
                     .px_3()
                     .py_2()
                     .rounded_md()

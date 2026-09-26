@@ -1,5 +1,5 @@
 //! The review as a tab beside the terminal tabs, back/forward navigation
-//! between tabs and sessions, and the resizable terminal/review split.
+//! between tabs and projects, and the resizable terminal/review split.
 
 use gpui::{
     AnyElement, Context, DragMoveEvent, MouseButton, Window, div, prelude::*, px, relative, svg,
@@ -15,6 +15,29 @@ use super::titlebar::{TITLEBAR_BUTTON_GAP, titlebar_button, titlebar_icon};
 use super::{WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const MAX_NAVIGATION_HISTORY: usize = 50;
+
+/// The review participates in the same numbering as terminal tabs. `9`
+/// always means last; an out-of-range number also lands on the last tab.
+fn numbered_tab_index(number: usize, count: usize) -> Option<usize> {
+    if number == 0 || count == 0 {
+        return None;
+    }
+    Some(if number >= 9 {
+        count - 1
+    } else {
+        (number - 1).min(count - 1)
+    })
+}
+
+pub(super) fn tab_shortcut_label(index: usize, count: usize) -> Option<String> {
+    if index < 8 {
+        Some(format!("⌘{}", index + 1))
+    } else if index + 1 == count {
+        Some("⌘9".into())
+    } else {
+        None
+    }
+}
 
 /// A place the user can go back to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,23 +172,40 @@ impl WorkspaceView {
         self.leave_library_section(WorkspaceSection::Workspace);
         self.workspace_section = WorkspaceSection::Workspace;
         self.review_tab_active = true;
+        self.pending_focus_session = None;
+        self.context_menu = None;
+        self.ide_menu_open = false;
         self.sync_terminal_surface_visibility(cx);
         self.sync_git_panel_visibility(cx);
+        self.sync_files_watcher(cx);
         self.diff_view.read(cx).focus_review(window);
         cx.notify();
     }
 
     /// Brings a terminal tab forward; an open review keeps its tab.
     pub(super) fn show_terminal_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prepare_terminal_tab(cx);
+        self.persist(cx);
+        self.focus_selected_terminal(window, cx);
+    }
+
+    /// Shared transition for interactive navigation and commands that focus
+    /// their new terminal on the next frame (for example, automations).
+    pub(super) fn prepare_terminal_tab(&mut self, cx: &mut Context<Self>) {
         self.leave_library_section(WorkspaceSection::Workspace);
         self.workspace_section = WorkspaceSection::Workspace;
         self.review_tab_active = false;
+        self.pending_focus_session = None;
+        self.context_menu = None;
+        self.ide_menu_open = false;
+        self.close_palette(cx);
+        if let Some(session) = self.snapshot.selected_session() {
+            self.inbox.mark_pane_read(session.id);
+        }
         self.sync_terminal_surface_visibility(cx);
         self.sync_diff_root(cx);
         self.sync_git_panel_visibility(cx);
         self.refresh_project_files(cx);
-        self.persist(cx);
-        self.focus_selected_terminal(window, cx);
     }
 
     fn apply_location(
@@ -204,15 +244,9 @@ impl WorkspaceView {
                 if !exists {
                     return false;
                 }
-                let same_workspace = self.snapshot.selected_project_id == Some(project_id)
-                    && current_workspace == Some(workspace_id);
                 self.snapshot.select_workspace(project_id, workspace_id);
                 self.snapshot.select_tab(tab_id);
-                if same_workspace {
-                    self.show_terminal_tab(window, cx);
-                } else {
-                    self.apply_workspace_selection_change(window, cx);
-                }
+                self.show_terminal_tab(window, cx);
                 true
             }
         }
@@ -258,17 +292,23 @@ impl WorkspaceView {
             .snapshot
             .selected_workspace()
             .map_or(0, |workspace| workspace.tabs.len());
-        if self.diff_view.read(cx).review_expanded()
-            && (action.index == 9 || action.index == terminal_tabs + 1)
-        {
+        let review_open = self.diff_view.read(cx).review_expanded();
+        let Some(index) =
+            numbered_tab_index(action.index, terminal_tabs + usize::from(review_open))
+        else {
+            return;
+        };
+        if index == terminal_tabs {
             self.activate_review_tab(window, cx);
             return;
         }
-        let changed = self.snapshot.select_tab_number(action.index);
-        if changed || self.review_tab_active {
-            self.show_terminal_tab(window, cx);
-        }
-        self.focus_selected_terminal(window, cx);
+        let tab_id = self
+            .snapshot
+            .selected_workspace()
+            .expect("terminal tab exists")
+            .tabs[index]
+            .id;
+        self.select_tab(tab_id, window, cx);
     }
 
     /// Navigation arrows for the titlebar.
@@ -315,7 +355,7 @@ impl WorkspaceView {
         } else {
             "chrome-icons/diff-unified.svg"
         };
-        let shortcut = (number <= 8).then(|| format!("⌘{number}"));
+        let shortcut = tab_shortcut_label(number - 1, number);
         div()
             .id("review-tab")
             .group("title-tab")
@@ -468,6 +508,24 @@ impl WorkspaceView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_shortcuts_match_their_numbered_destination() {
+        assert_eq!(numbered_tab_index(0, 3), None);
+        assert_eq!(numbered_tab_index(1, 0), None);
+        assert_eq!(numbered_tab_index(8, 3), Some(2));
+        for count in 1..=12 {
+            assert_eq!(numbered_tab_index(9, count), Some(count - 1));
+            for index in 0..count {
+                if let Some(label) = tab_shortcut_label(index, count) {
+                    let number: usize = label.trim_start_matches('⌘').parse().unwrap();
+                    assert_eq!(numbered_tab_index(number, count), Some(index));
+                }
+            }
+        }
+        assert_eq!(tab_shortcut_label(8, 10), None);
+        assert_eq!(tab_shortcut_label(9, 10).as_deref(), Some("⌘9"));
+    }
 
     fn terminal(tab: u128) -> NavLocation {
         NavLocation::Terminal {

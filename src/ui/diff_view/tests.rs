@@ -1,6 +1,70 @@
 use super::*;
 
 #[gpui::test]
+fn late_review_delivery_does_not_unlock_another_projects_pending_review(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::infrastructure::git::GitCliPort;
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        DiffView::new(
+            PathBuf::from("/tmp/vibra-review-a"),
+            Arc::new(GitCliPort::default()),
+            cx,
+        )
+    });
+    let comment = |id| ReviewComment {
+        id,
+        anchor: CommentAnchor {
+            path: "main.rs".into(),
+            side: CommentSide::New,
+            line: 1,
+        },
+        excerpt: "fn main() {}".into(),
+        body: "Please review this.".into(),
+    };
+    view.update(cx, |view, cx| {
+        view.comments.push(comment(1));
+        view.send_review(cx);
+        let previous_delivery = view.review_delivery.as_ref().unwrap().id;
+        view.set_root(PathBuf::from("/tmp/vibra-review-b"), cx);
+        view.comments.push(comment(2));
+        view.send_review(cx);
+        view.resolve_review_delivery(previous_delivery, true, cx);
+        view.resolve_review_delivery(previous_delivery, false, cx);
+        assert!(
+            view.review_delivery.is_some(),
+            "a late result must not permit sending the new review twice"
+        );
+        assert_eq!(view.comments.len(), 1);
+        let rejected_delivery = view.review_delivery.as_ref().unwrap().id;
+        view.resolve_review_delivery(rejected_delivery, false, cx);
+        assert!(view.review_delivery.is_none());
+        assert_eq!(
+            view.comments.len(),
+            1,
+            "rejected sends retain their comments"
+        );
+        view.send_review(cx);
+        let retried_delivery = view.review_delivery.as_ref().unwrap().id;
+        view.resolve_review_delivery(rejected_delivery, true, cx);
+        assert!(
+            view.review_delivery.is_some(),
+            "a retry of the same comments gets a new identity"
+        );
+        view.comments.push(comment(3));
+        view.resolve_review_delivery(retried_delivery, true, cx);
+        assert!(view.review_delivery.is_none());
+        assert_eq!(
+            view.comments
+                .iter()
+                .map(|comment| comment.id)
+                .collect::<Vec<_>>(),
+            [3]
+        );
+    });
+}
+
+#[gpui::test]
 fn changing_repository_clears_old_snapshot_before_refresh(cx: &mut gpui::TestAppContext) {
     use crate::infrastructure::git::GitCliPort;
 
@@ -352,14 +416,14 @@ fn review_list_is_one_flat_list_with_pinned_headers_and_comments(cx: &mut gpui::
         );
         view.send_review(cx);
         view.send_review(cx);
-        assert!(view.review_delivery_pending);
+        assert!(view.review_delivery.is_some());
         assert_eq!(
             view.comments.len(),
             1,
             "comments remain until delivery succeeds"
         );
-        let sent_id = view.comments[0].id;
-        view.confirm_review_sent(&[sent_id], cx);
+        let delivery = view.review_delivery.as_ref().unwrap().id;
+        view.resolve_review_delivery(delivery, true, cx);
         assert!(view.comments.is_empty());
     });
     let sent = sent.borrow();

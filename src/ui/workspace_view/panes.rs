@@ -110,13 +110,16 @@ impl super::WorkspaceView {
                     .as_ref()
                     .map(|identity| identity.title.clone())
                     .unwrap_or_else(|| format!("Terminal {}", index + 1));
-                // The ⌘ hint numbers the first nine tabs; later ones carry it.
+                // Later tabs keep their position in the label.
                 let title = if tab_count > 1 && index >= 9 {
                     format!("{title} {}", index + 1)
                 } else {
                     title
                 };
-                let shortcut = (index < 9).then(|| format!("⌘{}", index + 1));
+                let shortcut = super::tabs::tab_shortcut_label(
+                    index,
+                    tab_count + usize::from(show_review_tab),
+                );
                 let pane_count = tab.sessions.len();
                 let drag = TabDrag {
                     tab_id,
@@ -678,7 +681,6 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.snapshot.close_terminal(session_id) {
-            self.agent_names.remove(&session_id);
             self.reconcile_terminal_views(cx);
             self.sync_diff_root(cx);
             self.refresh_project_files(cx);
@@ -726,6 +728,7 @@ impl super::WorkspaceView {
         if self.review_covers_terminal(cx) {
             self.review_tab_active = false;
             self.sync_terminal_surface_visibility(cx);
+            self.sync_git_panel_visibility(cx);
         }
     }
 
@@ -759,8 +762,8 @@ impl super::WorkspaceView {
             self.sync_diff_root(cx);
             self.refresh_project_files(cx);
             self.persist(cx);
-            self.focus_selected_terminal(window, cx);
         }
+        self.focus_selected_terminal(window, cx);
     }
 
     pub(super) fn cycle_pane(
@@ -776,8 +779,8 @@ impl super::WorkspaceView {
             self.sync_diff_root(cx);
             self.refresh_project_files(cx);
             self.persist(cx);
-            self.focus_selected_terminal(window, cx);
         }
+        self.focus_selected_terminal(window, cx);
     }
 
     pub(super) fn resize_pane(&mut self, direction: PaneResizeDirection, cx: &mut Context<Self>) {

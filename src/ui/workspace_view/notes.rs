@@ -86,12 +86,7 @@ impl WorkspaceView {
                     .selected_workspace_id
                     .and_then(|id| workspaces.iter().find(|workspace| workspace.id == id))
                     .or_else(|| workspaces.first())?;
-                let tab = workspace
-                    .selected_tab_id
-                    .and_then(|id| workspace.tabs.iter().find(|tab| tab.id == id))
-                    .or_else(|| workspace.tabs.first())?;
-                tab.selected_session_id
-                    .or_else(|| tab.sessions.first().map(|session| session.id))
+                workspace.primary_session().map(|session| session.id)
             })
     }
 
