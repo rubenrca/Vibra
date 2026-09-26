@@ -30,6 +30,42 @@ pub struct AgentNotification {
     pub delivery: AgentNotificationDelivery,
 }
 
+/// The activity worth surfacing, on a real transition only. Notifications and
+/// the Inbox share this so both report the same events.
+pub fn agent_activity_event(
+    previous: Option<&AgentActivitySnapshot>,
+    current: Option<&AgentActivitySnapshot>,
+) -> Option<AgentNotificationKind> {
+    let previous = previous?;
+    let Some(current) = current else {
+        // Process gone / session-end: still a finish if it was working.
+        return (previous.state == AgentRuntimeState::Working)
+            .then_some(AgentNotificationKind::Finished);
+    };
+    if previous.kind.eq_ignore_ascii_case(&current.kind)
+        && previous.state == current.state
+        && previous.attention == current.attention
+    {
+        return None;
+    }
+    match current.state {
+        AgentRuntimeState::Waiting
+            if current.attention == Some(AgentAttention::Permission)
+                && (previous.state != AgentRuntimeState::Waiting
+                    || previous.attention != current.attention) =>
+        {
+            Some(AgentNotificationKind::NeedsPermission)
+        }
+        AgentRuntimeState::Waiting if previous.state != AgentRuntimeState::Waiting => {
+            Some(AgentNotificationKind::NeedsAttention)
+        }
+        AgentRuntimeState::Idle if previous.state == AgentRuntimeState::Working => {
+            Some(AgentNotificationKind::Finished)
+        }
+        _ => None,
+    }
+}
+
 /// Notify only on a real transition. Background activity gets a system banner;
 /// foreground activity never does, but a finished agent in another pane gets a sound.
 pub fn should_notify_agent(
@@ -42,34 +78,7 @@ pub fn should_notify_agent(
     if !notifications_enabled {
         return None;
     }
-    let previous = previous?;
-    let kind = if let Some(current) = current {
-        if previous.kind.eq_ignore_ascii_case(&current.kind)
-            && previous.state == current.state
-            && previous.attention == current.attention
-        {
-            return None;
-        }
-        match current.state {
-            AgentRuntimeState::Waiting
-                if current.attention == Some(AgentAttention::Permission)
-                    && (previous.state != AgentRuntimeState::Waiting
-                        || previous.attention != current.attention) =>
-            {
-                Some(AgentNotificationKind::NeedsPermission)
-            }
-            AgentRuntimeState::Waiting if previous.state != AgentRuntimeState::Waiting => {
-                Some(AgentNotificationKind::NeedsAttention)
-            }
-            AgentRuntimeState::Idle if previous.state == AgentRuntimeState::Working => {
-                Some(AgentNotificationKind::Finished)
-            }
-            _ => None,
-        }
-    } else {
-        // Process gone / session-end: still a finish if it was working.
-        (previous.state == AgentRuntimeState::Working).then_some(AgentNotificationKind::Finished)
-    }?;
+    let kind = agent_activity_event(previous, current)?;
 
     let delivery = if !window_active {
         AgentNotificationDelivery::Banner

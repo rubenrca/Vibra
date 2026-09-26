@@ -4,6 +4,7 @@ pub mod editor;
 pub mod files;
 pub mod ghostty;
 pub mod git;
+pub mod library;
 pub mod notifications;
 pub mod paths;
 pub mod persistence;
