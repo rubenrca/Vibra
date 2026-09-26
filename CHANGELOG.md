@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Replace the sessions sidebar with global navigation (Search, Inbox, Notes, Automations, Settings), pinned projects, and a right Workspace panel with Explorer and Changes; picking a changed file opens its review in a central tab that ⌘W closes back to the terminal.
+- Add the Inbox: running agents across every project with their state, plus unread events when an agent finishes, asks for permission, or waits for an answer in a pane you are not watching. Opening an event jumps to its terminal.
+- Add Notes: per-project text notes, saved to `library.json`, that can be pasted into the project's terminal without being submitted.
+- Add Automations: named commands run on demand or hourly, daily, or on weekdays while Vibra is open. Each run opens a visible session in the project and types the command into its shell, so any CLI works; scheduled runs keep your current session and report to the Inbox.
+- Redesign Changes like an IDE's source control view: branch and a … menu for scopes, fetch, pull, push, and refresh; a commit box with Commit (⌘↩), Commit and push, and Amend; Create PR (runs `gh pr create` in a new session); the file list; and a collapsible commit graph with branch labels.
+- Open reviews beside the terminal instead of replacing it, with a focus button to give the review the whole center. Commits opened from the graph return to Changes when closed.
+- Show the open review as a tab after the terminal tabs that fills the center like any tab; an optional split shows it beside the terminal (resizable and remembered) and highlights both tabs. Terminal tabs, Explorer/Changes, and the Inbox leave it open; ⌘1–⌘9 include it, and ⌘W closes it.
+- Redesign the navigation sidebar: a filled search field with keycap shortcuts, uniform rows, hover-revealed section actions, project avatars with an agent activity dot, and Settings pinned to the bottom.
+- Add back/forward navigation (⌃⌘← / ⌃⌘→ and titlebar arrows) across tabs, sessions, and the review.
+- Give split panes a header with a drag grip to reorder them, their agent and title, and buttons to enlarge or restore (also double-click or ⇧⌘↵) and close. Panes are now dragged only from that grip, not from the terminal.
+- Add a status bar with the branch, running agents, and unread Inbox events.
+- Stage or unstage single files or whole groups from Changes, and draft commit messages with the installed agent CLI (Claude Code, Gemini CLI, or Codex).
+- Add an Explorer toolbar to create files and folders, collapse the tree, and refresh it.
+- Fold unchanged lines between diff hunks into expandable “N unmodified lines” bars, add expand/collapse-all for files, and use a single line-number column in the unified layout.
+
 ## 0.3.29 — 2026-09-23
 
 - Fix a crash when expanding or collapsing a previously loaded Git diff in unified and split layouts.
