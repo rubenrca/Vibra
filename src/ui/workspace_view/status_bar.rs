@@ -12,7 +12,7 @@ use crate::ui::theme::{colors, surface, surface_tint};
 use super::{RightSidebarMode, WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const STATUS_POLL: Duration = Duration::from_secs(4);
-pub(super) const STATUS_BAR_HEIGHT: f32 = 24.0;
+pub(super) const STATUS_BAR_HEIGHT: f32 = 30.0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct AgentCounts {
@@ -95,18 +95,21 @@ impl WorkspaceView {
         let item = |id: &'static str| {
             div()
                 .id(id)
-                .h_full()
-                .px_2()
+                .h(px(22.0))
+                .px(px(7.0))
+                .rounded(px(6.0))
                 .flex()
                 .items_center()
-                .gap(px(5.0))
+                .gap(px(6.0))
                 .cursor_pointer()
                 .hover(|item| {
                     item.bg(surface_tint(colors().hover, colors().titlebar))
                         .text_color(colors().foreground)
                 })
         };
-        let dot = |color| div().size(px(6.0)).rounded_full().bg(color);
+        let icon = |path: &'static str| svg().path(path).size(px(14.0)).flex_none();
+        let dot = |color| div().size(px(6.0)).flex_none().rounded_full().bg(color);
+        let separator = || div().text_color(colors().subtle).child("·");
 
         div()
             .h(px(STATUS_BAR_HEIGHT))
@@ -114,11 +117,12 @@ impl WorkspaceView {
             .flex_none()
             .flex()
             .items_center()
-            .px_1()
+            .px(px(6.0))
+            .gap(px(2.0))
             .border_t_1()
             .border_color(colors().border_subtle)
             .bg(surface(colors().titlebar))
-            .text_size(px(11.5))
+            .text_size(px(12.0))
             .text_color(colors().muted)
             .when_some(
                 self.branch_summary
@@ -132,7 +136,7 @@ impl WorkspaceView {
                                 this.set_workspace_mode(RightSidebarMode::Diff, cx);
                                 this.focus_selected_terminal(window, cx);
                             }))
-                            .child(svg().path("chrome-icons/git-branch.svg").size(px(12.0)))
+                            .child(icon("chrome-icons/git-branch.svg"))
                             .child(summary.branch.clone())
                             .when(summary.dirty, |item| item.child(dot(colors().warning)))
                             .when(summary.ahead > 0, |item| {
@@ -152,20 +156,23 @@ impl WorkspaceView {
                     }))
                     .map(|item| {
                         if counts == AgentCounts::default() {
-                            item.child("Sin agentes activos")
+                            item.child(dot(colors().subtle))
+                                .child("Sin agentes activos")
                         } else {
-                            item.when(counts.working > 0, |item| {
-                                item.child(dot(colors().accent))
-                                    .child(format!("{} trabajando", counts.working))
-                            })
-                            .when(counts.waiting > 0, |item| {
-                                item.child(dot(colors().warning))
-                                    .child(format!("{} esperan", counts.waiting))
-                            })
-                            .when(counts.permission > 0, |item| {
-                                item.child(dot(colors().danger))
-                                    .child(format!("{} piden permiso", counts.permission))
-                            })
+                            let groups = [
+                                (counts.working, colors().accent, "trabajando"),
+                                (counts.waiting, colors().warning, "esperan"),
+                                (counts.permission, colors().danger, "piden permiso"),
+                            ];
+                            let mut first = true;
+                            groups.into_iter().filter(|(count, _, _)| *count > 0).fold(
+                                item,
+                                |item, (count, color, label)| {
+                                    let item = if first { item } else { item.child(separator()) };
+                                    first = false;
+                                    item.child(dot(color)).child(format!("{count} {label}"))
+                                },
+                            )
                         }
                     }),
             )
@@ -176,7 +183,8 @@ impl WorkspaceView {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.select_section(WorkspaceSection::Inbox, window, cx)
                     }))
-                    .child(svg().path("chrome-icons/inbox.svg").size(px(12.0)))
+                    .when(unread > 0, |item| item.text_color(colors().accent))
+                    .child(icon("chrome-icons/inbox.svg"))
                     .child(if unread > 0 {
                         format!("{unread} sin leer")
                     } else {

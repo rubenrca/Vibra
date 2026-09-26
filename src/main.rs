@@ -282,7 +282,8 @@ fn run() -> Result<()> {
                     titlebar: Some(TitlebarOptions {
                         title: Some("Vibra".into()),
                         appears_transparent: true,
-                        traffic_light_position: Some(gpui::point(px(14.0), px(14.0))),
+                        // AppKit's 16 px button frame sits centered in the 40 px titlebar.
+                        traffic_light_position: Some(gpui::point(px(14.0), px(12.0))),
                     }),
                     // On macOS, `is_movable: true` lets AppKit claim drags that begin on
                     // interactive titlebar controls. Vibra opts into window movement only on

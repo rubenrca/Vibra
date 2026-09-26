@@ -24,6 +24,24 @@ use super::{
     TabDragView, WorkspaceSection, split_gutter,
 };
 
+pub(super) const TAB_HEIGHT: f32 = 30.0;
+pub(super) const TAB_MAX_WIDTH: f32 = 240.0;
+pub(super) const TAB_RADIUS: f32 = 8.0;
+pub(super) const TAB_TEXT_SIZE: f32 = 13.0;
+
+/// `⌘N` hint, revealed while the tab is hovered.
+pub(super) fn tab_shortcut(shortcut: String) -> gpui::Div {
+    div()
+        .flex_none()
+        .opacity(0.0)
+        .group_hover("title-tab", |hint| hint.opacity(1.0))
+        .font_family(MONO_FONT)
+        .text_size(px(10.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(colors().subtle)
+        .child(shortcut)
+}
+
 impl super::WorkspaceView {
     fn center_has_splits(&self) -> bool {
         self.snapshot
@@ -74,7 +92,7 @@ impl super::WorkspaceView {
             .flex()
             .items_center()
             .justify_start()
-            .gap(px(4.0))
+            .gap(px(2.0))
             .overflow_x_hidden()
             .children(tabs.into_iter().enumerate().map(|(index, tab)| {
                 let tab_id = tab.id;
@@ -110,18 +128,20 @@ impl super::WorkspaceView {
                 let is_source = dragging_tab == Some(tab_id);
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
-                    .h(px(30.0))
+                    .group("title-tab")
+                    .h(px(TAB_HEIGHT))
                     .min_w(px(0.0))
-                    .max_w(px(300.0))
+                    .max_w(px(TAB_MAX_WIDTH))
                     .flex_1()
                     .relative()
                     .flex()
                     .items_center()
                     .justify_start()
-                    .px_2()
-                    .gap(px(6.0))
+                    .pl(px(10.0))
+                    .pr(px(8.0))
+                    .gap(px(8.0))
                     .overflow_hidden()
-                    .rounded(px(6.0))
+                    .rounded(px(TAB_RADIUS))
                     .when(can_reorder, |tab| tab.cursor_move())
                     .when(!can_reorder, |tab| tab.cursor_pointer())
                     .bg(if selected {
@@ -230,22 +250,20 @@ impl super::WorkspaceView {
                                     .min_w(px(0.0))
                                     .flex_shrink()
                                     .truncate()
-                                    .text_size(px(13.0))
-                                    .font_weight(if selected {
-                                        gpui::FontWeight::MEDIUM
-                                    } else {
-                                        gpui::FontWeight::NORMAL
-                                    })
+                                    .text_size(px(TAB_TEXT_SIZE))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .child(title),
                             )
                             .when(pane_count > 1, |label| {
                                 label.child(
                                     div()
                                         .flex_none()
+                                        .h(px(16.0))
                                         .px(px(5.0))
-                                        .py(px(1.0))
                                         .rounded(px(4.0))
-                                        .bg(colors().elevated)
+                                        .flex()
+                                        .items_center()
+                                        .bg(surface_tint(colors().hover, colors().terminal))
                                         .font_family(MONO_FONT)
                                         .text_size(px(10.0))
                                         .text_color(colors().subtle)
@@ -253,43 +271,19 @@ impl super::WorkspaceView {
                                 )
                             }),
                     )
-                    .when_some(shortcut, |tab, shortcut| {
-                        tab.child(
-                            div()
-                                .flex_none()
-                                .font_family(MONO_FONT)
-                                .text_size(px(10.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(if selected {
-                                    colors().muted
-                                } else {
-                                    colors().subtle
-                                })
-                                .child(shortcut),
-                        )
-                    })
+                    .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
             }))
             .when(show_review_tab, |list| {
                 list.child(self.review_tab(review_tab_number, cx))
             })
             .child(
-                div()
-                    .id("tab-bar-new-tab")
-                    .size(px(26.0))
-                    .flex_none()
-                    .rounded(px(6.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .text_color(colors().subtle)
-                    .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+                super::titlebar::titlebar_button("tab-bar-new-tab", true)
                     .tooltip(|_, cx| super::sidebar_tooltip("Nueva pestaña · ⌘T", cx))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_terminal_tab_in_project(window, cx);
                     }))
-                    .child(svg().path("chrome-icons/plus.svg").size(px(13.0))),
+                    .child(super::titlebar::titlebar_icon("chrome-icons/plus.svg")),
             )
             .when(can_reorder, |list| {
                 list.child(

@@ -88,7 +88,7 @@ impl Render for TabDragView {
             .justify_center()
             .px(px(TAB_LABEL_INSET))
             .overflow_hidden()
-            .rounded(px(6.0))
+            .rounded(px(8.0))
             .bg(if selected {
                 colors().selection
             } else {
@@ -103,7 +103,7 @@ impl Render for TabDragView {
                     .flex_1()
                     .truncate()
                     .text_center()
-                    .text_size(px(12.0))
+                    .text_size(px(13.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(self.title.clone()),
             )

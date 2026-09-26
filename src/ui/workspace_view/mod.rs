@@ -73,9 +73,9 @@ use crate::{
 };
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
-const TITLEBAR_CHROME_COLLAPSED: f32 = 204.0;
+const TITLEBAR_CHROME_COLLAPSED: f32 = 184.0;
 /// Titlebar chrome width when the right sidebar is fully collapsed (toggle only).
-const TITLEBAR_RIGHT_CHROME_COLLAPSED: f32 = 40.0;
+const TITLEBAR_RIGHT_CHROME_COLLAPSED: f32 = 44.0;
 const TITLEBAR_HEIGHT: f32 = 40.0;
 /// Open/close duration — short enough to feel snappy, long enough to read as motion.
 const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(160);

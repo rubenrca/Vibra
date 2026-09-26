@@ -17,6 +17,40 @@ use super::{
     TITLEBAR_RIGHT_CHROME_COLLAPSED, WorkspaceSection, sidebar_tooltip,
 };
 
+/// Room for the traffic lights: 14 px inset, three 14 px buttons, 20 px pitch.
+const TRAFFIC_LIGHTS_INSET: f32 = 80.0;
+pub(super) const TITLEBAR_BUTTON_SIZE: f32 = 28.0;
+pub(super) const TITLEBAR_BUTTON_GAP: f32 = 2.0;
+const TITLEBAR_ICON_SIZE: f32 = 16.0;
+
+/// Square icon button shared by every titlebar control so they line up.
+pub(super) fn titlebar_button(id: &'static str, enabled: bool) -> Stateful<Div> {
+    let button = div()
+        .id(id)
+        .size(px(TITLEBAR_BUTTON_SIZE))
+        .flex_none()
+        .rounded(px(6.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(colors().muted);
+    if !enabled {
+        return button.opacity(0.35);
+    }
+    button
+        .cursor_pointer()
+        .hover(|button| {
+            button
+                .bg(surface_tint(colors().hover, colors().titlebar))
+                .text_color(colors().foreground)
+        })
+        .active(|button| button.opacity(0.8))
+}
+
+pub(super) fn titlebar_icon(path: &'static str) -> gpui::Svg {
+    svg().path(path).size(px(TITLEBAR_ICON_SIZE)).flex_none()
+}
+
 impl super::WorkspaceView {
     /// Width of the titlebar chrome above the left sidebar.
     pub(super) fn titlebar_left_width(&self) -> f32 {
@@ -97,14 +131,22 @@ impl super::WorkspaceView {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .pl(px(86.0))
+                    .pl(px(TRAFFIC_LIGHTS_INSET))
                     .pr_2()
+                    .gap(px(TITLEBAR_BUTTON_GAP))
                     .when(left_progress > 0.001, |chrome| {
                         chrome
                             .border_r_1()
                             .border_color(colors().border_subtle)
                             .bg(surface_tint(colors().sidebar, colors().titlebar))
                     })
+                    // Anchored beside the traffic lights so they stay put while the sidebar animates.
+                    .child(
+                        self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
+                            this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
+                        }),
+                    )
+                    .child(self.navigation_buttons(cx))
                     .child(
                         div()
                             .h_full()
@@ -113,13 +155,7 @@ impl super::WorkspaceView {
                             .on_mouse_down(MouseButton::Left, |_, _, _| {
                                 crate::infrastructure::window::start_drag();
                             }),
-                    )
-                    .child(
-                        self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
-                            this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
-                        }),
-                    )
-                    .child(self.navigation_buttons(cx)),
+                    ),
             )
             .child(center_chrome)
             .child(
@@ -130,6 +166,7 @@ impl super::WorkspaceView {
                     .flex()
                     .items_center()
                     .pr_2()
+                    .gap(px(TITLEBAR_BUTTON_GAP))
                     .overflow_hidden()
                     .when(right_open, |chrome| {
                         chrome
@@ -144,7 +181,7 @@ impl super::WorkspaceView {
                                     .pl_3()
                                     .flex()
                                     .items_center()
-                                    .text_size(px(14.0))
+                                    .text_size(px(13.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .window_control_area(WindowControlArea::Drag)
                                     .on_mouse_down(MouseButton::Left, |_, _, _| {
@@ -246,25 +283,11 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .size(px(24.0))
-            .flex_none()
-            .rounded(px(5.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .text_color(colors().subtle)
-            .hover(|button| {
-                button
-                    .bg(surface_tint(colors().hover, colors().titlebar))
-                    .text_color(colors().foreground)
-            })
+        titlebar_button(id, true)
             .tooltip(move |_, cx| sidebar_tooltip(label, cx))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-            .child(svg().path(icon).size(px(14.0)))
+            .child(titlebar_icon(icon))
     }
 
     pub(super) fn sidebar_close_button(
@@ -290,29 +313,6 @@ impl super::WorkspaceView {
             .child("×")
     }
 
-    pub(super) fn sidebar_icon(left: bool) -> Div {
-        let panel = div()
-            .w(px(4.0))
-            .h_full()
-            .flex_none()
-            .bg(colors().foreground);
-        let content = div().h_full().flex_1();
-        let icon = div()
-            .w(px(14.0))
-            .h(px(12.0))
-            .flex()
-            .overflow_hidden()
-            .rounded(px(2.0))
-            .border_1()
-            .border_color(colors().muted);
-
-        if left {
-            icon.child(panel).child(content)
-        } else {
-            icon.child(content).child(panel)
-        }
-    }
-
     pub(super) fn sidebar_button(
         &self,
         id: &'static str,
@@ -320,44 +320,26 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .size(px(24.0))
-            .flex_none()
-            .rounded(px(5.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|button| button.bg(surface_tint(colors().hover, colors().titlebar)))
+        let (icon, label) = if left {
+            ("chrome-icons/panel-left.svg", "Barra lateral · ⌘B")
+        } else {
+            ("chrome-icons/panel-right.svg", "Panel derecho · ⌥⌘B")
+        };
+        titlebar_button(id, true)
+            .tooltip(move |_, cx| sidebar_tooltip(label, cx))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-            .child(Self::sidebar_icon(left))
+            .child(titlebar_icon(icon))
     }
 
     pub(super) fn ide_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        div()
-            .id("open-ide")
-            .h(px(24.0))
-            .relative()
-            .w(px(24.0))
-            .flex_none()
-            .rounded(px(5.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .bg(gpui::rgba(0x00000000))
-            .text_color(colors().subtle)
-            .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+        titlebar_button("open-ide", true)
+            .tooltip(|_, cx| sidebar_tooltip("Abrir en IDE", cx))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_ide(&OpenIde, window, cx);
             }))
-            .child(
-                svg()
-                    .path("chrome-icons/open-external.svg")
-                    .size(px(15.0))
-                    .text_color(colors().subtle),
-            )
+            .child(titlebar_icon("chrome-icons/open-external.svg"))
     }
 
     pub(super) fn ide_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {

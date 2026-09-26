@@ -7,9 +7,11 @@ use gpui::{
 use uuid::Uuid;
 
 use crate::infrastructure::settings::{MAX_REVIEW_SPLIT, MIN_REVIEW_SPLIT};
-use crate::ui::theme::{MONO_FONT, colors, surface_tint};
+use crate::ui::theme::{colors, surface_tint};
 use crate::{GoToTab, NavigateBack, NavigateForward};
 
+use super::panes::{TAB_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS, TAB_TEXT_SIZE, tab_shortcut};
+use super::titlebar::{TITLEBAR_BUTTON_GAP, titlebar_button, titlebar_icon};
 use super::{WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const MAX_NAVIGATION_HISTORY: usize = 50;
@@ -272,36 +274,16 @@ impl WorkspaceView {
     /// Navigation arrows for the titlebar.
     pub(super) fn navigation_buttons(&self, cx: &mut Context<Self>) -> AnyElement {
         let button = |id: &'static str, icon: &'static str, label: &'static str, enabled: bool| {
-            div()
-                .id(id)
-                .size(px(24.0))
-                .flex_none()
-                .rounded(px(5.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(if enabled {
-                    colors().muted
-                } else {
-                    colors().subtle
-                })
-                .when(!enabled, |button| button.opacity(0.45))
-                .when(enabled, |button| {
-                    button.cursor_pointer().hover(|button| {
-                        button
-                            .bg(surface_tint(colors().hover, colors().titlebar))
-                            .text_color(colors().foreground)
-                    })
-                })
+            titlebar_button(id, enabled)
                 .tooltip(move |_, cx| sidebar_tooltip(label, cx))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(svg().path(icon).size(px(14.0)))
+                .child(titlebar_icon(icon))
         };
         div()
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(2.0))
+            .gap(px(TITLEBAR_BUTTON_GAP))
             .child(
                 button(
                     "navigate-back",
@@ -336,16 +318,18 @@ impl WorkspaceView {
         let shortcut = (number <= 8).then(|| format!("⌘{number}"));
         div()
             .id("review-tab")
-            .h(px(30.0))
+            .group("title-tab")
+            .h(px(TAB_HEIGHT))
             .min_w(px(0.0))
-            .max_w(px(300.0))
+            .max_w(px(TAB_MAX_WIDTH))
             .flex_1()
             .flex()
             .items_center()
-            .px_2()
-            .gap(px(6.0))
+            .pl(px(10.0))
+            .pr(px(6.0))
+            .gap(px(8.0))
             .overflow_hidden()
-            .rounded(px(6.0))
+            .rounded(px(TAB_RADIUS))
             .cursor_pointer()
             .bg(if selected {
                 surface_tint(colors().selection, colors().terminal)
@@ -369,7 +353,7 @@ impl WorkspaceView {
             .child(
                 svg()
                     .path(icon)
-                    .size(px(14.0))
+                    .size(px(15.0))
                     .flex_none()
                     .text_color(if selected {
                         colors().accent
@@ -382,31 +366,17 @@ impl WorkspaceView {
                     .flex_1()
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(13.0))
-                    .font_weight(if selected {
-                        gpui::FontWeight::MEDIUM
-                    } else {
-                        gpui::FontWeight::NORMAL
-                    })
+                    .text_size(px(TAB_TEXT_SIZE))
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .child(title),
             )
-            .when_some(shortcut, |tab, shortcut| {
-                tab.child(
-                    div()
-                        .flex_none()
-                        .font_family(MONO_FONT)
-                        .text_size(px(10.0))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(colors().subtle)
-                        .child(shortcut),
-                )
-            })
+            .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
             .child(
                 div()
                     .id("close-review-tab")
-                    .size(px(18.0))
+                    .size(px(20.0))
                     .flex_none()
-                    .rounded(px(4.0))
+                    .rounded(px(5.0))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -419,7 +389,7 @@ impl WorkspaceView {
                         cx.stop_propagation();
                         this.close_review(window, cx);
                     }))
-                    .child(svg().path("chrome-icons/close.svg").size(px(11.0))),
+                    .child(svg().path("chrome-icons/close.svg").size(px(12.0))),
             )
             .into_any_element()
     }
