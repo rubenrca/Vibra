@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show one row of tabs per project: ⌘N now opens a tab like ⌘T instead of a hidden session, earlier sessions are merged into the project's tabs on load, and automations and Create PR open tabs. ⌃⌘[ / ⌃⌘] move between projects, and the session commands and the Info panel are gone from the palette.
+- Keep the open review when opening tabs or switching terminal tabs, show the terminal before running pane commands from a full-tab review, keep the right panel as it was when choosing a project, and add a + button to the tab bar.
+
 - Replace the sessions sidebar with global navigation (Search, Inbox, Notes, Automations, Settings), pinned projects, and a right Workspace panel with Explorer and Changes; picking a changed file opens its review in a central tab that ⌘W closes back to the terminal.
 - Add the Inbox: running agents across every project with their state, plus unread events when an agent finishes, asks for permission, or waits for an answer in a pane you are not watching. Opening an event jumps to its terminal.
 - Add Notes: per-project text notes, saved to `library.json`, that can be pasted into the project's terminal without being submitted.

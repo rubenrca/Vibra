@@ -4,7 +4,7 @@ Workspace de desarrollo nativo para macOS, escrito en Rust con GPUI. Combina
 terminales persistentes, proyectos, archivos, edición de texto, diff de Git e
 integración local para agentes en una sola ventana enfocada.
 
-![Vibra con espacios de sesiones, terminales divididas y el panel Git](docs/vibra-workspace.png)
+![Vibra con proyectos, terminales divididas y el panel Git](docs/vibra-workspace.png)
 
 La rama GPUI reemplaza la implementación SwiftUI/AppKit que llegó hasta Vibra
 0.2.7. El motor de terminal actual es `libghostty-vt`, integrado directamente en Rust. El historial, identidad de aplicación y canal de distribución
@@ -26,19 +26,19 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 
 ## Funciones principales
 
-### Proyectos, sesiones, tabs y panes
+### Proyectos, tabs y panes
 
-- proyectos asociados a carpetas, con sesiones y tabs persistentes; se agregan desde la sidebar o con `⇧⌘O`;
-- navegación global con Search, Inbox, Notes, Automations y Settings (ver [Inbox, Notes y Automations](#inbox-notes-y-automations)); cada proyecto se muestra con un avatar de su inicial en su color y un punto con el estado más urgente de sus agentes (pide permiso, espera, trabajando) y cuántos corren, que al pasar el cursor se vuelve el botón de nueva sesión;
-- proyectos renombrables, reordenables y fijables desde su menú contextual; cerrar la última sesión conserva el proyecto;
-- `＋` en cada proyecto o `⌘N` crea una sesión en su carpeta; los nuevos tabs y panes también parten desde esa raíz;
-- las sesiones de un proyecto comparten sus archivos y rama Git; Files, Git y búsqueda conservan la raíz del proyecto aunque una terminal haga `cd`;
+- proyectos asociados a carpetas, cada uno con su fila de tabs persistente; se agregan desde la sidebar o con `⇧⌘O`;
+- navegación global con Search, Inbox, Notes, Automations y Settings (ver [Inbox, Notes y Automations](#inbox-notes-y-automations)); cada proyecto se muestra con un avatar de su inicial en su color y un punto con el estado más urgente de sus agentes (pide permiso, espera, trabajando) y cuántos corren, que al pasar el cursor se vuelve el botón de nuevo tab;
+- proyectos renombrables, reordenables y fijables desde su menú contextual; cerrar el último tab conserva el proyecto;
+- `⌘T` o `⌘N`, el `＋` de la barra de tabs o el de cada proyecto abren un tab en la carpeta del proyecto; los panes también parten desde esa raíz. Las versiones anteriores permitían varias sesiones ocultas por proyecto: al abrir el workspace sus tabs se unen a la fila del proyecto, para que ninguna terminal quede fuera de alcance;
+- los tabs de un proyecto comparten sus archivos y rama Git; Files, Git y búsqueda conservan la raíz del proyecto aunque una terminal haga `cd`;
 - terminales divididas recursivamente en cuatro direcciones; con más de un pane, cada uno tiene una cabecera con los seis puntos para arrastrarlo y reordenarlo, su agente y título, un botón para agrandarlo al tab completo o restaurarlo (también con doble clic en la cabecera o `⇧⌘↵`) y otro para cerrarlo;
 - reordenar tabs, panes y proyectos arrastrándolos; saltar a un tab con `⌘1`–`⌘8` y al último con `⌘9` (la revisión abierta cuenta como un tab más, después de los de terminal);
-- navegación **atrás/adelante** (`⌃⌘←` / `⌃⌘→` o las flechas de la barra de título) entre tabs, sesiones y la revisión, sin importar cómo se llegó a cada lugar;
+- navegación **atrás/adelante** (`⌃⌘←` / `⌃⌘→` o las flechas de la barra de título) entre tabs, proyectos y la revisión, sin importar cómo se llegó a cada lugar; `⌃⌘[` / `⌃⌘]` pasan al proyecto anterior o siguiente;
 - barra de estado inferior con la rama del proyecto (cambios sin commit, ↑ahead ↓behind), los agentes activos y los eventos sin leer del Inbox; cada elemento abre Changes o el Inbox;
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
-- panel Workspace a la derecha con Explorer y Changes; las sesiones también se eligen desde Search o con los atajos de navegación;
+- panel Workspace a la derecha con Explorer y Changes; elegir un proyecto no lo abre ni lo cambia, queda como lo dejaste;
 - menús contextuales en proyectos y panes (renombrar, cerrar, dividir, zoom);
 - transparencia base del 6 % sobre el desenfoque nativo de macOS en el fondo, las sidebars, la barra superior y el terminal, manteniendo opacos el texto y los iconos;
 - command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`);
@@ -61,10 +61,10 @@ sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
   terminal** pega la nota en la terminal activa de su proyecto sin enviarla, para
   editarla ahí antes de pulsar Enter. Las notas vacías se descartan solas;
 - **Automations** guarda comandos con nombre, proyecto y horario: manual, cada
-  hora, todos los días o de lunes a viernes. Cada ejecución abre una sesión nueva
+  hora, todos los días o de lunes a viernes. Cada ejecución abre un tab nuevo
   en el proyecto, con el nombre de la automatización, y escribe el comando en su
-  shell, así que la salida queda visible y la sesión sigue disponible. Las
-  ejecuciones programadas no cambian la sesión que estás mirando y avisan en el
+  shell, así que la salida queda visible y el tab sigue disponible. Las
+  ejecuciones programadas no cambian el tab que estás mirando y avisan en el
   Inbox. Solo corren mientras Vibra está abierta: una hora perdida por más de
   10 minutos (Mac dormido o app cerrada) se omite en lugar de ejecutarse tarde.
   Se pueden pausar, editar y lanzar desde la paleta (`Automatización: Ejecutar …`).
@@ -93,7 +93,7 @@ Notas y automatizaciones se guardan en
 - cada archivo de Changes muestra al pasar el cursor `+` para pasarlo a stage o `−` para sacarlo; los grupos Changes y Staged Changes tienen lo mismo para todos sus archivos;
 - ✨ en la caja de mensaje redacta el commit con el agente CLI instalado (Claude Code, Gemini CLI o Codex, en ese orden), usando la shell de login del usuario. Recibe el patch de lo que se va a confirmar (hasta 48 KiB) y los últimos asuntos para imitar el estilo; el mensaje queda editable antes de confirmar;
 - Commit confirma lo que esté en stage o, si no hay nada, todos los cambios (como el *smart commit* de VS Code). Push, pull (`--ff-only`) y fetch corren en segundo plano sin pedir credenciales por terminal; si fallan, el panel muestra el error. Un primer push crea el upstream en `origin`;
-- Create PR abre una sesión nueva en el proyecto con `gh pr create`, así el flujo interactivo de GitHub CLI queda en una terminal normal;
+- Create PR abre un tab nuevo en el proyecto con `gh pr create`, así el flujo interactivo de GitHub CLI queda en una terminal normal;
 - al elegir un archivo o un commit del grafo, la revisión se abre como **un tab más** que ocupa el centro, igual que los tabs de terminal; su título y su cierre están en el tab. El botón de split de su barra la muestra junto a la terminal, con un divisor que se arrastra (la proporción se recuerda) y una cabecera para volver al tab completo o cerrarla; en ese modo se resaltan ambos tabs, porque los dos están en pantalla. Elegir un tab de terminal, cambiar entre Explorer y Changes o ir al Inbox deja la revisión abierta; `⌘W` sobre ella la cierra sin cerrar el proceso de la terminal. Un commit abierto desde el grafo vuelve a Changes al cerrarlo; los archivos de Changes usan el mismo ícono por tipo que el Explorer;
 - diffs de solo lectura en una sola lista virtualizada: archivos plegables con animación, la cabecera del archivo actual fija arriba, numeración única en Unified (anterior en eliminaciones y nueva en contexto/adiciones), las líneas sin cambios entre bloques plegadas en barras «N unmodified lines» que se abren de 20 en 20 hacia arriba o abajo (o completas con un clic), botones para expandir o colapsar todos los archivos y resaltado de sintaxis con el archivo completo como contexto (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - vista unificada o lado a lado y ajuste de líneas largas, recordados entre sesiones; sin ajuste, el scroll horizontal mueve solo el código, sincronizado entre archivos y columnas; el tamaño del texto del diff se ajusta aparte en Ajustes › Apariencia;
@@ -104,7 +104,7 @@ Notas y automatizaciones se guardan en
 
 - detección de Codex, Claude, Gemini, Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi;
 - estados de actividad en vivo para los agentes que se ejecutan dentro de una terminal de Vibra;
-- avisos de sistema cuando un agente termina o pide permiso fuera de la sesión visible;
+- avisos de sistema cuando un agente termina o pide permiso fuera del pane visible;
 - identidad resuelta por proceso foreground, sesión, título y texto reciente;
 - nombres personalizados para panes desde su menú contextual;
 - hooks estructurados de Claude y Codex para estados de trabajo, espera, permisos y fin de sesión;
@@ -114,7 +114,7 @@ Notas y automatizaciones se guardan en
 La CLI de Vibra no orquesta agentes ni layouts desde una terminal: no crea panes o
 tabs, no lanza agentes en otras sesiones y no envía prompts a otros procesos. Los
 agentes se ejecutan en la terminal (a mano o con una automatización que tú
-configuraste, siempre en una sesión visible) y Vibra conserva su detección,
+configuraste, siempre en un tab visible) y Vibra conserva su detección,
 estado y notificaciones.
 
 La detección automática está siempre activa. Para obtener estados más precisos
@@ -248,15 +248,16 @@ en `workspace.pre-projects.backup.json`, junto a `workspace.json`.
 | Atajo | Acción |
 | --- | --- |
 | `⇧⌘O` | Agregar proyecto desde una carpeta |
-| `⌘N` / `⌘T` / `⌘W` | Nueva sesión en el proyecto / nuevo tab / cerrar terminal |
+| `⌘T` o `⌘N` / `⌘W` | Nuevo tab en el proyecto / cerrar el pane, la revisión o la página abierta |
+| `⌃⌘[` / `⌃⌘]` | Proyecto anterior / siguiente |
 | `⌘1`–`⌘8` / `⌘9` | Ir al tab 1–8 / ir al último tab (incluye la revisión) |
-| `⌃⌘←` / `⌃⌘→` | Atrás / adelante entre tabs, sesiones y la revisión |
+| `⌃⌘←` / `⌃⌘→` | Atrás / adelante entre tabs, proyectos y la revisión |
 | `⌘D` / `⇧⌘D` | Dividir a la derecha / abajo |
 | `⌃⌥⌘` + flechas | Dividir en cualquier dirección |
 | `⌥⌘` + flechas | Enfocar pane vecino |
 | `⌘[` / `⌘]` | Pane anterior / siguiente |
 | `⌃⌥` + flechas | Cambiar proporción del pane |
-| `⌃⌥E` / `⇧⌘↵` | Igualar panes / alternar zoom |
+| `⌃⌥E` / `⇧⌘↵` | Igualar panes / agrandar o restaurar el pane |
 | `⇧⌘P` / `⌘P` | Paleta de comandos / quick open |
 | `⇧⌘E` | Abrir la carpeta activa en un IDE externo |
 | `⌘,` | Abrir Settings (modal centrado) |
