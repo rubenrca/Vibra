@@ -12,6 +12,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native/window_bridge.h");
     println!("cargo:rerun-if-changed=native/editor_bridge.m");
     println!("cargo:rerun-if-changed=native/editor_bridge.h");
+    println!("cargo:rerun-if-changed=native/usage_bridge.m");
     println!("cargo:rerun-if-env-changed=VIBRA_SPARKLE_FRAMEWORK");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -45,6 +46,14 @@ fn main() {
         &["-fobjc-exceptions"],
     );
     println!("cargo:rustc-link-lib=framework=Foundation");
+    compile_objc(
+        &manifest_dir,
+        "native/usage_bridge.m",
+        "vibra_usage_bridge",
+        &[],
+    );
+    println!("cargo:rustc-link-lib=framework=Security");
+    println!("cargo:rustc-link-lib=framework=LocalAuthentication");
     println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=UserNotifications");
     if let Some(framework_dir) = sparkle_framework {

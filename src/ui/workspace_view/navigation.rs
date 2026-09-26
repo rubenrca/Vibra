@@ -91,6 +91,7 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         self.leave_library_section(section);
+        self.usage.open = false;
         self.workspace_section = section;
         if section == WorkspaceSection::Workspace
             && !self.review_covers_terminal(cx)

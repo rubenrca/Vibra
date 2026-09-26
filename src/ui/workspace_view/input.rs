@@ -10,6 +10,17 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.to_ascii_lowercase();
+        if self.usage.open
+            && !self.settings_open
+            && self.palette_mode.is_none()
+            && self.rename_prompt.is_none()
+        {
+            if matches!(key.as_str(), "escape" | "esc") {
+                self.close_usage(window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if self.settings_open {
             if matches!(key.as_str(), "escape" | "esc") {
                 if self.settings_page == super::SettingsPage::Appearance

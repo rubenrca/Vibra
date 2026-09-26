@@ -427,6 +427,7 @@ impl WorkspaceView {
             || self.review_covers_terminal(cx)
             || self.palette_mode.is_some()
             || self.settings_open
+            || self.usage.open
             || self.rename_prompt.is_some()
             || self
                 .snapshot

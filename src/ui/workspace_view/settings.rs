@@ -390,6 +390,7 @@ impl WorkspaceView {
     }
 
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.usage.open = false;
         self.settings_open = true;
         self.close_palette(cx);
         self.context_menu = None;

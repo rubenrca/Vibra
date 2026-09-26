@@ -1474,6 +1474,36 @@ fn delayed_focus_cannot_return_to_a_hidden_tab_or_cover_a_global_page(
             view.select_section(WorkspaceSection::Notes, window, cx);
             view.focus_terminal(current, window, cx);
             assert!(view.focus_handle.is_focused(window));
+
+            view.select_section(WorkspaceSection::Workspace, window, cx);
+            view.usage.open = true;
+            view.focus_handle.focus(window);
+            view.focus_terminal(current, window, cx);
+            assert!(view.focus_handle.is_focused(window));
+            view.on_workspace_key_down(
+                &gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                    is_held: false,
+                },
+                window,
+                cx,
+            );
+            assert!(!view.usage.open);
+            assert!(
+                view.terminals[&current]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+
+            view.usage.open = true;
+            view.open_settings(cx);
+            assert!(!view.usage.open);
+            view.close_settings(cx);
+            view.usage.open = true;
+            view.open_palette(PaletteMode::Commands, cx);
+            assert!(!view.usage.open);
+            view.close_palette(cx);
             window.remove_window();
         })
         .unwrap();

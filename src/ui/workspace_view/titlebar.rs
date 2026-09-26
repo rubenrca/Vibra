@@ -418,6 +418,7 @@ impl super::WorkspaceView {
     }
 
     pub(super) fn open_ide(&mut self, _: &OpenIde, _: &mut Window, cx: &mut Context<Self>) {
+        self.usage.open = false;
         if self.ide_menu_open {
             self.ide_menu_open = false;
             cx.notify();

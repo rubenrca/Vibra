@@ -1,4 +1,4 @@
-//! Bottom status bar: the project's branch, running agents, and the Inbox.
+//! Bottom status bar: project branch, running agents, subscription usage, and Inbox.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -180,6 +180,7 @@ impl WorkspaceView {
                     }),
             )
             .child(div().flex_1())
+            .child(self.usage_status(cx))
             .child(
                 item("status-inbox")
                     .tooltip(|_, cx| sidebar_tooltip("Inbox", cx))

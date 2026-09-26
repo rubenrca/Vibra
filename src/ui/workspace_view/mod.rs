@@ -23,6 +23,7 @@ mod storage;
 mod tabs;
 mod terminals;
 mod titlebar;
+mod usage;
 
 use automation::HookAgentPresence;
 use automations_page::AutomationForm;
@@ -194,6 +195,7 @@ pub struct WorkspaceView {
     git_port: Arc<dyn GitPort>,
     branch_summary: Option<(PathBuf, crate::ports::git::GitBranchSummary)>,
     _status_task: Option<Task<()>>,
+    usage: usage::UsageState,
     diff_view: Entity<DiffView>,
     diff_file_index: Entity<DiffFileIndexView>,
     _diff_subscription: Subscription,
@@ -543,6 +545,7 @@ impl WorkspaceView {
             git_port,
             branch_summary: None,
             _status_task: None,
+            usage: usage::UsageState::default(),
             diff_view,
             diff_file_index,
             _diff_subscription: diff_subscription,
@@ -651,6 +654,7 @@ impl WorkspaceView {
         view.sync_git_panel_visibility(cx);
         view.start_automation_scheduler(cx);
         view.start_status_poll(cx);
+        view.start_usage_poll(cx);
         view
     }
 
@@ -1234,6 +1238,9 @@ impl Render for WorkspaceView {
 
         body = body.child(layout);
         body = body.child(self.status_bar(cx));
+        if let Some(popover) = self.usage_popover(window, cx) {
+            body = body.child(popover);
+        }
         if let Some(modal) = self.palette_modal(cx) {
             body = body.child(modal);
         } else if let Some(modal) = self.rename_modal(cx) {

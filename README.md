@@ -36,13 +36,28 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - terminales divididas recursivamente en cuatro direcciones; con más de un pane, cada uno tiene una cabecera con los seis puntos para arrastrarlo y reordenarlo, su agente y título, un botón para agrandarlo al tab completo o restaurarlo (también con doble clic en la cabecera o `⇧⌘↵`) y otro para cerrarlo;
 - reordenar tabs, panes y proyectos arrastrándolos; saltar a un tab con `⌘1`–`⌘8` y al último con `⌘9` (la revisión abierta cuenta como un tab más, después de los de terminal);
 - navegación **atrás/adelante** (`⌃⌘←` / `⌃⌘→` o las flechas de la barra de título) entre tabs, proyectos y la revisión, sin importar cómo se llegó a cada lugar; `⌃⌘[` / `⌃⌘]` pasan al proyecto anterior o siguiente;
-- barra de estado inferior con la rama del proyecto (cambios sin commit, ↑ahead ↓behind), los agentes activos y los eventos sin leer del Inbox; cada elemento abre Changes o el Inbox;
+- barra de estado inferior con la rama del proyecto (cambios sin commit, ↑ahead ↓behind), los agentes activos, el uso de suscripciones IA y los eventos sin leer del Inbox;
+- monitor propio de cuotas de **Claude Code, Codex y Grok Build**, sin otra app de uso instalada. La barra muestra el porcentaje **consumido** de la cuota más utilizada de cada proveedor. Un clic abre ventanas de uso, saldos reportados y tiempos de reinicio; se destacan cuotas desde el 80 % y el 95 %. Vibra consulta directamente a cada servicio cada cinco minutos y permite **Actualizar** manualmente, con espera mínima de 30 segundos y reintentos que respetan los límites del proveedor. Si una consulta falla, conserva el último dato de esa misma sesión marcado como desactualizado;
+
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
 - panel Workspace a la derecha con Explorer y Changes; elegir un proyecto no lo abre ni lo cambia, queda como lo dejaste;
 - menús contextuales en proyectos y panes (renombrar, cerrar, dividir, zoom);
 - transparencia base del 6 % sobre el desenfoque nativo de macOS en el fondo, las sidebars, la barra superior y el terminal, manteniendo opacos el texto y los iconos;
 - command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`);
 - temas de aplicación (familias claras/oscuras y paletas de terminal) más YAML de Warp o Ghostty en `~/.vibra/themes`.
+
+### Cuotas de suscripciones IA
+
+El monitor usa la sesión actual de cada CLI: el llavero de Claude Code (con
+`.claude/.credentials.json` como alternativa), `.codex/auth.json` o su entrada
+correspondiente en el llavero, y `.grok/auth.json`. Respeta `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME` y `GROK_HOME` heredados por Vibra. Las consultas automáticas no abren
+diálogos; **Actualizar** puede pedir acceso al llavero de macOS. No guarda ni
+modifica credenciales: si vencen, abre el CLI correspondiente para renovar su
+sesión y actualiza. Al detectar otro login descarta los datos anteriores.
+Esta versión sigue la cuenta actual de cada CLI; no importa cuentas guardadas
+en otras aplicaciones. Los servicios de cuota pueden cambiar sus respuestas;
+Vibra muestra un error si no reconoce el formato, sin inventar porcentajes.
 
 ### Inbox, Notes y Automations
 
