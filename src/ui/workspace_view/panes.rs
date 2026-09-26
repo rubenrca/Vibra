@@ -92,7 +92,8 @@ impl super::WorkspaceView {
                     .as_ref()
                     .map(|identity| identity.title.clone())
                     .unwrap_or_else(|| format!("Terminal {}", index + 1));
-                let title = if tab_count > 1 {
+                // The ⌘ hint numbers the first nine tabs; later ones carry it.
+                let title = if tab_count > 1 && index >= 9 {
                     format!("{title} {}", index + 1)
                 } else {
                     title
@@ -271,6 +272,25 @@ impl super::WorkspaceView {
             .when(show_review_tab, |list| {
                 list.child(self.review_tab(review_tab_number, cx))
             })
+            .child(
+                div()
+                    .id("tab-bar-new-tab")
+                    .size(px(26.0))
+                    .flex_none()
+                    .rounded(px(6.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_color(colors().subtle)
+                    .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+                    .tooltip(|_, cx| super::sidebar_tooltip("Nueva pestaña · ⌘T", cx))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_terminal_tab_in_project(window, cx);
+                    }))
+                    .child(svg().path("chrome-icons/plus.svg").size(px(13.0))),
+            )
             .when(can_reorder, |list| {
                 list.child(
                     div()
@@ -692,7 +712,6 @@ impl super::WorkspaceView {
             }
         });
         let is_empty = panes.is_none();
-        let zoomed = tab.as_ref().and_then(|tab| tab.zoomed_session_id).is_some();
         // Terminals share the continuous workspace surface; split panes keep
         // thin boundaries so focus and resize targets remain legible.
         div()
@@ -702,24 +721,18 @@ impl super::WorkspaceView {
             .overflow_hidden()
             .when(is_empty, |canvas| canvas.bg(surface(colors().terminal)))
             .when_some(panes, |canvas, panes| canvas.child(panes))
-            .when(zoomed, |canvas| {
-                canvas.child(
-                    div()
-                        .absolute()
-                        .left_3()
-                        .bottom_3()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(colors().elevated)
-                        .text_xs()
-                        .text_color(colors().muted)
-                        .child("Pane ampliado · ⇧⌘↵ restaurar"),
-                )
-            })
             .when(is_empty, |canvas| {
                 canvas.child(self.empty_project_content(cx))
             })
+    }
+
+    /// Pane commands act on what the user sees: a full-tab review steps
+    /// aside for the terminal first.
+    fn reveal_terminal(&mut self, cx: &mut Context<Self>) {
+        if self.review_covers_terminal(cx) {
+            self.review_tab_active = false;
+            self.sync_terminal_surface_visibility(cx);
+        }
     }
 
     pub(super) fn split_pane(
@@ -729,6 +742,7 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         self.select_section(WorkspaceSection::Workspace, window, cx);
+        self.reveal_terminal(cx);
         self.capture_selected_working_directory(cx);
         if let Some(session_id) = self.snapshot.split_selected_terminal(direction) {
             self.reconcile_terminal_views(cx);
@@ -745,6 +759,7 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         self.select_section(WorkspaceSection::Workspace, window, cx);
+        self.reveal_terminal(cx);
         if self.snapshot.focus_terminal(direction) {
             self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
@@ -761,6 +776,7 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         self.select_section(WorkspaceSection::Workspace, window, cx);
+        self.reveal_terminal(cx);
         if self.snapshot.cycle_terminal(offset) {
             self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
@@ -771,9 +787,11 @@ impl super::WorkspaceView {
     }
 
     pub(super) fn resize_pane(&mut self, direction: PaneResizeDirection, cx: &mut Context<Self>) {
-        if self.workspace_section == WorkspaceSection::Workspace
-            && self.snapshot.resize_selected_pane(direction)
-        {
+        if self.workspace_section != WorkspaceSection::Workspace {
+            return;
+        }
+        self.reveal_terminal(cx);
+        if self.snapshot.resize_selected_pane(direction) {
             self.persist(cx);
         }
     }
@@ -942,9 +960,11 @@ impl super::WorkspaceView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.workspace_section == WorkspaceSection::Workspace
-            && self.snapshot.equalize_selected_panes()
-        {
+        if self.workspace_section != WorkspaceSection::Workspace {
+            return;
+        }
+        self.reveal_terminal(cx);
+        if self.snapshot.equalize_selected_panes() {
             self.persist(cx);
         }
     }
@@ -956,10 +976,9 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         self.select_section(WorkspaceSection::Workspace, window, cx);
-        if self.snapshot.toggle_selected_pane_zoom() {
-            self.sync_terminal_surface_visibility(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
+        if let Some(session) = self.snapshot.selected_session().map(|item| item.id) {
+            self.reveal_terminal(cx);
+            self.toggle_pane_zoom_for(session, window, cx);
         }
     }
 }

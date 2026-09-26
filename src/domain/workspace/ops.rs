@@ -375,6 +375,9 @@ impl super::WorkspaceSnapshot {
         true
     }
 
+    /// Sessions are merged into one per project in the app; kept for
+    /// fixtures that build older, multi-session snapshots.
+    #[cfg(test)]
     pub fn rename_workspace(&mut self, project_id: Uuid, workspace_id: Uuid, name: &str) -> bool {
         let name = name.trim();
         if name.is_empty() || name.chars().count() > super::MAX_NAME_CHARS {
@@ -402,6 +405,9 @@ impl super::WorkspaceSnapshot {
         true
     }
 
+    /// Sessions are merged into one per project in the app; kept for
+    /// fixtures that build older, multi-session snapshots.
+    #[cfg(test)]
     pub fn close_workspace(&mut self, project_id: Uuid, workspace_id: Uuid) -> bool {
         let Some(project_index) = self
             .projects
@@ -530,6 +536,9 @@ impl super::WorkspaceSnapshot {
         true
     }
 
+    /// Sessions are merged into one per project in the app; kept for
+    /// fixtures that build older, multi-session snapshots.
+    #[cfg(test)]
     pub fn cycle_workspace(&mut self, offset: isize) -> bool {
         let entries: Vec<_> = self
             .projects
@@ -557,6 +566,9 @@ impl super::WorkspaceSnapshot {
         self.select_workspace(project_id, workspace_id)
     }
 
+    /// Sessions are merged into one per project in the app; kept for
+    /// fixtures that build older, multi-session snapshots.
+    #[cfg(test)]
     pub fn workspace_entries(&self) -> Vec<WorkspaceEntry> {
         self.projects
             .iter()

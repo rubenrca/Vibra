@@ -67,8 +67,8 @@ use crate::ui::theme::{
     self, MONO_FONT, colors, popover_surface, surface, surface_tint, window_surface,
 };
 use crate::{
-    CloseTerminal, NewTerminalTab, NewWorkspace, NextWorkspace, PreviousWorkspace, ShowSettings,
-    ToggleLeftSidebar, ToggleRightSidebar,
+    CloseTerminal, NewTerminalTab, NextProject, PreviousProject, ShowSettings, ToggleLeftSidebar,
+    ToggleRightSidebar,
 };
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
@@ -101,7 +101,6 @@ enum WorkspaceSection {
 enum RightSidebarMode {
     Files,
     Diff,
-    Info,
 }
 
 #[derive(Debug, Clone)]
@@ -123,24 +122,16 @@ enum PaletteAction {
     SelectProject(Uuid),
     NewTerminalTab,
     OpenIde,
-    NewWorkspace,
-    RenameWorkspace,
-    CloseWorkspace,
     Split(PaneSplitDirection),
     EqualizePanes,
     TogglePaneZoom,
     ToggleGit,
     ShowFiles,
-    ShowInfo,
     ShowSettings,
     ShowSection(WorkspaceSection),
     NewNote,
     NewAutomation,
     RunAutomation(Uuid),
-    SelectWorkspace {
-        project_id: Uuid,
-        workspace_id: Uuid,
-    },
     OpenFile(PathBuf),
 }
 
@@ -167,22 +158,10 @@ struct ContextMenuState {
 
 #[derive(Debug, Clone)]
 enum RenamePromptKind {
-    Workspace {
-        project_id: Uuid,
-        workspace_id: Uuid,
-    },
-    Pane {
-        session_id: Uuid,
-    },
-    Project {
-        project_id: Uuid,
-    },
-    NewFile {
-        directory: PathBuf,
-    },
-    NewFolder {
-        directory: PathBuf,
-    },
+    Pane { session_id: Uuid },
+    Project { project_id: Uuid },
+    NewFile { directory: PathBuf },
+    NewFolder { directory: PathBuf },
 }
 
 #[derive(Debug, Clone)]
@@ -195,7 +174,7 @@ struct RenamePrompt {
 enum ContextMenuAction {
     Rename,
     AddProject,
-    NewSession,
+    NewTab,
     AssociateFolder,
     RevealProject,
     RemoveProject,
@@ -374,8 +353,13 @@ impl WorkspaceView {
             ),
             None => (Library::default(), None),
         };
-        let mut snapshot_changed =
+        // Earlier versions kept several sessions per project; the UI now has
+        // one row of tabs per project, so their tabs are merged on load.
+        let consolidated =
+            workspace_load_error.is_none() && snapshot.consolidate_project_sessions();
+        let relocated =
             launch_directory.is_dir() && snapshot.relocate_root(Path::new("/"), &launch_directory);
+        let mut snapshot_changed = consolidated || relocated;
         if first_launch {
             snapshot.create_workspace(&launch_directory);
             snapshot_changed = true;
@@ -456,7 +440,7 @@ impl WorkspaceView {
                 DiffViewEvent::RunInTerminal { title, command } => {
                     if let Some(project_id) = this.snapshot.selected_project_id
                         && let Err(reason) =
-                            this.run_in_new_session(project_id, title, command, true, cx)
+                            this.run_in_new_tab(project_id, title, command, true, cx)
                     {
                         this.persistence_error = Some(reason.into());
                     }
@@ -732,6 +716,8 @@ impl WorkspaceView {
 
     fn sync_diff_root(&self, cx: &mut Context<Self>) {
         if !self.has_project_context() {
+            self.diff_view
+                .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
             self.sync_git_panel_visibility(cx);
             return;
         }
@@ -865,24 +851,6 @@ impl WorkspaceView {
 
     fn begin_rename_prompt(&mut self, kind: RenamePromptKind, cx: &mut Context<Self>) {
         let value = match kind {
-            RenamePromptKind::Workspace {
-                project_id,
-                workspace_id,
-            } => self
-                .snapshot
-                .projects
-                .iter()
-                .find(|project| project.id == project_id)
-                .and_then(|project| {
-                    project
-                        .workspaces
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .find(|workspace| workspace.id == workspace_id)
-                        .map(|workspace| workspace.name.clone())
-                })
-                .unwrap_or_default(),
             RenamePromptKind::Pane { session_id } => self
                 .agent_names
                 .get(&session_id)
@@ -944,21 +912,6 @@ impl WorkspaceView {
             return;
         }
         match prompt.kind {
-            RenamePromptKind::Workspace {
-                project_id,
-                workspace_id,
-            } => {
-                if self
-                    .snapshot
-                    .rename_workspace(project_id, workspace_id, &name)
-                {
-                    self.rename_prompt = None;
-                    self.persistence_error = None;
-                    self.persist(cx);
-                } else {
-                    self.persistence_error = Some("No se pudo renombrar la sesión".into());
-                }
-            }
             RenamePromptKind::Pane { session_id } => {
                 // Pane labels are intentionally independent from agent hook identity.
                 let project_id = self.project_id_for_session(session_id);
@@ -1017,8 +970,8 @@ impl WorkspaceView {
             (ContextMenuKind::Project { project_id }, ContextMenuAction::Rename) => {
                 self.begin_rename_prompt(RenamePromptKind::Project { project_id }, cx);
             }
-            (ContextMenuKind::Project { project_id }, ContextMenuAction::NewSession) => {
-                self.create_project_session(project_id, window, cx);
+            (ContextMenuKind::Project { project_id }, ContextMenuAction::NewTab) => {
+                self.open_project_tab(project_id, window, cx);
             }
             (ContextMenuKind::Project { project_id }, ContextMenuAction::AssociateFolder) => {
                 self.choose_project_folder(Some(project_id), false, window, cx);
@@ -1821,10 +1774,6 @@ impl WorkspaceView {
             }));
     }
 
-    fn new_workspace(&mut self, _: &NewWorkspace, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_workspace_in_project(window, cx);
-    }
-
     fn new_terminal_tab(
         &mut self,
         _: &NewTerminalTab,
@@ -1834,17 +1783,14 @@ impl WorkspaceView {
         self.open_terminal_tab_in_project(window, cx);
     }
 
-    fn open_workspace_in_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(project_id) = self.snapshot.selected_project_id {
-            self.create_project_session(project_id, window, cx);
-        } else {
-            self.choose_project_folder(None, true, window, cx);
-        }
-    }
-
+    /// `⌘T` / `⌘N`: a new tab in the selected project, or a folder picker
+    /// when there is no project yet.
     fn open_terminal_tab_in_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.selected_workspace().is_none() {
-            self.open_workspace_in_project(window, cx);
+            match self.snapshot.selected_project_id {
+                Some(project_id) => self.open_project_tab(project_id, window, cx),
+                None => self.choose_project_folder(None, true, window, cx),
+            }
             return;
         }
         if self
@@ -1901,33 +1847,38 @@ impl WorkspaceView {
         self.toggle_diff_panel(window, cx);
     }
 
-    fn previous_workspace(
+    fn previous_project(
         &mut self,
-        _: &PreviousWorkspace,
+        _: &PreviousProject,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.snapshot.cycle_workspace(-1) {
-            self.apply_workspace_selection_change(window, cx);
-        }
+        self.cycle_project(-1, window, cx);
     }
 
-    fn next_workspace(&mut self, _: &NextWorkspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.snapshot.cycle_workspace(1) {
-            self.apply_workspace_selection_change(window, cx);
-        }
+    fn next_project(&mut self, _: &NextProject, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_project(1, window, cx);
     }
 
-    fn select_workspace(
-        &mut self,
-        project_id: Uuid,
-        workspace_id: Uuid,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.snapshot.select_workspace(project_id, workspace_id) {
-            self.apply_workspace_selection_change(window, cx);
+    /// Moves through projects in sidebar order (pinned first).
+    fn cycle_project(&mut self, offset: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let (pinned, others): (Vec<Uuid>, Vec<Uuid>) = self
+            .snapshot
+            .projects
+            .iter()
+            .map(|project| project.id)
+            .partition(|id| self.settings.pinned_project_ids.contains(id));
+        let order: Vec<Uuid> = pinned.into_iter().chain(others).collect();
+        if order.is_empty() {
+            return;
         }
+        let current = self
+            .snapshot
+            .selected_project_id
+            .and_then(|id| order.iter().position(|item| *item == id))
+            .unwrap_or(0) as isize;
+        let next = (current + offset).rem_euclid(order.len() as isize) as usize;
+        self.select_project(order[next], window, cx);
     }
 
     fn select_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
@@ -1936,13 +1887,15 @@ impl WorkspaceView {
         }
     }
 
+    /// Shows the selected terminal after a tab, project, or pane change. An
+    /// open review stays as a tab of its project; switching to another
+    /// project closes it when the repository root changes.
     fn apply_workspace_selection_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_library_section(WorkspaceSection::Workspace);
         self.workspace_section = WorkspaceSection::Workspace;
-        self.diff_view
-            .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
-        self.sync_terminal_surface_visibility(cx);
+        self.review_tab_active = false;
         self.sync_diff_root(cx);
+        self.sync_terminal_surface_visibility(cx);
         self.sync_git_panel_visibility(cx);
         self.refresh_project_files(cx);
         self.persist(cx);
@@ -2190,133 +2143,6 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    fn info_sidebar_content(&self, cx: &mut Context<Self>) -> AnyElement {
-        let root = self.project_root();
-        let workspace_count = self.snapshot.workspace_entries().len();
-        let (tab_count, pane_count) = self
-            .snapshot
-            .selected_workspace()
-            .map(|workspace| {
-                (
-                    workspace.tabs.len(),
-                    workspace
-                        .tabs
-                        .iter()
-                        .map(|tab| tab.sessions.len())
-                        .sum::<usize>(),
-                )
-            })
-            .unwrap_or_default();
-        let selected = self.selected_file_path.as_ref().map(|path| {
-            (
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.display().to_string()),
-                path.display().to_string(),
-            )
-        });
-        let facts = [
-            ("Workspaces", workspace_count.to_string()),
-            ("Tabs", tab_count.to_string()),
-            ("Panes", pane_count.to_string()),
-            ("Terminal", self.terminal_port.backend_name().to_owned()),
-            ("Files visibles", self.project_files.len().to_string()),
-        ];
-        div()
-            .id("project-info-panel")
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .p_3()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .id("sidebar-back-explorer")
-                    .px_1()
-                    .py_1()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .text_size(px(11.0))
-                    .text_color(colors().subtle)
-                    .hover(|back| back.text_color(colors().foreground).bg(colors().hover))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_workspace_mode(RightSidebarMode::Files, cx);
-                    }))
-                    .child("← Explorer"),
-            )
-            .child(
-                div()
-                    .text_size(px(10.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().muted)
-                    .child("PROJECT ROOT"),
-            )
-            .child(
-                div()
-                    .p_2()
-                    .rounded(px(6.0))
-                    .bg(colors().elevated)
-                    .font_family(MONO_FONT)
-                    .text_size(px(9.0))
-                    .text_color(colors().foreground)
-                    .child(root.display().to_string()),
-            )
-            .children(facts.into_iter().map(|(label, value)| {
-                div()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(10.0))
-                            .text_color(colors().subtle)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(colors().foreground)
-                            .child(value),
-                    )
-            }))
-            .when_some(selected, |panel, (name, path)| {
-                panel
-                    .child(
-                        div()
-                            .mt_2()
-                            .text_size(px(10.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(colors().muted)
-                            .child("SELECCIÓN"),
-                    )
-                    .child(
-                        div()
-                            .p_2()
-                            .rounded(px(6.0))
-                            .bg(colors().elevated)
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(colors().foreground)
-                                    .child(name),
-                            )
-                            .child(
-                                div()
-                                    .font_family(MONO_FONT)
-                                    .text_size(px(8.5))
-                                    .text_color(colors().subtle)
-                                    .child(path),
-                            ),
-                    )
-            })
-            .into_any_element()
-    }
-
     fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.right_sidebar_mode;
         let full_width = self.right_sidebar_width();
@@ -2337,7 +2163,6 @@ impl WorkspaceView {
             match mode {
                 RightSidebarMode::Files => self.files_sidebar_content(cx),
                 RightSidebarMode::Diff => self.diff_file_index.clone().into_any_element(),
-                RightSidebarMode::Info => self.info_sidebar_content(cx),
             }
         };
 
@@ -2376,7 +2201,7 @@ impl WorkspaceView {
                     ContextMenuAction::ToggleProjectPin,
                     false,
                 ),
-                ("Nueva sesión", ContextMenuAction::NewSession, false),
+                ("Nueva pestaña", ContextMenuAction::NewTab, false),
                 ("Renombrar proyecto", ContextMenuAction::Rename, false),
                 (
                     "Asociar carpeta…",
@@ -2394,7 +2219,7 @@ impl WorkspaceView {
                 ("Cerrar pane", ContextMenuAction::ClosePane, true),
                 ("Dividir a la derecha", ContextMenuAction::SplitRight, false),
                 ("Dividir abajo", ContextMenuAction::SplitDown, false),
-                ("Zoom", ContextMenuAction::ToggleZoom, false),
+                ("Agrandar o restaurar", ContextMenuAction::ToggleZoom, false),
             ],
         };
         Some(
@@ -2513,7 +2338,6 @@ impl WorkspaceView {
     fn rename_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prompt = self.rename_prompt.clone()?;
         let title = match prompt.kind {
-            RenamePromptKind::Workspace { .. } => "Renombrar sesión",
             RenamePromptKind::Pane { .. } => "Renombrar pane",
             RenamePromptKind::Project { .. } => "Renombrar proyecto",
             RenamePromptKind::NewFile { .. } => "Nuevo archivo",
@@ -2678,13 +2502,12 @@ impl Render for WorkspaceView {
             .id("vibra-root")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::add_project))
-            .on_action(cx.listener(Self::new_workspace))
             .on_action(cx.listener(Self::new_terminal_tab))
             .on_action(cx.listener(Self::close_terminal))
             .on_action(cx.listener(Self::toggle_left_sidebar))
             .on_action(cx.listener(Self::toggle_right_sidebar))
-            .on_action(cx.listener(Self::previous_workspace))
-            .on_action(cx.listener(Self::next_workspace))
+            .on_action(cx.listener(Self::previous_project))
+            .on_action(cx.listener(Self::next_project))
             .on_action(cx.listener(Self::go_to_tab))
             .on_action(cx.listener(Self::navigate_back))
             .on_action(cx.listener(Self::navigate_forward))

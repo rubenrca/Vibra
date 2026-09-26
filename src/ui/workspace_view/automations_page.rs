@@ -249,7 +249,7 @@ impl WorkspaceView {
             );
             return None;
         };
-        match self.run_in_new_session(
+        match self.run_in_new_tab(
             project_id,
             &automation.name,
             &automation.command,
@@ -286,10 +286,10 @@ impl WorkspaceView {
         }
     }
 
-    /// Opens a session named `title` in the project and types `command` into
-    /// its shell. Returns the new terminal and whether the shell took the
-    /// command. With `reveal` off the user's current session stays selected.
-    pub(super) fn run_in_new_session(
+    /// Opens a tab named `title` in the project and types `command` into its
+    /// shell. Returns the new terminal and whether the shell took the
+    /// command. With `reveal` off the user's current tab stays selected.
+    pub(super) fn run_in_new_tab(
         &mut self,
         project_id: Uuid,
         title: &str,
@@ -297,35 +297,12 @@ impl WorkspaceView {
         reveal: bool,
         cx: &mut Context<Self>,
     ) -> Result<(Uuid, bool), &'static str> {
-        let previous = self.snapshot.selected_project_id.zip(
-            self.snapshot
-                .selected_workspace()
-                .map(|workspace| workspace.id),
-        );
-        let workspace_id = self
+        let (_, session_id) = self
             .snapshot
-            .create_workspace_in_project(project_id)
+            .open_tab_in_project(project_id, reveal)
             .ok_or("El proyecto no tiene una carpeta asociada.")?;
-        self.snapshot
-            .rename_workspace(project_id, workspace_id, title);
-        let session_id = self
-            .snapshot
-            .projects
-            .iter()
-            .find(|project| project.id == project_id)
-            .and_then(|project| project.workspaces.as_deref())
-            .and_then(|workspaces| {
-                workspaces
-                    .iter()
-                    .find(|workspace| workspace.id == workspace_id)
-            })
-            .and_then(|workspace| workspace.tabs.first())
-            .and_then(|tab| tab.sessions.first())
-            .map(|session| session.id)
-            .ok_or("No se pudo abrir la sesión.")?;
-        if !reveal && let Some((project, workspace)) = previous {
-            self.snapshot.select_workspace(project, workspace);
-        }
+        // The tab keeps the automation's name while its shell runs.
+        self.agent_names.insert(session_id, title.to_owned());
         self.reconcile_terminal_views(cx);
         let started = self
             .terminals
@@ -337,8 +314,7 @@ impl WorkspaceView {
         if reveal {
             self.leave_library_section(WorkspaceSection::Workspace);
             self.workspace_section = WorkspaceSection::Workspace;
-            self.diff_view
-                .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
+            self.review_tab_active = false;
             self.sync_terminal_surface_visibility(cx);
             self.sync_diff_root(cx);
             self.sync_git_panel_visibility(cx);
@@ -399,7 +375,7 @@ impl WorkspaceView {
             body = body.child(section_empty_state(
                 "chrome-icons/automations.svg",
                 "Tus tareas recurrentes",
-                "Guarda un comando (por ejemplo claude -p \"resume los cambios de ayer\" o cargo test) y ejecútalo cuando quieras o a una hora fija. Cada ejecución abre una sesión nueva en el proyecto, así ves la salida y puedes seguir trabajando en esa terminal.",
+                "Guarda un comando (por ejemplo claude -p \"resume los cambios de ayer\" o cargo test) y ejecútalo cuando quieras o a una hora fija. Cada ejecución abre una pestaña nueva en el proyecto, así ves la salida y puedes seguir trabajando en esa terminal.",
             ));
         }
         for automation in self.library.automations.clone() {

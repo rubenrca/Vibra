@@ -122,7 +122,6 @@ impl WorkspaceView {
                 self.sync_diff_root(cx);
                 self.diff_view.update(cx, |diff, cx| diff.refresh_now(cx));
             }
-            RightSidebarMode::Info => {}
         }
         cx.notify();
     }
@@ -313,7 +312,7 @@ impl WorkspaceView {
                                         .text_size(px(12.0))
                                         .line_height(px(17.0))
                                         .text_color(colors().subtle)
-                                        .child("Elige una carpeta; sus sesiones, archivos y cambios quedan juntos."),
+                                        .child("Elige una carpeta; sus terminales, archivos y cambios quedan juntos."),
                                 ),
                         )
                     }),

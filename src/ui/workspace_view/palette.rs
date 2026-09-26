@@ -79,29 +79,39 @@ impl super::WorkspaceView {
         let mut items = match mode {
             PaletteMode::Commands => vec![
                 PaletteItem {
-                    label: "Inbox: Open".into(),
-                    detail: "Actividad de los agentes".into(),
-                    action: PaletteAction::ShowSection(WorkspaceSection::Inbox),
+                    label: "Terminal: Nueva pestaña".into(),
+                    detail: "⌘T".into(),
+                    action: PaletteAction::NewTerminalTab,
                 },
                 PaletteItem {
-                    label: "Notes: Open".into(),
-                    detail: "Notas por proyecto".into(),
-                    action: PaletteAction::ShowSection(WorkspaceSection::Notes),
+                    label: "Pane: Dividir a la derecha".into(),
+                    detail: "⌘D".into(),
+                    action: PaletteAction::Split(PaneSplitDirection::Right),
                 },
                 PaletteItem {
-                    label: "Automations: Open".into(),
-                    detail: "Comandos guardados y programados".into(),
-                    action: PaletteAction::ShowSection(WorkspaceSection::Automations),
+                    label: "Pane: Dividir hacia abajo".into(),
+                    detail: "⇧⌘D".into(),
+                    action: PaletteAction::Split(PaneSplitDirection::Down),
                 },
                 PaletteItem {
-                    label: "Notes: Nueva nota".into(),
+                    label: "Pane: Dividir a la izquierda".into(),
                     detail: String::new(),
-                    action: PaletteAction::NewNote,
+                    action: PaletteAction::Split(PaneSplitDirection::Left),
                 },
                 PaletteItem {
-                    label: "Automations: Nueva automatización".into(),
+                    label: "Pane: Dividir hacia arriba".into(),
                     detail: String::new(),
-                    action: PaletteAction::NewAutomation,
+                    action: PaletteAction::Split(PaneSplitDirection::Up),
+                },
+                PaletteItem {
+                    label: "Pane: Igualar tamaños".into(),
+                    detail: "⌃⌥E".into(),
+                    action: PaletteAction::EqualizePanes,
+                },
+                PaletteItem {
+                    label: "Pane: Agrandar o restaurar".into(),
+                    detail: "⇧⌘↵".into(),
+                    action: PaletteAction::TogglePaneZoom,
                 },
                 PaletteItem {
                     label: "Proyecto: Agregar carpeta…".into(),
@@ -109,62 +119,12 @@ impl super::WorkspaceView {
                     action: PaletteAction::AddProject,
                 },
                 PaletteItem {
-                    label: "Terminal: New tab".into(),
-                    detail: "⌘T".into(),
-                    action: PaletteAction::NewTerminalTab,
-                },
-                PaletteItem {
-                    label: "Workspace: Open current folder in IDE".into(),
+                    label: "Proyecto: Abrir en el IDE".into(),
                     detail: "⇧⌘E".into(),
                     action: PaletteAction::OpenIde,
                 },
                 PaletteItem {
-                    label: "Sesión: Nueva en este proyecto".into(),
-                    detail: "⌘N".into(),
-                    action: PaletteAction::NewWorkspace,
-                },
-                PaletteItem {
-                    label: "Pane: Split right".into(),
-                    detail: "⌘D".into(),
-                    action: PaletteAction::Split(PaneSplitDirection::Right),
-                },
-                PaletteItem {
-                    label: "Pane: Split down".into(),
-                    detail: "⇧⌘D".into(),
-                    action: PaletteAction::Split(PaneSplitDirection::Down),
-                },
-                PaletteItem {
-                    label: "Pane: Split left".into(),
-                    detail: String::new(),
-                    action: PaletteAction::Split(PaneSplitDirection::Left),
-                },
-                PaletteItem {
-                    label: "Pane: Split up".into(),
-                    detail: String::new(),
-                    action: PaletteAction::Split(PaneSplitDirection::Up),
-                },
-                PaletteItem {
-                    label: "Pane: Equalize".into(),
-                    detail: "⌃⌥E".into(),
-                    action: PaletteAction::EqualizePanes,
-                },
-                PaletteItem {
-                    label: "Pane: Toggle zoom".into(),
-                    detail: "⇧⌘↵".into(),
-                    action: PaletteAction::TogglePaneZoom,
-                },
-                PaletteItem {
-                    label: "Sesión: Renombrar actual".into(),
-                    detail: String::new(),
-                    action: PaletteAction::RenameWorkspace,
-                },
-                PaletteItem {
-                    label: "Sesión: Cerrar actual".into(),
-                    detail: String::new(),
-                    action: PaletteAction::CloseWorkspace,
-                },
-                PaletteItem {
-                    label: "Workspace: Toggle sidebar".into(),
+                    label: "Workspace: Mostrar u ocultar panel".into(),
                     detail: "⌥⌘B".into(),
                     action: PaletteAction::ToggleGit,
                 },
@@ -174,12 +134,32 @@ impl super::WorkspaceView {
                     action: PaletteAction::ShowFiles,
                 },
                 PaletteItem {
-                    label: "Workspace: Info".into(),
-                    detail: String::new(),
-                    action: PaletteAction::ShowInfo,
+                    label: "Inbox: Abrir".into(),
+                    detail: "Actividad de los agentes".into(),
+                    action: PaletteAction::ShowSection(WorkspaceSection::Inbox),
                 },
                 PaletteItem {
-                    label: "Settings: Open".into(),
+                    label: "Notes: Abrir".into(),
+                    detail: "Notas por proyecto".into(),
+                    action: PaletteAction::ShowSection(WorkspaceSection::Notes),
+                },
+                PaletteItem {
+                    label: "Notes: Nueva nota".into(),
+                    detail: String::new(),
+                    action: PaletteAction::NewNote,
+                },
+                PaletteItem {
+                    label: "Automations: Abrir".into(),
+                    detail: "Comandos guardados y programados".into(),
+                    action: PaletteAction::ShowSection(WorkspaceSection::Automations),
+                },
+                PaletteItem {
+                    label: "Automations: Nueva automatización".into(),
+                    detail: String::new(),
+                    action: PaletteAction::NewAutomation,
+                },
+                PaletteItem {
+                    label: "Settings: Abrir".into(),
                     detail: "⌘,".into(),
                     action: PaletteAction::ShowSettings,
                 },
@@ -221,7 +201,7 @@ impl super::WorkspaceView {
                     .automations
                     .iter()
                     .map(|automation| PaletteItem {
-                        label: format!("Automatización: Ejecutar {}", automation.name),
+                        label: format!("Automations: Ejecutar {}", automation.name),
                         detail: automation.command.clone(),
                         action: PaletteAction::RunAutomation(automation.id),
                     }),
@@ -231,19 +211,6 @@ impl super::WorkspaceView {
                 detail: project.root_path.clone(),
                 action: PaletteAction::SelectProject(project.id),
             }));
-            items.extend(
-                self.snapshot
-                    .workspace_entries()
-                    .into_iter()
-                    .map(|entry| PaletteItem {
-                        label: format!("Sesión: {}", entry.workspace_name),
-                        detail: entry.project_name,
-                        action: PaletteAction::SelectWorkspace {
-                            project_id: entry.project_id,
-                            workspace_id: entry.workspace_id,
-                        },
-                    }),
-            );
         }
         if mode != PaletteMode::Files {
             let query = self.palette_query.to_lowercase();
@@ -273,57 +240,17 @@ impl super::WorkspaceView {
                 self.open_terminal_tab_in_project(window, cx);
             }
             PaletteAction::OpenIde => self.open_ide(&OpenIde, window, cx),
-            PaletteAction::NewWorkspace => {
-                self.open_workspace_in_project(window, cx);
-            }
-            PaletteAction::RenameWorkspace => {
-                if let (Some(project), Some(workspace)) = (
-                    self.snapshot.selected_project(),
-                    self.snapshot.selected_workspace(),
-                ) {
-                    self.begin_rename_prompt(
-                        super::RenamePromptKind::Workspace {
-                            project_id: project.id,
-                            workspace_id: workspace.id,
-                        },
-                        cx,
-                    );
-                }
-            }
-            PaletteAction::CloseWorkspace => {
-                let selected = self
-                    .snapshot
-                    .selected_project()
-                    .zip(self.snapshot.selected_workspace())
-                    .map(|(project, workspace)| (project.id, workspace.id));
-                if let Some((project_id, workspace_id)) = selected
-                    && self.snapshot.close_workspace(project_id, workspace_id)
-                {
-                    self.reconcile_terminal_views(cx);
-                    self.apply_workspace_selection_change(window, cx);
-                }
-            }
             PaletteAction::Split(direction) => self.split_pane(direction, window, cx),
             PaletteAction::EqualizePanes => {
                 self.select_section(WorkspaceSection::Workspace, window, cx);
-                if self.snapshot.equalize_selected_panes() {
-                    self.persist(cx);
-                }
+                self.equalize_panes(&crate::EqualizePanes, window, cx);
             }
             PaletteAction::TogglePaneZoom => {
-                self.select_section(WorkspaceSection::Workspace, window, cx);
-                if self.snapshot.toggle_selected_pane_zoom() {
-                    self.sync_terminal_surface_visibility(cx);
-                    self.persist(cx);
-                }
+                self.toggle_pane_zoom(&crate::TogglePaneZoom, window, cx);
             }
             PaletteAction::ToggleGit => self.toggle_diff_panel(window, cx),
             PaletteAction::ShowFiles => {
                 self.set_workspace_mode(RightSidebarMode::Files, cx);
-                self.focus_selected_terminal(window, cx);
-            }
-            PaletteAction::ShowInfo => {
-                self.set_workspace_mode(RightSidebarMode::Info, cx);
                 self.focus_selected_terminal(window, cx);
             }
             PaletteAction::ShowSection(section) => self.select_section(section, window, cx),
@@ -335,10 +262,6 @@ impl super::WorkspaceView {
             PaletteAction::ShowSettings => {
                 self.open_settings(cx);
             }
-            PaletteAction::SelectWorkspace {
-                project_id,
-                workspace_id,
-            } => self.select_workspace(project_id, workspace_id, window, cx),
             PaletteAction::OpenFile(path) => {
                 self.select_file_path(path, cx);
                 self.set_workspace_mode(RightSidebarMode::Files, cx);

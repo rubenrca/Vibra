@@ -26,13 +26,12 @@ actions!(
     vibra,
     [
         AddProject,
-        NewWorkspace,
         NewTerminalTab,
         CloseTerminal,
         ToggleLeftSidebar,
         ToggleRightSidebar,
-        PreviousWorkspace,
-        NextWorkspace,
+        PreviousProject,
+        NextProject,
         NavigateBack,
         NavigateForward,
         CopyTerminal,
@@ -137,13 +136,13 @@ fn run() -> Result<()> {
 
             cx.bind_keys([
                 KeyBinding::new("shift-cmd-o", AddProject, None),
-                KeyBinding::new("cmd-n", NewWorkspace, None),
+                KeyBinding::new("cmd-n", NewTerminalTab, None),
                 KeyBinding::new("cmd-t", NewTerminalTab, None),
                 KeyBinding::new("cmd-w", CloseTerminal, None),
                 KeyBinding::new("cmd-b", ToggleLeftSidebar, None),
                 KeyBinding::new("alt-cmd-b", ToggleRightSidebar, None),
-                KeyBinding::new("ctrl-cmd-[", PreviousWorkspace, None),
-                KeyBinding::new("ctrl-cmd-]", NextWorkspace, None),
+                KeyBinding::new("ctrl-cmd-[", PreviousProject, None),
+                KeyBinding::new("ctrl-cmd-]", NextProject, None),
                 KeyBinding::new("ctrl-cmd-left", NavigateBack, None),
                 KeyBinding::new("ctrl-cmd-right", NavigateForward, None),
                 KeyBinding::new("cmd-c", CopyTerminal, Some("Terminal")),
@@ -211,7 +210,6 @@ fn run() -> Result<()> {
                     name: "File".into(),
                     items: vec![
                         MenuItem::action("Add Project…", AddProject),
-                        MenuItem::action("New Session", NewWorkspace),
                         MenuItem::action("New Terminal Tab", NewTerminalTab),
                         MenuItem::separator(),
                         MenuItem::action("Open Current Folder in…", OpenIde),
@@ -239,8 +237,8 @@ fn run() -> Result<()> {
                 Menu {
                     name: "Window".into(),
                     items: vec![
-                        MenuItem::action("Previous Workspace", PreviousWorkspace),
-                        MenuItem::action("Next Workspace", NextWorkspace),
+                        MenuItem::action("Previous Project", PreviousProject),
+                        MenuItem::action("Next Project", NextProject),
                         MenuItem::action("Back", NavigateBack),
                         MenuItem::action("Forward", NavigateForward),
                         MenuItem::separator(),

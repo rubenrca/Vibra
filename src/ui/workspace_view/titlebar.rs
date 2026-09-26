@@ -159,11 +159,11 @@ impl super::WorkspaceView {
                                 |this, _, cx| this.open_palette(PaletteMode::Files, cx),
                             ))
                             .child(self.workspace_title_action(
-                                "workspace-new-session",
+                                "workspace-new-tab",
                                 "chrome-icons/plus.svg",
-                                "Nueva sesión · ⌘N",
+                                "Nueva pestaña · ⌘T",
                                 cx,
-                                |this, window, cx| this.open_workspace_in_project(window, cx),
+                                |this, window, cx| this.open_terminal_tab_in_project(window, cx),
                             ))
                             .child(self.ide_button(cx))
                     })

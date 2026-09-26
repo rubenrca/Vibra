@@ -54,33 +54,21 @@ impl WorkspaceView {
             .push(kind, Some(pane_id), title, detail, unix_now(), seen);
     }
 
-    /// "Project › Session" for a terminal, or an empty string once it is gone.
+    /// The project a terminal belongs to, or an empty string once it is gone.
     pub(super) fn session_location_label(&self, pane_id: Uuid) -> String {
-        self.snapshot
-            .projects
-            .iter()
-            .find_map(|project| {
-                project
-                    .workspaces
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .find(|workspace| {
-                        workspace
-                            .tabs
-                            .iter()
-                            .flat_map(|tab| &tab.sessions)
-                            .any(|session| session.id == pane_id)
-                    })
-                    .map(|workspace| {
-                        if workspace.name == project.name {
-                            project.name.clone()
-                        } else {
-                            format!("{} › {}", project.name, workspace.name)
-                        }
-                    })
-            })
-            .unwrap_or_default()
+        let Some(project) = self.snapshot.projects.iter().find(|project| {
+            project
+                .workspaces
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|workspace| &workspace.tabs)
+                .flat_map(|tab| &tab.sessions)
+                .any(|session| session.id == pane_id)
+        }) else {
+            return String::new();
+        };
+        project.name.clone()
     }
 
     /// Shows a terminal from anywhere in the app and acknowledges its events.

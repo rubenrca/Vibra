@@ -319,7 +319,6 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
     snapshot.create_workspace(&root);
     snapshot.create_terminal_tab_with_options(true, None);
     let first_project = snapshot.selected_project_id.unwrap();
-    let first_workspace = snapshot.selected_workspace().unwrap().id;
     snapshot.create_workspace(&root);
     let second_workspace = snapshot.selected_workspace().unwrap().id;
     repository.save(&snapshot).unwrap();
@@ -355,22 +354,25 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
 
     window
         .update(cx, |view, window, cx| {
-            let first = view
-                .snapshot
-                .projects
-                .iter()
-                .flat_map(|project| project.workspaces.as_deref().unwrap_or_default())
-                .find(|workspace| workspace.id == first_workspace)
-                .unwrap();
-            let first_tab = first.tabs[0].id;
-            let second_tab = first.tabs[1].id;
-            let first_session = first.tabs[0].sessions[0].id;
-            let second_session = first.tabs[1].sessions[0].id;
-            let other_session = view.snapshot.selected_session().unwrap().id;
+            // Earlier sessions of a project load as tabs of the selected one.
+            let merged = view.snapshot.selected_workspace().unwrap().clone();
+            assert_eq!(merged.id, second_workspace);
+            assert_eq!(merged.tabs.len(), 3, "no terminal stays out of reach");
             assert_eq!(
-                view.snapshot.selected_workspace().unwrap().id,
-                second_workspace
+                view.snapshot
+                    .selected_project()
+                    .unwrap()
+                    .workspaces
+                    .as_ref()
+                    .unwrap()
+                    .len(),
+                1
             );
+            let other_session = view.snapshot.selected_session().unwrap().id;
+            let first_tab = merged.tabs[1].id;
+            let second_tab = merged.tabs[2].id;
+            let first_session = merged.tabs[1].sessions[0].id;
+            let second_session = merged.tabs[2].sessions[0].id;
             assert!(view.terminals[&other_session].read(cx).is_surface_visible());
             assert!(!view.terminals[&first_session].read(cx).is_surface_visible());
             assert!(
@@ -378,19 +380,17 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
                     .read(cx)
                     .is_surface_visible()
             );
-
-            view.select_workspace(first_project, first_workspace, window, cx);
-            assert!(
-                view.terminals[&second_session]
-                    .read(cx)
-                    .is_surface_visible()
-            );
-            assert!(
-                !view.terminals[&other_session].read(cx).is_surface_visible(),
-                "sessions in the unselected workspace must stop cwd/agent polls"
+            assert_eq!(
+                view.repository.load().unwrap().unwrap(),
+                view.snapshot,
+                "the merge is saved"
             );
 
             view.select_tab(first_tab, window, cx);
+            assert!(
+                !view.terminals[&other_session].read(cx).is_surface_visible(),
+                "the unselected tab must stop cwd/agent polls"
+            );
             assert!(view.terminals[&first_session].read(cx).is_surface_visible());
             assert!(
                 !view.terminals[&second_session]
@@ -491,10 +491,6 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
             assert_eq!(view.project_root(), root);
             assert_eq!(view.snapshot.selected_project_id, Some(first_project));
 
-            assert!(
-                view.snapshot
-                    .close_workspace(first_project, first_workspace)
-            );
             assert!(
                 view.snapshot
                     .close_workspace(first_project, second_workspace)
@@ -779,14 +775,13 @@ fn open_recording_workspace(cx: &mut gpui::TestAppContext, name: &str) -> Record
 }
 
 #[gpui::test]
-fn scheduled_automations_run_in_a_new_session_without_stealing_focus(
-    cx: &mut gpui::TestAppContext,
-) {
+fn scheduled_automations_run_in_a_new_tab_without_stealing_focus(cx: &mut gpui::TestAppContext) {
     use crate::domain::inbox::InboxKind;
     use crate::domain::library::AutomationSchedule;
 
     let (root, snapshot, inputs, window) = open_recording_workspace(cx, "automation");
     let selected_workspace = snapshot.selected_workspace().unwrap().id;
+    let selected_tab = snapshot.selected_tab().unwrap().id;
     window
         .update(cx, |view, window, cx| {
             let id = view
@@ -803,17 +798,23 @@ fn scheduled_automations_run_in_a_new_session_without_stealing_focus(
             let session = view.run_automation(id, Some(42), false, cx).unwrap();
 
             assert_eq!(
-                view.snapshot.selected_workspace().unwrap().id,
-                selected_workspace,
+                view.snapshot.selected_tab().unwrap().id,
+                selected_tab,
                 "a scheduled run keeps what the user is looking at"
             );
-            let workspace = view
-                .snapshot
-                .workspace_entries()
-                .into_iter()
-                .find(|entry| entry.workspace_name == "Resumen")
-                .expect("the run opens a session named after the automation");
-            assert!(workspace.title_is_manual);
+            // The run is one more tab of the project, named after it.
+            let workspace = view.snapshot.selected_workspace().unwrap();
+            assert_eq!(workspace.id, selected_workspace);
+            assert!(
+                workspace
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.sessions.iter().any(|pane| pane.id == session))
+            );
+            assert_eq!(
+                view.agent_names.get(&session).map(String::as_str),
+                Some("Resumen")
+            );
             assert!(view.terminals.contains_key(&session));
             assert!(
                 inputs
@@ -1022,6 +1023,55 @@ fn review_tab_survives_panel_and_section_changes(cx: &mut gpui::TestAppContext) 
             assert!(!view.review_visible(cx));
             view.select_section(WorkspaceSection::Workspace, window, cx);
             assert!(view.review_visible(cx));
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn new_tabs_and_pane_commands_keep_the_review_and_show_the_terminal(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "tab-hygiene");
+    let project = snapshot.selected_project_id.unwrap();
+    window
+        .update(cx, |view, _, cx| {
+            view.set_right_sidebar_visible(false, false, cx);
+            view.diff_view
+                .update(cx, |diff, cx| diff.set_review_expanded(true, cx));
+        })
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.review_covers_terminal(cx));
+
+            // Pane commands act on the visible terminal.
+            view.cycle_pane(1, window, cx);
+            assert!(!view.review_visible(cx));
+            assert!(view.diff_view.read(cx).review_expanded());
+            view.activate_review_tab(window, cx);
+
+            // ⌘T (and ⌘N) add a tab to the project; the review stays open.
+            let tabs = view.snapshot.selected_workspace().unwrap().tabs.len();
+            view.new_terminal_tab(&crate::NewTerminalTab, window, cx);
+            let workspace = view.snapshot.selected_workspace().unwrap();
+            assert_eq!(workspace.tabs.len(), tabs + 1);
+            assert_eq!(
+                view.snapshot
+                    .selected_project()
+                    .unwrap()
+                    .workspaces
+                    .as_ref()
+                    .unwrap()
+                    .len(),
+                1,
+                "new tabs never create hidden sessions"
+            );
+            assert!(view.diff_view.read(cx).review_expanded());
+            assert!(!view.review_visible(cx));
+
+            // Choosing the project keeps the right panel as the user left it.
+            view.select_project(project, window, cx);
+            assert!(!view.right_sidebar_visible);
             window.remove_window();
         })
         .unwrap();

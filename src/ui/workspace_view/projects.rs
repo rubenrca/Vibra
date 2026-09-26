@@ -33,7 +33,7 @@ impl WorkspaceView {
     pub(super) fn choose_project_folder(
         &mut self,
         project_id: Option<Uuid>,
-        create_session: bool,
+        open_tab: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -105,8 +105,8 @@ impl WorkspaceView {
                     }
                 };
                 let empty = this.snapshot.selected_workspace().is_none();
-                if create_session || (project_id.is_none() && empty) {
-                    this.snapshot.create_workspace_in_project(id);
+                if open_tab || (project_id.is_none() && empty) {
+                    this.snapshot.open_tab_in_project(id, true);
                 }
                 this.persistence_error = None;
                 this.right_sidebar_mode = RightSidebarMode::Files;
@@ -119,7 +119,9 @@ impl WorkspaceView {
         .detach();
     }
 
-    pub(super) fn create_project_session(
+    /// Opens a terminal tab in the project, asking for its folder first
+    /// when a migrated project has none.
+    pub(super) fn open_project_tab(
         &mut self,
         id: Uuid,
         window: &mut Window,
@@ -135,9 +137,7 @@ impl WorkspaceView {
             self.choose_project_folder(Some(id), true, window, cx);
             return;
         }
-        if self.snapshot.create_workspace_in_project(id).is_some() {
-            self.right_sidebar_mode = RightSidebarMode::Files;
-            self.set_right_sidebar_visible(true, true, cx);
+        if self.snapshot.open_tab_in_project(id, true).is_some() {
             self.reconcile_terminal_views(cx);
             self.apply_workspace_selection_change(window, cx);
         }
@@ -152,8 +152,7 @@ impl WorkspaceView {
             {
                 self.snapshot.toggle_project(id);
             }
-            self.right_sidebar_mode = RightSidebarMode::Files;
-            self.set_right_sidebar_visible(true, true, cx);
+            // Keep the right panel as the user left it.
             self.apply_workspace_selection_change(window, cx);
         }
     }
@@ -170,7 +169,7 @@ impl WorkspaceView {
         let confirmation = window.prompt(
             PromptLevel::Warning,
             &format!("¿Quitar {} de Vibra?", project.name),
-            Some("Se cerrarán sus sesiones y procesos. La carpeta y sus archivos se conservarán en el disco."),
+            Some("Se cerrarán sus pestañas y procesos. La carpeta y sus archivos se conservarán en el disco."),
             &["Cancelar", "Quitar proyecto"], cx,
         );
         cx.spawn_in(window, async move |this, cx| {
@@ -381,7 +380,7 @@ impl WorkspaceView {
                             .id(SharedString::from(format!("project-new-session-{id}")))
                             .absolute()
                             .inset_0()
-                            .tooltip(|_, cx| sidebar_tooltip("Nueva sesión · ⌘N", cx))
+                            .tooltip(|_, cx| sidebar_tooltip("Nueva pestaña · ⌘T", cx))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -392,7 +391,7 @@ impl WorkspaceView {
                             .hover(|s| s.bg(colors().hover))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.create_project_session(id, window, cx);
+                                this.open_project_tab(id, window, cx);
                                 cx.stop_propagation();
                             }))
                             .child(
@@ -413,7 +412,7 @@ impl WorkspaceView {
             .unwrap_or_else(|| "Vibra".into());
         let path = project.and_then(|p| p.directory()).map(PathBuf::from);
         let button = if project.is_some() {
-            "Crear sesión · ⌘N"
+            "Nueva terminal · ⌘T"
         } else {
             "Agregar proyecto · ⇧⌘O"
         };
@@ -442,7 +441,7 @@ impl WorkspaceView {
                 div()
                     .text_size(px(12.0))
                     .text_color(colors().muted)
-                    .child("Organiza tu trabajo en sesiones"),
+                    .child("Abre una terminal en esta carpeta para empezar"),
             )
             .child(
                 div()
@@ -455,11 +454,9 @@ impl WorkspaceView {
                     .text_size(px(12.0))
                     .text_color(colors().foreground)
                     .hover(|s| s.bg(colors().hover))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.open_workspace_in_project(window, cx)
-                        }),
-                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_terminal_tab_in_project(window, cx)
+                    }))
                     .child(button),
             )
             .into_any_element()

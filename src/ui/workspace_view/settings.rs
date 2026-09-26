@@ -978,7 +978,7 @@ impl WorkspaceView {
                             .text_color(colors().subtle)
                             .child(concat!(
                                 "Vibra reconoce los agentes que ejecutas en sus terminales ",
-                                "y muestra su actividad en panes, tabs y sesiones."
+                                "y muestra su actividad en panes y pestañas."
                             )),
                     )
                     .child(div().h(px(1.0)).bg(colors().border_subtle))
