@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.31 — 2026-09-27
+
+- Redesign Inbox details with a persistent pull request header and Summary, Code, and Checks tabs. Default to the active project's open issues and pull requests, with closed and merged work available through filters.
+- Reuse the Workspace diff viewer in Inbox, including syntax highlighting, Unified/Split layouts, wrapping, sticky file headers, shared text preferences, and expandable full-file context. Review comments prepare an editable agent draft.
+- Preload Inbox feeds and restore the last successful list while refreshing GitHub and Linear. Preserve visible tasks when a provider cannot be reached.
+- Show added and removed line counts beside projects, and improve tab and project dragging with matching previews, animated insertion gaps, and Escape to cancel.
+- Refine the subscription quota popover, translucent borders, terminal padding, and alignment of Git controls.
+- Merge concurrent settings updates without overwriting unrelated preferences from another Vibra instance, and preserve recovery copies when the settings file cannot be safely updated.
+
 ## 0.3.30 — 2026-09-27
 
 - Reorganize the workspace around global Search, Inbox, Notes, Automations, and Settings, pinned projects, and a right panel with Explorer and Changes. Add project agent indicators, back/forward navigation, and a status bar with the branch, active agents, and unread events.
