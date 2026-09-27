@@ -197,6 +197,23 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertTrue(marker.exists())
         self.assertEqual((self.root / "dist/fetch-args.txt").read_text().strip(), "--refresh")
 
+    def test_resume_accepts_semantic_appcast_commit_after_the_release_tag(self):
+        self.prepare_resumed_dmg(self.commit)
+        subprocess.run(["git", "tag", f"v{VERSION}"], cwd=self.root, check=True)
+        feed = self.root / "docs/appcast.xml"
+        feed.parent.mkdir()
+        feed.write_text("<rss/>\n")
+        subprocess.run(["git", "add", "docs/appcast.xml"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", f"chore(release): publish v{VERSION} appcast"],
+            cwd=self.root,
+            check=True,
+        )
+
+        result = self.run_release("--resume-dmg", "--dry-run")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_notarized_package_requires_source_matching_clean_commit(self):
         shutil.copy2(Path(__file__).with_name("package_app.sh"), self.root / "Scripts/package_app.sh")
         subprocess.run(["git", "add", "Scripts/package_app.sh"], cwd=self.root, check=True)

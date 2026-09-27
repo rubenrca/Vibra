@@ -195,7 +195,8 @@ if [[ -n $existing_tag_commit && $existing_tag_commit != $head_commit ]]; then
   last_subject=$(git -C "$repo_root" log -1 --format=%s HEAD)
   last_paths=$(git -C "$repo_root" diff-tree --no-commit-id --name-only -r HEAD)
   if [[ $previous_commit != $existing_tag_commit \
-      || $last_subject != "Publish the Vibra $version appcast" \
+      || ( $last_subject != "chore(release): publish v$version appcast" \
+        && $last_subject != "Publish the Vibra $version appcast" ) \
       || $last_paths != docs/appcast.xml ]]; then
     print -u2 -- "tag $tag points to $existing_tag_commit, but HEAD is $head_commit."
     exit 65
@@ -488,7 +489,7 @@ if (( ! prerelease )); then
   cp "$staging_dir/appcast.xml" "$feed_dir/appcast.xml"
   git -C "$repo_root" add "$feed_dir/appcast.xml"
   if [[ -n $(git -C "$repo_root" status --porcelain -- "$feed_dir/appcast.xml") ]]; then
-    git -C "$repo_root" commit -m "Publish the Vibra $version appcast"
+    git -C "$repo_root" commit -m "chore(release): publish v$version appcast"
   fi
   git -C "$repo_root" push origin main
   print
