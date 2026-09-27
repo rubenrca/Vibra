@@ -3,17 +3,32 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.29</title>
-            <pubDate>Wed, 23 Sep 2026 23:28:40 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.29</link>
-            <sparkle:version>194</sparkle:version>
-            <sparkle:shortVersionString>0.3.29</sparkle:shortVersionString>
+            <title>0.3.30</title>
+            <pubDate>Sun, 27 Sep 2026 18:33:57 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.30</link>
+            <sparkle:version>214</sparkle:version>
+            <sparkle:shortVersionString>0.3.30</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Fix a crash when expanding or collapsing a previously loaded Git diff in unified and split layouts.</li>
+  <li>Reorganize the workspace around global Search, Inbox, Notes, Automations, and Settings, pinned projects, and a right panel with Explorer and Changes. Add project agent indicators, back/forward navigation, and a status bar with the branch, active agents, and unread events.</li>
+  <li>Keep one row of tabs per project: ⌘N and ⌘T open tabs, earlier sessions merge into the project's tabs on load, and automations and Create PR open visible tabs. ⌃⌘[ / ⌃⌘] move between projects.</li>
+  <li>Reorder terminal and review tabs by dragging, drop terminal tabs onto other tabs or terminal content to create directional splits, and detach panes back into tabs without restarting their processes. Preserve nested layouts and the review's position in numbered shortcuts.</li>
+  <li>Give split panes a drag grip, agent and title, and enlarge, restore, and close controls. Double-clicking the header or pressing ⇧⌘↵ toggles zoom; pane focus stays visible through zoom and full-tab reviews.</li>
+  <li>Rebuild Inbox around MonoCode's open-source interaction model, with GitHub issues and pull requests, Linear tasks, a resizable list, connection tabs, persisted filters, Markdown discussion and comments, and related agent sessions. GitHub stays scoped to local project remotes.</li>
+  <li>Add PR Summary, Code, and Checks views, GitHub Actions job logs, repair drafts, confirmed PR lifecycle actions, and a reusable Ask terminal. Prepare editable task drafts before launching an agent in the selected project.</li>
+  <li>Keep local agent activity in Inbox, including unread events when an agent finishes, asks for permission, or waits for an answer in another pane. Opening an event reveals its terminal even when it was hidden by zoom.</li>
+  <li>Add per-project Notes that save to library.json and paste into the project's terminal without submitting the text. Add manual, hourly, daily, and weekday Automations that run in visible tabs while Vibra is open; scheduled runs preserve focus and report to Inbox.</li>
+  <li>Show Claude Code, Codex, and Grok Build subscription usage in the status bar, with quota windows, reported balances, reset times, manual refresh, rate-limit handling, and stale-data indicators. Use each CLI's current login without storing or changing its credentials.</li>
+  <li>Redesign Changes with staging controls, Commit, Commit and push, Amend, Fetch, Pull, Push, Create PR, agent-generated commit messages, and a collapsible commit graph. Keep asynchronous Git results scoped to their original project.</li>
+  <li>Open reviews as persistent central tabs or resizable panes beside a terminal. Switching terminal tabs, panels, or Inbox preserves the review; ⌘W closes it without closing the terminal process.</li>
+  <li>Open Explorer and quick-open files in read-only tabs, including text files outside Git repositories, with line numbers, syntax highlighting, copying, and reload. Show diffs for changed files and offer Open in App for unsupported formats.</li>
+  <li>Add Explorer file and folder creation, collapse-all, and refresh controls. Validate nested paths, clear stale rows on project changes, and cancel dismissed quick-open searches.</li>
+  <li>Fold unchanged diff lines into expandable “N unmodified lines” bars, add expand/collapse-all controls, and use a single line-number column in unified layout.</li>
+  <li>Standardize app-owned UI text in English, restore missing SVG icons, improve sidebar keycaps and tooltips, refine the Midnight palette, and apply 12% base transparency over native macOS blur while keeping text and icons opaque.</li>
+  <li>Serialize workspace, settings, notes, and automation saves, including final saves on close. Preserve manual pane names and automation labels across agent restarts, prevent actions from reaching another project's terminal, and pause automations when their project is removed.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.29/Vibra-0.3.29.dmg" length="13516587" type="application/octet-stream" sparkle:edSignature="jmRK3U5t5f5azXHcOxJJgwVmMJGWUly32njr0wR8TPSY0R2S4QC8uL/diyTODBRMxUC1Nci3ZBIJ+CPK3VhoAg=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.30/Vibra-0.3.30.dmg" length="15170863" type="application/octet-stream" sparkle:edSignature="EsksPgSauYFxT8Qg1UtG/Tgtor/HWpTsJvKyyZHys33pgCjXfp+UZuVdwjTYkTsaX6Ddf7Zu5uyOBToZIgg3Ag=="/>
         </item>
     </channel>
 </rss>
