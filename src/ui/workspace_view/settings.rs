@@ -1162,6 +1162,7 @@ impl WorkspaceView {
         self.diff_view.update(cx, |diff_view, cx| {
             diff_view.set_preferences(split, wrap, size, cx)
         });
+        self.sync_inbox_review_preferences(cx);
         self.persist_settings(cx);
     }
 

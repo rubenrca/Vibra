@@ -171,12 +171,21 @@ pub fn safe_link(url: &str) -> bool {
 }
 
 pub fn markdown(id: &str, text: &str) -> AnyElement {
+    render_markdown(id, text, false)
+}
+
+/// More spacious typography for the Inbox's primary description.
+pub fn markdown_prose(id: &str, text: &str) -> AnyElement {
+    render_markdown(id, text, true)
+}
+
+fn render_markdown(id: &str, text: &str, prose: bool) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(12.0))
-        .text_size(px(13.0))
-        .line_height(px(21.0))
+        .gap(px(if prose { 16.0 } else { 12.0 }))
+        .text_size(px(if prose { 15.0 } else { 13.0 }))
+        .line_height(px(if prose { 25.0 } else { 21.0 }))
         .text_color(colors().foreground)
         .children(blocks(text).into_iter().enumerate().map(|(index, block)| {
             if block.rule {

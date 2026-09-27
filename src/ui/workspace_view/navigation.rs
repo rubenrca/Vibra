@@ -100,11 +100,19 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let entering_inbox =
+            section == WorkspaceSection::Inbox && self.workspace_section != WorkspaceSection::Inbox;
         self.leave_library_section(section);
         self.usage.open = false;
         self.workspace_section = section;
         if section == WorkspaceSection::Inbox {
+            if entering_inbox {
+                self.scope_inbox_to_active_project();
+            }
             self.ensure_inbox_loaded(cx);
+            if !self.work_inbox.activity {
+                self.sync_inbox_selection(cx);
+            }
         }
         if section == WorkspaceSection::Workspace
             && !self.review_covers_terminal(cx)

@@ -1,12 +1,16 @@
 //! Inbox connectors and explicit remote actions. Credentials never enter commands or prompts.
 
+mod cache;
 mod detail;
 mod github;
 mod linear;
+mod review;
+pub use cache::ListCache;
 pub use detail::{
-    github_check_job, load_check_log, load_checks, load_detail, load_diff, post_comment,
-    run_pr_action,
+    github_check_job, load_check_log, load_checks, load_detail, load_diff, load_full_file,
+    post_comment, run_pr_action,
 };
+pub use review::load_review_file;
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -15,6 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -22,20 +27,20 @@ use crate::domain::work_items::{WorkItem, WorkKind, WorkSource, WorkStatus};
 
 pub use linear::{connect_linear, disconnect_linear, linear_connected};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxProject {
     pub id: Uuid,
     pub root: PathBuf,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkQuery {
     pub projects: Vec<InboxProject>,
     pub assigned_to_me: bool,
     pub status: Option<WorkStatus>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct WorkItemsPage {
     pub items: Vec<WorkItem>,
     pub truncated: bool,

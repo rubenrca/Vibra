@@ -70,7 +70,8 @@ sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
   una lista redimensionable, con conexiones por pestaña y un menú de filtros por
   asignación, estados múltiples, tiempo, tipo y proyecto. El detalle conserva el
   título y las acciones visibles, renderiza Markdown y permite leer y publicar
-  comentarios y respuestas. Los PR tienen **Summary**, **Code** (diff por archivo)
+  comentarios y respuestas. Los PR tienen **Summary**, **Code** (el mismo visor
+  de diff de Workspace, con resaltado, Unified/Split, Wrap y contexto plegable)
   y **Checks**, con registros de GitHub Actions y **Fix** para preparar una
   reparación. Merge, squash, rebase, draft, ready, close y reopen requieren
   confirmar el PR seleccionado. **Enviar al agente** abre un borrador con el
@@ -105,8 +106,11 @@ Notas y automatizaciones se guardan en
 El Inbox usa la sesión de **GitHub CLI** (`gh auth login`) y encuentra `gh` a
 través de la shell de login, también al abrir Vibra desde Finder. Consulta los
 repositorios de `github.com` asociados a todos los remotos de tus proyectos locales,
-incluido upstream. **Asignados a mí** restringe ese mismo conjunto. Por defecto
-incluye todos los estados y no restringe la asignación.
+incluido upstream. Al entrar a Inbox desde un proyecto, GitHub muestra solo sus
+tareas; **All projects** permite ampliar la selección. Por defecto incluye
+**Open** y **Draft**, sin restringir la asignación. **Closed** y **Merged** se
+activan desde los filtros; **All statuses** muestra todos los estados.
+**Reset filters** vuelve al proyecto activo y a los estados predeterminados.
 Para **Linear**, copia una API key personal y pulsa **Conectar Linear desde
 portapapeles** en Settings → General; también puedes llegar desde **+** en Inbox. La clave se verifica antes
 de guardarla en `~/Library/Application Support/Vibra/linear-token`, con permisos

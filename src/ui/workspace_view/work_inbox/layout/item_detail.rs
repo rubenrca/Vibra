@@ -1,7 +1,6 @@
 use super::*;
 use crate::domain::work_items::WorkComment;
 use crate::ui::markdown::{markdown, safe_link};
-use crate::ui::theme::MONO_FONT;
 
 impl WorkspaceView {
     pub(super) fn inbox_detail_panel(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -29,34 +28,52 @@ impl WorkspaceView {
         let url = item.url.clone();
         let mut header = div()
             .flex_none()
+            .min_w(px(0.0))
             .px(px(32.0))
-            .pt_5()
-            .pb_4()
+            .pt(px(24.0))
+            .pb(px(20.0))
             .flex()
             .flex_col()
-            .gap(px(10.0))
+            .gap(px(12.0))
             .border_b_1()
             .border_color(colors().border_subtle)
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .gap_2()
-                    .text_size(px(12.0))
+                    .gap(px(8.0))
+                    .text_size(px(13.0))
                     .text_color(colors().subtle)
-                    .child(provider_icon(item.source, 14.0))
-                    .child(item.repository.clone())
-                    .child("/")
-                    .child(svg().path(status).size(px(14.0)).text_color(color))
+                    .child(provider_icon(item.source, 16.0))
+                    .child(if item.kind == WorkKind::PullRequest {
+                        "Pull request"
+                    } else {
+                        "Issue"
+                    })
                     .child(item.reference.clone())
-                    .child(item.state_label.clone()),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .ml_1()
+                            .text_color(color)
+                            .child(svg().path(status).size(px(14.0)).text_color(color))
+                            .child(item.state_label.clone()),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(item.repository.clone()),
+                    ),
             )
             .child(
                 div()
-                    .max_h(px(50.0))
-                    .overflow_hidden()
-                    .text_size(px(20.0))
-                    .line_height(px(25.0))
+                    .text_size(px(22.0))
+                    .line_height(px(29.0))
+                    .text_color(colors().foreground)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(item.title.clone()),
             )
@@ -65,56 +82,67 @@ impl WorkspaceView {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap_2()
-                    .text_size(px(12.0))
+                    .gap(px(8.0))
+                    .text_size(px(13.0))
                     .text_color(colors().subtle)
                     .when(!item.author.is_empty(), |row| {
-                        row.child(person(&item.author))
+                        row.child(person(&item.author)).child("·")
                     })
-                    .children(
-                        item.assignees
-                            .iter()
-                            .filter(|name| *name != &item.author)
-                            .map(|name| person(name)),
-                    )
-                    .when(item.assignees.is_empty(), |row| row.child("· Unassigned"))
+                    .when(item.assignees.is_empty(), |row| row.child("Unassigned"))
+                    .children(item.assignees.iter().map(|name| person(name)))
                     .when(item.created_at > 0, |row| {
-                        row.child(format!(
-                            "· Created {}",
+                        row.child("·").child(format!(
+                            "Created {}",
                             relative_time(unix_now(), item.created_at)
                         ))
                     })
+                    .child("·")
                     .child(format!(
-                        "· Updated {}",
+                        "Updated {}",
                         relative_time(unix_now(), item.updated_at)
-                    )),
-            )
-            .when_some(
-                summary.filter(|detail| !detail.head_ref.is_empty()),
-                |header, detail| {
-                    let branch = detail.head_ref.clone();
-                    header.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .text_size(px(12.0))
-                            .text_color(colors().muted)
-                            .child(
-                                svg()
-                                    .path("chrome-icons/git-branch.svg")
-                                    .size(px(13.0))
-                                    .text_color(colors().muted),
-                            )
-                            .child(format!("{} ← {}", detail.base_ref, detail.head_ref))
-                            .child(quiet_button("copy-inbox-branch", "Copy").on_click(
-                                move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(branch.clone()))
-                                },
-                            ))
-                            .child(review_label(&detail.review_decision)),
-                    )
-                },
+                    ))
+                    .when_some(
+                        summary.filter(|detail| !detail.head_ref.is_empty()),
+                        |row, detail| {
+                            let branch = detail.head_ref.clone();
+                            row.child("·")
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .min_w(px(0.0))
+                                        .child(
+                                            svg()
+                                                .path("chrome-icons/git-branch.svg")
+                                                .size(px(14.0))
+                                                .flex_none()
+                                                .text_color(colors().subtle),
+                                        )
+                                        .child(div().min_w(px(0.0)).truncate().child(format!(
+                                            "{} ← {}",
+                                            detail.base_ref, detail.head_ref
+                                        )))
+                                        .child(
+                                            icon_button(
+                                                "copy-inbox-branch",
+                                                "chrome-icons/copy.svg",
+                                                "Copy branch name",
+                                            )
+                                            .on_click(
+                                                move |_, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        ClipboardItem::new_string(branch.clone()),
+                                                    )
+                                                },
+                                            ),
+                                        ),
+                                )
+                                .when(!review_label(&detail.review_decision).is_empty(), |row| {
+                                    row.child("·").child(review_label(&detail.review_decision))
+                                })
+                        },
+                    ),
             );
         if let Some(panes) = self.settings.inbox.linked_sessions.get(&item.url) {
             let sessions: Vec<_> = panes
@@ -184,13 +212,21 @@ impl WorkspaceView {
                         )
                     },
                 )
-                .child(section_button("inbox-ask", "Ask", false).on_click(
-                    cx.listener(|this, _, window, cx| this.open_inbox_discussion(window, cx)),
-                ))
                 .child(
-                    quiet_button(
+                    detail_action("inbox-ask", "chrome-icons/comment.svg", "Ask", true).on_click(
+                        cx.listener(|this, _, window, cx| this.open_inbox_discussion(window, cx)),
+                    ),
+                )
+                .child(
+                    detail_action(
                         "inbox-external",
-                        format!("Open in {} ↗", item.source.label()),
+                        "chrome-icons/open-external.svg",
+                        if item.kind == WorkKind::PullRequest {
+                            "Review on GitHub".to_owned()
+                        } else {
+                            format!("Open in {}", item.source.label())
+                        },
+                        false,
                     )
                     .on_click(move |_, _, cx| cx.open_url(&url)),
                 ),
@@ -256,65 +292,88 @@ impl WorkspaceView {
             );
         }
         if item.kind == WorkKind::PullRequest {
+            let checks = state.and_then(|state| state.checks.data.as_ref());
             header = header.pb_0().child(
-                div().flex().gap_4().h(px(36.0)).children(
-                    [
-                        (DetailTab::Summary, "Summary"),
-                        (DetailTab::Code, "Code"),
-                        (DetailTab::Checks, "Checks"),
-                    ]
-                    .into_iter()
-                    .map(|(tab, label)| {
-                        let selected = self.work_inbox.detail_tab == tab;
-                        let failures = state
-                            .and_then(|state| state.checks.data.as_ref())
-                            .map(|checks| checks.iter().filter(|check| check.failed()).count())
-                            .unwrap_or_default();
-                        div()
-                            .id(SharedString::from(format!("inbox-detail-{label}")))
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .cursor_pointer()
-                            .text_size(px(12.0))
-                            .text_color(if selected {
-                                colors().foreground
-                            } else {
-                                colors().muted
-                            })
-                            .when(selected, |tab| {
-                                tab.border_b_2().border_color(colors().foreground)
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_inbox_detail_tab(tab, cx)
-                            }))
-                            .child(label)
-                            .when(tab == DetailTab::Checks && failures > 0, |tab| {
-                                tab.child(
-                                    div()
-                                        .text_color(colors().danger)
-                                        .child(format!("⊗ {failures}")),
-                                )
-                            })
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(20.0))
+                    .mt(px(4.0))
+                    .h(px(44.0))
+                    .children(
+                        [
+                            (DetailTab::Summary, "Summary"),
+                            (DetailTab::Code, "Code"),
+                            (DetailTab::Checks, "Checks"),
+                        ]
+                        .into_iter()
+                        .map(|(tab, label)| {
+                            let selected = self.work_inbox.detail_tab == tab;
+                            div()
+                                .id(SharedString::from(format!("inbox-detail-{label}")))
+                                .h_full()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .cursor_pointer()
+                                .text_size(px(13.0))
+                                .text_color(if selected {
+                                    colors().foreground
+                                } else {
+                                    colors().subtle
+                                })
+                                .hover(|tab| tab.text_color(colors().foreground))
+                                .border_b_2()
+                                .border_color(if selected {
+                                    colors().foreground
+                                } else {
+                                    gpui::rgba(0x00000000)
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.select_inbox_detail_tab(tab, cx)
+                                }))
+                                .child(label)
+                                .when(tab == DetailTab::Checks, |tab| {
+                                    tab.when_some(
+                                        checks.filter(|checks| !checks.is_empty()),
+                                        |tab, checks| {
+                                            let failed = checks.iter().any(|check| check.failed());
+                                            let passed = checks.iter().all(|check| check.passed());
+                                            tab.child(checks::check_status_icon(
+                                                failed, passed, 15.0,
+                                            ))
+                                        },
+                                    )
+                                })
+                        }),
+                    )
+                    .child(div().flex_1())
+                    .when(self.work_inbox.detail_tab == DetailTab::Code, |row| {
+                        row.child(self.inbox_code_modes(state, cx))
                     }),
-                ),
             );
         }
+        let code =
+            item.kind == WorkKind::PullRequest && self.work_inbox.detail_tab == DetailTab::Code;
         let mut body = div()
             .id(SharedString::from(format!(
-                "inbox-detail-scroll-{}",
-                item.url
+                "inbox-detail-scroll-{}-{}",
+                item.url, self.work_inbox.detail_tab as u8
             )))
             .flex_1()
             .min_h(px(0.0))
-            .overflow_y_scroll()
+            .when(!code, |body| body.overflow_y_scroll())
+            .when(code, |body| body.overflow_hidden())
             .px(px(32.0))
-            .py_5()
+            .py(px(24.0))
             .flex()
             .flex_col()
             .gap_5();
-        if !item.labels.is_empty() {
+        if !item.labels.is_empty()
+            && (item.kind != WorkKind::PullRequest
+                || self.work_inbox.detail_tab == DetailTab::Summary)
+        {
             body = body.child(
                 div()
                     .flex()
@@ -368,7 +427,7 @@ impl WorkspaceView {
         let body = detail
             .map(|detail| detail.body.as_str())
             .unwrap_or(&item.body);
-        content = content.child(markdown(
+        content = content.child(crate::ui::markdown::markdown_prose(
             &format!("inbox-body-{}", item.url),
             if body.trim().is_empty() {
                 "No description."
@@ -560,353 +619,6 @@ impl WorkspaceView {
                     .child(markdown(&format!("reply-body-{}", reply.id), &reply.body))
             }))
             .into_any_element()
-    }
-
-    fn inbox_diff_body(
-        &self,
-        item: &WorkItem,
-        state: Option<&ItemState>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let Some(diff) = state.and_then(|state| state.diff.data.as_ref()) else {
-            return message(
-                state
-                    .and_then(|state| state.diff.error.as_deref())
-                    .unwrap_or("Loading pull request files…"),
-                state.is_some_and(|state| state.diff.error.is_some()),
-            )
-            .into_any_element();
-        };
-        let mut body = div().flex().flex_col().gap_3().child(
-            div()
-                .text_size(px(12.0))
-                .text_color(colors().muted)
-                .child(format!(
-                    "{} files · +{} −{}",
-                    diff.files.len(),
-                    diff.files.iter().map(|f| f.additions).sum::<u64>(),
-                    diff.files.iter().map(|f| f.deletions).sum::<u64>()
-                )),
-        );
-        for file in &diff.files {
-            let key = item.url.clone();
-            let path = file.path.clone();
-            let collapsed = state.is_some_and(|state| state.collapsed_files.contains(&path));
-            let mut card = div()
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(colors().border_subtle)
-                .overflow_hidden()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .id(SharedString::from(format!("pr-file-{}", file.path)))
-                        .px_3()
-                        .h(px(36.0))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .cursor_pointer()
-                        .bg(surface_tint(colors().elevated, colors().background))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let files = &mut this
-                                .work_inbox
-                                .details
-                                .entry(key.clone())
-                                .or_default()
-                                .collapsed_files;
-                            if !files.remove(&path) {
-                                files.insert(path.clone());
-                            }
-                            cx.notify();
-                        }))
-                        .child(
-                            svg()
-                                .path(if collapsed {
-                                    "chrome-icons/chevron-right.svg"
-                                } else {
-                                    "chrome-icons/chevron-down.svg"
-                                })
-                                .size(px(12.0))
-                                .text_color(colors().subtle),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .font_family(MONO_FONT)
-                                .text_size(px(12.0))
-                                .child(
-                                    file.previous_path
-                                        .as_ref()
-                                        .map(|old| format!("{old} → {}", file.path))
-                                        .unwrap_or(file.path.clone()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(colors().success)
-                                .child(format!("+{}", file.additions)),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(colors().danger)
-                                .child(format!("−{}", file.deletions)),
-                        ),
-                );
-            if !collapsed {
-                if file.patch.is_empty() {
-                    card = card.child(message(
-                        "No text patch available (binary file or change too large).",
-                        false,
-                    ));
-                } else {
-                    let rows = std::sync::Arc::new(patch_rows(&file.patch));
-                    let count = rows.len();
-                    card = card.child(
-                        gpui::uniform_list(
-                            SharedString::from(format!("pr-diff-lines-{}", file.path)),
-                            count,
-                            move |range, _, _| {
-                                range
-                                    .map(|index| {
-                                        let row = &rows[index];
-                                        div()
-                                            .h(px(19.0))
-                                            .px_2()
-                                            .flex()
-                                            .gap_2()
-                                            .font_family(MONO_FONT)
-                                            .text_size(px(11.5))
-                                            .whitespace_nowrap()
-                                            .when(row.kind == '+', |line| {
-                                                line.bg(colors().diff_added_bg)
-                                            })
-                                            .when(row.kind == '-', |line| {
-                                                line.bg(colors().diff_deleted_bg)
-                                            })
-                                            .child(
-                                                div()
-                                                    .w(px(35.0))
-                                                    .flex_none()
-                                                    .text_right()
-                                                    .text_color(colors().subtle)
-                                                    .child(
-                                                        row.old
-                                                            .map(|n| n.to_string())
-                                                            .unwrap_or_default(),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .w(px(35.0))
-                                                    .flex_none()
-                                                    .text_right()
-                                                    .text_color(colors().subtle)
-                                                    .child(
-                                                        row.new
-                                                            .map(|n| n.to_string())
-                                                            .unwrap_or_default(),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_color(if row.kind == '@' {
-                                                        colors().accent
-                                                    } else {
-                                                        colors().foreground
-                                                    })
-                                                    .child(row.text.clone()),
-                                            )
-                                    })
-                                    .collect()
-                            },
-                        )
-                        .h(px((count as f32 * 19.0).min(600.0)))
-                        .min_w(px(0.0)),
-                    );
-                }
-            }
-            body = body.child(card);
-        }
-        if diff.truncated {
-            body = body.child(message(
-                "The file list is truncated. View the rest on GitHub.",
-                true,
-            ));
-        }
-        body.into_any_element()
-    }
-
-    fn inbox_checks_body(
-        &self,
-        item: &WorkItem,
-        state: Option<&ItemState>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut body = div().flex().flex_col().gap_2().child(
-            div()
-                .flex()
-                .items_center()
-                .child(div().flex_1().text_size(px(13.0)).child("Checks"))
-                .child(
-                    icon_button(
-                        "inbox-refresh-checks",
-                        "chrome-icons/refresh.svg",
-                        "Refresh checks",
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.load_inbox_detail(true, cx))),
-                ),
-        );
-        if let Some(error) = state.and_then(|state| state.checks.error.as_ref()) {
-            body = body.child(message(error, true));
-        }
-        let Some(checks) = state.and_then(|state| state.checks.data.as_ref()) else {
-            return body
-                .child(message("Loading checks…", false))
-                .into_any_element();
-        };
-        if checks.is_empty() {
-            body = body.child(message("This pull request has no checks.", false));
-        }
-        for (index, check) in checks.iter().enumerate() {
-            let color = if check.failed() {
-                colors().danger
-            } else if check.passed() {
-                colors().success
-            } else {
-                colors().warning
-            };
-            let url = check.url.clone();
-            let key = format!("{}:{}", check.name, check.url);
-            let expanded = state.is_some_and(|state| state.expanded_checks.contains(&key));
-            let has_job = work_items::github_check_job(item, check).is_some();
-            let can_fix = check.failed()
-                && state.is_some_and(|state| {
-                    !state.checks.loading
-                        && state.checks.error.is_none()
-                        && state.summary.data.as_ref().is_some_and(|detail| {
-                            !detail.head_oid.is_empty() && detail.head_oid == check.head_oid
-                        })
-                });
-            let log_check = check.clone();
-            let fix_check = check.clone();
-            let mut card = div()
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(colors().border_subtle)
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .min_h(px(42.0))
-                        .px_3()
-                        .py_2()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            svg()
-                                .path(if check.failed() {
-                                    "chrome-icons/issue-canceled.svg"
-                                } else if check.passed() {
-                                    "chrome-icons/issue-closed.svg"
-                                } else {
-                                    "chrome-icons/issue-open.svg"
-                                })
-                                .size(px(16.0))
-                                .text_color(color),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .text_size(px(12.0))
-                                .child(check.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(color)
-                                .child(check.state.clone()),
-                        )
-                        .when(has_job, |row| {
-                            row.child(
-                                quiet_button(
-                                    SharedString::from(format!("check-log-{index}")),
-                                    if expanded { "Hide log" } else { "Log" },
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.toggle_inbox_check(log_check.clone(), cx)
-                                    },
-                                )),
-                            )
-                        })
-                        .when(can_fix, |row| {
-                            row.child(
-                                quiet_button(
-                                    SharedString::from(format!("check-fix-{index}")),
-                                    "Fix",
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.prepare_inbox_check_fix(&fix_check, cx)
-                                    },
-                                )),
-                            )
-                        })
-                        .when(safe_link(&url), |row| {
-                            row.child(
-                                quiet_button(
-                                    SharedString::from(format!("check-link-{index}")),
-                                    "View ↗",
-                                )
-                                .on_click(move |_, _, cx| cx.open_url(&url)),
-                            )
-                        }),
-                );
-            if expanded {
-                let log = state.and_then(|state| state.check_logs.get(&key));
-                if let Some(error) = log.and_then(|log| log.error.as_ref()) {
-                    card = card.child(message(error, true));
-                }
-                if let Some(text) = log.and_then(|log| log.data.as_ref()) {
-                    let rows: std::sync::Arc<Vec<String>> =
-                        std::sync::Arc::new(text.lines().map(str::to_owned).collect());
-                    let count = rows.len();
-                    card = card.child(
-                        gpui::uniform_list(
-                            SharedString::from(format!("check-log-lines-{index}")),
-                            count,
-                            move |range, _, _| {
-                                range
-                                    .map(|index| {
-                                        div()
-                                            .h(px(18.0))
-                                            .px_3()
-                                            .font_family(MONO_FONT)
-                                            .text_size(px(11.0))
-                                            .whitespace_nowrap()
-                                            .child(rows[index].clone())
-                                    })
-                                    .collect()
-                            },
-                        )
-                        .h(px((count as f32 * 18.0).clamp(36.0, 360.0)))
-                        .min_w(px(0.0)),
-                    );
-                } else if log.is_none_or(|log| log.loading) {
-                    card = card.child(message("Loading log…", false));
-                }
-            }
-            body = body.child(card);
-        }
-        body.into_any_element()
     }
 
     fn inbox_agent_panel(&self, item: &WorkItem, cx: &mut Context<Self>) -> AnyElement {
@@ -1109,7 +821,7 @@ fn person(name: &str) -> gpui::Div {
         .text_color(colors().muted)
         .child(
             div()
-                .size(px(16.0))
+                .size(px(18.0))
                 .flex_none()
                 .rounded_full()
                 .bg(surface_tint(colors().selection, colors().background))
@@ -1137,74 +849,32 @@ fn review_label(value: &str) -> &'static str {
     }
 }
 
-struct PatchRow {
-    old: Option<u64>,
-    new: Option<u64>,
-    kind: char,
-    text: String,
-}
-fn patch_rows(patch: &str) -> Vec<PatchRow> {
-    let mut old = 0;
-    let mut new = 0;
-    patch
-        .lines()
-        .map(|text| {
-            let kind = text.chars().next().unwrap_or(' ');
-            if text.starts_with("@@") {
-                let parts: Vec<_> = text.split_whitespace().collect();
-                old = parts
-                    .get(1)
-                    .and_then(|part| part.trim_start_matches('-').split(',').next()?.parse().ok())
-                    .unwrap_or_default();
-                new = parts
-                    .get(2)
-                    .and_then(|part| part.trim_start_matches('+').split(',').next()?.parse().ok())
-                    .unwrap_or_default();
-                return PatchRow {
-                    old: None,
-                    new: None,
-                    kind: '@',
-                    text: text.into(),
-                };
-            }
-            let (left, right) = match kind {
-                '-' => {
-                    let value = old;
-                    old += 1;
-                    (Some(value), None)
-                }
-                '+' => {
-                    let value = new;
-                    new += 1;
-                    (None, Some(value))
-                }
-                ' ' => {
-                    let value = (Some(old), Some(new));
-                    old += 1;
-                    new += 1;
-                    value
-                }
-                _ => (None, None),
-            };
-            PatchRow {
-                old: left,
-                new: right,
-                kind,
-                text: text.into(),
-            }
+fn detail_action(
+    id: &'static str,
+    icon: &'static str,
+    label: impl Into<SharedString>,
+    bordered: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(px(32.0))
+        .px(px(12.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(7.0))
+        .rounded(px(7.0))
+        .text_size(px(13.0))
+        .text_color(colors().muted)
+        .cursor_pointer()
+        .when(bordered, |button| {
+            button.border_1().border_color(colors().border_subtle)
         })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn patch_numbers_follow_hunks_and_do_not_count_eof_markers() {
-        let rows = patch_rows("@@ -4,2 +8,2 @@\n same\n-old\n+new\n\\ No newline at end of file");
-        assert_eq!((rows[1].old, rows[1].new), (Some(4), Some(8)));
-        assert_eq!((rows[2].old, rows[2].new), (Some(5), None));
-        assert_eq!((rows[3].old, rows[3].new), (None, Some(9)));
-        assert_eq!((rows[4].old, rows[4].new), (None, None));
-    }
+        .hover(|button| {
+            button
+                .bg(surface_tint(colors().hover, colors().background))
+                .text_color(colors().foreground)
+        })
+        .child(svg().path(icon).size(px(16.0)).text_color(colors().muted))
+        .child(label.into())
 }

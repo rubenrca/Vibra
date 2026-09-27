@@ -77,34 +77,44 @@ pub struct WorkDetail {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct WorkDiffFile {
     pub path: String,
+    pub blob_oid: String,
+    pub removed: bool,
     pub previous_path: Option<String>,
     pub additions: u64,
     pub deletions: u64,
     pub patch: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct WorkDiff {
     pub files: Vec<WorkDiffFile>,
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WorkCheck {
     pub head_oid: String,
     pub name: String,
     pub state: String,
     pub url: String,
+    pub workflow: String,
+    pub duration_seconds: Option<u64>,
 }
 
 impl WorkCheck {
     pub fn failed(&self) -> bool {
         matches!(
             self.state.as_str(),
-            "FAILURE" | "ERROR" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
+            "FAILURE"
+                | "ERROR"
+                | "TIMED_OUT"
+                | "ACTION_REQUIRED"
+                | "STARTUP_FAILURE"
+                | "CANCELLED"
+                | "STALE"
         )
     }
     pub fn passed(&self) -> bool {
@@ -169,6 +179,8 @@ pub enum WorkStatus {
 }
 
 impl WorkStatus {
+    pub const ALL: [Self; 4] = [Self::Open, Self::Draft, Self::Closed, Self::Merged];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "Open",
@@ -179,7 +191,7 @@ impl WorkStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkItem {
     pub remote_id: String,
     pub source: WorkSource,
@@ -254,10 +266,40 @@ impl Default for InboxPreferences {
 }
 
 impl InboxPreferences {
+    /// An empty saved selection is the default, including preferences written
+    /// before Inbox started hiding completed work. All states are explicit.
+    pub fn selected_statuses(&self) -> &[WorkStatus] {
+        if let Some(status) = &self.status {
+            std::slice::from_ref(status)
+        } else if self.statuses.is_empty() {
+            &[WorkStatus::Open, WorkStatus::Draft]
+        } else {
+            &self.statuses
+        }
+    }
+
+    pub fn query_status(&self) -> Option<WorkStatus> {
+        let statuses = self.selected_statuses();
+        if statuses == [WorkStatus::Draft] {
+            Some(WorkStatus::Draft)
+        } else if statuses
+            .iter()
+            .all(|status| matches!(status, WorkStatus::Open | WorkStatus::Draft))
+        {
+            Some(WorkStatus::Open)
+        } else if statuses.len() == 1 {
+            Some(statuses[0])
+        } else {
+            None
+        }
+    }
+
     pub fn filters_active(&self) -> bool {
         self.assigned_to_me
-            || self.status.is_some()
-            || !self.statuses.is_empty()
+            || !self.status_selected(WorkStatus::Open)
+            || !self.status_selected(WorkStatus::Draft)
+            || self.status_selected(WorkStatus::Closed)
+            || self.status_selected(WorkStatus::Merged)
             || !self.hidden_kinds.is_empty()
             || !self.hidden_projects.is_empty()
             || !self.hidden_groups.is_empty()
@@ -265,14 +307,18 @@ impl InboxPreferences {
     }
 
     pub fn toggle_status(&mut self, status: WorkStatus) {
-        if let Some(legacy) = self.status.take() {
-            self.statuses.push(legacy);
-        }
+        self.statuses = self.selected_statuses().to_vec();
+        self.status = None;
         toggle_value(&mut self.statuses, status);
+        // Preserve the existing last-checkbox behavior without confusing an
+        // explicit request for all states with the default saved selection.
+        if self.statuses.is_empty() {
+            self.statuses = WorkStatus::ALL.to_vec();
+        }
     }
 
     pub fn status_selected(&self, status: WorkStatus) -> bool {
-        self.status == Some(status) || self.statuses.contains(&status)
+        self.selected_statuses().contains(&status)
     }
 
     pub fn mark_seen(&mut self, item: &WorkItem) {
@@ -300,9 +346,7 @@ pub struct WorkFilter {
 
 impl WorkFilter {
     pub fn matches(&self, item: &WorkItem, preferences: &InboxPreferences) -> bool {
-        if preferences
-            .status
-            .is_some_and(|status| item.status != status)
+        if !preferences.status_selected(item.status)
             || self
                 .project
                 .is_some_and(|project| item.project_id != Some(project))
@@ -311,8 +355,7 @@ impl WorkFilter {
         {
             return false;
         }
-        if (!preferences.statuses.is_empty() && !preferences.statuses.contains(&item.status))
-            || (item.source == WorkSource::GitHub && preferences.hidden_kinds.contains(&item.kind))
+        if (item.source == WorkSource::GitHub && preferences.hidden_kinds.contains(&item.kind))
             || item
                 .project_id
                 .is_some_and(|id| preferences.hidden_projects.contains(&id))
@@ -399,6 +442,8 @@ mod tests {
         item.status = WorkStatus::Closed;
         assert!(!filter.matches(&item, &preferences));
         preferences.status = None;
+        assert!(!filter.matches(&item, &preferences));
+        preferences.toggle_status(WorkStatus::Closed);
         assert!(filter.matches(&item, &preferences));
         let restored: InboxPreferences =
             serde_json::from_str(&serde_json::to_string(&preferences).unwrap()).unwrap();
@@ -406,14 +451,24 @@ mod tests {
     }
 
     #[test]
-    fn inbox_defaults_and_combined_filters_match_monocode() {
+    fn inbox_defaults_hide_completed_work_and_filters_remain_composable() {
         let mut prefs = InboxPreferences::default();
         let filter = WorkFilter::default();
         let mut item = fixture();
-        item.status = WorkStatus::Closed;
         assert!(!prefs.assigned_to_me && !prefs.filters_active());
-        assert!(filter.matches(&item, &prefs));
+        for status in WorkStatus::ALL {
+            item.status = status;
+            assert_eq!(
+                filter.matches(&item, &prefs),
+                matches!(status, WorkStatus::Open | WorkStatus::Draft)
+            );
+        }
+        assert_eq!(prefs.query_status(), Some(WorkStatus::Open));
+        item.status = WorkStatus::Closed;
         prefs.toggle_status(WorkStatus::Closed);
+        prefs.toggle_status(WorkStatus::Open);
+        prefs.toggle_status(WorkStatus::Draft);
+        assert_eq!(prefs.query_status(), Some(WorkStatus::Closed));
         prefs.toggle_status(WorkStatus::Draft);
         assert!(filter.matches(&item, &prefs));
         item.status = WorkStatus::Draft;
@@ -430,6 +485,29 @@ mod tests {
         let today = local_day_start(1_790_000_000);
         assert!(InboxTime::Today.includes(today, 1_790_000_000));
         assert!(!InboxTime::Today.includes(today - 1, 1_790_000_000));
+    }
+
+    #[test]
+    fn saved_inbox_defaults_hide_closed_but_explicit_status_choices_survive() {
+        for json in [r#"{}"#, r#"{"status":null,"statuses":[]}"#] {
+            let prefs: InboxPreferences = serde_json::from_str(json).unwrap();
+            assert!(prefs.status_selected(WorkStatus::Open));
+            assert!(prefs.status_selected(WorkStatus::Draft));
+            assert!(!prefs.status_selected(WorkStatus::Closed));
+            assert!(!prefs.status_selected(WorkStatus::Merged));
+        }
+        let mut prefs: InboxPreferences = serde_json::from_str(r#"{"status":"Closed"}"#).unwrap();
+        assert_eq!(prefs.selected_statuses(), [WorkStatus::Closed]);
+        prefs.toggle_status(WorkStatus::Closed);
+        let restored: InboxPreferences =
+            serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert!(
+            WorkStatus::ALL
+                .iter()
+                .all(|status| restored.status_selected(*status))
+        );
+        assert_eq!(restored.query_status(), None);
+        assert!(restored.filters_active());
     }
 
     #[test]

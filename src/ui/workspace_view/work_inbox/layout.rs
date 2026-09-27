@@ -1,5 +1,7 @@
 //! Native translation of MonoCode InboxView / InboxFiltersMenu (c576783).
 
+mod checks;
+mod code;
 mod item_detail;
 
 use super::*;
@@ -55,6 +57,7 @@ impl WorkspaceView {
                 if feed.connected == Some(false) {
                     "Add a connection to get started."
                 } else if self.settings.inbox.filters_active()
+                    || self.work_inbox.filter.project.is_some()
                     || !self.work_inbox.filter.query.is_empty()
                 {
                     "No tasks match these filters."
@@ -198,9 +201,13 @@ impl WorkspaceView {
                     )
                     .child(
                         icon_button("inbox-filter-menu", "chrome-icons/filter.svg", "Filters")
-                            .when(self.settings.inbox.filters_active(), |button| {
-                                button.bg(surface_tint(colors().selection, colors().background))
-                            })
+                            .when(
+                                self.settings.inbox.filters_active()
+                                    || self.work_inbox.filter.project.is_some(),
+                                |button| {
+                                    button.bg(surface_tint(colors().selection, colors().background))
+                                },
+                            )
                             .on_click(cx.listener(|this, event, _, cx| {
                                 this.open_inbox_menu(InboxMenu::Filters, event, cx)
                             })),
@@ -292,7 +299,26 @@ impl WorkspaceView {
                             .size(px(14.0))
                             .text_color(colors().subtle),
                     )
-                    .child(div().flex_1().text_size(px(13.0)).child("Inbox"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(13.0))
+                            .child(
+                                self.work_inbox
+                                    .filter
+                                    .project
+                                    .and_then(|id| {
+                                        self.snapshot
+                                            .projects
+                                            .iter()
+                                            .find(|project| project.id == id)
+                                    })
+                                    .map(|project| format!("Inbox · {}", project.name))
+                                    .unwrap_or_else(|| "Inbox".into()),
+                            ),
+                    )
                     .child(
                         quiet_button(
                             "inbox-activity",
@@ -468,7 +494,21 @@ impl WorkspaceView {
                                 this.inbox_filters_changed(cx);
                             })),
                     )
-                    .child(menu_heading("STATUS"));
+                    .child(menu_heading("STATUS"))
+                    .child(
+                        MenuRow::new("All statuses")
+                            .checked(
+                                WorkStatus::ALL
+                                    .iter()
+                                    .all(|status| preferences.status_selected(*status)),
+                            )
+                            .render("inbox-all-statuses")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.inbox.status = None;
+                                this.settings.inbox.statuses = WorkStatus::ALL.to_vec();
+                                this.inbox_filters_changed(cx);
+                            })),
+                    );
                 for status in [
                     WorkStatus::Open,
                     WorkStatus::Draft,
@@ -523,16 +563,27 @@ impl WorkspaceView {
                                 })),
                         );
                     }
-                    content = content.child(menu_heading("PROJECTS"));
+                    content = content.child(menu_heading("PROJECTS")).child(
+                        MenuRow::new("All projects")
+                            .checked(
+                                self.work_inbox.filter.project.is_none()
+                                    && preferences.hidden_projects.is_empty(),
+                            )
+                            .render("inbox-all-projects")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.work_inbox.filter.project = None;
+                                this.settings.inbox.hidden_projects.clear();
+                                this.inbox_filters_changed(cx);
+                            })),
+                    );
                     for project in &self.snapshot.projects {
                         let id = project.id;
                         content = content.child(
                             MenuRow::new(project.name.clone())
-                                .checked(!preferences.hidden_projects.contains(&id))
+                                .checked(self.inbox_project_selected(id))
                                 .render(SharedString::from(format!("filter-project-{id}")))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    toggle_value(&mut this.settings.inbox.hidden_projects, id);
-                                    this.inbox_filters_changed(cx);
+                                    this.toggle_inbox_project(id, cx);
                                 })),
                         );
                     }
@@ -561,7 +612,7 @@ impl WorkspaceView {
                     }
                 }
                 content = content.child(menu_separator()).child(
-                    MenuRow::new("Clear filters")
+                    MenuRow::new("Reset filters")
                         .render("inbox-clear-filters")
                         .on_click(cx.listener(|this, _, _, cx| {
                             let source = this.settings.inbox.source;
@@ -577,6 +628,7 @@ impl WorkspaceView {
                                 ..Default::default()
                             };
                             this.work_inbox.filter = WorkFilter::default();
+                            this.scope_inbox_to_active_project();
                             this.inbox_filters_changed(cx);
                         })),
                 );

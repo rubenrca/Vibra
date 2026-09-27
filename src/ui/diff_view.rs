@@ -16,7 +16,9 @@
 //!   opened outside a hunk (block comments, strings) still colors correctly.
 
 mod changes_panel;
+mod external;
 mod sidebar;
+pub(crate) use external::ExternalDiffSource;
 pub(crate) use sidebar::DiffFileIndexView;
 
 use std::collections::hash_map::DefaultHasher;
@@ -172,6 +174,8 @@ impl RowMetrics {
 }
 
 pub struct DiffView {
+    external: Option<ExternalDiffSource>,
+    full_file: bool,
     context_root: PathBuf,
     mode: GitPanelMode,
     mode_menu_open: bool,
@@ -362,7 +366,9 @@ impl DiffView {
                 Timer::after(POLL_INTERVAL).await;
                 if this
                     .update(cx, |this, cx| {
-                        if crate::ui::idle::should_poll_git_snapshot(this.panel_visible) {
+                        if this.external.is_none()
+                            && crate::ui::idle::should_poll_git_snapshot(this.panel_visible)
+                        {
                             this.refresh_visible_sources(false, cx);
                         }
                     })
@@ -373,6 +379,8 @@ impl DiffView {
             }
         });
         Self {
+            external: None,
+            full_file: false,
             context_root,
             mode: GitPanelMode::Worktree,
             mode_menu_open: false,
@@ -733,6 +741,9 @@ impl DiffView {
     }
 
     fn refresh_visible_sources(&mut self, notify_loading: bool, cx: &mut Context<Self>) {
+        if self.external.is_some() {
+            return;
+        }
         self.refresh(notify_loading, cx);
         match self.mode {
             GitPanelMode::Worktree => self.refresh_graph(notify_loading, cx),
@@ -1261,7 +1272,7 @@ impl DiffView {
             .map(|change| {
                 (
                     change.path.clone(),
-                    DiffSource::new(snapshot, change, against, head),
+                    self.source_for_change(snapshot, change, against, head),
                 )
             })
             .collect();
@@ -1485,6 +1496,9 @@ impl DiffView {
     }
 
     fn load_diff(&mut self, path: String, cx: &mut Context<Self>) {
+        if self.external.is_some() && self.pending_loads.len() >= 4 {
+            return;
+        }
         let Some(source) = self.active_snapshot().and_then(|snapshot| {
             let change = snapshot
                 .changes
@@ -1492,7 +1506,7 @@ impl DiffView {
                 .find(|change| change.path == path)?
                 .clone();
             let (against, head) = self.active_revisions();
-            Some(DiffSource::new(snapshot, &change, against, head))
+            Some(self.source_for_change(snapshot, &change, against, head))
         }) else {
             return;
         };
@@ -1519,9 +1533,13 @@ impl DiffView {
             },
         );
         let port = self.git_port.clone();
+        let external_loader = self.external.as_ref().map(|source| source.load.clone());
         let source_for_task = source.clone();
         let task = cx.background_spawn(async move {
             let source = &source_for_task;
+            if let Some(load) = external_loader {
+                return load(&source.change.path);
+            }
             let diff = if let Some(revision) = &source.against {
                 port.diff_against(
                     &source.repository,
@@ -1558,6 +1576,10 @@ impl DiffView {
                 match result {
                     Ok(document) => {
                         this.fold_reveals.remove(&path_for_task);
+                        if this.full_file {
+                            this.fold_reveals
+                                .insert(path_for_task.clone(), external::all_folds(&document));
+                        }
                         this.documents.insert(
                             path_for_task,
                             CachedDiffDocument {
@@ -1568,7 +1590,39 @@ impl DiffView {
                         this.evict_diff_caches();
                         this.error = None;
                     }
-                    Err(error) => this.error = Some(format!("Git: {error:#}").into()),
+                    Err(error) => {
+                        if this.external.is_some() {
+                            // A failed remote load is a visible result, not a
+                            // missing document to enqueue again in a tight loop.
+                            let diff = crate::ports::git::GitDiff {
+                                path: path_for_task.clone(),
+                                additions: 0,
+                                deletions: 0,
+                                binary: false,
+                                truncated: false,
+                                rows: vec![GitDiffRow {
+                                    old_line: None,
+                                    new_line: None,
+                                    kind: GitDiffRowKind::Notice,
+                                    text: format!("Diff: {error:#}"),
+                                }],
+                            };
+                            this.documents.insert(
+                                path_for_task,
+                                CachedDiffDocument {
+                                    source,
+                                    document: Arc::new(DiffDocument::prepare_with_sources(
+                                        diff, None,
+                                    )),
+                                },
+                            );
+                        } else {
+                            this.error = Some(format!("Git: {error:#}").into());
+                        }
+                    }
+                }
+                if this.external.is_some() {
+                    this.load_missing_expanded(cx);
                 }
                 cx.notify();
             });
@@ -1775,7 +1829,7 @@ impl DiffView {
         }
         let modifiers = &event.keystroke.modifiers;
         let Some(draft) = self.draft.as_mut() else {
-            if self.review_expanded && matches!(key, "escape" | "esc") {
+            if self.external.is_none() && self.review_expanded && matches!(key, "escape" | "esc") {
                 self.set_review_expanded(false, cx);
                 cx.emit(DiffViewEvent::ReturnToTerminal);
                 cx.stop_propagation();
@@ -3325,7 +3379,7 @@ impl DiffView {
                 !self.expanded.is_empty(),
                 cx.listener(|this, _, _, cx| this.collapse_all(cx)),
             ))
-            .when(self.review_focused, |bar| {
+            .when(self.external.is_none() && self.review_focused, |bar| {
                 bar.child(Self::toolbar_icon_button(
                     "review-show-beside-terminal",
                     "chrome-icons/split-view.svg",
@@ -3615,6 +3669,13 @@ impl Render for DiffView {
 
 impl DiffView {
     fn empty_message(&self) -> Option<&'static str> {
+        if let Some(external) = &self.external {
+            return external
+                .snapshot
+                .changes
+                .is_empty()
+                .then_some("This pull request has no changed files.");
+        }
         match self.mode {
             GitPanelMode::Worktree => {
                 if self.snapshot.is_none() && self.refreshing && !self.snapshot_settled {

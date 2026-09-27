@@ -2,6 +2,7 @@
 
 mod detail;
 mod layout;
+mod review;
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -38,6 +39,13 @@ enum DetailTab {
     Summary,
     Code,
     Checks,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum CodeMode {
+    #[default]
+    Hunks,
+    FullFile,
 }
 
 struct LoadState<T> {
@@ -92,7 +100,10 @@ struct ItemState {
     summary: LoadState<WorkDetail>,
     diff: LoadState<WorkDiff>,
     checks: LoadState<Vec<WorkCheck>>,
-    collapsed_files: HashSet<String>,
+    review: Option<gpui::Entity<crate::ui::diff_view::DiffView>>,
+    _review_subscription: Option<gpui::Subscription>,
+    code_mode: CodeMode,
+    checks_attention_only: bool,
     draft: String,
     reply: Option<(String, String)>,
     posting: bool,
@@ -124,6 +135,16 @@ struct SourceFeed {
 }
 
 impl SourceFeed {
+    fn restore(&mut self, generation: u64, page: WorkItemsPage) -> bool {
+        if generation != self.generation || self.fetched.is_some() {
+            return false;
+        }
+        self.apply_page(page);
+        // A disk snapshot is usable immediately but still needs a live refresh.
+        // Keep loading set and do not start the refresh cooldown yet.
+        true
+    }
+
     fn accept(&mut self, generation: u64, result: anyhow::Result<WorkItemsPage>) -> bool {
         if generation != self.generation {
             return false;
@@ -136,26 +157,28 @@ impl SourceFeed {
         self.loading = false;
         self.fetched = Some(Instant::now());
         match result {
-            Ok(mut page) => {
-                page.items.extend(
-                    self.items
-                        .iter()
-                        .filter(|item| {
-                            page.failed_scopes.iter().any(|(repo, kind)| {
-                                item.repository.eq_ignore_ascii_case(repo) && item.kind == *kind
-                            })
-                        })
-                        .cloned(),
-                );
-                self.items = page.items;
-                self.items
-                    .sort_by_key(|item| std::cmp::Reverse(item.updated_at));
-                self.connected = Some(page.connected);
-                self.truncated = page.truncated;
-                self.error = page.warning;
-            }
+            Ok(page) => self.apply_page(page),
             Err(error) => self.error = Some(format!("{error:#}")),
         }
+    }
+
+    fn apply_page(&mut self, mut page: WorkItemsPage) {
+        page.items.extend(
+            self.items
+                .iter()
+                .filter(|item| {
+                    page.failed_scopes.iter().any(|(repo, kind)| {
+                        item.repository.eq_ignore_ascii_case(repo) && item.kind == *kind
+                    })
+                })
+                .cloned(),
+        );
+        self.items = page.items;
+        self.items
+            .sort_by_key(|item| std::cmp::Reverse(item.updated_at));
+        self.connected = Some(page.connected);
+        self.truncated = page.truncated;
+        self.error = page.warning;
     }
 }
 
@@ -211,7 +234,43 @@ const AGENTS: [(&str, &str); 3] = [
 ];
 
 impl WorkspaceView {
-    fn sync_inbox_selection(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn scope_inbox_to_active_project(&mut self) {
+        self.work_inbox.filter.project = if self.settings.inbox.source == WorkSource::GitHub {
+            self.snapshot.selected_project_id.filter(|id| {
+                self.snapshot
+                    .projects
+                    .iter()
+                    .any(|project| project.id == *id)
+            })
+        } else {
+            // Linear teams/projects are remote groups, not local repository IDs.
+            None
+        };
+        self.settings.inbox.hidden_projects.clear();
+    }
+
+    fn inbox_project_selected(&self, id: Uuid) -> bool {
+        self.work_inbox.filter.project.map_or_else(
+            || !self.settings.inbox.hidden_projects.contains(&id),
+            |project| project == id,
+        )
+    }
+
+    fn toggle_inbox_project(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        if let Some(selected) = self.work_inbox.filter.project.take() {
+            self.settings.inbox.hidden_projects = self
+                .snapshot
+                .projects
+                .iter()
+                .filter(|project| project.id != selected)
+                .map(|project| project.id)
+                .collect();
+        }
+        crate::domain::work_items::toggle_value(&mut self.settings.inbox.hidden_projects, id);
+        self.inbox_filters_changed(cx);
+    }
+
+    pub(super) fn sync_inbox_selection(&mut self, cx: &mut Context<Self>) {
         let visible: Vec<_> = self
             .work_inbox
             .feed(self.settings.inbox.source)
@@ -255,19 +314,7 @@ impl WorkspaceView {
                 })
                 .collect(),
             assigned_to_me: self.settings.inbox.assigned_to_me,
-            status: if self.settings.inbox.statuses.is_empty() {
-                self.settings.inbox.status
-            } else if self
-                .settings
-                .inbox
-                .statuses
-                .iter()
-                .all(|status| matches!(status, WorkStatus::Open | WorkStatus::Draft))
-            {
-                Some(WorkStatus::Open)
-            } else {
-                None
-            },
+            status: self.settings.inbox.query_status(),
         }
     }
 
@@ -277,12 +324,31 @@ impl WorkspaceView {
         }
         self.refresh_work_source(WorkSource::GitHub, false, cx);
         self.refresh_work_source(WorkSource::Linear, false, cx);
+        self.inbox_source_updated(self.settings.inbox.source, false, cx);
+    }
+
+    fn inbox_source_updated(
+        &mut self,
+        source: WorkSource,
+        refresh_detail: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspace_section == WorkspaceSection::Inbox
+            && !self.work_inbox.activity
+            && source == self.settings.inbox.source
+        {
+            self.sync_inbox_selection(cx);
+            self.load_inbox_detail(refresh_detail, cx);
+        }
+        cx.notify();
     }
 
     pub(super) fn start_inbox_poll(&mut self, cx: &mut Context<Self>) {
         if cfg!(test) {
             return;
         }
+        // Start while the workspace opens, before the user visits Inbox.
+        self.ensure_inbox_loaded(cx);
         self.work_inbox._poll_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 Timer::after(Duration::from_secs(60)).await;
@@ -318,21 +384,44 @@ impl WorkspaceView {
             feed.items.clear();
             feed.error = None;
             feed.truncated = false;
+            feed.fetched = None;
         }
+        let restore_cache = feed.fetched.is_none();
         feed.query = Some(query.clone());
         feed.loading = true;
         feed._task = Some(cx.spawn(async move |this, cx| {
+            let cache_query = query.clone();
+            let (cache, cached) = cx
+                .background_spawn(async move {
+                    let cache = work_items::ListCache::new(source, &cache_query);
+                    let cached = if restore_cache {
+                        cache.as_ref().and_then(work_items::ListCache::load)
+                    } else {
+                        None
+                    };
+                    (cache, cached)
+                })
+                .await;
+            if let Some(page) = cached {
+                let _ = this.update(cx, |this, cx| {
+                    if this.work_inbox.feed_mut(source).restore(generation, page) {
+                        this.inbox_source_updated(source, false, cx);
+                    }
+                });
+            }
             let result = cx
-                .background_spawn(async move { work_items::list(source, &query) })
+                .background_spawn(async move {
+                    let result = work_items::list(source, &query);
+                    if let (Some(cache), Ok(page)) = (cache, &result) {
+                        cache.save(page);
+                    }
+                    result
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let feed = this.work_inbox.feed_mut(source);
                 if feed.accept(generation, result) {
-                    if source == this.settings.inbox.source {
-                        this.sync_inbox_selection(cx);
-                        this.load_inbox_detail(true, cx);
-                    }
-                    cx.notify();
+                    this.inbox_source_updated(source, true, cx);
                 }
             });
         }));
@@ -343,6 +432,7 @@ impl WorkspaceView {
         self.work_inbox.activity = false;
         self.settings.inbox.source = source;
         self.work_inbox.filter = WorkFilter::default();
+        self.scope_inbox_to_active_project();
         self.work_inbox.selected = None;
         self.work_inbox.search_editing = false;
         self.work_inbox.action_error = None;
@@ -709,6 +799,245 @@ mod tests {
     use super::super::tests::open_recording_workspace;
     use super::*;
     use crate::domain::work_items::fixture;
+
+    #[gpui::test]
+    fn inbox_reuses_the_workspace_diff_and_prepares_review_comments_without_execution(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::ui::diff_view::DiffViewEvent;
+        let (root, _, inputs, window) = open_recording_workspace(cx, "inbox-shared-diff");
+        let item = fixture();
+        let review = window
+            .update(cx, |view, _, cx| {
+                view.work_inbox.github.items.push(item.clone());
+                view.work_inbox.selected = Some(item.url.clone());
+                view.work_inbox
+                    .details
+                    .entry(item.url.clone())
+                    .or_default()
+                    .diff
+                    .data = Some(WorkDiff::default());
+                view.sync_inbox_review(&item.url, cx);
+                let review = view.work_inbox.details[&item.url].review.clone().unwrap();
+                assert_ne!(review.entity_id(), view.diff_view.entity_id());
+                view.sync_inbox_review(&item.url, cx);
+                assert_eq!(
+                    review.entity_id(),
+                    view.work_inbox.details[&item.url]
+                        .review
+                        .as_ref()
+                        .unwrap()
+                        .entity_id()
+                );
+                view.set_inbox_code_mode(CodeMode::FullFile, cx);
+                view.work_inbox.composer_note = "Existing instructions".into();
+                review
+            })
+            .unwrap();
+        let writes = inputs.lock().unwrap().len();
+        review.update(cx, |_, cx| {
+            cx.emit(DiffViewEvent::PreferencesChanged {
+                split: true,
+                wrap: true,
+            });
+            cx.emit(DiffViewEvent::SendReview {
+                prompt: "main.rs:2: Please simplify this function.".into(),
+                delivery_id: Uuid::new_v4(),
+            });
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _, cx| {
+                assert!(view.settings.diff_split && view.settings.diff_wrap);
+                assert!(view.work_inbox.composer_open);
+                assert!(
+                    view.work_inbox
+                        .composer_note
+                        .starts_with("Existing instructions\n\n")
+                );
+                assert!(view.work_inbox.composer_note.contains(&item.url));
+                assert!(
+                    view.work_inbox
+                        .composer_note
+                        .contains("Please simplify this function.")
+                );
+                assert_eq!(inputs.lock().unwrap().len(), writes);
+                view.work_inbox.selected = None;
+                review.update(cx, |_, cx| {
+                    cx.emit(DiffViewEvent::SendReview {
+                        prompt: "Obsolete selection".into(),
+                        delivery_id: Uuid::new_v4(),
+                    });
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, _| {
+                assert!(!view.work_inbox.composer_note.contains("Obsolete selection"));
+                window.remove_window();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn work_inbox_cached_list_stays_visible_during_refresh_and_network_failure() {
+        let mut feed = SourceFeed {
+            generation: 1,
+            loading: true,
+            ..Default::default()
+        };
+        let page = || WorkItemsPage {
+            items: vec![fixture()],
+            connected: true,
+            ..Default::default()
+        };
+        assert!(!feed.restore(0, page()));
+        assert!(feed.items.is_empty());
+        assert!(feed.restore(1, page()));
+        assert_eq!(feed.items.len(), 1);
+        assert!(feed.loading);
+        assert!(feed.fetched.is_none());
+        assert!(feed.accept(1, Err(anyhow::anyhow!("offline"))));
+        assert_eq!(feed.items.len(), 1);
+        assert!(!feed.loading);
+        assert!(feed.error.is_some());
+        assert!(!feed.restore(1, WorkItemsPage::default()));
+        assert_eq!(feed.items.len(), 1);
+        // Live data replaces the snapshot, including a now-empty inbox.
+        assert!(feed.accept(
+            1,
+            Ok(WorkItemsPage {
+                connected: true,
+                ..Default::default()
+            })
+        ));
+        assert!(feed.items.is_empty());
+        assert!(feed.error.is_none());
+    }
+
+    #[gpui::test]
+    fn entering_inbox_scopes_the_active_project_and_reselects_visible_open_work(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (root, snapshot, _, window) = open_recording_workspace(cx, "inbox-project-scope");
+        let first_project = snapshot.selected_project_id.unwrap();
+        let other_root = root.join("other");
+        std::fs::create_dir_all(&other_root).unwrap();
+        window
+            .update(cx, |view, window, cx| {
+                let second_project = view.snapshot.add_project(&other_root);
+                view.snapshot.select_project(first_project);
+                let mut first = fixture();
+                first.project_id = Some(first_project);
+                let mut second = first.clone();
+                second.url = "https://github.com/other/app/issues/1".into();
+                second.project_id = Some(second_project);
+                let mut closed = first.clone();
+                closed.url = "https://github.com/demo/app/issues/43".into();
+                closed.status = WorkStatus::Closed;
+                let mut merged = closed.clone();
+                merged.url = "https://github.com/demo/app/pull/44".into();
+                merged.kind = WorkKind::PullRequest;
+                merged.status = WorkStatus::Merged;
+                view.work_inbox.github.items = vec![
+                    closed.clone(),
+                    second.clone(),
+                    first.clone(),
+                    merged.clone(),
+                ];
+                view.work_inbox.selected = Some(second.url.clone());
+                view.settings.inbox.hidden_projects = vec![first_project];
+                view.select_section(WorkspaceSection::Inbox, window, cx);
+                assert_eq!(view.work_inbox.filter.project, Some(first_project));
+                assert_eq!(
+                    view.work_inbox.selected.as_deref(),
+                    Some(first.url.as_str())
+                );
+                assert!(
+                    !view
+                        .work_inbox
+                        .filter
+                        .matches(&second, &view.settings.inbox)
+                );
+                assert!(
+                    !view
+                        .work_inbox
+                        .filter
+                        .matches(&closed, &view.settings.inbox)
+                );
+                assert!(
+                    !view
+                        .work_inbox
+                        .filter
+                        .matches(&merged, &view.settings.inbox)
+                );
+                assert_eq!(view.inbox_query().status, Some(WorkStatus::Open));
+                assert!(view.inbox_project_selected(first_project));
+                assert!(!view.inbox_project_selected(second_project));
+
+                // A manual broader selection survives refreshes and clicks while already in Inbox.
+                view.toggle_inbox_project(second_project, cx);
+                assert!(
+                    view.work_inbox
+                        .filter
+                        .matches(&second, &view.settings.inbox)
+                );
+                assert!(view.work_inbox.filter.matches(&first, &view.settings.inbox));
+                view.select_section(WorkspaceSection::Inbox, window, cx);
+                assert!(view.work_inbox.filter.project.is_none());
+
+                view.select_section(WorkspaceSection::Workspace, window, cx);
+                view.snapshot.select_project(second_project);
+                view.select_section(WorkspaceSection::Inbox, window, cx);
+                assert_eq!(view.work_inbox.filter.project, Some(second_project));
+                assert_eq!(
+                    view.work_inbox.selected.as_deref(),
+                    Some(second.url.as_str())
+                );
+
+                view.select_work_source(WorkSource::Linear, cx);
+                assert!(view.work_inbox.filter.project.is_none());
+                view.select_work_source(WorkSource::GitHub, cx);
+                assert_eq!(view.work_inbox.filter.project, Some(second_project));
+                window.remove_window();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn work_inbox_prefetch_does_not_select_or_mark_tasks_read_until_visible(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (root, _, _, window) = open_recording_workspace(cx, "inbox-prefetch");
+        window
+            .update(cx, |view, window, cx| {
+                let item = fixture();
+                view.work_inbox.github.apply(Ok(WorkItemsPage {
+                    items: vec![item.clone()],
+                    connected: true,
+                    ..Default::default()
+                }));
+                view.inbox_source_updated(WorkSource::GitHub, true, cx);
+                assert!(view.work_inbox.selected.is_none());
+                assert!(item.unread(&view.settings.inbox.seen));
+                assert!(view.work_inbox.details.is_empty());
+                view.workspace_section = WorkspaceSection::Inbox;
+                view.work_inbox.activity = true;
+                view.inbox_source_updated(WorkSource::GitHub, false, cx);
+                assert!(view.work_inbox.selected.is_none());
+                assert!(item.unread(&view.settings.inbox.seen));
+                view.work_inbox.activity = false;
+                view.inbox_source_updated(WorkSource::GitHub, false, cx);
+                assert_eq!(view.work_inbox.selected.as_deref(), Some(item.url.as_str()));
+                assert!(!item.unread(&view.settings.inbox.seen));
+                window.remove_window();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn work_inbox_sources_fail_independently_and_ignore_stale_results() {

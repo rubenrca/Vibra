@@ -50,11 +50,18 @@ pub(super) fn gh_output(arguments: &[&str], input: Option<Vec<u8>>) -> Result<Ve
 }
 
 pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
-    let viewer = gh(&["api", "--hostname", "github.com", "user"], None)?;
-    let login = viewer["login"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .context("GitHub did not return the active account.")?;
+    // The unfiltered feed does not use the login. Avoid a serial network
+    // round trip before any repository can start loading in that common case.
+    let login = if query.assigned_to_me {
+        let viewer = gh(&["api", "--hostname", "github.com", "user"], None)?;
+        viewer["login"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .context("GitHub did not return the active account.")?
+            .to_owned()
+    } else {
+        String::new()
+    };
     let mut repositories = BTreeMap::new();
     for project in &query.projects {
         if let Ok(bytes) = bounded_output(
@@ -75,6 +82,9 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
         }
     }
     if repositories.is_empty() {
+        // There is no search request to validate the local connection in this
+        // case. Keep the sign-in error without making a network round trip.
+        gh_output(&["auth", "token", "--hostname", "github.com"], None)?;
         return Ok(WorkItemsPage {
             connected: true,
             warning: Some(
@@ -96,7 +106,7 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
                     {
                         return None;
                     }
-                    Some((repo.clone(), kind, search_query(repo, kind, query, login)))
+                    Some((repo.clone(), kind, search_query(repo, kind, query, &login)))
                 })
         })
         .collect();
@@ -141,6 +151,11 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
                 }
             }
         }
+    }
+    if !searches.is_empty() && page.failed_scopes.len() == searches.len() {
+        bail!(
+            "GitHub: could not load tasks. Check your connection and sign in with gh auth login."
+        );
     }
     if !failed.is_empty() {
         page.warning = Some(format!(

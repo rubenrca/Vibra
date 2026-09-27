@@ -22,7 +22,7 @@ const QUERY: &str = r#"query($filter: IssueFilter) {
   }
 }"#;
 
-fn token_path() -> Result<PathBuf> {
+pub(super) fn token_path() -> Result<PathBuf> {
     Ok(application_support_directory()
         .context("Could not find the Vibra folder.")?
         .join("linear-token"))

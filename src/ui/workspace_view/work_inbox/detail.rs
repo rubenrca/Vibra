@@ -39,19 +39,10 @@ impl WorkspaceView {
                                 return;
                             }
                             if let Some(state) = this.work_inbox.details.get_mut(&key) {
-                                let initial = state.$field.data.is_none();
                                 state.$field.apply(revision, result);
-                                if stringify!($field) == "diff"
-                                    && initial
-                                    && let Some(diff) = &state.diff.data
-                                {
-                                    state.collapsed_files = diff
-                                        .files
-                                        .iter()
-                                        .skip(1)
-                                        .map(|file| file.path.clone())
-                                        .collect();
-                                }
+                            }
+                            if stringify!($field) == "diff" {
+                                this.sync_inbox_review(&key, cx);
                             }
                             cx.notify();
                         });
@@ -72,7 +63,21 @@ impl WorkspaceView {
     pub(super) fn select_inbox_detail_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
         self.work_inbox.detail_tab = tab;
         self.load_inbox_detail(false, cx);
+        self.sync_inbox_review_preferences(cx);
         cx.notify();
+    }
+
+    pub(super) fn set_inbox_code_mode(&mut self, mode: CodeMode, cx: &mut Context<Self>) {
+        if let Some(url) = self.work_inbox.selected.clone() {
+            let state = self.work_inbox.details.entry(url).or_default();
+            state.code_mode = mode;
+            if let Some(view) = &state.review {
+                view.update(cx, |view, cx| {
+                    view.set_full_file(mode == CodeMode::FullFile, cx)
+                });
+            }
+            cx.notify();
+        }
     }
 
     pub(super) fn toggle_inbox_check(&mut self, check: WorkCheck, cx: &mut Context<Self>) {

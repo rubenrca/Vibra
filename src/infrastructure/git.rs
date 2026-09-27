@@ -2074,6 +2074,28 @@ fn validate_relative_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Parse a remote or local unified patch with the same bounds and line model.
+pub(crate) fn parse_diff_patch(path: &str, patch: &[u8]) -> GitDiff {
+    let mut diff = GitDiff {
+        path: path.into(),
+        rows: Vec::new(),
+        additions: 0,
+        deletions: 0,
+        binary: false,
+        truncated: false,
+    };
+    append_patch(
+        patch,
+        None,
+        &mut diff.rows,
+        &mut diff.additions,
+        &mut diff.deletions,
+        &mut diff.binary,
+        &mut diff.truncated,
+    );
+    diff
+}
+
 fn append_patch(
     bytes: &[u8],
     section: Option<&str>,

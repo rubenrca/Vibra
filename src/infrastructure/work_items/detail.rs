@@ -1,6 +1,7 @@
 //! Inbox detail and explicit user actions. Every request names its remote target.
 
 use anyhow::{Context, Result, bail};
+use base64::Engine;
 use serde_json::{Value, json};
 
 use super::{github, graphql_data, linear, string, timestamp};
@@ -217,6 +218,8 @@ pub fn load_diff(item: &WorkItem) -> Result<WorkDiff> {
         for file in files {
             diff.files.push(WorkDiffFile {
                 path: string(file, "filename"),
+                blob_oid: string(file, "sha"),
+                removed: file["status"].as_str() == Some("removed"),
                 previous_path: file["previous_filename"].as_str().map(str::to_owned),
                 additions: file["additions"].as_u64().unwrap_or_default(),
                 deletions: file["deletions"].as_u64().unwrap_or_default(),
@@ -229,6 +232,43 @@ pub fn load_diff(item: &WorkItem) -> Result<WorkDiff> {
     }
     diff.truncated = true;
     Ok(diff)
+}
+
+pub fn load_full_file(item: &WorkItem, file: &WorkDiffFile) -> Result<String> {
+    let (repo, _) = github_target(item)?;
+    if file.blob_oid.len() != 40 || !file.blob_oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("This file has no available Git blob. Refresh the pull request.");
+    }
+    // Use the immutable blob returned with the diff, never a moving branch or local checkout.
+    let endpoint = format!("repos/{repo}/git/blobs/{}", file.blob_oid);
+    let data = github::gh(&["api", "--hostname", "github.com", &endpoint], None)?;
+    decode_file_blob(&data)
+}
+
+fn decode_file_blob(data: &Value) -> Result<String> {
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    if data["size"].as_u64().is_some_and(|size| size > LIMIT) {
+        bail!("This file is too large to display. Open it on GitHub.");
+    }
+    if data["encoding"].as_str() != Some("base64") {
+        bail!("GitHub did not return text content for this file.");
+    }
+    let content: String = data["content"]
+        .as_str()
+        .context("GitHub did not return the file content.")?
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content)
+        .context("GitHub returned invalid file content.")?;
+    if bytes.len() > LIMIT as usize {
+        bail!("This file is too large to display. Open it on GitHub.");
+    }
+    if bytes.contains(&0) {
+        bail!("This is a binary file. Open it on GitHub to view it.");
+    }
+    String::from_utf8(bytes).context("This file is not UTF-8 text. Open it on GitHub to view it.")
 }
 
 pub fn load_checks(item: &WorkItem) -> Result<Vec<WorkCheck>> {
@@ -245,13 +285,23 @@ pub fn load_checks(item: &WorkItem) -> Result<Vec<WorkCheck>> {
         ],
         None,
     )?;
+    parse_checks(&data)
+}
+
+fn parse_checks(data: &Value) -> Result<Vec<WorkCheck>> {
     let nodes = data["statusCheckRollup"]
         .as_array()
         .context("GitHub did not return the checks.")?;
     Ok(nodes
         .iter()
         .map(|node| WorkCheck {
-            head_oid: string(&data, "headRefOid"),
+            workflow: string(node, "workflowName"),
+            duration_seconds: {
+                let start = timestamp(&node["startedAt"]);
+                let end = timestamp(&node["completedAt"]);
+                (start > 0 && end >= start).then(|| end - start)
+            },
+            head_oid: string(data, "headRefOid"),
             name: node["name"]
                 .as_str()
                 .or(node["context"].as_str())
@@ -392,6 +442,47 @@ pub fn run_pr_action(item: &WorkItem, action: PrAction, head_oid: &str) -> Resul
 mod tests {
     use super::*;
     #[test]
+    fn checks_keep_workflows_and_only_completed_durations() {
+        let checks = parse_checks(&json!({"headRefOid":"abc", "statusCheckRollup":[
+            {"name":"Lint", "conclusion":"SUCCESS", "workflowName":"CI", "startedAt":"2026-09-20T01:00:00Z", "completedAt":"2026-09-20T01:03:35Z"},
+            {"name":"Tests", "conclusion":"", "status":"IN_PROGRESS", "startedAt":"2026-09-20T01:00:00Z"},
+            {"context":"Deploy", "state":"SUCCESS", "targetUrl":"https://ci.example.com/job"},
+            {"name":"Clock skew", "conclusion":"SUCCESS", "startedAt":"2026-09-20T01:00:10Z", "completedAt":"2026-09-20T01:00:00Z"}
+        ]})).unwrap();
+        assert_eq!(checks[0].workflow, "CI");
+        assert_eq!(checks[0].duration_seconds, Some(215));
+        assert!(checks[0].passed());
+        assert_eq!(checks[1].state, "IN_PROGRESS");
+        assert!(checks[1].duration_seconds.is_none());
+        assert_eq!(checks[2].name, "Deploy");
+        assert!(checks[2].workflow.is_empty());
+        assert!(checks[2].duration_seconds.is_none());
+        assert!(checks[3].duration_seconds.is_none());
+    }
+
+    #[test]
+    fn full_files_decode_text_and_reject_binary_invalid_or_oversized_content() {
+        let text = "fn main() {}\n";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+        assert_eq!(
+            decode_file_blob(
+                &json!({"encoding":"base64", "content":format!("{encoded}\n"), "size":text.len()})
+            )
+            .unwrap(),
+            text
+        );
+        for value in [
+            json!({"encoding":"base64", "content":"AA==", "size":1}),
+            json!({"encoding":"base64", "content":"/w==", "size":1}),
+            json!({"encoding":"base64", "content":"invalid!"}),
+            json!({"encoding":"base64", "content":"", "size":2097153}),
+            json!({"encoding":"base64"}),
+        ] {
+            assert!(decode_file_blob(&value).is_err());
+        }
+    }
+
+    #[test]
     fn review_threads_keep_replies_paths_and_truncation() {
         let detail = parse_github_detail(
             &json!({"body":"Summary","headRefOid":"abc","comments":{"totalCount":2,"nodes":[{"id":"1","body":"Comment","author":{"login":"ana"},"createdAt":"2026-09-20T01:00:00Z"}]},"reviewThreads":{"nodes":[{"id":"thread","path":"src/main.rs","isResolved":true,"comments":{"totalCount":2,"nodes":[{"id":"2","body":"Fix","line":42},{"id":"3","body":"Done"}]}}]}}),
@@ -414,6 +505,7 @@ mod tests {
             state: "FAILURE".into(),
             head_oid: "abc".into(),
             url: "https://github.com/demo/app/actions/runs/12/job/34".into(),
+            ..Default::default()
         };
         assert_eq!(github_check_job(&item, &check), Some(34));
         for url in [

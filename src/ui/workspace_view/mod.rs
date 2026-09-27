@@ -479,6 +479,7 @@ impl WorkspaceView {
                 DiffViewEvent::PreferencesChanged { split, wrap } => {
                     this.settings.diff_split = *split;
                     this.settings.diff_wrap = *wrap;
+                    this.sync_inbox_review_preferences(cx);
                     this.persist_settings(cx);
                 }
                 DiffViewEvent::SendReview {
