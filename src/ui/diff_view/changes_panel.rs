@@ -19,6 +19,9 @@ const GRAPH_ROW_HEIGHT: f32 = 26.0;
 /// The graph polls less often than the file list; commits change rarely.
 const GRAPH_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_COMMIT_MESSAGE_CHARS: usize = 10_000;
+const COMMIT_CONTROL_HEIGHT: f32 = 34.0;
+const COMMIT_CONTROL_LINE_HEIGHT: f32 = 18.0;
+const COMMIT_MENU_WIDTH: f32 = 30.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CommitAction {
@@ -367,7 +370,7 @@ impl DiffView {
             .child(
                 div()
                     .w_full()
-                    .h(px(30.0))
+                    .h(px(COMMIT_CONTROL_HEIGHT))
                     .flex()
                     .rounded(px(6.0))
                     .overflow_hidden()
@@ -385,12 +388,17 @@ impl DiffView {
                         div()
                             .id("git-commit")
                             .flex_1()
+                            .min_w(px(0.0))
                             .h_full()
+                            .relative()
                             .flex()
                             .items_center()
                             .justify_center()
-                            .gap(px(6.0))
+                            // Balance the menu and divider so the label is centered
+                            // across the entire control, matching Create PR below.
+                            .pl(px(COMMIT_MENU_WIDTH + 1.0))
                             .text_size(px(12.5))
+                            .line_height(px(COMMIT_CONTROL_LINE_HEIGHT))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .when(can_commit, |button| {
                                 button.cursor_pointer().hover(|button| button.opacity(0.9))
@@ -399,30 +407,47 @@ impl DiffView {
                                 this.run_commit(CommitAction::Commit, cx)
                             }))
                             .child(
-                                svg()
-                                    .path("chrome-icons/check.svg")
-                                    .size(px(14.0))
-                                    .flex_none()
-                                    .text_color(if can_commit {
-                                        colors().background
-                                    } else {
-                                        colors().muted
-                                    }),
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .top_0()
+                                    .bottom_0()
+                                    .w(px(COMMIT_MENU_WIDTH))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        svg()
+                                            .path("chrome-icons/check.svg")
+                                            .size(px(14.0))
+                                            .text_color(if can_commit {
+                                                colors().background
+                                            } else {
+                                                colors().muted
+                                            }),
+                                    ),
                             )
-                            .child(busy.unwrap_or("Commit")),
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .child(busy.unwrap_or("Commit")),
+                            ),
                     )
                     .child(
                         div()
                             .w(px(1.0))
                             .h_full()
+                            .flex_none()
                             .bg(colors().border_subtle)
                             .opacity(0.6),
                     )
                     .child(
                         div()
                             .id("git-commit-menu")
-                            .w(px(30.0))
+                            .w(px(COMMIT_MENU_WIDTH))
                             .h_full()
+                            .flex_none()
                             .flex()
                             .items_center()
                             .justify_center()
@@ -448,16 +473,20 @@ impl DiffView {
             .child(
                 div()
                     .id("git-create-pr")
+                    .group("git-create-pr")
                     .w_full()
-                    .h(px(30.0))
+                    .h(px(COMMIT_CONTROL_HEIGHT))
+                    .relative()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .gap(px(6.0))
+                    .px(px(COMMIT_MENU_WIDTH))
                     .rounded(px(6.0))
                     .border_1()
                     .border_color(colors().border_subtle)
                     .text_size(px(12.5))
+                    .line_height(px(COMMIT_CONTROL_LINE_HEIGHT))
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(colors().muted)
                     .cursor_pointer()
                     .hover(|button| {
@@ -473,9 +502,24 @@ impl DiffView {
                         this.changes.menu = None;
                     }))
                     .child(
-                        svg()
-                            .path("chrome-icons/git-pull-request.svg")
-                            .size(px(14.0)),
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(COMMIT_MENU_WIDTH))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                svg()
+                                    .path("chrome-icons/git-pull-request.svg")
+                                    .size(px(14.0))
+                                    .text_color(colors().muted)
+                                    .group_hover("git-create-pr", |icon| {
+                                        icon.text_color(colors().foreground)
+                                    }),
+                            ),
                     )
                     .child("Create PR"),
             )
@@ -507,10 +551,10 @@ impl DiffView {
             .track_focus(&self.changes.focus)
             .on_key_down(cx.listener(Self::on_commit_key_down))
             .w_full()
-            .min_h(px(34.0))
+            .min_h(px(COMMIT_CONTROL_HEIGHT))
             .max_h(px(140.0))
             .overflow_y_scroll()
-            .pl_2()
+            .pl(px(10.0))
             .pr(px(32.0))
             .py(px(7.0))
             .rounded(px(6.0))
@@ -523,7 +567,7 @@ impl DiffView {
             .bg(surface_tint(colors().elevated, colors().sidebar))
             .cursor_text()
             .text_size(px(12.5))
-            .line_height(px(18.0))
+            .line_height(px(COMMIT_CONTROL_LINE_HEIGHT))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.changes.focus.focus(window);
                 this.changes.menu = None;
@@ -540,7 +584,7 @@ impl DiffView {
                     input.children(lines.into_iter().enumerate().map(|(index, line)| {
                         let caret = focused && index + 1 == line_count;
                         div()
-                            .min_h(px(18.0))
+                            .min_h(px(COMMIT_CONTROL_LINE_HEIGHT))
                             .text_color(colors().foreground)
                             .child(if caret { format!("{line}▏") } else { line })
                     }))
@@ -917,8 +961,9 @@ impl DiffView {
             PanelMenu::Commit => {
                 // Header, message box (grows with its lines), gap, button.
                 let lines = self.changes.message.split('\n').count().max(1) as f32;
-                let message_height = (lines * 18.0 + 16.0).clamp(34.0, 140.0);
-                40.0 + message_height + 8.0 + 30.0 + 4.0
+                let message_height =
+                    (lines * COMMIT_CONTROL_LINE_HEIGHT + 16.0).clamp(COMMIT_CONTROL_HEIGHT, 140.0);
+                40.0 + message_height + 8.0 + COMMIT_CONTROL_HEIGHT + 4.0
             }
         };
         div()

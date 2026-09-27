@@ -24,9 +24,9 @@ pub fn menu_surface() -> Hsla {
     color
 }
 
-/// Visible on any surface; the theme's subtle border can match `elevated`.
+/// Use the same contrasting stroke as the rest of the chrome.
 pub fn menu_border() -> Rgba {
-    foreground_alpha(0.10)
+    colors().border_subtle
 }
 
 pub fn menu_hover() -> Rgba {

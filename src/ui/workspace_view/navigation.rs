@@ -68,7 +68,8 @@ pub(super) fn keycap(label: &'static str) -> Div {
                 .justify_center()
                 .rounded(px(3.0))
                 .border_1()
-                .border_color(colors().border_subtle)
+                .border_color(gpui::Hsla::from(colors().foreground).opacity(0.32))
+                .bg(gpui::Hsla::from(colors().foreground).opacity(0.04))
                 .child(key.to_string())
         }))
 }

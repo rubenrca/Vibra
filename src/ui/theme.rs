@@ -215,6 +215,12 @@ fn with_alpha(mut color: Rgba, alpha: f32) -> Rgba {
     color
 }
 
+/// Blend a soft 12% stroke over the actual surface, including its backdrop.
+/// A fixed near-background color can disappear as the translucent window moves.
+fn subtle_border(foreground: Rgba) -> Rgba {
+    with_alpha(foreground, 0.12)
+}
+
 /// Compact terminal/UI seed. Chrome surfaces are derived so a new palette
 /// stays consistent without listing every role by hand.
 #[derive(Debug, Clone, Copy)]
@@ -311,7 +317,7 @@ fn theme_from_seed(spec: ThemeSeed) -> Theme {
     };
     let hover = surface(if dark { 0.14 } else { 0.10 });
     let selection = mix(bg, accent, if dark { 0.22 } else { 0.14 });
-    let border = surface(if dark { 0.16 } else { 0.18 });
+    let border = subtle_border(fg);
     let muted = mix(fg, bg, 0.32);
     let subtle = mix(fg, bg, 0.52);
     let authentic = spec.ansi.is_some();
@@ -456,7 +462,7 @@ fn midnight_dark() -> Theme {
         elevated: rgb(0x191919),
         hover: rgb(0x1e1e1e),
         selection: rgb(0x262626),
-        border_subtle: rgb(0x222222),
+        border_subtle: subtle_border(rgb(0xe6e6e6)),
         foreground: rgb(0xe6e6e6),
         muted: rgb(0x999999),
         subtle: rgb(0x787878),
@@ -489,7 +495,7 @@ fn midnight_light() -> Theme {
         elevated: rgb(0xffffff),
         hover: rgb(0xededed),
         selection: rgb(0xe6e6e6),
-        border_subtle: rgb(0xe2e2e2),
+        border_subtle: subtle_border(rgb(0x202020)),
         foreground: rgb(0x202020),
         muted: rgb(0x616161),
         subtle: rgb(0x858585),
@@ -522,7 +528,7 @@ fn moss_dark() -> Theme {
         elevated: rgb(0x1f2d26),
         hover: rgb(0x25362e),
         selection: rgb(0x2c4036),
-        border_subtle: rgb(0x2a3a32),
+        border_subtle: subtle_border(rgb(0xd6e6dc)),
         foreground: rgb(0xd6e6dc),
         muted: rgb(0x8eaa98),
         subtle: rgb(0x6a8474),
@@ -555,7 +561,7 @@ fn moss_light() -> Theme {
         elevated: rgb(0xffffff),
         hover: rgb(0xdcebe2),
         selection: rgb(0xcfe0d5),
-        border_subtle: rgb(0xc5d6cb),
+        border_subtle: subtle_border(rgb(0x1a2b22)),
         foreground: rgb(0x1a2b22),
         muted: rgb(0x4a6656),
         subtle: rgb(0x789486),
@@ -588,7 +594,7 @@ fn harbor_dark() -> Theme {
         elevated: rgb(0x1f2734),
         hover: rgb(0x253040),
         selection: rgb(0x2c3a4d),
-        border_subtle: rgb(0x2a3442),
+        border_subtle: subtle_border(rgb(0xd5deea)),
         foreground: rgb(0xd5deea),
         muted: rgb(0x8ea0b8),
         subtle: rgb(0x6a7c94),
@@ -621,7 +627,7 @@ fn harbor_light() -> Theme {
         elevated: rgb(0xffffff),
         hover: rgb(0xd8e3ef),
         selection: rgb(0xc9d8ea),
-        border_subtle: rgb(0xc0cfde),
+        border_subtle: subtle_border(rgb(0x182230)),
         foreground: rgb(0x182230),
         muted: rgb(0x4a5c74),
         subtle: rgb(0x7a8ca4),
@@ -654,7 +660,7 @@ fn cinder_dark() -> Theme {
         elevated: rgb(0x2c241f),
         hover: rgb(0x352c26),
         selection: rgb(0x40352d),
-        border_subtle: rgb(0x3a302a),
+        border_subtle: subtle_border(rgb(0xeadfd6)),
         foreground: rgb(0xeadfd6),
         muted: rgb(0xb09a88),
         subtle: rgb(0x847466),
@@ -687,7 +693,7 @@ fn cinder_light() -> Theme {
         elevated: rgb(0xffffff),
         hover: rgb(0xeadcd0),
         selection: rgb(0xe0d0c0),
-        border_subtle: rgb(0xd8c8b8),
+        border_subtle: subtle_border(rgb(0x2a1e18)),
         foreground: rgb(0x2a1e18),
         muted: rgb(0x6a5244),
         subtle: rgb(0x9a8070),
@@ -720,7 +726,7 @@ fn violet_dark() -> Theme {
         elevated: rgb(0x252032),
         hover: rgb(0x2c273c),
         selection: rgb(0x352f48),
-        border_subtle: rgb(0x322c40),
+        border_subtle: subtle_border(rgb(0xe0d8f0)),
         foreground: rgb(0xe0d8f0),
         muted: rgb(0xa090c0),
         subtle: rgb(0x786c98),
@@ -753,7 +759,7 @@ fn violet_light() -> Theme {
         elevated: rgb(0xffffff),
         hover: rgb(0xe0d8f0),
         selection: rgb(0xd4c8ea),
-        border_subtle: rgb(0xc8bce0),
+        border_subtle: subtle_border(rgb(0x221a30)),
         foreground: rgb(0x221a30),
         muted: rgb(0x5a4c78),
         subtle: rgb(0x8a7ca8),
@@ -786,7 +792,7 @@ fn bloom_dark() -> Theme {
         elevated: rgb(0x2f2430),
         hover: rgb(0x382c39),
         selection: rgb(0x443644),
-        border_subtle: rgb(0x3a2e3a),
+        border_subtle: subtle_border(rgb(0xf0e4ee)),
         foreground: rgb(0xf0e4ee),
         muted: rgb(0xb898b0),
         subtle: rgb(0x8a7088),
@@ -819,7 +825,7 @@ fn bloom_light() -> Theme {
         elevated: rgb(0xffffff),
         hover: rgb(0xead6e4),
         selection: rgb(0xe0c8da),
-        border_subtle: rgb(0xd8bcd0),
+        border_subtle: subtle_border(rgb(0x3a1840)),
         foreground: rgb(0x3a1840),
         muted: rgb(0x7a4068),
         subtle: rgb(0xa07090),

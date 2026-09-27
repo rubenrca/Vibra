@@ -204,13 +204,6 @@ impl super::WorkspaceView {
                                 cx,
                                 |this, _, cx| this.open_palette(PaletteMode::Files, cx),
                             ))
-                            .child(self.workspace_title_action(
-                                "workspace-new-tab",
-                                "chrome-icons/plus.svg",
-                                "New tab · ⌘T",
-                                cx,
-                                |this, window, cx| this.open_terminal_tab_in_project(window, cx),
-                            ))
                             .child(self.ide_button(cx))
                     })
                     .when(!right_open, |chrome| chrome.child(div().flex_1()))

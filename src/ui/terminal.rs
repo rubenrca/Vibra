@@ -38,7 +38,8 @@ use agent_presence::{detect_agent_presence, is_interactive_shell_process_name};
 
 const TERMINAL_FONT_SIZE: f32 = 12.0;
 const TERMINAL_LINE_HEIGHT: f32 = 16.0;
-/// Keeps the terminal grid from visually touching the rounded panel edges.
+/// Keeps the terminal grid comfortably inset from the panel edges.
+const TERMINAL_HORIZONTAL_PADDING: f32 = 12.0;
 const TERMINAL_VERTICAL_PADDING: f32 = 4.0;
 /// Match `PANEL_RADIUS` so the canvas fill doesn't square off card corners.
 const SURFACE_CORNER_RADIUS: f32 = 10.0;
@@ -1613,10 +1614,17 @@ impl TerminalPaintState {
 }
 
 fn terminal_grid_bounds(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
-    let padding = px(TERMINAL_VERTICAL_PADDING).min(bounds.size.height / 2.0);
+    let horizontal_padding = px(TERMINAL_HORIZONTAL_PADDING).min(bounds.size.width / 2.0);
+    let vertical_padding = px(TERMINAL_VERTICAL_PADDING).min(bounds.size.height / 2.0);
     Bounds::new(
-        point(bounds.left(), bounds.top() + padding),
-        size(bounds.size.width, bounds.size.height - padding * 2.0),
+        point(
+            bounds.left() + horizontal_padding,
+            bounds.top() + vertical_padding,
+        ),
+        size(
+            bounds.size.width - horizontal_padding * 2.0,
+            bounds.size.height - vertical_padding * 2.0,
+        ),
     )
 }
 
