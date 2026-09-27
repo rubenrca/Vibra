@@ -243,7 +243,7 @@ impl WorkspaceView {
             .group("global-project")
             .w(px(row_width))
             .mb(px(2.0))
-            .h(px(30.0))
+            .h(px(32.0))
             .pl(px(project_padding))
             .pr(px(SIDEBAR_ROW_END_PADDING))
             .rounded(px(7.0))
@@ -299,7 +299,7 @@ impl WorkspaceView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(gpui::Rgba { a: 0.18, ..color })
+                    .bg(gpui::Rgba { a: 0.12, ..color })
                     .text_size(px(11.0))
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(color)
@@ -313,9 +313,9 @@ impl WorkspaceView {
                     .text_size(px(13.0))
                     .line_height(px(18.0))
                     .font_weight(if selected {
-                        gpui::FontWeight::SEMIBOLD
-                    } else {
                         gpui::FontWeight::MEDIUM
+                    } else {
+                        gpui::FontWeight::NORMAL
                     })
                     .text_color(if selected {
                         colors().foreground

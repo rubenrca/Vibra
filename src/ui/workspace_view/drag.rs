@@ -8,6 +8,7 @@ use crate::ui::terminal::TerminalDragPreview;
 use crate::ui::theme::{MONO_FONT, colors};
 
 use super::chrome::TAB_LABEL_INSET;
+use super::panes::{TAB_HEIGHT, TAB_RADIUS, TAB_TEXT_SIZE};
 
 #[derive(Clone)]
 pub(crate) struct PaneDividerDrag {
@@ -80,7 +81,7 @@ impl Render for TabDragView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected;
         div()
-            .h(px(30.0))
+            .h(px(TAB_HEIGHT))
             .w(px(self.width))
             .relative()
             .flex()
@@ -88,7 +89,7 @@ impl Render for TabDragView {
             .justify_center()
             .px(px(TAB_LABEL_INSET))
             .overflow_hidden()
-            .rounded(px(8.0))
+            .rounded(px(TAB_RADIUS))
             .bg(if selected {
                 colors().selection
             } else {
@@ -103,7 +104,7 @@ impl Render for TabDragView {
                     .flex_1()
                     .truncate()
                     .text_center()
-                    .text_size(px(13.0))
+                    .text_size(px(TAB_TEXT_SIZE))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(self.title.clone()),
             )

@@ -6,6 +6,8 @@ use crate::domain::workspace::WorkspaceSplitAxis;
 use crate::ui::menu::{menu_border, menu_surface};
 use crate::ui::theme::{colors, surface};
 
+use super::SidebarResizeEdge;
+
 pub(crate) const PANEL_GAP: f32 = 4.0;
 pub(crate) const PANEL_BORDER_WIDTH: f32 = 1.0;
 // Leave equal room for the status dot and shortcut so tab labels stay centered.
@@ -17,7 +19,7 @@ pub(crate) const SIDEBAR_ROW_END_PADDING: f32 = 2.0;
 pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
 
 pub(crate) fn sidebar_row_width(panel_width: f32) -> f32 {
-    panel_width - 2.0 * (PANEL_BORDER_WIDTH + SIDEBAR_ROW_INSET)
+    panel_width - PANEL_BORDER_WIDTH - 2.0 * SIDEBAR_ROW_INSET
 }
 
 /// Keep a usable resize target between the flat split panes.
@@ -207,6 +209,7 @@ pub(crate) fn ease_out_cubic(t: f32) -> f32 {
 pub(crate) fn clipped_width_panel(
     width: f32,
     full_width: f32,
+    edge: SidebarResizeEdge,
     background: gpui::Rgba,
     content: impl IntoElement,
 ) -> Div {
@@ -217,12 +220,13 @@ pub(crate) fn clipped_width_panel(
         .relative()
         .overflow_hidden()
         .bg(surface(background))
-        .border_l_1()
-        .border_r_1()
+        // Only the edge facing the workspace needs a separator.
+        .when(edge == SidebarResizeEdge::Left, |panel| panel.border_r_1())
+        .when(edge == SidebarResizeEdge::Right, |panel| panel.border_l_1())
         .border_color(colors().border_subtle)
         .child(
             div()
-                .w(px(full_width - 2.0 * PANEL_BORDER_WIDTH))
+                .w(px(full_width - PANEL_BORDER_WIDTH))
                 .h_full()
                 .flex()
                 .flex_col()

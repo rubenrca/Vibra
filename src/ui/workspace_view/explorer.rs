@@ -426,6 +426,7 @@ impl WorkspaceView {
         let action = |id: &'static str, icon: &'static str, label: &'static str| {
             div()
                 .id(SharedString::from(id))
+                .group("explorer-action")
                 .size(px(24.0))
                 .flex_none()
                 .rounded(px(5.0))
@@ -441,7 +442,16 @@ impl WorkspaceView {
                 })
                 .tooltip(move |_, cx| sidebar_tooltip(label, cx))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(svg().path(icon).size(px(14.0)))
+                .child(
+                    svg()
+                        .path(icon)
+                        .size(px(14.0))
+                        .flex_none()
+                        .text_color(colors().muted)
+                        .group_hover("explorer-action", |icon| {
+                            icon.text_color(colors().foreground)
+                        }),
+                )
         };
         div()
             .h(px(30.0))

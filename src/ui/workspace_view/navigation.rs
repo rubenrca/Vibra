@@ -25,11 +25,11 @@ pub(super) fn project_color(id: Uuid) -> gpui::Rgba {
     palette[id.as_bytes()[0] as usize % palette.len()]
 }
 
-/// One navigation row: 30 px, 15 px icon, 13 px label.
+/// One navigation row: 32 px, 15 px icon, 13 px label.
 fn rail_row(id: impl Into<SharedString>) -> Stateful<Div> {
     div()
         .id(id.into())
-        .h(px(30.0))
+        .h(px(32.0))
         .w_full()
         .flex_none()
         .px(px(8.0))
@@ -39,7 +39,7 @@ fn rail_row(id: impl Into<SharedString>) -> Stateful<Div> {
         .gap(px(10.0))
         .cursor_pointer()
         .text_size(px(13.0))
-        .font_weight(gpui::FontWeight::MEDIUM)
+        .font_weight(gpui::FontWeight::NORMAL)
         .text_color(colors().muted)
         .hover(|row| {
             row.bg(surface_tint(colors().hover, colors().sidebar))
@@ -47,21 +47,30 @@ fn rail_row(id: impl Into<SharedString>) -> Stateful<Div> {
         })
 }
 
-/// A shortcut drawn as a small keycap.
+/// System-font keycaps keep macOS modifier symbols legible and evenly spaced.
 pub(super) fn keycap(label: &'static str) -> Div {
     div()
         .flex_none()
-        .h(px(18.0))
-        .px(px(5.0))
-        .rounded(px(4.0))
         .flex()
         .items_center()
-        .border_1()
-        .border_color(colors().border_subtle)
-        .font_family(crate::ui::theme::MONO_FONT)
-        .text_size(px(10.0))
-        .text_color(colors().subtle)
-        .child(label)
+        .gap(px(3.0))
+        .font_family(".SystemUIFont")
+        .text_size(px(11.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(colors().muted)
+        .children(label.chars().map(|key| {
+            div()
+                .w(px(16.0))
+                .h(px(18.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(colors().border_subtle)
+                .child(key.to_string())
+        }))
 }
 
 /// Sidebar section heading with room for a trailing action.
@@ -76,9 +85,9 @@ fn section_label(label: &'static str) -> Div {
         .child(
             div()
                 .flex_1()
-                .text_size(px(13.0))
+                .text_size(px(12.0))
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(colors().muted)
+                .text_color(colors().subtle)
                 .child(label),
         )
 }
@@ -151,24 +160,28 @@ impl WorkspaceView {
             .child(
                 div()
                     .px(px(SIDEBAR_ROW_INSET))
-                    .pt(px(6.0))
+                    .pt(px(10.0))
                     .pb(px(4.0))
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
+                    .gap(px(3.0))
                     .child(
                         div()
                             .id("global-search")
-                            .h(px(30.0))
+                            .group("global-search")
+                            .h(px(32.0))
                             .mb(px(8.0))
                             .px(px(8.0))
-                            .rounded(px(7.0))
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(colors().border_subtle)
+                            .bg(surface_tint(colors().panel, colors().sidebar))
                             .flex()
                             .items_center()
                             .gap(px(8.0))
                             .cursor_pointer()
-                            .bg(surface_tint(colors().elevated, colors().sidebar))
                             .text_size(px(13.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(colors().subtle)
                             .hover(|field| {
                                 field
@@ -178,8 +191,17 @@ impl WorkspaceView {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_palette(PaletteMode::Commands, cx)
                             }))
-                            .child(svg().path("chrome-icons/search.svg").size(px(14.0)))
-                            .child(div().flex_1().child("Search"))
+                            .child(
+                                svg()
+                                    .path("chrome-icons/search.svg")
+                                    .size(px(16.0))
+                                    .flex_none()
+                                    .text_color(colors().muted)
+                                    .group_hover("global-search", |icon| {
+                                        icon.text_color(colors().foreground)
+                                    }),
+                            )
+                            .child(div().flex_1().min_w(px(0.0)).truncate().child("Search"))
                             .child(keycap("⇧⌘P")),
                     )
                     .children(nav_items.into_iter().map(|(section, label, icon)| {
@@ -187,6 +209,7 @@ impl WorkspaceView {
                         rail_row(SharedString::from(format!("nav-{label}")))
                             .when(selected, |row| {
                                 row.bg(surface_tint(colors().selection, colors().sidebar))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(colors().foreground)
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -194,7 +217,7 @@ impl WorkspaceView {
                             }))
                             .child(svg().path(icon).size(px(15.0)).flex_none().text_color(
                                 if selected {
-                                    colors().accent
+                                    colors().foreground
                                 } else {
                                     colors().subtle
                                 },
@@ -327,8 +350,6 @@ impl WorkspaceView {
                 div()
                     .px(px(SIDEBAR_ROW_INSET))
                     .py(px(8.0))
-                    .border_t_1()
-                    .border_color(colors().border_subtle)
                     .child(
                         rail_row("global-settings")
                             .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))

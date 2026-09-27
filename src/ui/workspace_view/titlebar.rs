@@ -21,7 +21,7 @@ use super::{
 const TRAFFIC_LIGHTS_INSET: f32 = 80.0;
 pub(super) const TITLEBAR_BUTTON_SIZE: f32 = 28.0;
 pub(super) const TITLEBAR_BUTTON_GAP: f32 = 2.0;
-const TITLEBAR_ICON_SIZE: f32 = 16.0;
+const TITLEBAR_ICON_SIZE: f32 = 17.0;
 
 /// Square icon button shared by every titlebar control so they line up.
 pub(super) fn titlebar_button(id: &'static str, enabled: bool) -> Stateful<Div> {
@@ -38,6 +38,7 @@ pub(super) fn titlebar_button(id: &'static str, enabled: bool) -> Stateful<Div> 
         return button.opacity(0.35);
     }
     button
+        .group("titlebar-action")
         .cursor_pointer()
         .hover(|button| {
             button
@@ -48,7 +49,15 @@ pub(super) fn titlebar_button(id: &'static str, enabled: bool) -> Stateful<Div> 
 }
 
 pub(super) fn titlebar_icon(path: &'static str) -> gpui::Svg {
-    svg().path(path).size(px(TITLEBAR_ICON_SIZE)).flex_none()
+    // GPUI SVGs require their own color; a parent div's color is not inherited.
+    svg()
+        .path(path)
+        .size(px(TITLEBAR_ICON_SIZE))
+        .flex_none()
+        .text_color(colors().muted)
+        .group_hover("titlebar-action", |icon| {
+            icon.text_color(colors().foreground)
+        })
 }
 
 impl super::WorkspaceView {
@@ -121,8 +130,6 @@ impl super::WorkspaceView {
             .flex_none()
             .flex()
             .items_center()
-            .border_b_1()
-            .border_color(colors().border_subtle)
             .bg(surface(colors().titlebar))
             .child(
                 div()
@@ -172,7 +179,7 @@ impl super::WorkspaceView {
                         chrome
                             .border_l_1()
                             .border_color(colors().border_subtle)
-                            .bg(surface_tint(colors().panel, colors().titlebar))
+                            .bg(surface_tint(colors().sidebar, colors().titlebar))
                             .child(
                                 div()
                                     .h_full()
@@ -182,6 +189,7 @@ impl super::WorkspaceView {
                                     .flex()
                                     .items_center()
                                     .text_size(px(13.0))
+                                    .text_color(colors().muted)
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .window_control_area(WindowControlArea::Drag)
                                     .on_mouse_down(MouseButton::Left, |_, _, _| {
@@ -225,20 +233,18 @@ impl super::WorkspaceView {
         ];
 
         div()
-            .h(px(36.0))
+            .h(px(38.0))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
             .px_2()
-            .gap(px(1.0))
-            .border_b_1()
-            .border_color(colors().border_subtle)
+            .gap(px(4.0))
             .children(modes.into_iter().map(|(item_mode, label)| {
                 let selected = item_mode == mode;
                 div()
                     .id(SharedString::from(format!("utility-mode-{label}")))
-                    .h(px(24.0))
+                    .h(px(26.0))
                     .min_w(px(0.0))
                     .flex_1()
                     .rounded(px(6.0))
@@ -249,7 +255,7 @@ impl super::WorkspaceView {
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .bg(if selected {
-                        surface_tint(colors().selection, colors().panel)
+                        surface_tint(colors().selection, colors().sidebar)
                     } else {
                         gpui::rgba(0x00000000)
                     })
@@ -262,7 +268,7 @@ impl super::WorkspaceView {
                         if selected {
                             tab
                         } else {
-                            tab.bg(surface_tint(colors().hover, colors().panel))
+                            tab.bg(surface_tint(colors().hover, colors().sidebar))
                                 .text_color(colors().foreground)
                         }
                     })
@@ -298,6 +304,7 @@ impl super::WorkspaceView {
     ) -> Stateful<Div> {
         div()
             .id(id)
+            .group("sidebar-close")
             .size(px(18.0))
             .flex_none()
             .rounded(px(4.0))
@@ -305,12 +312,18 @@ impl super::WorkspaceView {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .text_size(px(13.0))
             .text_color(colors().subtle)
             .hover(|close| close.bg(colors().hover).text_color(colors().foreground))
             .active(|close| close.opacity(0.72))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
-            .child("×")
+            .child(
+                svg()
+                    .path("chrome-icons/close.svg")
+                    .size(px(12.0))
+                    .flex_none()
+                    .text_color(colors().muted)
+                    .group_hover("sidebar-close", |icon| icon.text_color(colors().foreground)),
+            )
     }
 
     pub(super) fn sidebar_button(
@@ -320,16 +333,43 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
-        let (icon, label) = if left {
-            ("chrome-icons/panel-left.svg", "Barra lateral · ⌘B")
+        let open = if left {
+            self.left_sidebar_visible
         } else {
-            ("chrome-icons/panel-right.svg", "Panel derecho · ⌥⌘B")
+            self.workspace_section == WorkspaceSection::Workspace && self.right_sidebar_visible
+        };
+        let (icon, label) = match (left, open) {
+            (true, true) => (
+                "chrome-icons/panel-left-close.svg",
+                "Ocultar barra lateral · ⌘B",
+            ),
+            (true, false) => (
+                "chrome-icons/panel-left-open.svg",
+                "Mostrar barra lateral · ⌘B",
+            ),
+            (false, true) => (
+                "chrome-icons/panel-right-close.svg",
+                "Ocultar panel derecho · ⌥⌘B",
+            ),
+            (false, false) => (
+                "chrome-icons/panel-right-open.svg",
+                "Mostrar panel derecho · ⌥⌘B",
+            ),
         };
         titlebar_button(id, true)
+            .text_color(if open {
+                colors().muted
+            } else {
+                colors().subtle
+            })
             .tooltip(move |_, cx| sidebar_tooltip(label, cx))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-            .child(titlebar_icon(icon))
+            .child(titlebar_icon(icon).size(px(18.0)).text_color(if open {
+                colors().muted
+            } else {
+                colors().subtle
+            }))
     }
 
     pub(super) fn ide_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {

@@ -26,7 +26,7 @@ use super::{
 
 pub(super) const TAB_HEIGHT: f32 = 30.0;
 pub(super) const TAB_MAX_WIDTH: f32 = 240.0;
-pub(super) const TAB_RADIUS: f32 = 8.0;
+pub(super) const TAB_RADIUS: f32 = 6.0;
 pub(super) const TAB_TEXT_SIZE: f32 = 13.0;
 
 /// `⌘N` hint, revealed while the tab is hovered.
@@ -254,7 +254,11 @@ impl super::WorkspaceView {
                                     .flex_shrink()
                                     .truncate()
                                     .text_size(px(TAB_TEXT_SIZE))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font_weight(if selected {
+                                        gpui::FontWeight::MEDIUM
+                                    } else {
+                                        gpui::FontWeight::NORMAL
+                                    })
                                     .child(title),
                             )
                             .when(pane_count > 1, |label| {
@@ -377,7 +381,7 @@ impl super::WorkspaceView {
                     })
                     .when(framed, |pane| {
                         pane.border_1().border_color(if highlighted {
-                            colors().muted
+                            crate::ui::theme::mix(colors().border_subtle, colors().muted, 0.28)
                         } else {
                             colors().border_subtle
                         })
@@ -545,6 +549,7 @@ impl super::WorkspaceView {
         let button = |id: String, icon: &'static str, label: &'static str| {
             div()
                 .id(SharedString::from(id))
+                .group("pane-action")
                 .size(px(22.0))
                 .flex_none()
                 .rounded(px(4.0))
@@ -556,7 +561,14 @@ impl super::WorkspaceView {
                 .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
                 .tooltip(move |_, cx| super::sidebar_tooltip(label, cx))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(svg().path(icon).size(px(12.0)))
+                .child(
+                    svg()
+                        .path(icon)
+                        .size(px(14.0))
+                        .flex_none()
+                        .text_color(colors().muted)
+                        .group_hover("pane-action", |icon| icon.text_color(colors().foreground)),
+                )
         };
         div()
             .id(SharedString::from(format!("pane-header-{session_id}")))
@@ -601,7 +613,13 @@ impl super::WorkspaceView {
                     .justify_center()
                     .text_color(colors().subtle)
                     .when(!can_drag, |grip| grip.opacity(0.4))
-                    .child(svg().path("chrome-icons/grip.svg").size(px(14.0))),
+                    .child(
+                        svg()
+                            .path("chrome-icons/grip.svg")
+                            .size(px(14.0))
+                            .flex_none()
+                            .text_color(colors().subtle),
+                    ),
             )
             .child(agent_compact_badge(
                 identity

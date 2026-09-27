@@ -396,7 +396,7 @@ impl WorkspaceView {
                     .size(px(15.0))
                     .flex_none()
                     .text_color(if selected {
-                        colors().accent
+                        colors().foreground
                     } else {
                         colors().muted
                     }),
@@ -407,13 +407,18 @@ impl WorkspaceView {
                     .min_w(px(0.0))
                     .truncate()
                     .text_size(px(TAB_TEXT_SIZE))
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font_weight(if selected {
+                        gpui::FontWeight::MEDIUM
+                    } else {
+                        gpui::FontWeight::NORMAL
+                    })
                     .child(title),
             )
             .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
             .child(
                 div()
                     .id("close-review-tab")
+                    .group("review-close")
                     .size(px(20.0))
                     .flex_none()
                     .rounded(px(5.0))
@@ -429,7 +434,16 @@ impl WorkspaceView {
                         cx.stop_propagation();
                         this.close_review(window, cx);
                     }))
-                    .child(svg().path("chrome-icons/close.svg").size(px(12.0))),
+                    .child(
+                        svg()
+                            .path("chrome-icons/close.svg")
+                            .size(px(12.0))
+                            .flex_none()
+                            .text_color(colors().muted)
+                            .group_hover("review-close", |icon| {
+                                icon.text_color(colors().foreground)
+                            }),
+                    ),
             )
             .into_any_element()
     }

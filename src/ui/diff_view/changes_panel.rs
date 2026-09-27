@@ -450,7 +450,17 @@ impl DiffView {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.run_commit(CommitAction::Commit, cx)
                             }))
-                            .child(svg().path("chrome-icons/check.svg").size(px(14.0)))
+                            .child(
+                                svg()
+                                    .path("chrome-icons/check.svg")
+                                    .size(px(14.0))
+                                    .flex_none()
+                                    .text_color(if can_commit {
+                                        colors().background
+                                    } else {
+                                        colors().muted
+                                    }),
+                            )
                             .child(busy.unwrap_or("Commit")),
                     )
                     .child(
@@ -474,7 +484,17 @@ impl DiffView {
                                 cx.stop_propagation();
                                 this.toggle_panel_menu(PanelMenu::Commit, cx);
                             }))
-                            .child(svg().path("chrome-icons/chevron-down.svg").size(px(12.0))),
+                            .child(
+                                svg()
+                                    .path("chrome-icons/chevron-down.svg")
+                                    .size(px(12.0))
+                                    .flex_none()
+                                    .text_color(if can_commit {
+                                        colors().background
+                                    } else {
+                                        colors().muted
+                                    }),
+                            ),
                     ),
             )
             .child(

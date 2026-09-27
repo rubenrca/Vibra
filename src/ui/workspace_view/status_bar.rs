@@ -115,7 +115,13 @@ impl WorkspaceView {
                         .text_color(colors().foreground)
                 })
         };
-        let icon = |path: &'static str| svg().path(path).size(px(14.0)).flex_none();
+        let icon = |path: &'static str| {
+            svg()
+                .path(path)
+                .size(px(14.0))
+                .flex_none()
+                .text_color(colors().muted)
+        };
         let dot = |color| div().size(px(6.0)).flex_none().rounded_full().bg(color);
         let separator = || div().text_color(colors().subtle).child("·");
 
@@ -127,10 +133,8 @@ impl WorkspaceView {
             .items_center()
             .px(px(6.0))
             .gap(px(2.0))
-            .border_t_1()
-            .border_color(colors().border_subtle)
             .bg(surface(colors().titlebar))
-            .text_size(px(12.0))
+            .text_size(px(11.0))
             .text_color(colors().muted)
             .when_some(self.current_branch_summary().cloned(), |bar, summary| {
                 bar.child(
@@ -159,7 +163,8 @@ impl WorkspaceView {
                     }))
                     .map(|item| {
                         if counts == AgentCounts::default() {
-                            item.child(dot(colors().subtle))
+                            item.text_color(colors().subtle)
+                                .child(dot(colors().subtle))
                                 .child("Sin agentes activos")
                         } else {
                             let groups = [

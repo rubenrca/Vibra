@@ -1036,16 +1036,20 @@ impl WorkspaceView {
         let width = full_width * self.left_sidebar_progress;
         let show_handle = self.left_sidebar_progress > 0.99;
         // The native backdrop is tinted once underneath this panel.
-        clipped_width_panel(width, full_width, colors().sidebar, content).when(
-            show_handle,
-            |sidebar| {
-                sidebar.child(self.sidebar_resize_handle(
-                    "resize-left-sidebar",
-                    SidebarResizeEdge::Left,
-                    cx,
-                ))
-            },
+        clipped_width_panel(
+            width,
+            full_width,
+            SidebarResizeEdge::Left,
+            colors().sidebar,
+            content,
         )
+        .when(show_handle, |sidebar| {
+            sidebar.child(self.sidebar_resize_handle(
+                "resize-left-sidebar",
+                SidebarResizeEdge::Left,
+                cx,
+            ))
+        })
     }
 
     fn right_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1077,16 +1081,20 @@ impl WorkspaceView {
             .flex_col()
             .child(self.utility_mode_tabs(cx))
             .child(content);
-        clipped_width_panel(width, full_width, colors().sidebar, content).when(
-            show_handle,
-            |sidebar| {
-                sidebar.child(self.sidebar_resize_handle(
-                    "resize-right-sidebar",
-                    SidebarResizeEdge::Right,
-                    cx,
-                ))
-            },
+        clipped_width_panel(
+            width,
+            full_width,
+            SidebarResizeEdge::Right,
+            colors().sidebar,
+            content,
         )
+        .when(show_handle, |sidebar| {
+            sidebar.child(self.sidebar_resize_handle(
+                "resize-right-sidebar",
+                SidebarResizeEdge::Right,
+                cx,
+            ))
+        })
     }
 
     fn error_banner(&self) -> Option<impl IntoElement> {

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Restore missing Search, pane and toolbar icons by assigning SVG colors explicitly, and render sidebar shortcuts as readable macOS keycaps.
+
+- Refine Midnight with near-black surfaces and neutral light tones, simplify workspace separators and navigation styling, and add directional show/hide icons and tooltips for both sidebars while preserving Vibra's project navigation.
+
 - Keep pane focus visible through zoom and full-tab reviews; restore the workspace from numbered tab shortcuts and show ⌘9 only on the actual last tab.
 - Clear stale Explorer rows on project changes, cancel dismissed quick-open searches, and isolate review delivery acknowledgements so late results cannot unlock another send.
 - Preserve manual pane names and automation labels across agent restarts; remove obsolete CLI alias restrictions from display names.
