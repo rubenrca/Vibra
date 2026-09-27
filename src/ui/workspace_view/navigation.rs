@@ -10,7 +10,7 @@ use crate::ui::theme::{colors, surface, surface_tint};
 use super::chrome::SIDEBAR_ROW_INSET;
 
 use super::{
-    ContextMenuKind, PaletteMode, ProjectDrag, RightSidebarMode, WorkspaceSection, WorkspaceView,
+    ContextMenuKind, PaletteMode, RightSidebarMode, WorkspaceSection, WorkspaceView,
     sidebar_tooltip,
 };
 
@@ -234,6 +234,7 @@ impl WorkspaceView {
             .child(
                 div()
                     .id("global-project-list")
+                    .map(|list| self.project_list_drop_area(list, cx))
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
@@ -253,11 +254,7 @@ impl WorkspaceView {
                     )
                     .when(!pinned.is_empty(), |list| {
                         list.child(section_label("Pinned"))
-                            .children(
-                                pinned
-                                    .into_iter()
-                                    .map(|(id, name)| self.project_sidebar_header(id, name, cx)),
-                            )
+                            .children(self.project_rows(pinned, cx))
                     })
                     .child(
                         section_label("Projects").child(
@@ -290,29 +287,9 @@ impl WorkspaceView {
                                 ),
                         ),
                     )
-                    .children(
-                        projects
-                            .into_iter()
-                            .map(|(id, name)| self.project_sidebar_header(id, name, cx)),
-                    )
+                    .children(self.project_rows(projects, cx))
                     .when(self.snapshot.projects.len() > 1, |list| {
-                        list.child(
-                            div()
-                                .id("global-project-drop-end")
-                                .h(px(28.0))
-                                .w_full()
-                                .can_drop(|value, _, _| {
-                                    value.downcast_ref::<ProjectDrag>().is_some()
-                                })
-                                .drag_over::<ProjectDrag>(|style, _, _, _| {
-                                    style.border_t_2().border_color(colors().accent)
-                                })
-                                .on_drop(cx.listener(|this, drag: &ProjectDrag, _, cx| {
-                                    if this.snapshot.move_project(drag.project_id, None) {
-                                        this.persist(cx);
-                                    }
-                                })),
-                        )
+                        list.child(self.project_list_end_target(cx))
                     })
                     .when(!has_projects, |list| {
                         list.child(

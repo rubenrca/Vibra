@@ -1386,6 +1386,49 @@ fn changing_project_hides_old_branch_and_ignores_late_results(cx: &mut gpui::Tes
 }
 
 #[gpui::test]
+fn project_diff_counts_follow_folders_and_ignore_removed_projects(cx: &mut gpui::TestAppContext) {
+    use super::projects::ProjectDiffStats;
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "project-diff-counts");
+    let first = snapshot.selected_project_id.unwrap();
+    let first_stats = ProjectDiffStats {
+        additions: 12,
+        deletions: 3,
+    };
+    let second_stats = ProjectDiffStats {
+        additions: 4,
+        deletions: 8,
+    };
+    window
+        .update(cx, |view, window, cx| {
+            let second_root = root.join("second");
+            let second = view.snapshot.add_project(&second_root);
+            view.apply_project_diff_stats(root.clone(), Some(first_stats), cx);
+            view.apply_project_diff_stats(second_root.clone(), Some(second_stats), cx);
+            assert_eq!(view.project_diff_stats(first), Some(first_stats));
+            assert_eq!(view.project_diff_stats(second), Some(second_stats));
+
+            let replacement_root = root.join("replacement");
+            view.snapshot
+                .set_project_directory(first, &replacement_root);
+            view.apply_project_diff_stats(root.clone(), Some(second_stats), cx);
+            assert_eq!(view.project_diff_stats(first), None);
+            view.apply_project_diff_stats(replacement_root.clone(), Some(first_stats), cx);
+            assert_eq!(view.project_diff_stats(first), Some(first_stats));
+            // A failed refresh or a folder that is no longer a repo clears its count.
+            view.apply_project_diff_stats(replacement_root, None, cx);
+            assert_eq!(view.project_diff_stats(first), None);
+            assert_eq!(view.project_diff_stats(second), Some(second_stats));
+
+            view.snapshot.remove_project(second);
+            view.apply_project_diff_stats(second_root, Some(first_stats), cx);
+            assert_eq!(view.project_diff_stats(second), None);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn workspace_panel_navigation_leaves_library_editors(cx: &mut gpui::TestAppContext) {
     let (root, _, _, window) = open_recording_workspace(cx, "section-cleanup");
     window

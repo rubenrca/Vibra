@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, Context, MouseButton, MouseDownEvent, PathPromptOptions, PromptLevel, SharedString,
-    Window, div, prelude::*, px, svg,
+    AnyElement, Bounds, Context, DragMoveEvent, MouseButton, MouseDownEvent, PathPromptOptions,
+    Pixels, Point, PromptLevel, SharedString, Window, div, linear_color_stop, linear_gradient,
+    prelude::*, px, svg,
 };
 use uuid::Uuid;
 
@@ -15,11 +16,55 @@ use crate::ui::theme::{colors, surface_tint};
 
 use super::chrome::sidebar_row_width;
 use super::{
-    ContextMenuKind, ProjectDrag, RightSidebarMode, SIDEBAR_CONTROL_SIZE, SIDEBAR_ROW_END_PADDING,
-    WorkspaceSection, WorkspaceView, sidebar_tooltip,
+    ContextMenuKind, DragGhost, ProjectDrag, ReorderDrag, ReorderSlot, RightSidebarMode,
+    SIDEBAR_CONTROL_SIZE, WorkspaceSection, WorkspaceView, sidebar_tooltip,
 };
 
+/// A project row and the space below it.
+const PROJECT_ROW_PITCH: f32 = 34.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ProjectDiffStats {
+    pub additions: usize,
+    pub deletions: usize,
+}
+
 impl WorkspaceView {
+    pub(super) fn apply_project_diff_stats(
+        &mut self,
+        root: PathBuf,
+        stats: Option<ProjectDiffStats>,
+        cx: &mut Context<Self>,
+    ) {
+        // A project can be removed or linked to another folder during the poll.
+        if !self.snapshot.projects.iter().any(|project| {
+            project
+                .directory()
+                .is_some_and(|path| Path::new(path) == root)
+        }) {
+            return;
+        }
+        if self.project_diff_stats.get(&root).copied() == stats {
+            return;
+        }
+        if let Some(stats) = stats {
+            self.project_diff_stats.insert(root, stats);
+        } else {
+            self.project_diff_stats.remove(&root);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn project_diff_stats(&self, id: Uuid) -> Option<ProjectDiffStats> {
+        let root = self
+            .snapshot
+            .projects
+            .iter()
+            .find(|project| project.id == id)?
+            .directory()?;
+        self.project_diff_stats.get(Path::new(root)).copied()
+    }
+
     pub(super) fn add_project(
         &mut self,
         _: &AddProject,
@@ -219,28 +264,32 @@ impl WorkspaceView {
             && self.workspace_section == WorkspaceSection::Workspace;
         let project_padding = 6.0;
         let icon_slot_size = 20.0;
-        // Folder icon, two 10 px gaps, and the status/new-tab slot.
-        let label_width = (row_width
-            - project_padding
-            - SIDEBAR_ROW_END_PADDING
-            - icon_slot_size
-            - 20.0
-            - controls_width)
-            .max(48.0);
+        let diff_stats = self
+            .project_diff_stats(id)
+            .filter(|stats| stats.additions > 0 || stats.deletions > 0);
+        let hover_background = if selected {
+            colors().selection
+        } else {
+            colors().hover
+        };
         let color = super::navigation::project_color(id);
         let activity = self.project_agent_activity(id);
-        let drag = ProjectDrag {
-            project_id: id,
-            name: name.clone(),
+        let drag = ProjectDrag { project_id: id };
+        let ghost = {
+            let name = name.clone();
+            DragGhost::new(7.0, colors().sidebar, move || {
+                project_drag_ghost(color, name.clone(), project_padding, icon_slot_size)
+            })
         };
         div()
             .id(SharedString::from(format!("project-{id}")))
             .group("global-project")
+            .relative()
             .w(px(row_width))
             .mb(px(2.0))
             .h(px(32.0))
             .pl(px(project_padding))
-            .pr(px(SIDEBAR_ROW_END_PADDING))
+            .pr(px(project_padding))
             .rounded(px(7.0))
             .flex()
             .items_center()
@@ -255,7 +304,13 @@ impl WorkspaceView {
                     row.bg(surface_tint(colors().hover, colors().sidebar))
                 }
             })
-            .cursor_pointer()
+            .cursor_move()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, _| {
+                    this.reorder_drag = Some(ReorderDrag::Project(id));
+                }),
+            )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.select_project(id, window, cx);
                 cx.stop_propagation();
@@ -272,20 +327,14 @@ impl WorkspaceView {
                     cx.stop_propagation();
                 }),
             )
-            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
-            .can_drop(move |value, _, _| {
-                value
-                    .downcast_ref::<ProjectDrag>()
-                    .is_some_and(|drag| drag.project_id != id)
-            })
-            .drag_over::<ProjectDrag>(|style, _, _, _| {
-                style.border_t_2().border_color(colors().accent)
-            })
-            .on_drop(cx.listener(move |this, drag: &ProjectDrag, _, cx| {
-                if this.snapshot.move_project(drag.project_id, Some(id)) {
-                    this.persist(cx);
-                }
-            }))
+            .child(ghost.measure())
+            .on_drag(drag, move |_, _, _, cx| ghost.preview(cx))
+            .on_drag_move(
+                cx.listener(move |this, event: &DragMoveEvent<ProjectDrag>, _, cx| {
+                    let source = event.drag(cx).project_id;
+                    this.hover_project(source, id, event.bounds, event.event.position, cx);
+                }),
+            )
             .child(
                 div()
                     .size(px(icon_slot_size))
@@ -302,8 +351,8 @@ impl WorkspaceView {
             )
             .child(
                 div()
-                    .w(px(label_width))
-                    .flex_none()
+                    .flex_1()
+                    .min_w(px(0.0))
                     .truncate()
                     .text_size(px(13.0))
                     .line_height(px(18.0))
@@ -324,21 +373,29 @@ impl WorkspaceView {
             )
             .child(
                 div()
-                    .w(px(controls_width))
+                    .min_w(px(controls_width))
                     .h(px(SIDEBAR_CONTROL_SIZE))
                     .flex_none()
                     .relative()
-                    // Agent activity, replaced by the new-tab button on hover.
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.0))
+                    // Keep activity beside the counts; only replace it when there is no diff.
                     .when_some(activity, |slot, (dot, count)| {
                         slot.child(
                             div()
-                                .absolute()
-                                .inset_0()
+                                .min_w(px(controls_width))
+                                .h_full()
+                                .flex_none()
                                 .flex()
                                 .items_center()
-                                .justify_end()
+                                .justify_center()
                                 .gap(px(3.0))
-                                .group_hover("global-project", |style| style.opacity(0.0))
+                                .when(diff_stats.is_none(), |activity| {
+                                    activity
+                                        .group_hover("global-project", |style| style.opacity(0.0))
+                                })
                                 .when(count > 1, |slot| {
                                     slot.child(
                                         div()
@@ -350,34 +407,234 @@ impl WorkspaceView {
                                 .child(div().size(px(7.0)).rounded_full().bg(dot)),
                         )
                     })
+                    .when_some(diff_stats, |slot, stats| {
+                        slot.child(
+                            div()
+                                .id(SharedString::from(format!("project-diff-{id}")))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .text_size(px(10.5))
+                                .tooltip(move |_, cx| {
+                                    sidebar_tooltip(
+                                        format!(
+                                            "Uncommitted changes: {} lines added, {} lines deleted",
+                                            stats.additions, stats.deletions
+                                        ),
+                                        cx,
+                                    )
+                                })
+                                .when(stats.additions > 0, |counts| {
+                                    counts.child(
+                                        div()
+                                            .text_color(colors().success)
+                                            .child(format!("+{}", stats.additions)),
+                                    )
+                                })
+                                .when(stats.deletions > 0, |counts| {
+                                    counts.child(
+                                        div()
+                                            .text_color(colors().danger)
+                                            .child(format!("−{}", stats.deletions)),
+                                    )
+                                }),
+                        )
+                    })
+                    // Overlay the action so hovering never shifts the name or counts.
                     .child(
                         div()
-                            .id(SharedString::from(format!("project-new-tab-{id}")))
                             .absolute()
-                            .inset_0()
-                            .tooltip(|_, cx| sidebar_tooltip("New tab · ⌘T", cx))
+                            .right(px(-project_padding))
+                            .top(px(-project_padding))
+                            .bottom(px(-project_padding))
+                            .w(px(controls_width + 24.0 + project_padding))
+                            .pr(px(project_padding))
+                            .rounded_r(px(7.0))
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .rounded(px(5.0))
-                            .cursor_pointer()
+                            .justify_end()
                             .opacity(0.0)
                             .group_hover("global-project", |style| style.opacity(1.0))
-                            .hover(|s| s.bg(colors().hover))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_project_tab(id, window, cx);
-                                cx.stop_propagation();
-                            }))
+                            .when(diff_stats.is_some(), |overlay| {
+                                overlay.bg(linear_gradient(
+                                    90.0,
+                                    linear_color_stop(hover_background, 0.0).opacity(0.0),
+                                    linear_color_stop(
+                                        hover_background,
+                                        24.0 / (controls_width + 24.0 + project_padding),
+                                    ),
+                                ))
+                            })
                             .child(
-                                svg()
-                                    .path("chrome-icons/plus.svg")
-                                    .size(px(12.0))
-                                    .text_color(colors().muted),
+                                div()
+                                    .id(SharedString::from(format!("project-new-tab-{id}")))
+                                    .size(px(controls_width))
+                                    .flex_none()
+                                    .tooltip(|_, cx| sidebar_tooltip("New tab · ⌘T", cx))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(5.0))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(colors().hover))
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_project_tab(id, window, cx);
+                                        cx.stop_propagation();
+                                    }))
+                                    .child(
+                                        svg()
+                                            .path("chrome-icons/plus.svg")
+                                            .size(px(12.0))
+                                            .text_color(colors().muted),
+                                    ),
                             ),
                     ),
             )
             .into_any_element()
+    }
+
+    /// One sidebar section, with a gap where a project dragged within it lands.
+    pub(super) fn project_rows(
+        &self,
+        projects: Vec<(Uuid, String)>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let order: Vec<_> = projects.iter().map(|(id, _)| *id).collect();
+        let source = match self.reorder_drag {
+            Some(ReorderDrag::Project(id)) if cx.has_active_drag() && order.contains(&id) => {
+                Some(id)
+            }
+            _ => None,
+        };
+        let landing = source.and(self.project_drop);
+        let slots = super::reorder_slots(&order, source, landing);
+        let section = order
+            .first()
+            .is_some_and(|id| self.settings.pinned_project_ids.contains(id));
+        let mut motion = self.project_motion.borrow_mut();
+        let motion = &mut motion[usize::from(section)];
+        motion.update(&slots, px(PROJECT_ROW_PITCH));
+        let mut projects = projects;
+        slots
+            .into_iter()
+            .map(|slot| match slot {
+                ReorderSlot::Item(id) => {
+                    let index = projects
+                        .iter()
+                        .position(|(project, _)| *project == id)
+                        .expect("project in section");
+                    let (_, name) = projects.swap_remove(index);
+                    super::slide_into_place(
+                        div()
+                            .relative()
+                            .child(self.project_sidebar_header(id, name, cx)),
+                        motion.slide(id),
+                        "project",
+                        true,
+                    )
+                }
+                ReorderSlot::Gap => super::reorder_gap()
+                    .w(px(sidebar_row_width(self.left_sidebar_width())))
+                    .h(px(32.0))
+                    .mb(px(2.0))
+                    .rounded(px(7.0))
+                    .into_any_element(),
+            })
+            .collect()
+    }
+
+    /// Projects in the same sidebar section as `project_id`, in order.
+    fn project_section_order(&self, project_id: Uuid) -> Vec<Uuid> {
+        let pinned = self.settings.pinned_project_ids.contains(&project_id);
+        self.snapshot
+            .projects
+            .iter()
+            .filter(|project| self.settings.pinned_project_ids.contains(&project.id) == pinned)
+            .map(|project| project.id)
+            .collect()
+    }
+
+    /// Crossing the middle of a row moves the gap past it, which slides it aside.
+    fn hover_project(
+        &mut self,
+        source: Uuid,
+        target: Uuid,
+        bounds: Bounds<Pixels>,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if source == target || !bounds.contains(&position) {
+            return;
+        }
+        let order = self.project_section_order(source);
+        if !order.contains(&target) {
+            return;
+        }
+        let y = f32::from(position.y - bounds.top()) / f32::from(bounds.size.height).max(1.0);
+        self.set_project_drop(
+            Some(super::landing_beside(&order, Some(source), target, y > 0.5)),
+            cx,
+        );
+    }
+
+    fn set_project_drop(&mut self, drop: Option<Option<Uuid>>, cx: &mut Context<Self>) {
+        if self.project_drop != drop {
+            self.project_drop = drop;
+            cx.notify();
+        }
+    }
+
+    /// The list accepts the drop and forgets the landing once the pointer
+    /// leaves it, so the dragged project returns to its place.
+    pub(super) fn project_list_drop_area<E: InteractiveElement>(
+        &self,
+        list: E,
+        cx: &mut Context<Self>,
+    ) -> E {
+        list.can_drop(|value, _, _| value.downcast_ref::<ProjectDrag>().is_some())
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<ProjectDrag>, _, cx| {
+                    if !event.bounds.contains(&event.event.position) {
+                        this.set_project_drop(None, cx);
+                    }
+                }),
+            )
+            .on_drop(cx.listener(|this, drag: &ProjectDrag, _, cx| {
+                if let Some(before) = this.project_drop.take() {
+                    this.drop_project(drag, before, cx);
+                }
+            }))
+    }
+
+    /// The space below the last project moves a dragged project to the end.
+    pub(super) fn project_list_end_target(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("global-project-drop-end")
+            .h(px(28.0))
+            .w_full()
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<ProjectDrag>, _, cx| {
+                    let source = event.drag(cx).project_id;
+                    if event.bounds.contains(&event.event.position)
+                        && !this.settings.pinned_project_ids.contains(&source)
+                    {
+                        this.set_project_drop(Some(None), cx);
+                    }
+                }),
+            )
+            .into_any_element()
+    }
+
+    fn drop_project(&mut self, drag: &ProjectDrag, before: Option<Uuid>, cx: &mut Context<Self>) {
+        self.reorder_drag = None;
+        if self.snapshot.move_project(drag.project_id, before) {
+            self.persist(cx);
+        }
+        cx.notify();
     }
 
     pub(super) fn empty_project_content(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -436,4 +693,47 @@ impl WorkspaceView {
             )
             .into_any_element()
     }
+}
+
+/// The row as it looks while selected, without controls that cannot be used mid-drag.
+fn project_drag_ghost(
+    color: gpui::Rgba,
+    name: String,
+    padding: f32,
+    icon_slot_size: f32,
+) -> AnyElement {
+    div()
+        .h(px(32.0))
+        .px(px(padding))
+        .rounded(px(7.0))
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .bg(surface_tint(colors().selection, colors().sidebar))
+        .child(
+            div()
+                .size(px(icon_slot_size))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path("chrome-icons/folder.svg")
+                        .size(px(14.0))
+                        .text_color(color),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_size(px(13.0))
+                .line_height(px(18.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(colors().foreground)
+                .child(name),
+        )
+        .into_any_element()
 }

@@ -1,117 +1,190 @@
 //! Stable drop targets shared by terminal tabs, review tabs and split panes.
 
 use gpui::{
-    AnyElement, Context, DragMoveEvent, SharedString, Window, div, prelude::*, px, relative, svg,
+    AnyElement, App, Bounds, Context, DragMoveEvent, MouseButton, Pixels, Point, SharedString,
+    Window, div, prelude::*, px, relative, svg,
 };
 use uuid::Uuid;
 
 use crate::domain::workspace::{PaneSplitDirection, WorkspaceTabId};
 use crate::ui::theme::colors;
 
-use super::{PaneDrag, ReorderDrag, TabDrag, WorkspaceView};
+use super::panes::{TAB_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS};
+use super::{PaneDrag, ReorderDrag, ReorderSlot, TabDrag, TabStripDrop, WorkspaceView};
 
 impl WorkspaceView {
-    /// Edges insert into the strip, while the middle docks a tab as a split.
-    /// A pane dropped anywhere in the strip becomes an independent tab.
-    pub(super) fn tab_drop_targets(
+    /// The strip as it will look after the drop. The dragged tab leaves a gap
+    /// that follows the pointer, and the other tabs slide around it.
+    pub(super) fn tab_strip_slots(&self, cx: &App) -> Vec<ReorderSlot<WorkspaceTabId>> {
+        let order = self.visible_tab_order(cx);
+        if !cx.has_active_drag() {
+            return order.into_iter().map(ReorderSlot::Item).collect();
+        }
+        let source = self.strip_drag_source(&order);
+        let landing = match self.reorder_drag {
+            Some(ReorderDrag::Tab(_) | ReorderDrag::Pane(_)) => {
+                self.tab_strip_drop.map(|drop| drop.before)
+            }
+            _ => None,
+        };
+        super::reorder_slots(&order, source, landing)
+    }
+
+    /// The dragged tab when it already has a place in the strip.
+    fn strip_drag_source(&self, order: &[WorkspaceTabId]) -> Option<WorkspaceTabId> {
+        match self.reorder_drag {
+            Some(ReorderDrag::Tab(source)) if order.contains(&source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Tracks the pointer over one tab while dragging. The outer quarters move
+    /// the gap beside the tab, which slides it aside; the middle docks into it.
+    pub(super) fn tab_drag_zone(
         &self,
         target: WorkspaceTabId,
-        after: Option<WorkspaceTabId>,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let detaching = matches!(self.reorder_drag, Some(ReorderDrag::Pane(_)))
-            || (self.reorder_drag == Some(ReorderDrag::Tab(WorkspaceTabId::Review))
-                && self.review_dock_owner().is_some());
-        let accepts_drag = self.reorder_drag != Some(ReorderDrag::Tab(target)) || detaching;
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .children((0..3).map(|zone| {
-                let before = if zone == 2 { after } else { Some(target) };
-                div()
-                    .id(SharedString::from(format!("tab-drop-{target:?}-{zone}")))
-                    .group("tab-drop-zone")
-                    .relative()
-                    .h_full()
-                    .w(relative(if zone == 1 { 0.5 } else { 0.25 }))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .can_drop(move |value, _, _| {
-                        value.downcast_ref::<PaneDrag>().is_some()
-                            || value
-                                .downcast_ref::<TabDrag>()
-                                .is_some_and(|drag| drag.tab_id != target || drag.from_pane)
-                    })
-                    .drag_over::<TabDrag>(move |style, drag, _, _| {
-                        let style = style.border_color(colors().accent);
-                        match zone {
-                            0 => style.border_l_2(),
-                            2 => style.border_r_2(),
-                            _ if drag.from_pane => style.border_l_2(),
-                            _ => style
-                                .rounded(px(5.0))
-                                .border_1()
-                                .bg(gpui::Hsla::from(colors().accent).opacity(0.14)),
-                        }
-                    })
-                    .drag_over::<PaneDrag>(move |style, _, _, _| {
-                        let style = style.border_color(colors().accent);
-                        if zone == 2 {
-                            style.border_r_2()
-                        } else {
-                            style.border_l_2()
-                        }
-                    })
-                    .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
-                        if zone == 1 && !drag.from_pane {
-                            this.dock_tab(drag.tab_id, target, window, cx);
-                        } else {
-                            this.drop_tab_in_strip(drag, before, window, cx);
-                        }
-                    }))
-                    .on_drop(cx.listener(move |this, drag: &PaneDrag, window, cx| {
-                        this.detach_pane(drag.session_id, before, window, cx);
-                    }))
-                    .when(zone == 1 && accepts_drag, |zone| {
-                        zone.child(
-                            div()
-                                .min_w(px(0.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(4.0))
-                                .px(px(5.0))
-                                .py(px(3.0))
-                                .rounded(px(4.0))
-                                .bg(colors().elevated)
-                                .text_color(colors().accent)
-                                .opacity(0.0)
-                                .group_drag_over::<TabDrag>("tab-drop-zone", |style| {
-                                    style.opacity(1.0)
-                                })
-                                .group_drag_over::<PaneDrag>("tab-drop-zone", |style| {
-                                    style.opacity(1.0)
-                                })
-                                .child(
-                                    svg()
-                                        .path(if detaching {
-                                            "chrome-icons/plus.svg"
-                                        } else {
-                                            "chrome-icons/split-view.svg"
-                                        })
-                                        .size(px(12.0))
-                                        .flex_none(),
-                                )
-                                .child(div().truncate().text_size(px(10.0)).child(if detaching {
-                                    "Tab"
-                                } else {
-                                    "Split"
-                                })),
-                        )
-                    })
+    ) -> Option<AnyElement> {
+        if !cx.has_active_drag() {
+            return None;
+        }
+        let merging = self
+            .tab_strip_drop
+            .is_some_and(|drop| drop.merge == Some(target));
+        Some(
+            div()
+                .id(SharedString::from(format!("tab-drop-{target:?}")))
+                .absolute()
+                .inset_0()
+                .on_drag_move(
+                    cx.listener(move |this, event: &DragMoveEvent<TabDrag>, _, cx| {
+                        let drag = event.drag(cx);
+                        let can_merge = !drag.from_pane && drag.tab_id != target;
+                        this.hover_tab(target, event.bounds, event.event.position, can_merge, cx);
+                    }),
+                )
+                .on_drag_move(
+                    cx.listener(move |this, event: &DragMoveEvent<PaneDrag>, _, cx| {
+                        this.hover_tab(target, event.bounds, event.event.position, false, cx);
+                    }),
+                )
+                .when(merging, |zone| zone.child(merge_preview()))
+                .into_any_element(),
+        )
+    }
+
+    fn hover_tab(
+        &mut self,
+        target: WorkspaceTabId,
+        bounds: Bounds<Pixels>,
+        position: Point<Pixels>,
+        can_merge: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !bounds.contains(&position) {
+            return;
+        }
+        let x = f32::from(position.x - bounds.left()) / f32::from(bounds.size.width).max(1.0);
+        let order = self.visible_tab_order(cx);
+        let source = self.strip_drag_source(&order);
+        let next = if can_merge && (0.25..=0.75).contains(&x) {
+            // Keep the gap where it is so the strip does not shift under the pointer.
+            let before = self
+                .tab_strip_drop
+                .map(|drop| drop.before)
+                .unwrap_or_else(|| {
+                    source.and_then(|source| super::landing_beside(&order, None, source, true))
+                });
+            TabStripDrop {
+                before,
+                merge: Some(target),
+            }
+        } else {
+            TabStripDrop {
+                before: super::landing_beside(&order, source, target, x > 0.5),
+                merge: None,
+            }
+        };
+        self.set_tab_strip_drop(Some(next), cx);
+    }
+
+    fn set_tab_strip_drop(&mut self, drop: Option<TabStripDrop>, cx: &mut Context<Self>) {
+        if self.tab_strip_drop != drop {
+            self.tab_strip_drop = drop;
+            cx.notify();
+        }
+    }
+
+    /// Where the dragged tab will land. Hovering it keeps the current landing.
+    pub(super) fn tab_strip_gap(&self, cx: &mut Context<Self>) -> AnyElement {
+        super::reorder_gap()
+            .id("tab-drop-gap")
+            .h(px(TAB_HEIGHT))
+            .min_w(px(0.0))
+            .max_w(px(TAB_MAX_WIDTH))
+            .flex_1()
+            .rounded(px(TAB_RADIUS))
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<TabDrag>, _, cx| {
+                this.hover_tab_gap(event.bounds, event.event.position, cx);
+            }))
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<PaneDrag>, _, cx| {
+                this.hover_tab_gap(event.bounds, event.event.position, cx);
             }))
             .into_any_element()
+    }
+
+    fn hover_tab_gap(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if bounds.contains(&position) {
+            let drop = self.tab_strip_drop.map(|drop| TabStripDrop {
+                merge: None,
+                ..drop
+            });
+            self.set_tab_strip_drop(drop, cx);
+        }
+    }
+
+    /// The whole strip accepts the drop and forgets the landing once the
+    /// pointer leaves it, so the dragged tab returns to its place.
+    pub(super) fn tab_strip_drop_area<E: InteractiveElement>(
+        &self,
+        strip: E,
+        cx: &mut Context<Self>,
+    ) -> E {
+        strip
+            .can_drop(|value, _, _| {
+                value.downcast_ref::<TabDrag>().is_some()
+                    || value.downcast_ref::<PaneDrag>().is_some()
+            })
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<TabDrag>, _, cx| {
+                if !event.bounds.contains(&event.event.position) {
+                    this.set_tab_strip_drop(None, cx);
+                }
+            }))
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<PaneDrag>, _, cx| {
+                if !event.bounds.contains(&event.event.position) {
+                    this.set_tab_strip_drop(None, cx);
+                }
+            }))
+            .on_drop(cx.listener(
+                |this, drag: &TabDrag, window, cx| match this.tab_strip_drop.take() {
+                    Some(TabStripDrop {
+                        merge: Some(target),
+                        ..
+                    }) => this.dock_tab(drag.tab_id, target, window, cx),
+                    Some(drop) => this.drop_tab_in_strip(drag, drop.before, window, cx),
+                    None => {}
+                },
+            ))
+            .on_drop(cx.listener(|this, drag: &PaneDrag, window, cx| {
+                if let Some(drop) = this.tab_strip_drop.take() {
+                    this.detach_pane(drag.session_id, drop.before, window, cx);
+                }
+            }))
     }
 
     pub(super) fn drop_tab_in_strip(
@@ -338,27 +411,93 @@ impl WorkspaceView {
     }
 
     pub(super) fn tab_strip_end_target(&self, cx: &mut Context<Self>) -> AnyElement {
+        let dragging = cx.has_active_drag()
+            && matches!(
+                self.reorder_drag,
+                Some(ReorderDrag::Tab(_) | ReorderDrag::Pane(_))
+            );
         div()
             .id("tab-drop-end")
             .h_full()
-            .min_w(px(24.0))
+            .min_w(px(54.0))
             .flex_1()
-            .can_drop(|value, _, _| {
-                value.downcast_ref::<TabDrag>().is_some()
-                    || value.downcast_ref::<PaneDrag>().is_some()
+            .flex()
+            .items_center()
+            .pl(px(4.0))
+            .when(!dragging, |zone| {
+                zone.child(
+                    super::titlebar::titlebar_button("tab-bar-new-tab", true)
+                        .tooltip(|_, cx| super::sidebar_tooltip("New tab · ⌘T", cx))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_terminal_tab_in_project(window, cx);
+                        }))
+                        .child(super::titlebar::titlebar_icon("chrome-icons/plus.svg")),
+                )
             })
-            .drag_over::<TabDrag>(|style, _, _, _| style.border_l_2().border_color(colors().accent))
-            .drag_over::<PaneDrag>(|style, _, _, _| {
-                style.border_l_2().border_color(colors().accent)
+            .when(dragging, |zone| {
+                zone.on_drag_move(cx.listener(|this, event: &DragMoveEvent<TabDrag>, _, cx| {
+                    this.hover_tab_strip_end(event.bounds, event.event.position, cx);
+                }))
+                .on_drag_move(cx.listener(
+                    |this, event: &DragMoveEvent<PaneDrag>, _, cx| {
+                        this.hover_tab_strip_end(event.bounds, event.event.position, cx);
+                    },
+                ))
             })
-            .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
-                this.drop_tab_in_strip(drag, None, window, cx)
-            }))
-            .on_drop(cx.listener(|this, drag: &PaneDrag, window, cx| {
-                this.detach_pane(drag.session_id, None, window, cx)
-            }))
             .into_any_element()
     }
+
+    fn hover_tab_strip_end(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if bounds.contains(&position) {
+            self.set_tab_strip_drop(
+                Some(TabStripDrop {
+                    before: None,
+                    merge: None,
+                }),
+                cx,
+            );
+        }
+    }
+}
+
+/// Covers a tab that the dragged one will dock into as a split.
+fn merge_preview() -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(TAB_RADIUS))
+        .border_1()
+        .border_color(colors().accent)
+        .bg(gpui::Hsla::from(colors().accent).opacity(0.14))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .px(px(6.0))
+                .py(px(3.0))
+                .rounded(px(5.0))
+                .bg(colors().elevated)
+                .text_size(px(11.0))
+                .text_color(colors().accent)
+                .child(
+                    svg()
+                        .path("chrome-icons/split-view.svg")
+                        .size(px(12.0))
+                        .flex_none(),
+                )
+                .child("Split"),
+        )
+        .into_any_element()
 }
 
 fn split_drop_preview(direction: PaneSplitDirection) -> AnyElement {

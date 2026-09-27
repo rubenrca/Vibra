@@ -14,7 +14,6 @@ pub(crate) const PANEL_BORDER_WIDTH: f32 = 1.0;
 // Keep project rows aligned with the global navigation.
 /// Horizontal inset of sidebar rows inside the panel border.
 pub(crate) const SIDEBAR_ROW_INSET: f32 = 10.0;
-pub(crate) const SIDEBAR_ROW_END_PADDING: f32 = 2.0;
 pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
 
 pub(crate) fn sidebar_row_width(panel_width: f32) -> f32 {

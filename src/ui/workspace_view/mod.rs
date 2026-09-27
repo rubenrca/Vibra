@@ -35,8 +35,10 @@ pub(crate) use files::{file_tree_icon, file_tree_icon_color};
 use persistence::{FinishError, PersistenceQueue};
 use settings::SettingsPage;
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -196,6 +198,7 @@ pub struct WorkspaceView {
     file_port: Arc<dyn FileSystemPort>,
     git_port: Arc<dyn GitPort>,
     branch_summary: Option<(PathBuf, crate::ports::git::GitBranchSummary)>,
+    project_diff_stats: HashMap<PathBuf, projects::ProjectDiffStats>,
     _status_task: Option<Task<()>>,
     usage: usage::UsageState,
     diff_view: Entity<DiffView>,
@@ -229,6 +232,14 @@ pub struct WorkspaceView {
     review_split_direction: PaneSplitDirection,
     review_docked_tab_id: Option<Uuid>,
     pane_drop_preview: Option<(Uuid, PaneSplitDirection)>,
+    tab_strip_drop: Option<TabStripDrop>,
+    tab_motion: SlotMotion<crate::domain::workspace::WorkspaceTabId>,
+    /// Width of a tab in the strip, which is the distance a reordered tab slides.
+    tab_width: Rc<Cell<gpui::Pixels>>,
+    /// Pinned and unpinned sections slide independently.
+    project_motion: RefCell<[SlotMotion<Uuid>; 2]>,
+    /// The project a dragged one lands before; `Some(None)` is the end.
+    project_drop: Option<Option<Uuid>>,
     navigation: tabs::Navigation,
     /// Agent and automation events, newest last; lives only while the app runs.
     inbox: Inbox,
@@ -555,6 +566,7 @@ impl WorkspaceView {
             file_port,
             git_port,
             branch_summary: None,
+            project_diff_stats: HashMap::new(),
             _status_task: None,
             usage: usage::UsageState::default(),
             diff_view,
@@ -587,6 +599,11 @@ impl WorkspaceView {
             review_split_direction: PaneSplitDirection::Right,
             review_docked_tab_id: None,
             pane_drop_preview: None,
+            tab_strip_drop: None,
+            tab_motion: SlotMotion::default(),
+            tab_width: Rc::new(Cell::new(px(0.0))),
+            project_motion: RefCell::new([SlotMotion::default(), SlotMotion::default()]),
+            project_drop: None,
             navigation: tabs::Navigation::default(),
             inbox: Inbox::default(),
             work_inbox: work_inbox::WorkInbox::default(),

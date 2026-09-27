@@ -10,6 +10,18 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.to_ascii_lowercase();
+        if matches!(key.as_str(), "escape" | "esc")
+            && self.reorder_drag.is_some()
+            && cx.stop_active_drag(window)
+        {
+            self.reorder_drag = None;
+            self.pane_drop_preview = None;
+            self.tab_strip_drop = None;
+            self.project_drop = None;
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         if self.usage.open
             && !self.settings_open
             && self.palette_mode.is_none()

@@ -11,9 +11,11 @@ use crate::infrastructure::settings::{MAX_REVIEW_SPLIT, MIN_REVIEW_SPLIT};
 use crate::ui::theme::{colors, surface_tint};
 use crate::{GoToTab, NavigateBack, NavigateForward};
 
-use super::panes::{TAB_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS, TAB_TEXT_SIZE, tab_shortcut};
+use super::panes::{
+    TAB_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS, TAB_TEXT_SIZE, tab_drag_ghost, tab_shortcut,
+};
 use super::titlebar::{TITLEBAR_BUTTON_GAP, titlebar_button, titlebar_icon};
-use super::{ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView, sidebar_tooltip};
+use super::{DragGhost, ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const MAX_NAVIGATION_HISTORY: usize = 50;
 
@@ -389,7 +391,6 @@ impl WorkspaceView {
         &self,
         index: usize,
         count: usize,
-        after: Option<WorkspaceTabId>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let selected = self.review_visible(cx);
@@ -407,8 +408,19 @@ impl WorkspaceView {
             title: title.to_string(),
             from_pane: false,
         };
-        let is_source = self.reorder_drag == Some(ReorderDrag::Tab(WorkspaceTabId::Review))
-            && cx.has_active_drag();
+        let ghost = {
+            let title = title.to_string();
+            DragGhost::new(TAB_RADIUS, colors().terminal, move || {
+                tab_drag_ghost(
+                    svg()
+                        .path(icon)
+                        .size(px(15.0))
+                        .flex_none()
+                        .text_color(colors().foreground),
+                    title.clone(),
+                )
+            })
+        };
         div()
             .id("review-tab")
             .relative()
@@ -425,7 +437,6 @@ impl WorkspaceView {
             .overflow_hidden()
             .rounded(px(TAB_RADIUS))
             .cursor_move()
-            .when(is_source, |tab| tab.opacity(0.45))
             .bg(if selected {
                 surface_tint(colors().selection, colors().terminal)
             } else {
@@ -450,7 +461,8 @@ impl WorkspaceView {
                     cx.stop_propagation();
                 }),
             )
-            .on_drag(drag, |drag, offset, _, cx| drag.preview(offset, cx))
+            .child(ghost.measure())
+            .on_drag(drag, move |_, _, _, cx| ghost.preview(cx))
             .on_click(cx.listener(|this, _, window, cx| this.activate_review_tab(window, cx)))
             .child(
                 svg()
@@ -477,7 +489,7 @@ impl WorkspaceView {
                     .child(title),
             )
             .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
-            .child(self.tab_drop_targets(WorkspaceTabId::Review, after, cx))
+            .children(self.tab_drag_zone(WorkspaceTabId::Review, cx))
             .child(
                 div()
                     .id("close-review-tab")
@@ -508,7 +520,10 @@ impl WorkspaceView {
                             }),
                     ),
             )
-            .into_any_element()
+            .map(|tab| {
+                let slide = self.tab_motion.slide(WorkspaceTabId::Review);
+                super::slide_into_place(tab, slide, "tab", false)
+            })
     }
 
     /// Review can dock on any edge of the terminal area.

@@ -22,29 +22,66 @@ pub(super) struct AgentCounts {
 }
 
 impl WorkspaceView {
-    /// Polls the branch summary for the selected project; cheap and cached.
+    /// Refreshes branch chrome and diff counts for the visible project list.
     pub(super) fn start_status_poll(&mut self, cx: &mut Context<Self>) {
         self._status_task = Some(cx.spawn(async move |this, cx| {
             loop {
-                let Ok(target) = this.update(cx, |this, _| {
-                    (this.workspace_section == WorkspaceSection::Workspace
+                let Ok((target, roots, port)) = this.update(cx, |this, _| {
+                    let target = (this.workspace_section == WorkspaceSection::Workspace
                         && this.has_project_context())
-                    .then(|| (this.project_root(), this.git_port.clone()))
+                    .then(|| this.project_root());
+                    let mut roots = this
+                        .snapshot
+                        .projects
+                        .iter()
+                        .filter_map(|project| project.directory().map(PathBuf::from))
+                        .collect::<Vec<_>>();
+                    roots.sort();
+                    roots.dedup();
+                    this.project_diff_stats
+                        .retain(|root, _| roots.contains(root));
+                    if !this.left_sidebar_visible {
+                        roots.clear();
+                    }
+                    (target, roots, this.git_port.clone())
                 }) else {
                     break;
                 };
-                let Some((root, port)) = target else {
+                if target.is_none() && roots.is_empty() {
                     Timer::after(STATUS_POLL).await;
                     continue;
-                };
-                let (root, summary) = cx
+                }
+                let (summary, stats) = cx
                     .background_spawn(async move {
-                        let summary = port.branch_summary(&root).ok().flatten();
-                        (root, summary)
+                        let stats = roots
+                            .into_iter()
+                            .map(|root| {
+                                let stats = port.snapshot(&root).ok().flatten().map(|snapshot| {
+                                    super::projects::ProjectDiffStats {
+                                        additions: snapshot.additions,
+                                        deletions: snapshot.deletions,
+                                    }
+                                });
+                                (root, stats)
+                            })
+                            .collect::<Vec<_>>();
+                        // Snapshots populate the branch cache, so reuse it when possible.
+                        let summary = target.map(|root| {
+                            let summary = port.branch_summary(&root).ok().flatten();
+                            (root, summary)
+                        });
+                        (summary, stats)
                     })
                     .await;
                 if this
-                    .update(cx, |this, cx| this.apply_branch_summary(root, summary, cx))
+                    .update(cx, |this, cx| {
+                        if let Some((root, summary)) = summary {
+                            this.apply_branch_summary(root, summary, cx);
+                        }
+                        for (root, stats) in stats {
+                            this.apply_project_diff_stats(root, stats, cx);
+                        }
+                    })
                     .is_err()
                 {
                     break;
@@ -134,6 +171,8 @@ impl WorkspaceView {
             .px(px(6.0))
             .gap(px(2.0))
             .bg(surface(colors().titlebar))
+            .border_t_1()
+            .border_color(colors().border_subtle)
             .text_size(px(11.0))
             .text_color(colors().muted)
             .when_some(self.current_branch_summary().cloned(), |bar, summary| {
