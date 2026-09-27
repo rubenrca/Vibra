@@ -6,6 +6,8 @@
 
 - Refine Midnight with near-black surfaces and neutral light tones, simplify workspace separators and navigation styling, and add directional show/hide icons and tooltips for both sidebars while preserving Vibra's project navigation.
 
+- Rebuild Inbox around MonoCode’s open-source interaction model: a resizable list, connection tabs, checkbox filters, fixed detail header, Markdown discussion and comments, PR Summary/Code/Checks, Actions job logs, repair drafts, confirmed PR lifecycle actions, and a reusable Ask terminal. Scope GitHub to local project remotes, prepare task drafts before launching agents, persist related sessions, and keep local agent events under Activity.
+
 - Keep pane focus visible through zoom and full-tab reviews; restore the workspace from numbered tab shortcuts and show ⌘9 only on the actual last tab.
 - Clear stale Explorer rows on project changes, cancel dismissed quick-open searches, and isolate review delivery acknowledgements so late results cannot unlock another send.
 - Preserve manual pane names and automation labels across agent restarts; remove obsolete CLI alias restrictions from display names.

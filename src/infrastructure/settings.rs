@@ -20,6 +20,8 @@ pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     #[serde(default)]
+    pub inbox: crate::domain::work_items::InboxPreferences,
+    #[serde(default)]
     pub schema_version: u32,
     #[serde(default = "default_terminal_font_size")]
     pub terminal_font_size: f32,
@@ -121,6 +123,7 @@ fn default_theme_id() -> String {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            inbox: Default::default(),
             schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
             terminal_font_size: default_terminal_font_size(),
             show_hidden_files: false,

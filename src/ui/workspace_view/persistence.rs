@@ -44,7 +44,7 @@ enum Command {
     Wake,
     Finish {
         workspace: Box<Option<(u64, WorkspaceSnapshot)>>,
-        settings: Option<(u64, AppSettings)>,
+        settings: Box<Option<(u64, AppSettings)>>,
         library: Option<(u64, Library)>,
         completed: mpsc::Sender<Vec<String>>,
     },
@@ -157,7 +157,7 @@ impl PersistenceQueue {
         self.commands
             .send(Command::Finish {
                 workspace: Box::new(workspace),
-                settings,
+                settings: Box::new(settings),
                 library,
                 completed,
             })
@@ -256,7 +256,7 @@ fn run(
                 completed,
             } => {
                 workspace = (*final_workspace).or(workspace);
-                settings = final_settings.or(settings);
+                settings = (*final_settings).or(settings);
                 library = final_library.or(library);
                 (Some(completed), true)
             }

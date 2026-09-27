@@ -137,7 +137,10 @@ impl super::WorkspaceView {
             cx.stop_propagation();
             return;
         }
-        if self.handle_note_key(event, cx) || self.handle_automation_form_key(event, cx) {
+        if self.handle_inbox_key(event, window, cx)
+            || self.handle_note_key(event, cx)
+            || self.handle_automation_form_key(event, cx)
+        {
             cx.stop_propagation();
         }
     }

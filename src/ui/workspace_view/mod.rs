@@ -24,6 +24,7 @@ mod tabs;
 mod terminals;
 mod titlebar;
 mod usage;
+mod work_inbox;
 
 use automation::HookAgentPresence;
 use automations_page::AutomationForm;
@@ -227,6 +228,7 @@ pub struct WorkspaceView {
     navigation: tabs::Navigation,
     /// Agent and automation events, newest last; lives only while the app runs.
     inbox: Inbox,
+    work_inbox: work_inbox::WorkInbox,
     /// Notes and automations, saved to `library.json`.
     library: Library,
     library_repository: Option<LibraryRepository>,
@@ -575,6 +577,7 @@ impl WorkspaceView {
             review_tab_active: false,
             navigation: tabs::Navigation::default(),
             inbox: Inbox::default(),
+            work_inbox: work_inbox::WorkInbox::default(),
             library,
             library_repository,
             library_error: None,
@@ -655,6 +658,7 @@ impl WorkspaceView {
         view.start_automation_scheduler(cx);
         view.start_status_poll(cx);
         view.start_usage_poll(cx);
+        view.start_inbox_poll(cx);
         view
     }
 
@@ -1246,6 +1250,9 @@ impl Render for WorkspaceView {
 
         body = body.child(layout);
         body = body.child(self.status_bar(cx));
+        if let Some(popover) = self.inbox_popover(window, cx) {
+            body = body.child(popover);
+        }
         if let Some(popover) = self.usage_popover(window, cx) {
             body = body.child(popover);
         }

@@ -102,6 +102,9 @@ impl WorkspaceView {
         self.leave_library_section(section);
         self.usage.open = false;
         self.workspace_section = section;
+        if section == WorkspaceSection::Inbox {
+            self.ensure_inbox_loaded(cx);
+        }
         if section == WorkspaceSection::Workspace
             && !self.review_covers_terminal(cx)
             && let Some(session) = self.snapshot.selected_session()

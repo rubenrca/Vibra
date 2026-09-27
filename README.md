@@ -64,8 +64,21 @@ Vibra muestra un error si no reconoce el formato, sin inventar porcentajes.
 Vibra adopta la organización de una GUI de agentes, pero la superficie de trabajo
 sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
 
-- **Inbox** reúne los agentes activos de todos los proyectos (con su estado:
-  trabajando, espera tu respuesta, pide permiso) y el historial de eventos: un
+- **Inbox** reúne issues y pull requests de **GitHub** y tareas de **Linear** en
+  una lista redimensionable, con conexiones por pestaña y un menú de filtros por
+  asignación, estados múltiples, tiempo, tipo y proyecto. El detalle conserva el
+  título y las acciones visibles, renderiza Markdown y permite leer y publicar
+  comentarios y respuestas. Los PR tienen **Summary**, **Code** (diff por archivo)
+  y **Checks**, con registros de GitHub Actions y **Fix** para preparar una
+  reparación. Merge, squash, rebase, draft, ready, close y reopen requieren
+  confirmar el PR seleccionado. **Enviar al agente** abre un borrador con el
+  contexto de la tarea: elige proyecto y Claude, Codex o Gemini, añade indicaciones
+  y pulsa **Enviar** para crear una sesión. El agente debe estar instalado y
+  autenticado. Las sesiones relacionadas quedan enlazadas al detalle.
+  **Ask** abre una conversación lateral con el agente y un contexto de consulta
+  remota, reutilizable por tarea; su terminal también queda disponible en el proyecto;
+- **Actividad**, dentro del Inbox, reúne los agentes activos de todos los
+  proyectos (trabajando, espera tu respuesta, pide permiso) y sus eventos: un
   agente que terminó, pidió permiso o espera respuesta en una terminal que no
   estabas mirando, y las automatizaciones que se iniciaron. La navegación muestra
   el número de eventos sin leer; al elegir uno se abre su terminal y se marca como
@@ -86,6 +99,31 @@ sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
 
 Notas y automatizaciones se guardan en
 `~/Library/Application Support/Vibra/library.json`, junto a `settings.json`.
+
+El Inbox usa la sesión de **GitHub CLI** (`gh auth login`) y encuentra `gh` a
+través de la shell de login, también al abrir Vibra desde Finder. Consulta los
+repositorios de `github.com` asociados a todos los remotos de tus proyectos locales,
+incluido upstream. **Asignados a mí** restringe ese mismo conjunto. Por defecto
+incluye todos los estados y no restringe la asignación.
+Para **Linear**, copia una API key personal y pulsa **Conectar Linear desde
+portapapeles** en Settings → General; también puedes llegar desde **+** en Inbox. La clave se verifica antes
+de guardarla en `~/Library/Application Support/Vibra/linear-token`, con permisos
+`0600`. Solo se envía a la API de Linear y se elimina con **Desconectar**.
+
+Las fuentes se actualizan de forma independiente cada minuto mientras el Inbox
+está abierto, además del botón **Actualizar**. GitHub consulta hasta 100 issues
+**y** 100 PRs por repositorio; Linear, hasta 100 tareas. Se avisa al alcanzar esos
+límites y cuando un repositorio falla. Descripción, comentarios, diffs y checks se
+cargan por tarea sin bloquear la ventana. Los errores de actualización conservan
+los datos disponibles. Los filtros, el ancho de lista, las marcas de lectura y
+las sesiones relacionadas se guardan en `settings.json`; una tarea actualizada
+vuelve a aparecer sin leer. Los borradores de comentarios viven por tarea durante
+la sesión. Las descripciones se entregan al agente mediante un archivo temporal
+privado que la shell elimina al leerlo.
+
+La implementación sigue el [código abierto del Inbox de MonoCode](https://github.com/hardbeat920/monocode/tree/c576783ac14a50a0998222146fd9838d85d52ffb/src/features/inbox).
+El [documento de adaptación](docs/inbox-monocode.md) detalla las referencias,
+el comportamiento trasladado y las diferencias de esta versión nativa.
 
 ### Terminal
 

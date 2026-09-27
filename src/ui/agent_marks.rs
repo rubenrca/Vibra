@@ -38,6 +38,14 @@ macro_rules! bundled_assets {
 pub struct VibraAssets;
 
 bundled_assets! {
+    ("chrome-icons/check-all.svg", "ChromeIcons/check-all.svg"),
+    ("chrome-icons/git-merge.svg", "ChromeIcons/git-merge.svg"),
+    ("chrome-icons/issue-canceled.svg", "ChromeIcons/issue-canceled.svg"),
+    ("chrome-icons/issue-closed.svg", "ChromeIcons/issue-closed.svg"),
+    ("chrome-icons/issue-open.svg", "ChromeIcons/issue-open.svg"),
+    ("chrome-icons/filter.svg", "ChromeIcons/filter.svg"),
+    ("chrome-icons/github.svg", "ChromeIcons/github.svg"),
+    ("chrome-icons/linear.svg", "ChromeIcons/linear.svg"),
     ("agent-marks/aider.svg", "AgentMarks/aider.svg"),
     ("agent-marks/amp.svg", "AgentMarks/amp.svg"),
     ("agent-marks/claude.svg", "AgentMarks/claude.svg"),

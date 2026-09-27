@@ -1,0 +1,211 @@
+//! Inbox connectors and explicit remote actions. Credentials never enter commands or prompts.
+
+mod detail;
+mod github;
+mod linear;
+pub use detail::{
+    github_check_job, load_check_log, load_checks, load_detail, load_diff, post_comment,
+    run_pr_action,
+};
+
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+use serde_json::Value;
+use uuid::Uuid;
+
+use crate::domain::work_items::{WorkItem, WorkKind, WorkSource, WorkStatus};
+
+pub use linear::{connect_linear, disconnect_linear, linear_connected};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InboxProject {
+    pub id: Uuid,
+    pub root: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkQuery {
+    pub projects: Vec<InboxProject>,
+    pub assigned_to_me: bool,
+    pub status: Option<WorkStatus>,
+}
+
+#[derive(Default)]
+pub struct WorkItemsPage {
+    pub items: Vec<WorkItem>,
+    pub truncated: bool,
+    pub connected: bool,
+    pub warning: Option<String>,
+    pub failed_scopes: Vec<(String, WorkKind)>,
+}
+
+pub fn list(source: WorkSource, query: &WorkQuery) -> Result<WorkItemsPage> {
+    match source {
+        WorkSource::GitHub => github::list(query),
+        WorkSource::Linear => linear::list(query),
+    }
+}
+
+/// Keep long, multiline task descriptions out of the terminal's command line.
+/// The shell reads and removes this private file before launching the agent.
+pub fn prepare_launch(agent: &str, item: &WorkItem) -> Result<(String, PathBuf)> {
+    prepare_prompt_launch(agent, &item.prompt())
+}
+
+pub fn prepare_prompt_launch(agent: &str, prompt: &str) -> Result<(String, PathBuf)> {
+    use crate::domain::work_items::shell_argument;
+    use crate::infrastructure::paths::atomic_write;
+    if !matches!(agent, "claude" | "codex" | "gemini") {
+        bail!("Agente no válido.");
+    }
+    let path = std::env::temp_dir().join(format!("vibra-inbox-{}.txt", Uuid::new_v4()));
+    atomic_write(&path, prompt.as_bytes())
+        .context("No se pudo preparar el contexto de la tarea.")?;
+    let script = launch_script(agent, &path);
+    // zsh guarantees the same expansion even when the project's shell is fish.
+    Ok((format!("/bin/zsh -lc {}", shell_argument(&script)), path))
+}
+
+fn launch_script(agent: &str, path: &std::path::Path) -> String {
+    let path = crate::domain::work_items::shell_argument(&path.to_string_lossy());
+    format!("{agent} \"$(/bin/cat {path}; /bin/rm -f {path})\"")
+}
+
+const MAX_OUTPUT: u64 = 4 * 1024 * 1024;
+
+/// Drain pipes concurrently and kill the whole process group on timeout.
+fn bounded_output(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>> {
+    use std::os::unix::process::CommandExt;
+    let mut child = command
+        .process_group(0)
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("No se pudo iniciar la consulta del Inbox.")?;
+    let stdout = child.stdout.take().unwrap();
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(MAX_OUTPUT + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    let writer = input.map(|bytes| {
+        let mut stdin = child.stdin.take().unwrap();
+        thread::spawn(move || stdin.write_all(&bytes))
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if started.elapsed() < Duration::from_secs(25) => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            _ => {
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.wait();
+                break Err(anyhow::anyhow!(
+                    "La consulta tardó demasiado. Intenta actualizar."
+                ));
+            }
+        }
+    };
+    // A login script can leave a descendant holding stdout after its parent
+    // exits. Stop that private process group before joining the pipe readers.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+    let bytes = reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("No se pudo leer la respuesta."))??;
+    if !status?.success() {
+        bail!("No se pudo consultar el servicio. Revisa tu conexión y la sesión del proveedor.");
+    }
+    if bytes.len() as u64 > MAX_OUTPUT {
+        bail!("La respuesta supera el tamaño permitido.");
+    }
+    Ok(bytes)
+}
+
+fn string(value: &Value, key: &str) -> String {
+    value[key].as_str().unwrap_or_default().to_owned()
+}
+
+fn timestamp(value: &Value) -> u64 {
+    value
+        .as_str()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|date| date.timestamp().max(0) as u64)
+        .unwrap_or_default()
+}
+
+fn graphql_data(value: Value) -> Result<Value> {
+    if value
+        .get("errors")
+        .is_some_and(|errors| !errors.as_array().is_some_and(Vec::is_empty))
+    {
+        bail!("El servicio rechazó la consulta. Revisa los permisos de tu cuenta.");
+    }
+    value
+        .get("data")
+        .filter(|data| data.is_object())
+        .cloned()
+        .context("El servicio devolvió una respuesta no válida.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn work_inbox_launch_passes_multiline_context_as_one_argument_and_removes_private_file() {
+        let mut item = crate::domain::work_items::fixture();
+        item.body
+            .push_str(&"\nLong description with 'quotes' $(printf injected) `whoami`".repeat(500));
+        let (command, path) = prepare_launch("claude", &item).unwrap();
+        assert!(!command.contains(['\n', '\r']));
+        assert!(command.len() < 1024);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), item.prompt());
+        // A function replaces the CLI so this test cannot start a real agent.
+        let script = format!(
+            "claude() {{ test \"$#\" -eq 1 || return 12; printf '%s' \"$1\"; }}; {}",
+            launch_script("claude", &path)
+        );
+        let output = Command::new("/bin/zsh")
+            .args(["-f", "-c", &script])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), item.prompt());
+        assert!(!path.exists());
+        assert!(prepare_launch("not-an-agent", &item).is_err());
+    }
+
+    #[test]
+    fn work_inbox_subprocess_drains_input_and_rejects_failed_commands() {
+        let input = vec![b'x'; 128 * 1024];
+        let output = bounded_output(&mut Command::new("/bin/cat"), Some(input.clone())).unwrap();
+        assert_eq!(output, input);
+        assert!(bounded_output(&mut Command::new("/usr/bin/false"), None).is_err());
+    }
+}

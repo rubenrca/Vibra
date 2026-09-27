@@ -8,6 +8,17 @@ independiente del workspace.
 
 - `src/domain/workspace`: proyectos, tabs, panes, selección, geometría y migraciones.
 - `src/domain/library.rs`: notas, automatizaciones y reglas del horario.
+- `src/domain/work_items.rs`: tareas externas, filtros, detalle remoto y marcas de
+  lectura. `src/infrastructure/work_items` contiene los conectores GitHub/Linear,
+  consultas acotadas, comentarios, acciones de PR y preparación del contexto para
+  terminales; las credenciales no pasan por los argumentos del proceso.
+  `work_inbox.rs` coordina las fuentes; `work_inbox/detail.rs` las cargas y acciones
+  por URL; `work_inbox/layout` la lista, menús y detalle nativos. Las respuestas se
+  validan por fuente, generación y revisión de la tarea. Cambiar de conexión
+  invalida el detalle. Los borradores permanecen con su URL y una confirmación de
+  merge captura el head aprobado (`expectedHeadOid`). `src/ui/markdown.rs` renderiza
+  CommonMark sin ejecutar HTML remoto. La actividad local sigue en `inbox.rs`.
+  Véase [la adaptación de MonoCode](inbox-monocode.md).
 - `src/ports`: contratos de terminal, Git y filesystem; `src/infrastructure` implementa
   esos contratos y los repositorios de JSON.
 - `src/ui/workspace_view/mod.rs`: construcción y coordinación de la ventana.

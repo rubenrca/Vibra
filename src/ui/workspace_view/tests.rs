@@ -730,7 +730,10 @@ type RecordingWorkspace = (
     gpui::WindowHandle<WorkspaceView>,
 );
 
-fn open_recording_workspace(cx: &mut gpui::TestAppContext, name: &str) -> RecordingWorkspace {
+pub(super) fn open_recording_workspace(
+    cx: &mut gpui::TestAppContext,
+    name: &str,
+) -> RecordingWorkspace {
     use crate::infrastructure::files::LocalFileSystemPort;
     use crate::infrastructure::git::GitCliPort;
 

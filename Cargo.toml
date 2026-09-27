@@ -23,6 +23,7 @@ sha2 = "0.10"
 uuid = { version = "1.24", features = ["serde", "v4"] }
 
 raw-window-handle = "0.6"
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["test-support"] }

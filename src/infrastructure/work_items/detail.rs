@@ -1,0 +1,444 @@
+//! Inbox detail and explicit user actions. Every request names its remote target.
+
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
+
+use super::{github, graphql_data, linear, string, timestamp};
+use crate::domain::work_items::{
+    PrAction, WorkCheck, WorkComment, WorkDetail, WorkDiff, WorkDiffFile, WorkItem, WorkKind,
+    WorkSource,
+};
+
+const DETAIL_QUERY: &str = r#"query($id: ID!) {
+ node(id:$id) {
+  ... on Issue { body comments(last:40) { totalCount nodes { id body createdAt url isMinimized author { login } } } }
+  ... on PullRequest {
+   body baseRefName headRefName headRefOid reviewDecision
+   comments(last:40) { totalCount nodes { id body createdAt url isMinimized author { login } } }
+   reviews(last:40) { totalCount nodes { id body submittedAt url state author { login } } }
+   reviewThreads(last:20) { totalCount nodes { id isResolved path comments(first:20) {
+     totalCount nodes { id body createdAt url path line originalLine isMinimized author { login } }
+   } } }
+  }
+ }
+}"#;
+
+const LINEAR_DETAIL_QUERY: &str = r#"query($id: String!) {
+ issue(id:$id) { description comments(last:50) { pageInfo { hasPreviousPage } nodes {
+   id body createdAt url user { name } parent { id }
+ } } }
+}"#;
+
+pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
+    if item.remote_id.is_empty() {
+        bail!("La tarea no tiene un identificador remoto. Actualiza el Inbox.");
+    }
+    match item.source {
+        WorkSource::GitHub => {
+            let data = github_graphql(DETAIL_QUERY, json!({"id":item.remote_id}))?;
+            let node = data
+                .get("node")
+                .filter(|node| node.is_object())
+                .context("La tarea ya no está disponible en GitHub.")?;
+            Ok(parse_github_detail(node))
+        }
+        WorkSource::Linear => {
+            let data =
+                linear::authenticated_graphql(LINEAR_DETAIL_QUERY, json!({"id":item.remote_id}))?;
+            let issue = data
+                .get("issue")
+                .filter(|issue| issue.is_object())
+                .context("La tarea ya no está disponible en Linear.")?;
+            let nodes = array(&issue["comments"]["nodes"]);
+            let mut comments: Vec<_> = nodes
+                .iter()
+                .filter(|node| node["parent"]["id"].as_str().is_none())
+                .map(linear_comment)
+                .collect();
+            for node in nodes
+                .iter()
+                .filter(|node| node["parent"]["id"].as_str().is_some())
+            {
+                let reply = linear_comment(node);
+                if let Some(parent) = comments
+                    .iter_mut()
+                    .find(|comment| Some(comment.id.as_str()) == node["parent"]["id"].as_str())
+                {
+                    parent.replies.push(reply);
+                } else {
+                    comments.push(reply);
+                }
+            }
+            Ok(WorkDetail {
+                body: string(issue, "description"),
+                comments,
+                truncated: issue["comments"]["pageInfo"]["hasPreviousPage"]
+                    .as_bool()
+                    .unwrap_or(false),
+                ..Default::default()
+            })
+        }
+    }
+}
+
+fn array(value: &Value) -> &[Value] {
+    value.as_array().map(Vec::as_slice).unwrap_or_default()
+}
+
+fn github_comment(node: &Value) -> WorkComment {
+    WorkComment {
+        id: string(node, "id"),
+        author: string(&node["author"], "login"),
+        body: string(node, "body"),
+        at: timestamp(node.get("createdAt").unwrap_or(&node["submittedAt"])),
+        url: string(node, "url"),
+        context: string(node, "state"),
+        ..Default::default()
+    }
+}
+
+fn linear_comment(node: &Value) -> WorkComment {
+    WorkComment {
+        id: string(node, "id"),
+        reply_id: Some(string(node, "id")),
+        author: string(&node["user"], "name"),
+        body: string(node, "body"),
+        at: timestamp(&node["createdAt"]),
+        url: string(node, "url"),
+        ..Default::default()
+    }
+}
+
+fn parse_github_detail(node: &Value) -> WorkDetail {
+    let mut detail = WorkDetail {
+        body: string(node, "body"),
+        base_ref: string(node, "baseRefName"),
+        head_ref: string(node, "headRefName"),
+        head_oid: string(node, "headRefOid"),
+        review_decision: string(node, "reviewDecision"),
+        ..Default::default()
+    };
+    for connection in ["comments", "reviews"] {
+        let nodes = array(&node[connection]["nodes"]);
+        detail.truncated |=
+            node[connection]["totalCount"].as_u64().unwrap_or_default() > nodes.len() as u64;
+        detail.comments.extend(
+            nodes
+                .iter()
+                .filter(|comment| {
+                    comment["isMinimized"].as_bool() != Some(true)
+                        && comment["body"]
+                            .as_str()
+                            .is_some_and(|body| !body.trim().is_empty())
+                })
+                .map(github_comment),
+        );
+    }
+    let threads = array(&node["reviewThreads"]["nodes"]);
+    detail.truncated |= node["reviewThreads"]["totalCount"]
+        .as_u64()
+        .unwrap_or_default()
+        > threads.len() as u64;
+    for thread in threads {
+        let nodes = array(&thread["comments"]["nodes"]);
+        detail.truncated |= thread["comments"]["totalCount"]
+            .as_u64()
+            .unwrap_or_default()
+            > nodes.len() as u64;
+        let mut comments = nodes
+            .iter()
+            .filter(|node| node["isMinimized"].as_bool() != Some(true))
+            .map(github_comment);
+        if let Some(mut parent) = comments.next() {
+            parent.reply_id = Some(string(thread, "id"));
+            parent.context = format!(
+                "{}{}{}",
+                string(thread, "path"),
+                nodes
+                    .first()
+                    .and_then(|node| node["line"].as_u64().or(node["originalLine"].as_u64()))
+                    .map(|n| format!(":{n}"))
+                    .unwrap_or_default(),
+                if thread["isResolved"].as_bool() == Some(true) {
+                    " · Resuelto"
+                } else {
+                    ""
+                }
+            );
+            parent.replies = comments.collect();
+            detail.comments.push(parent);
+        }
+    }
+    detail.comments.sort_by_key(|comment| comment.at);
+    detail
+}
+
+fn github_graphql(query: &str, variables: Value) -> Result<Value> {
+    graphql_data(github::gh(
+        &["api", "--hostname", "github.com", "graphql", "--input", "-"],
+        Some(serde_json::to_vec(
+            &json!({"query":query,"variables":variables}),
+        )?),
+    )?)
+}
+
+fn github_target(item: &WorkItem) -> Result<(String, u64)> {
+    let path = item
+        .url
+        .strip_prefix("https://github.com/")
+        .context("Enlace de GitHub no válido.")?;
+    let parts: Vec<_> = path.split('/').collect();
+    if parts.len() != 4 || !matches!(parts[2], "issues" | "pull") {
+        bail!("Destino de GitHub no válido.");
+    }
+    let repo =
+        github::repository_from_remote(&format!("https://github.com/{}/{}", parts[0], parts[1]))
+            .context("Repositorio no válido.")?;
+    let number = parts[3]
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .context("Número de tarea no válido.")?;
+    Ok((repo, number))
+}
+
+pub fn load_diff(item: &WorkItem) -> Result<WorkDiff> {
+    let (repo, number) = github_target(item)?;
+    if item.kind != WorkKind::PullRequest {
+        bail!("Solo los PR tienen diff.");
+    }
+    let mut diff = WorkDiff::default();
+    for page in 1..=5 {
+        let endpoint = format!("repos/{repo}/pulls/{number}/files?per_page=100&page={page}");
+        let value = github::gh(&["api", "--hostname", "github.com", &endpoint], None)?;
+        let files = value
+            .as_array()
+            .context("GitHub no devolvió los archivos del PR.")?;
+        for file in files {
+            diff.files.push(WorkDiffFile {
+                path: string(file, "filename"),
+                previous_path: file["previous_filename"].as_str().map(str::to_owned),
+                additions: file["additions"].as_u64().unwrap_or_default(),
+                deletions: file["deletions"].as_u64().unwrap_or_default(),
+                patch: string(file, "patch"),
+            });
+        }
+        if files.len() < 100 {
+            return Ok(diff);
+        }
+    }
+    diff.truncated = true;
+    Ok(diff)
+}
+
+pub fn load_checks(item: &WorkItem) -> Result<Vec<WorkCheck>> {
+    let (repo, number) = github_target(item)?;
+    let data = github::gh(
+        &[
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &repo,
+            "--json",
+            "statusCheckRollup,headRefOid",
+        ],
+        None,
+    )?;
+    let nodes = data["statusCheckRollup"]
+        .as_array()
+        .context("GitHub no devolvió los checks.")?;
+    Ok(nodes
+        .iter()
+        .map(|node| WorkCheck {
+            head_oid: string(&data, "headRefOid"),
+            name: node["name"]
+                .as_str()
+                .or(node["context"].as_str())
+                .unwrap_or("Check")
+                .into(),
+            state: node["conclusion"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .or(node["state"].as_str())
+                .or(node["status"].as_str())
+                .unwrap_or("PENDING")
+                .into(),
+            url: node["detailsUrl"]
+                .as_str()
+                .or(node["targetUrl"].as_str())
+                .unwrap_or_default()
+                .into(),
+        })
+        .collect())
+}
+
+/// Only GitHub Actions job URLs can resolve logs; third-party checks keep their link.
+pub fn github_check_job(item: &WorkItem, check: &WorkCheck) -> Option<u64> {
+    let (repo, _) = github_target(item).ok()?;
+    let path = check
+        .url
+        .strip_prefix(&format!("https://github.com/{repo}/actions/runs/"))?;
+    let parts: Vec<_> = path.split('/').collect();
+    if parts.len() != 3 || parts[1] != "job" || parts[0].parse::<u64>().ok()? == 0 {
+        return None;
+    }
+    parts[2].parse::<u64>().ok().filter(|id| *id > 0)
+}
+
+pub fn load_check_log(item: &WorkItem, check: &WorkCheck) -> Result<String> {
+    let (repo, _) = github_target(item)?;
+    let job = github_check_job(item, check).context(
+        "Este check no tiene un job de GitHub Actions. Abre su enlace para ver el registro.",
+    )?;
+    let bytes = github::gh_output(
+        &[
+            "run",
+            "view",
+            "--repo",
+            &repo,
+            "--job",
+            &job.to_string(),
+            "--log",
+        ],
+        None,
+    )?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut log: String = text
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .take(200_000)
+        .collect();
+    if text.chars().count() > 200_000 {
+        log.push_str("\n… Registro truncado. Abre GitHub para ver el registro completo.");
+    }
+    if log.trim().is_empty() {
+        log = "El job aún no tiene registros disponibles.".into();
+    }
+    Ok(log)
+}
+
+pub fn post_comment(item: &WorkItem, body: &str, reply: Option<&str>) -> Result<()> {
+    if body.trim().is_empty() || body.len() > 65_536 {
+        bail!("El comentario debe tener entre 1 y 65.536 bytes.");
+    }
+    match item.source {
+        WorkSource::GitHub => {
+            let (query, variables) = if let Some(reply) = reply {
+                (
+                    "mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}",
+                    json!({"id":reply,"body":body}),
+                )
+            } else {
+                (
+                    "mutation($id:ID!,$body:String!){addComment(input:{subjectId:$id,body:$body}){commentEdge{node{id}}}}",
+                    json!({"id":item.remote_id,"body":body}),
+                )
+            };
+            github_graphql(query, variables)?;
+        }
+        WorkSource::Linear => {
+            let mut input = json!({"issueId":item.remote_id,"body":body});
+            if let Some(reply) = reply {
+                input["parentId"] = json!(reply);
+            }
+            let data = linear::authenticated_graphql(
+                "mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}",
+                json!({"input":input}),
+            )?;
+            if data["commentCreate"]["success"].as_bool() != Some(true) {
+                bail!("Linear no pudo publicar el comentario.");
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn run_pr_action(item: &WorkItem, action: PrAction, head_oid: &str) -> Result<()> {
+    if item.source != WorkSource::GitHub || item.kind != WorkKind::PullRequest {
+        bail!("Esta acción requiere un PR de GitHub.");
+    }
+    let mut variables = json!({"id":item.remote_id});
+    let query = match action {
+        PrAction::Merge | PrAction::Squash | PrAction::Rebase => {
+            if head_oid.is_empty() {
+                bail!("Actualiza el PR antes de integrarlo.");
+            }
+            variables["head"] = json!(head_oid);
+            variables["method"] = json!(match action {
+                PrAction::Squash => "SQUASH",
+                PrAction::Rebase => "REBASE",
+                _ => "MERGE",
+            });
+            "mutation($id:ID!,$head:GitObjectID!,$method:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head,mergeMethod:$method}){pullRequest{id}}}"
+        }
+        PrAction::Draft => {
+            "mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id}){pullRequest{id}}}"
+        }
+        PrAction::Ready => {
+            "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}"
+        }
+        PrAction::Close => {
+            "mutation($id:ID!){closePullRequest(input:{pullRequestId:$id}){pullRequest{id}}}"
+        }
+        PrAction::Reopen => {
+            "mutation($id:ID!){reopenPullRequest(input:{pullRequestId:$id}){pullRequest{id}}}"
+        }
+    };
+    github_graphql(query, variables)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn review_threads_keep_replies_paths_and_truncation() {
+        let detail = parse_github_detail(
+            &json!({"body":"Summary","headRefOid":"abc","comments":{"totalCount":2,"nodes":[{"id":"1","body":"Comment","author":{"login":"ana"},"createdAt":"2026-09-20T01:00:00Z"}]},"reviewThreads":{"nodes":[{"id":"thread","path":"src/main.rs","isResolved":true,"comments":{"totalCount":2,"nodes":[{"id":"2","body":"Fix","line":42},{"id":"3","body":"Done"}]}}]}}),
+        );
+        assert!(detail.truncated);
+        let thread = detail
+            .comments
+            .iter()
+            .find(|comment| comment.reply_id.is_some())
+            .unwrap();
+        assert_eq!(thread.replies.len(), 1);
+        assert_eq!(thread.context, "src/main.rs:42 · Resuelto");
+        assert_eq!(thread.reply_id.as_deref(), Some("thread"));
+    }
+    #[test]
+    fn check_logs_are_scoped_to_the_pr_repository() {
+        let item = crate::domain::work_items::fixture();
+        let mut check = WorkCheck {
+            name: "CI".into(),
+            state: "FAILURE".into(),
+            head_oid: "abc".into(),
+            url: "https://github.com/demo/app/actions/runs/12/job/34".into(),
+        };
+        assert_eq!(github_check_job(&item, &check), Some(34));
+        for url in [
+            "https://github.com/other/app/actions/runs/12/job/34",
+            "https://github.com/demo/app/actions/runs/12/job/34?redirect=evil",
+            "https://ci.example.com/34",
+        ] {
+            check.url = url.into();
+            assert_eq!(github_check_job(&item, &check), None);
+        }
+    }
+
+    #[test]
+    fn remote_target_cannot_be_redirected_by_repo_or_path() {
+        let mut item = crate::domain::work_items::fixture();
+        item.repository = "unrelated/checkout".into();
+        assert_eq!(github_target(&item).unwrap(), ("demo/app".into(), 42));
+        for url in [
+            "https://github.com.evil/demo/app/pull/42",
+            "https://github.com/demo/app/pull/42?x=1",
+            "https://github.com/demo/app/../42",
+        ] {
+            item.url = url.into();
+            assert!(github_target(&item).is_err());
+        }
+    }
+}

@@ -82,7 +82,7 @@ impl WorkspaceView {
         }
     }
 
-    pub(super) fn inbox_content(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn inbox_activity_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = unix_now();
         let agents: Vec<_> = self
             .snapshot
@@ -94,6 +94,13 @@ impl WorkspaceView {
             .collect();
         let unread = self.inbox.unread_count();
         let actions = vec![
+            section_button("inbox-show-tasks", "← Tareas", false)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.work_inbox.activity = false;
+                    this.ensure_inbox_loaded(cx);
+                    cx.notify();
+                }))
+                .into_any_element(),
             section_button("inbox-mark-read", "Marcar como leído", false)
                 .when(unread == 0, |button| button.opacity(0.5))
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -279,7 +286,7 @@ impl WorkspaceView {
 
     /// Unread count for the global navigation badge.
     pub(super) fn inbox_unread_badge(&self) -> Option<AnyElement> {
-        let unread = self.inbox.unread_count();
+        let unread = self.inbox.unread_count() + self.work_inbox_unread_count();
         (unread > 0).then(|| {
             div()
                 .min_w(px(20.0))

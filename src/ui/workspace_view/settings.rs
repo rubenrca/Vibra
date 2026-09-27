@@ -873,6 +873,8 @@ impl WorkspaceView {
 
     fn general_settings(&self, panel: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
         panel
+            .child(self.settings_section_heading("Inbox", "GitHub usa tu sesión de gh. Conecta Linear con una API key personal guardada solo en este Mac."))
+            .child(self.inbox_connection_controls(cx))
             .child(self.settings_section_heading(
                 "Al abrir Vibra",
                 "Configura qué elementos estarán disponibles al abrir Vibra.",

@@ -99,7 +99,7 @@ impl WorkspaceView {
 
     pub(super) fn status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let counts = self.agent_counts();
-        let unread = self.inbox.unread_count();
+        let unread = self.inbox.unread_count() + self.work_inbox_unread_count();
         let item = |id: &'static str| {
             div()
                 .id(id)
@@ -159,6 +159,7 @@ impl WorkspaceView {
                 item("status-agents")
                     .tooltip(|_, cx| sidebar_tooltip("Ver agentes en el Inbox", cx))
                     .on_click(cx.listener(|this, _, window, cx| {
+                        this.work_inbox.activity = true;
                         this.select_section(WorkspaceSection::Inbox, window, cx)
                     }))
                     .map(|item| {

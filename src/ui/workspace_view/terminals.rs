@@ -164,6 +164,9 @@ impl WorkspaceView {
     }
 
     pub(super) fn visible_terminal_ids(&self, cx: &Context<Self>) -> HashSet<Uuid> {
+        if let Some(pane) = self.visible_inbox_terminal() {
+            return HashSet::from([pane]);
+        }
         if self.workspace_section == WorkspaceSection::Workspace && !self.review_covers_terminal(cx)
         {
             self.snapshot.painted_session_ids()
