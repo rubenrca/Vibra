@@ -11,7 +11,6 @@ use super::SidebarResizeEdge;
 pub(crate) const PANEL_GAP: f32 = 4.0;
 pub(crate) const PANEL_BORDER_WIDTH: f32 = 1.0;
 // Leave equal room for the status dot and shortcut so tab labels stay centered.
-pub(crate) const TAB_LABEL_INSET: f32 = 36.0;
 // Keep project rows aligned with the global navigation.
 /// Horizontal inset of sidebar rows inside the panel border.
 pub(crate) const SIDEBAR_ROW_INSET: f32 = 10.0;

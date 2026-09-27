@@ -19,10 +19,10 @@ pub(super) fn agent_state_label(
     attention: Option<AgentAttention>,
 ) -> &'static str {
     match (state, attention) {
-        (AgentRuntimeState::Waiting, Some(AgentAttention::Permission)) => "Pide permiso",
-        (AgentRuntimeState::Waiting, _) => "Espera tu respuesta",
-        (AgentRuntimeState::Working, _) => "Trabajando",
-        (AgentRuntimeState::Idle, _) => "En espera",
+        (AgentRuntimeState::Waiting, Some(AgentAttention::Permission)) => "Needs permission",
+        (AgentRuntimeState::Waiting, _) => "Waiting for your response",
+        (AgentRuntimeState::Working, _) => "Working",
+        (AgentRuntimeState::Idle, _) => "Idle",
     }
 }
 
@@ -94,14 +94,14 @@ impl WorkspaceView {
             .collect();
         let unread = self.inbox.unread_count();
         let actions = vec![
-            section_button("inbox-show-tasks", "← Tareas", false)
+            section_button("inbox-show-tasks", "← Tasks", false)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.work_inbox.activity = false;
                     this.ensure_inbox_loaded(cx);
                     cx.notify();
                 }))
                 .into_any_element(),
-            section_button("inbox-mark-read", "Marcar como leído", false)
+            section_button("inbox-mark-read", "Mark as read", false)
                 .when(unread == 0, |button| button.opacity(0.5))
                 .on_click(cx.listener(|this, _, _, cx| {
                     if this.inbox.mark_all_read() {
@@ -109,7 +109,7 @@ impl WorkspaceView {
                     }
                 }))
                 .into_any_element(),
-            section_button("inbox-clear", "Limpiar", false)
+            section_button("inbox-clear", "Clear", false)
                 .when(self.inbox.is_empty(), |button| button.opacity(0.5))
                 .on_click(cx.listener(|this, _, _, cx| {
                     if this.inbox.clear() {
@@ -120,10 +120,7 @@ impl WorkspaceView {
         ];
 
         let mut body = div().flex().flex_col().gap_1().max_w(px(760.0)).w_full();
-        body = body.child(section_heading(format!(
-            "Agentes activos · {}",
-            agents.len()
-        )));
+        body = body.child(section_heading(format!("Active agents · {}", agents.len())));
         if agents.is_empty() {
             body = body.child(
                 div()
@@ -131,7 +128,7 @@ impl WorkspaceView {
                     .pb_3()
                     .text_size(px(12.0))
                     .text_color(colors().subtle)
-                    .child("Ningún agente corriendo. Abre Claude, Codex o cualquier CLI en una terminal y aparecerá aquí."),
+                    .child("No agents running. Open Claude, Codex, or any CLI in a terminal to see it here."),
             );
         }
         for (pane_id, presence) in agents {
@@ -187,15 +184,15 @@ impl WorkspaceView {
 
         body = body.child(div().h(px(12.0)));
         body = body.child(section_heading(if unread > 0 {
-            format!("Actividad · {unread} sin leer")
+            format!("Activity · {unread} unread")
         } else {
-            "Actividad".to_owned()
+            "Activity".to_owned()
         }));
         if self.inbox.is_empty() {
             body = body.child(section_empty_state(
                 "chrome-icons/inbox.svg",
-                "Todo al día",
-                "Cuando un agente termine, pida permiso o espere tu respuesta en una terminal que no estás mirando, lo verás aquí.",
+                "All caught up",
+                "When an agent finishes, asks for permission, or needs a response in a terminal you're not viewing, you'll see it here.",
             ));
         }
         for item in self.inbox.items() {
@@ -266,11 +263,11 @@ impl WorkspaceView {
                             .text_color(colors().subtle)
                             .truncate()
                             .child(if item.detail.is_empty() {
-                                "Terminal cerrada".to_owned()
+                                "Terminal closed".to_owned()
                             } else if openable {
                                 item.detail.clone()
                             } else {
-                                format!("{} · terminal cerrada", item.detail)
+                                format!("{} · terminal closed", item.detail)
                             }),
                     ),
             )

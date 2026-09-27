@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
-    TabSnapshot, WorkspaceSplitAxis,
+    TabSnapshot, WorkspaceSplitAxis, WorkspaceTabId,
 };
 use crate::ui::agent_marks::agent_compact_badge;
 use crate::ui::terminal::TerminalDragPreview;
@@ -21,13 +21,13 @@ use crate::{
 
 use super::{
     ContextMenuKind, PaneDividerDrag, PaneDividerDragView, PaneDrag, ReorderDrag, TabDrag,
-    TabDragView, WorkspaceSection, split_gutter,
+    WorkspaceSection, split_gutter,
 };
 
 pub(super) const TAB_HEIGHT: f32 = 30.0;
 pub(super) const TAB_MAX_WIDTH: f32 = 240.0;
-pub(super) const TAB_RADIUS: f32 = 6.0;
-pub(super) const TAB_TEXT_SIZE: f32 = 13.0;
+pub(super) const TAB_RADIUS: f32 = 8.0;
+pub(super) const TAB_TEXT_SIZE: f32 = 14.0;
 
 /// `⌘N` hint, revealed while the tab is hovered.
 pub(super) fn tab_shortcut(shortcut: String) -> gpui::Div {
@@ -73,18 +73,15 @@ impl super::WorkspaceView {
         selected_tab_id: Option<Uuid>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let can_reorder = tabs.len() > 1;
-        let tab_count = tabs.len();
-        // A tab is highlighted while its content is on screen, so a review
-        // shown beside the terminal highlights both tabs.
+        // A docked review belongs to its terminal tab; only standalone reviews
+        // occupy a separate position in the strip.
         let terminal_hidden = self.review_covers_terminal(cx);
-        let review_tab_number = tab_count + 1;
-        let show_review_tab = self.diff_view.read(cx).review_expanded();
         let dragging_tab = match self.reorder_drag {
             Some(ReorderDrag::Tab(id)) if cx.has_active_drag() => Some(id),
             _ => None,
         };
-        let tab_ids = tabs.iter().map(|tab| tab.id).collect::<Vec<_>>();
+        let tab_ids = self.visible_tab_order(cx);
+        let tab_count = tab_ids.len();
         let tab_list = div()
             .h_full()
             .flex_1()
@@ -94,10 +91,15 @@ impl super::WorkspaceView {
             .justify_start()
             .gap(px(2.0))
             .overflow_x_hidden()
-            .children(tabs.into_iter().enumerate().map(|(index, tab)| {
-                let tab_id = tab.id;
+            .children(tab_ids.iter().copied().enumerate().map(|(index, item)| {
                 let after_tab_id = tab_ids.get(index + 1).copied();
-                let tab_order = tab_ids.clone();
+                let WorkspaceTabId::Terminal(tab_id) = item else {
+                    return self.review_tab(index, tab_count, after_tab_id, cx);
+                };
+                let tab = tabs
+                    .iter()
+                    .find(|tab| tab.id == tab_id)
+                    .expect("tab in strip");
                 let selected = Some(tab_id) == selected_tab_id && !terminal_hidden;
                 let session = tab
                     .sessions
@@ -116,19 +118,15 @@ impl super::WorkspaceView {
                 } else {
                     title
                 };
-                let shortcut = super::tabs::tab_shortcut_label(
-                    index,
-                    tab_count + usize::from(show_review_tab),
-                );
-                let pane_count = tab.sessions.len();
+                let shortcut = super::tabs::tab_shortcut_label(index, tab_count);
+                let pane_count =
+                    tab.sessions.len() + usize::from(self.review_dock_owner() == Some(tab_id));
                 let drag = TabDrag {
-                    tab_id,
+                    tab_id: item,
                     title: title.clone(),
-                    selected,
-                    shortcut: shortcut.clone(),
-                    tab_count,
+                    from_pane: false,
                 };
-                let is_source = dragging_tab == Some(tab_id);
+                let is_source = dragging_tab == Some(item);
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
                     .group("title-tab")
@@ -145,8 +143,7 @@ impl super::WorkspaceView {
                     .gap(px(8.0))
                     .overflow_hidden()
                     .rounded(px(TAB_RADIUS))
-                    .when(can_reorder, |tab| tab.cursor_move())
-                    .when(!can_reorder, |tab| tab.cursor_pointer())
+                    .cursor_move()
                     .bg(if selected {
                         surface_tint(colors().selection, colors().terminal)
                     } else {
@@ -168,9 +165,8 @@ impl super::WorkspaceView {
                     .when(is_source, |tab| tab.opacity(0.45))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.reorder_drag = Some(ReorderDrag::Tab(tab_id));
-                            this.select_tab(tab_id, window, cx);
+                        cx.listener(move |this, _, _, cx| {
+                            this.reorder_drag = Some(ReorderDrag::Tab(item));
                             // Tabs own their drag gesture; only the empty bar moves the window.
                             cx.stop_propagation();
                         }),
@@ -197,38 +193,7 @@ impl super::WorkspaceView {
                             }),
                         )
                     })
-                    .when(can_reorder, |tab| {
-                        tab.on_drag(drag, |drag, _, window, cx| {
-                            // Keep the preview close to the visible tab width.
-                            let window_width: f32 = window.bounds().size.width.into();
-                            let width =
-                                (window_width * (0.52 / drag.tab_count as f32)).clamp(160.0, 300.0);
-                            cx.new(|_| TabDragView {
-                                title: drag.title.clone(),
-                                selected: drag.selected,
-                                shortcut: drag.shortcut.clone(),
-                                width,
-                            })
-                        })
-                        .can_drop(move |value, _, _| {
-                            value
-                                .downcast_ref::<TabDrag>()
-                                .is_some_and(|drag| drag.tab_id != tab_id)
-                        })
-                        .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
-                            let dragged_from_left = tab_order
-                                .iter()
-                                .position(|id| *id == drag.tab_id)
-                                .is_some_and(|source_index| source_index < index);
-                            let before_tab_id = if dragged_from_left {
-                                after_tab_id
-                            } else {
-                                Some(tab_id)
-                            };
-                            this.reorder_tab(drag.tab_id, before_tab_id, window, cx);
-                        }))
-                        .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().hover))
-                    })
+                    .on_drag(drag, |drag, offset, _, cx| drag.preview(offset, cx))
                     .child(agent_compact_badge(
                         identity
                             .as_ref()
@@ -279,33 +244,57 @@ impl super::WorkspaceView {
                             }),
                     )
                     .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
+                    .child(self.tab_drop_targets(item, after_tab_id, cx))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("close-tab-{tab_id}")))
+                            .group("tab-close")
+                            .size(px(20.0))
+                            .flex_none()
+                            .rounded(px(5.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .opacity(if selected { 1.0 } else { 0.0 })
+                            .group_hover("title-tab", |button| button.opacity(1.0))
+                            .hover(|button| button.bg(colors().hover))
+                            .tooltip(|_, cx| super::sidebar_tooltip("Close tab", cx))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_tab(tab_id, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .child(
+                                svg()
+                                    .path("chrome-icons/close.svg")
+                                    .size(px(12.0))
+                                    .text_color(colors().muted)
+                                    .group_hover("tab-close", |icon| {
+                                        icon.text_color(colors().foreground)
+                                    }),
+                            ),
+                    )
+                    .into_any_element()
             }))
-            .when(show_review_tab, |list| {
-                list.child(self.review_tab(review_tab_number, cx))
-            })
             .child(
                 super::titlebar::titlebar_button("tab-bar-new-tab", true)
-                    .tooltip(|_, cx| super::sidebar_tooltip("Nueva pestaña · ⌘T", cx))
+                    .tooltip(|_, cx| super::sidebar_tooltip("New tab · ⌘T", cx))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_terminal_tab_in_project(window, cx);
                     }))
+                    .on_drop(cx.listener(|this, drag: &PaneDrag, window, cx| {
+                        this.detach_pane(drag.session_id, None, window, cx);
+                    }))
+                    .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
+                        this.drop_tab_in_strip(drag, None, window, cx);
+                    }))
+                    .drag_over::<PaneDrag>(|style, _, _, _| style.bg(colors().selection))
+                    .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().selection))
                     .child(super::titlebar::titlebar_icon("chrome-icons/plus.svg")),
             )
-            .when(can_reorder, |list| {
-                list.child(
-                    div()
-                        .id("tab-drop-end")
-                        .h_full()
-                        .w(px(24.0))
-                        .flex_none()
-                        .can_drop(|value, _, _| value.downcast_ref::<TabDrag>().is_some())
-                        .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().hover))
-                        .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
-                            this.reorder_tab(drag.tab_id, None, window, cx);
-                        })),
-                )
-            });
+            .child(self.tab_strip_end_target(cx));
 
         div()
             .h_full()
@@ -346,10 +335,8 @@ impl super::WorkspaceView {
                 let highlighted = terminal
                     .as_ref()
                     .is_some_and(|terminal| terminal.read(cx).focus_handle(cx).is_focused(window));
-                let can_drag = self
-                    .snapshot
-                    .selected_tab()
-                    .is_some_and(|tab| tab.zoomed_session_id.is_none() && pane_count > 1);
+                let review_split = self.review_visible(cx) && !self.review_covers_terminal(cx);
+                let can_drag = pane_count > 1 || review_split;
                 let dragging_pane = match self.reorder_drag {
                     Some(ReorderDrag::Pane(id)) if cx.has_active_drag() => Some(id),
                     _ => None,
@@ -357,10 +344,14 @@ impl super::WorkspaceView {
                 let is_source = dragging_pane == Some(session_id);
                 let drag = PaneDrag {
                     session_id,
+                    title: self
+                        .pane_identity_by_id(session_id, cx)
+                        .map(|identity| identity.title)
+                        .unwrap_or_else(|| "Terminal".into()),
                     preview: drag_preview,
                 };
                 // Split panes get a header: grip to reorder, title, zoom, close.
-                let show_header = pane_count > 1;
+                let show_header = can_drag;
                 let zoomed = self
                     .snapshot
                     .selected_tab()
@@ -441,6 +432,7 @@ impl super::WorkspaceView {
                                 this.swap_panes(drag.session_id, session_id, window, cx);
                             })),
                     )
+                    .child(self.pane_tab_drop_targets(session_id, cx))
                     .into_any_element()
             }
             PaneLayoutSnapshot::Split {
@@ -591,7 +583,7 @@ impl super::WorkspaceView {
             .when(can_drag, |header| {
                 header
                     .cursor_move()
-                    .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.preview.clone()))
+                    .on_drag(drag, |drag, offset, _, cx| drag.preview(offset, cx))
             })
             .on_mouse_down(
                 MouseButton::Left,
@@ -653,9 +645,9 @@ impl super::WorkspaceView {
                         "chrome-icons/maximize.svg"
                     },
                     if zoomed {
-                        "Restaurar pane · ⇧⌘↵"
+                        "Restore pane · ⇧⌘↵"
                     } else {
-                        "Agrandar pane · ⇧⌘↵"
+                        "Zoom pane · ⇧⌘↵"
                     },
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -666,7 +658,7 @@ impl super::WorkspaceView {
                 button(
                     format!("pane-close-{session_id}"),
                     "chrome-icons/close.svg",
-                    "Cerrar pane",
+                    "Close pane",
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.close_pane(session_id, window, cx);
@@ -704,6 +696,23 @@ impl super::WorkspaceView {
             self.refresh_project_files(cx);
             self.persist(cx);
             self.focus_selected_terminal(window, cx);
+        }
+    }
+
+    pub(super) fn close_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        let review_in_front = self.review_covers_terminal(cx);
+        let closing_selected = self
+            .snapshot
+            .selected_tab()
+            .is_some_and(|tab| tab.id == tab_id);
+        if self.snapshot.close_tab(tab_id) {
+            self.reconcile_terminal_views(cx);
+            if closing_selected && !review_in_front {
+                self.show_terminal_tab(window, cx);
+            } else {
+                self.persist(cx);
+            }
+            cx.notify();
         }
     }
 
@@ -817,6 +826,7 @@ impl super::WorkspaceView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pane_drop_preview = None;
         if self.pane_resize_dirty {
             self.pane_resize_dirty = false;
             self.persist(cx);

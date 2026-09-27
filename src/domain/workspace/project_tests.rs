@@ -327,7 +327,7 @@ fn legacy_flat_order_and_spacers_preserve_all_sessions_once() {
     snapshot.normalize();
     assert_eq!(session_ids(&snapshot), [second, first]);
     assert_eq!(snapshot.projects[0].id, space);
-    assert_eq!(snapshot.projects[0].name, "Espacio");
+    assert_eq!(snapshot.projects[0].name, "Workspace");
     assert_eq!(snapshot.selected_workspace().unwrap().id, second);
 }
 

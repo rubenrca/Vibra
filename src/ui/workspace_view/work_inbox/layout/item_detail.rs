@@ -20,11 +20,7 @@ impl WorkspaceView {
                         .size(px(24.0))
                         .text_color(colors().subtle),
                 )
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .child("Selecciona una tarea del Inbox"),
-                )
+                .child(div().text_size(px(13.0)).child("Select a task from Inbox"))
                 .into_any_element();
         };
         let state = self.work_inbox.details.get(&item.url);
@@ -81,15 +77,15 @@ impl WorkspaceView {
                             .filter(|name| *name != &item.author)
                             .map(|name| person(name)),
                     )
-                    .when(item.assignees.is_empty(), |row| row.child("· Sin asignar"))
+                    .when(item.assignees.is_empty(), |row| row.child("· Unassigned"))
                     .when(item.created_at > 0, |row| {
                         row.child(format!(
-                            "· Creado {}",
+                            "· Created {}",
                             relative_time(unix_now(), item.created_at)
                         ))
                     })
                     .child(format!(
-                        "· Actualizado {}",
+                        "· Updated {}",
                         relative_time(unix_now(), item.updated_at)
                     )),
             )
@@ -111,7 +107,7 @@ impl WorkspaceView {
                                     .text_color(colors().muted),
                             )
                             .child(format!("{} ← {}", detail.base_ref, detail.head_ref))
-                            .child(quiet_button("copy-inbox-branch", "Copiar").on_click(
+                            .child(quiet_button("copy-inbox-branch", "Copy").on_click(
                                 move |_, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(branch.clone()))
                                 },
@@ -138,7 +134,7 @@ impl WorkspaceView {
                         .gap_2()
                         .text_size(px(11.0))
                         .text_color(colors().subtle)
-                        .child("Sesiones relacionadas")
+                        .child("Related sessions")
                         .children(sessions.into_iter().map(|session| {
                             let pane = session.id;
                             quiet_button(
@@ -163,7 +159,7 @@ impl WorkspaceView {
                 .gap_2()
                 .when(item.kind == WorkKind::Issue, |row| {
                     row.child(
-                        section_button("inbox-send-to-agent", "Enviar al agente", true)
+                        section_button("inbox-send-to-agent", "Send to agent", true)
                             .on_click(cx.listener(|this, _, _, cx| this.open_inbox_composer(cx))),
                     )
                 })
@@ -176,7 +172,7 @@ impl WorkspaceView {
                                 if item.status == WorkStatus::Open {
                                     "Merge ▾"
                                 } else {
-                                    "Acciones ▾"
+                                    "Actions ▾"
                                 },
                                 true,
                             )
@@ -194,7 +190,7 @@ impl WorkspaceView {
                 .child(
                     quiet_button(
                         "inbox-external",
-                        format!("Abrir en {} ↗", item.source.label()),
+                        format!("Open in {} ↗", item.source.label()),
                     )
                     .on_click(move |_, _, cx| cx.open_url(&url)),
                 ),
@@ -205,18 +201,59 @@ impl WorkspaceView {
             && key == &item.url
         {
             let busy = state.is_some_and(|state| state.mutation_busy);
-            header = header.child(div().p_3().rounded(px(6.0)).border_1().border_color(colors().border_subtle).flex().flex_col().gap_2()
-                .child(div().text_size(px(12.0)).child(format!("{} · {} {}", action.label(), item.repository, item.reference)))
-                .child(div().text_size(px(11.0)).text_color(colors().muted).child(
-                    if matches!(action, PrAction::Merge | PrAction::Squash | PrAction::Rebase) {
-                        "Esta acción integra los cambios en la rama base del repositorio remoto."
-                    } else { "Esta acción actualiza el estado del pull request en GitHub." }))
-                .when_some(state.and_then(|state| state.mutation_error.as_ref()), |row, error| row.child(message(error, true)))
-                .child(div().flex().gap_2()
-                    .child(section_button("inbox-confirm-action", if busy { "Aplicando…" } else { "Confirmar" }, true)
-                        .on_click(cx.listener(|this, _, _, cx| this.confirm_inbox_pr_action(cx))))
-                    .child(quiet_button("inbox-cancel-action", "Cancelar")
-                        .on_click(cx.listener(move |this, _, _, cx| { if !busy { this.work_inbox.confirmation = None; cx.notify(); } })))));
+            header = header.child(
+                div()
+                    .p_3()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_size(px(12.0)).child(format!(
+                        "{} · {} {}",
+                        action.label(),
+                        item.repository,
+                        item.reference
+                    )))
+                    .child(div().text_size(px(11.0)).text_color(colors().muted).child(
+                        if matches!(
+                            action,
+                            PrAction::Merge | PrAction::Squash | PrAction::Rebase
+                        ) {
+                            "This action merges changes into the remote repository's base branch."
+                        } else {
+                            "This action updates the pull request status on GitHub."
+                        },
+                    ))
+                    .when_some(
+                        state.and_then(|state| state.mutation_error.as_ref()),
+                        |row, error| row.child(message(error, true)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                section_button(
+                                    "inbox-confirm-action",
+                                    if busy { "Applying…" } else { "Confirm" },
+                                    true,
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.confirm_inbox_pr_action(cx)),
+                                ),
+                            )
+                            .child(quiet_button("inbox-cancel-action", "Cancel").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    if !busy {
+                                        this.work_inbox.confirmation = None;
+                                        cx.notify();
+                                    }
+                                }),
+                            )),
+                    ),
+            );
         }
         if item.kind == WorkKind::PullRequest {
             header = header.pb_0().child(
@@ -334,13 +371,13 @@ impl WorkspaceView {
         content = content.child(markdown(
             &format!("inbox-body-{}", item.url),
             if body.trim().is_empty() {
-                "Sin descripción."
+                "No description."
             } else {
                 body
             },
         ));
         if state.is_some_and(|state| state.summary.loading) {
-            content = content.child(message("Actualizando conversación…", false));
+            content = content.child(message("Refreshing conversation…", false));
         }
         if let Some(detail) = detail {
             if !detail.comments.is_empty() {
@@ -351,14 +388,14 @@ impl WorkspaceView {
                         .border_color(colors().border_subtle)
                         .text_size(px(12.0))
                         .text_color(colors().muted)
-                        .child(format!("{} comentarios", detail.comments.len())),
+                        .child(format!("{} comments", detail.comments.len())),
                 );
             }
             for comment in &detail.comments {
                 content = content.child(self.inbox_comment_card(&item.url, comment, cx));
             }
             if detail.truncated {
-                content = content.child(message("Se muestran los comentarios recientes. La conversación completa está en el servicio de origen.", false));
+                content = content.child(message("Showing recent comments. The full conversation is available on the source service.", false));
             }
         }
         let draft = state.map(|state| state.draft.clone()).unwrap_or_default();
@@ -380,8 +417,8 @@ impl WorkspaceView {
                                 .items_center()
                                 .gap_2()
                                 .text_size(px(12.0))
-                                .child(format!("Responder a {author}"))
-                                .child(quiet_button("inbox-cancel-reply", "Cancelar").on_click(
+                                .child(format!("Reply to {author}"))
+                                .child(quiet_button("inbox-cancel-reply", "Cancel").on_click(
                                     cx.listener(|this, _, _, cx| {
                                         if let Some(url) = this.work_inbox.selected.clone() {
                                             this.work_inbox.details.entry(url).or_default().reply =
@@ -420,7 +457,7 @@ impl WorkspaceView {
                             }
                         }))
                         .child(if draft.is_empty() {
-                            "Escribe un comentario…".into()
+                            "Write a comment…".into()
                         } else {
                             draft
                         }),
@@ -434,9 +471,9 @@ impl WorkspaceView {
                         section_button(
                             "inbox-post-comment",
                             if busy {
-                                "Publicando…"
+                                "Posting…"
                             } else {
-                                "Publicar comentario · ⌘↩"
+                                "Post comment · ⌘↩"
                             },
                             false,
                         )
@@ -481,7 +518,7 @@ impl WorkspaceView {
                         row.child(
                             quiet_button(
                                 SharedString::from(format!("reply-{}", comment.id)),
-                                "Responder",
+                                "Reply",
                             )
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
@@ -506,7 +543,7 @@ impl WorkspaceView {
                 card.child(
                     quiet_button(
                         SharedString::from(format!("comment-link-{}", comment.id)),
-                        "Ver comentario ↗",
+                        "View comment ↗",
                     )
                     .on_click(move |_, _, cx| cx.open_url(&link)),
                 )
@@ -535,7 +572,7 @@ impl WorkspaceView {
             return message(
                 state
                     .and_then(|state| state.diff.error.as_deref())
-                    .unwrap_or("Cargando archivos del PR…"),
+                    .unwrap_or("Loading pull request files…"),
                 state.is_some_and(|state| state.diff.error.is_some()),
             )
             .into_any_element();
@@ -545,7 +582,7 @@ impl WorkspaceView {
                 .text_size(px(12.0))
                 .text_color(colors().muted)
                 .child(format!(
-                    "{} archivos · +{} −{}",
+                    "{} files · +{} −{}",
                     diff.files.len(),
                     diff.files.iter().map(|f| f.additions).sum::<u64>(),
                     diff.files.iter().map(|f| f.deletions).sum::<u64>()
@@ -624,7 +661,7 @@ impl WorkspaceView {
             if !collapsed {
                 if file.patch.is_empty() {
                     card = card.child(message(
-                        "Sin patch textual disponible (archivo binario o cambio demasiado grande).",
+                        "No text patch available (binary file or change too large).",
                         false,
                     ));
                 } else {
@@ -698,7 +735,7 @@ impl WorkspaceView {
         }
         if diff.truncated {
             body = body.child(message(
-                "La lista de archivos está truncada. Revisa el resto en GitHub.",
+                "The file list is truncated. View the rest on GitHub.",
                 true,
             ));
         }
@@ -720,7 +757,7 @@ impl WorkspaceView {
                     icon_button(
                         "inbox-refresh-checks",
                         "chrome-icons/refresh.svg",
-                        "Actualizar checks",
+                        "Refresh checks",
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.load_inbox_detail(true, cx))),
                 ),
@@ -730,11 +767,11 @@ impl WorkspaceView {
         }
         let Some(checks) = state.and_then(|state| state.checks.data.as_ref()) else {
             return body
-                .child(message("Cargando checks…", false))
+                .child(message("Loading checks…", false))
                 .into_any_element();
         };
         if checks.is_empty() {
-            body = body.child(message("Este PR no tiene checks registrados.", false));
+            body = body.child(message("This pull request has no checks.", false));
         }
         for (index, check) in checks.iter().enumerate() {
             let color = if check.failed() {
@@ -801,11 +838,7 @@ impl WorkspaceView {
                             row.child(
                                 quiet_button(
                                     SharedString::from(format!("check-log-{index}")),
-                                    if expanded {
-                                        "Ocultar registro"
-                                    } else {
-                                        "Registro"
-                                    },
+                                    if expanded { "Hide log" } else { "Log" },
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -831,7 +864,7 @@ impl WorkspaceView {
                             row.child(
                                 quiet_button(
                                     SharedString::from(format!("check-link-{index}")),
-                                    "Ver ↗",
+                                    "View ↗",
                                 )
                                 .on_click(move |_, _, cx| cx.open_url(&url)),
                             )
@@ -868,7 +901,7 @@ impl WorkspaceView {
                         .min_w(px(0.0)),
                     );
                 } else if log.is_none_or(|log| log.loading) {
-                    card = card.child(message("Cargando registro…", false));
+                    card = card.child(message("Loading log…", false));
                 }
             }
             body = body.child(card);
@@ -907,24 +940,20 @@ impl WorkspaceView {
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .child(format!(
                                 "{} · {}",
-                                if ask { "Ask" } else { "Enviar al agente" },
+                                if ask { "Ask" } else { "Send to agent" },
                                 item.reference
                             )),
                     )
                     .child(
-                        icon_button(
-                            "inbox-close-agent",
-                            "chrome-icons/close.svg",
-                            "Cerrar panel",
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.work_inbox.discussion_open = false;
-                            this.work_inbox.composer_open = false;
-                            this.work_inbox.composer_editing = false;
-                            this.sync_terminal_surface_visibility(cx);
-                            this.focus_handle.focus(window);
-                            cx.notify();
-                        })),
+                        icon_button("inbox-close-agent", "chrome-icons/close.svg", "Close panel")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.work_inbox.discussion_open = false;
+                                this.work_inbox.composer_open = false;
+                                this.work_inbox.composer_editing = false;
+                                this.sync_terminal_surface_visibility(cx);
+                                this.focus_handle.focus(window);
+                                cx.notify();
+                            })),
                     ),
             )
             .when_some(self.work_inbox.action_error.as_ref(), |panel, error| {
@@ -948,7 +977,7 @@ impl WorkspaceView {
                         .find(|project| project.id == id)
                 })
                 .map(|project| project.name.as_str())
-                .unwrap_or("Elegir proyecto");
+                .unwrap_or("Choose project");
             panel = panel.child(
                 div()
                     .flex_1()
@@ -1041,7 +1070,7 @@ impl WorkspaceView {
                                     cx.notify();
                                 }))
                                 .child(if self.work_inbox.composer_note.is_empty() {
-                                    "Añade instrucciones para el agente…".into()
+                                    "Add instructions for the agent…".into()
                                 } else {
                                     self.work_inbox.composer_note.clone()
                                 }),
@@ -1051,7 +1080,7 @@ impl WorkspaceView {
                         div().flex().justify_end().child(
                             section_button(
                                 "inbox-confirm-send",
-                                if ask { "Abrir conversación" } else { "Enviar" },
+                                if ask { "Open conversation" } else { "Send" },
                                 true,
                             )
                             .on_click(cx.listener(
@@ -1101,9 +1130,9 @@ fn person(name: &str) -> gpui::Div {
 
 fn review_label(value: &str) -> &'static str {
     match value {
-        "APPROVED" => "Aprobado",
-        "CHANGES_REQUESTED" => "Cambios solicitados",
-        "REVIEW_REQUIRED" => "Revisión pendiente",
+        "APPROVED" => "Approved",
+        "CHANGES_REQUESTED" => "Changes requested",
+        "REVIEW_REQUIRED" => "Review required",
         _ => "",
     }
 }

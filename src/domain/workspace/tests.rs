@@ -398,7 +398,11 @@ fn tabs_can_be_reordered_and_addressed_by_number() {
         vec![first, second, third]
     );
 
-    assert!(snapshot.move_tab(third, Some(first)));
+    assert!(snapshot.move_workspace_tab(
+        WorkspaceTabId::Terminal(third),
+        Some(WorkspaceTabId::Terminal(first)),
+        false
+    ));
     assert_eq!(
         snapshot
             .selected_workspace()
@@ -410,8 +414,12 @@ fn tabs_can_be_reordered_and_addressed_by_number() {
         vec![third, first, second]
     );
     assert_eq!(snapshot.selected_tab().unwrap().id, third);
-    assert!(!snapshot.move_tab(third, Some(first)));
-    assert!(snapshot.move_tab(third, None));
+    assert!(!snapshot.move_workspace_tab(
+        WorkspaceTabId::Terminal(third),
+        Some(WorkspaceTabId::Terminal(first)),
+        false
+    ));
+    assert!(snapshot.move_workspace_tab(WorkspaceTabId::Terminal(third), None, false));
     assert_eq!(
         snapshot
             .selected_workspace()
@@ -422,6 +430,27 @@ fn tabs_can_be_reordered_and_addressed_by_number() {
             .collect::<Vec<_>>(),
         vec![first, second, third]
     );
+}
+
+#[test]
+fn closing_tabs_removes_their_panes_and_preserves_background_selection() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(Path::new("/tmp/close-tabs"));
+    let project = snapshot.selected_project_id.unwrap();
+    let first = snapshot.selected_tab().unwrap().id;
+    snapshot.split_selected_terminal(PaneSplitDirection::Right);
+    let (second, _) = snapshot.open_tab_in_project(project, true).unwrap();
+    let (third, _) = snapshot.open_tab_in_project(project, true).unwrap();
+    assert!(snapshot.close_tab(first));
+    assert_eq!(snapshot.terminal_sessions().count(), 2);
+    assert_eq!(snapshot.selected_tab().unwrap().id, third);
+    assert!(snapshot.close_tab(third));
+    assert_eq!(snapshot.selected_tab().unwrap().id, second);
+    assert!(snapshot.close_tab(second));
+    assert!(snapshot.selected_workspace().is_none());
+    assert_eq!(snapshot.selected_project_id, Some(project));
+    assert!(snapshot.projects.iter().any(|item| item.id == project));
+    assert!(!snapshot.close_tab(Uuid::new_v4()));
 }
 
 #[test]

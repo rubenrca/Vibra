@@ -106,7 +106,7 @@ impl WorkspaceView {
         if !authorized {
             let _ = request
                 .response
-                .send(AutomationResponse::failure("capacidad inválida o expirada"));
+                .send(AutomationResponse::failure("invalid or expired capability"));
             return;
         }
 
@@ -275,7 +275,7 @@ impl WorkspaceView {
                 .as_ref()
                 .or(previous)
                 .map(|snapshot| snapshot.kind.clone())
-                .unwrap_or_else(|| "Agente".to_owned());
+                .unwrap_or_else(|| "Agent".to_owned());
             let seen = self.window_is_active && self.session_is_selected(pane_id, cx);
             self.record_agent_event(pane_id, event, &agent, seen);
         }
@@ -293,7 +293,7 @@ impl WorkspaceView {
                         .as_ref()
                         .or(previous)
                         .map(|snapshot| snapshot.kind.as_str())
-                        .unwrap_or("Agente");
+                        .unwrap_or("Agent");
                     let (title, body) = agent_notification_copy(notification.kind, agent);
                     crate::infrastructure::notifications::deliver(
                         &title,

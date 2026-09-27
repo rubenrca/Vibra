@@ -2,6 +2,7 @@ pub mod agent_marks;
 mod diff_document;
 mod diff_rows;
 pub mod diff_view;
+mod file_view;
 mod git_graph;
 pub mod idle;
 mod markdown;

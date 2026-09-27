@@ -97,8 +97,8 @@ impl super::WorkspaceView {
             .snapshot
             .selected_workspace()
             .and_then(|workspace| workspace.selected_tab_id);
-        let show_tab_selector =
-            self.workspace_section == WorkspaceSection::Workspace && !tabs.is_empty();
+        let show_tab_selector = self.workspace_section == WorkspaceSection::Workspace
+            && !self.visible_tab_order(cx).is_empty();
         let section_label = match self.workspace_section {
             WorkspaceSection::Workspace => self
                 .snapshot
@@ -200,14 +200,14 @@ impl super::WorkspaceView {
                             .child(self.workspace_title_action(
                                 "workspace-file-search",
                                 "chrome-icons/search.svg",
-                                "Buscar archivo · ⌘P",
+                                "Find file · ⌘P",
                                 cx,
                                 |this, _, cx| this.open_palette(PaletteMode::Files, cx),
                             ))
                             .child(self.workspace_title_action(
                                 "workspace-new-tab",
                                 "chrome-icons/plus.svg",
-                                "Nueva pestaña · ⌘T",
+                                "New tab · ⌘T",
                                 cx,
                                 |this, window, cx| this.open_terminal_tab_in_project(window, cx),
                             ))
@@ -338,23 +338,16 @@ impl super::WorkspaceView {
         } else {
             self.workspace_section == WorkspaceSection::Workspace && self.right_sidebar_visible
         };
-        let (icon, label) = match (left, open) {
-            (true, true) => (
-                "chrome-icons/panel-left-close.svg",
-                "Ocultar barra lateral · ⌘B",
-            ),
-            (true, false) => (
-                "chrome-icons/panel-left-open.svg",
-                "Mostrar barra lateral · ⌘B",
-            ),
-            (false, true) => (
-                "chrome-icons/panel-right-close.svg",
-                "Ocultar panel derecho · ⌥⌘B",
-            ),
-            (false, false) => (
-                "chrome-icons/panel-right-open.svg",
-                "Mostrar panel derecho · ⌥⌘B",
-            ),
+        let icon = if left {
+            "chrome-icons/panel-left.svg"
+        } else {
+            "chrome-icons/panel-right.svg"
+        };
+        let label = match (left, open) {
+            (true, true) => "Hide sidebar · ⌘B",
+            (true, false) => "Show sidebar · ⌘B",
+            (false, true) => "Hide right panel · ⌥⌘B",
+            (false, false) => "Show right panel · ⌥⌘B",
         };
         titlebar_button(id, true)
             .text_color(if open {
@@ -374,7 +367,7 @@ impl super::WorkspaceView {
 
     pub(super) fn ide_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         titlebar_button("open-ide", true)
-            .tooltip(|_, cx| sidebar_tooltip("Abrir en IDE", cx))
+            .tooltip(|_, cx| sidebar_tooltip("Open in IDE", cx))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_ide(&OpenIde, window, cx);
@@ -402,7 +395,7 @@ impl super::WorkspaceView {
                         .top(px(TITLEBAR_HEIGHT - 2.0))
                         .right(px(right))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(menu_heading("Abrir carpeta en"))
+                        .child(menu_heading("Open folder in"))
                         .when(self.ide_discovering, |menu| {
                             menu.child(
                                 div()
@@ -411,7 +404,7 @@ impl super::WorkspaceView {
                                     .flex()
                                     .items_center()
                                     .text_color(colors().muted)
-                                    .child("Buscando editores…"),
+                                    .child("Finding editors…"),
                             )
                         })
                         .children(self.installed_editors.clone().into_iter().enumerate().map(
@@ -518,14 +511,14 @@ impl super::WorkspaceView {
                 match result {
                     Ok(()) => {
                         if this.persistence_error.as_ref().is_some_and(|error| {
-                            error.to_string().starts_with("No se pudo abrir el IDE:")
+                            error.to_string().starts_with("Could not open the IDE:")
                         }) {
                             this.persistence_error = None;
                         }
                     }
                     Err(error) => {
                         this.persistence_error =
-                            Some(format!("No se pudo abrir el IDE: {error}").into());
+                            Some(format!("Could not open the IDE: {error}").into());
                     }
                 }
                 cx.notify();

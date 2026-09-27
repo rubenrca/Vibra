@@ -37,6 +37,7 @@ use gpui::{
 use uuid::Uuid;
 
 use crate::ports::files::FileEntryKind;
+use crate::ports::files::FileSystemPort;
 use crate::ports::git::{
     GitBranchChanges, GitBranchRef, GitCommit, GitCommitChanges, GitDiffRow, GitDiffRowKind,
     GitFileChange, GitFileStatus, GitHistory, GitPort, GitRepositorySnapshot,
@@ -46,6 +47,7 @@ use crate::ui::diff_rows::{
     BodyRow, CommentAnchor, CommentSide, DiffLayout, FlattenFile, FoldDirection, FoldReveal,
     ReviewComment, ReviewRow, body_row_anchors, body_rows, flatten, review_prompt,
 };
+use crate::ui::file_view::FileView;
 use crate::ui::git_graph::{GitGraphRow, assign_commit_lanes};
 use crate::ui::syntax::SyntaxSpan;
 use crate::ui::theme::{MONO_FONT, colors, floating_surface, mix, surface_tint};
@@ -209,6 +211,7 @@ pub struct DiffView {
     panel_visible: bool,
     review_expanded: bool,
     selected_review_path: Option<String>,
+    file_preview: Option<(PathBuf, gpui::Entity<FileView>)>,
     focus_handle: FocusHandle,
     refreshing: bool,
     /// First snapshot for the current root has finished (success, none, or error).
@@ -405,6 +408,7 @@ impl DiffView {
             panel_visible: false,
             review_expanded: false,
             selected_review_path: None,
+            file_preview: None,
             focus_handle: cx.focus_handle(),
             refreshing: false,
             snapshot_settled: false,
@@ -461,6 +465,9 @@ impl DiffView {
         self.layout = layout;
         self.wrap = wrap;
         self.font_size = font_size;
+        if let Some((_, file)) = &self.file_preview {
+            file.update(cx, |file, cx| file.set_font_size(font_size, cx));
+        }
         if wrap {
             self.h_offset = 0.0;
         }
@@ -486,6 +493,13 @@ impl DiffView {
     }
 
     pub fn review_title(&self) -> String {
+        if let Some((path, _)) = &self.file_preview {
+            return path
+                .file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned();
+        }
         self.selected_commit
             .as_ref()
             .filter(|_| self.mode == GitPanelMode::History)
@@ -497,7 +511,47 @@ impl DiffView {
         self.focus_handle.focus(window);
     }
 
+    pub(crate) fn review_icon(&self) -> &'static str {
+        if self.file_preview.is_some() {
+            "file-icons/file.svg"
+        } else if self.review_is_commit() {
+            "chrome-icons/git-commit.svg"
+        } else {
+            "chrome-icons/diff-unified.svg"
+        }
+    }
+
+    pub(crate) fn preview_path(&self) -> Option<&std::path::Path> {
+        self.file_preview.as_ref().map(|(path, _)| path.as_path())
+    }
+
+    pub(crate) fn open_file_preview(
+        &mut self,
+        path: PathBuf,
+        port: Arc<dyn FileSystemPort>,
+        cx: &mut Context<Self>,
+    ) {
+        let file = cx.new(|cx| {
+            FileView::new(
+                self.context_root.clone(),
+                path.clone(),
+                port,
+                self.font_size,
+                cx,
+            )
+        });
+        self.file_preview = Some((path, file));
+        self.set_review_expanded(true, cx);
+        cx.emit(DiffViewEvent::ReviewOpened);
+        cx.notify();
+    }
+
+    pub(crate) fn review_has_focus(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.focus_handle.contains_focused(window, cx)
+    }
+
     fn open_review_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.file_preview = None;
         self.selected_review_path = Some(path.clone());
         self.pending_reveal = Some(path.clone());
         self.expand_path(path, cx);
@@ -506,15 +560,6 @@ impl DiffView {
         cx.emit(DiffViewEvent::ReviewOpened);
         cx.emit(DiffViewEvent::Changed);
         cx.notify();
-    }
-
-    pub fn toggle_review_expanded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_review_expanded(!self.review_expanded, cx);
-        if self.review_expanded {
-            self.focus_handle.focus(window);
-        } else {
-            cx.emit(DiffViewEvent::ReturnToTerminal);
-        }
     }
 
     pub fn set_review_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
@@ -527,6 +572,7 @@ impl DiffView {
             cx.emit(DiffViewEvent::ReviewOpened);
         } else {
             self.review_focused = true;
+            self.file_preview = None;
             if std::mem::take(&mut self.return_to_worktree) {
                 self.set_mode(GitPanelMode::Worktree, cx);
             }
@@ -571,6 +617,7 @@ impl DiffView {
         if !exists {
             return false;
         }
+        self.file_preview = None;
         self.set_mode(GitPanelMode::Worktree, cx);
         self.selected_review_path = Some(relative_path.clone());
         self.pending_reveal = Some(relative_path.clone());
@@ -677,6 +724,9 @@ impl DiffView {
 
     /// Quiet refresh from workspace file events (no loading flash).
     pub fn refresh_from_fs_event(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, file)) = &self.file_preview {
+            file.update(cx, |file, cx| file.reload(cx));
+        }
         if self.panel_visible {
             self.refresh_visible_sources(false, cx);
         }
@@ -1139,6 +1189,7 @@ impl DiffView {
     }
 
     fn select_commit(&mut self, commit: GitCommit, cx: &mut Context<Self>) {
+        self.file_preview = None;
         self.comments.clear();
         self.review_delivery = None;
         self.draft = None;
@@ -1714,6 +1765,14 @@ impl DiffView {
 
     fn on_key_down(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
+        if self.file_preview.is_some() {
+            if matches!(key, "escape" | "esc") {
+                self.set_review_expanded(false, cx);
+                cx.emit(DiffViewEvent::ReturnToTerminal);
+                cx.stop_propagation();
+            }
+            return;
+        }
         let modifiers = &event.keystroke.modifiers;
         let Some(draft) = self.draft.as_mut() else {
             if self.review_expanded && matches!(key, "escape" | "esc") {
@@ -3499,6 +3558,16 @@ impl Render for DiffView {
     /// The central review. The Changes sidebar is rendered by
     /// [`DiffFileIndexView`] through [`DiffView::changes_panel`].
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some((_, file)) = &self.file_preview {
+            return div()
+                .id("document-preview")
+                .track_focus(&self.focus_handle)
+                .on_key_down(cx.listener(Self::on_key_down))
+                .size_full()
+                .overflow_hidden()
+                .child(file.clone())
+                .into_any_element();
+        }
         let error = match self.mode {
             GitPanelMode::Branch => self.branch_error.clone().or_else(|| self.error.clone()),
             GitPanelMode::LatestTurn => self.turn_error.clone().or_else(|| self.error.clone()),
@@ -3518,10 +3587,7 @@ impl Render for DiffView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            // Full-tab reviews are titled and closed by their tab.
-            .when(!self.review_focused, |view| {
-                view.child(self.review_pane_header(cx))
-            })
+            // WorkspaceView owns the tab / draggable pane header.
             .when_some(error, |view, error| {
                 view.child(
                     div()
@@ -3543,6 +3609,7 @@ impl Render for DiffView {
                     .child(self.review_toolbar(cx))
                     .child(self.review_list(window, cx)),
             })
+            .into_any_element()
     }
 }
 

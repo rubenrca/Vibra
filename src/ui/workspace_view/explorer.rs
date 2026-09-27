@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, MouseButton, MouseDownEvent, SharedString, div, prelude::*, px, svg,
-    uniform_list,
+    AnyElement, Context, MouseButton, MouseDownEvent, SharedString, Window, div, prelude::*, px,
+    svg, uniform_list,
 };
 
 use crate::ports::files::FileEntryKind;
@@ -106,6 +106,32 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    pub(super) fn open_project_file(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_file_path(path.clone(), cx);
+        self.close_palette(cx);
+        let (git_root, _) = self.diff_view.read(cx).status_index();
+        let relative = git_root
+            .as_deref()
+            .and_then(|root| relative_repo_path(&path, root));
+        let changed = relative.is_some_and(|relative| {
+            self.diff_view
+                .update(cx, |diff, cx| diff.select_path_if_changed(&relative, cx))
+        });
+        if changed {
+            self.right_sidebar_mode = RightSidebarMode::Diff;
+        } else {
+            let port = self.file_port.clone();
+            self.diff_view
+                .update(cx, |diff, cx| diff.open_file_preview(path, port, cx));
+        }
+        self.activate_review_tab(window, cx);
+    }
+
     pub(super) fn files_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let rows = Arc::clone(&self.project_files);
         let selected_path = self.selected_file_path.clone();
@@ -158,7 +184,7 @@ impl WorkspaceView {
                                                 rel.as_ref()
                                                     .and_then(|rel| git_statuses.get(rel).copied())
                                             };
-                                            this.project_file_row(row, selected, rel, status, cx)
+                                            this.project_file_row(row, selected, status, cx)
                                         })
                                         .collect()
                                 },
@@ -189,7 +215,6 @@ impl WorkspaceView {
         &self,
         row: &ProjectFileRow,
         selected: bool,
-        rel_for_click: Option<String>,
         status: Option<GitFileStatus>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -235,19 +260,7 @@ impl WorkspaceView {
                         }
                         return;
                     }
-                    this.select_file_path(path.clone(), cx);
-                    if let Some(rel) = rel_for_click.as_ref() {
-                        // Selecting any changed file peeks it in Git; documents
-                        // never replace the terminal surface.
-                        let selected = this
-                            .diff_view
-                            .update(cx, |diff, cx| diff.select_path_if_changed(rel, cx));
-                        if selected {
-                            this.right_sidebar_mode = RightSidebarMode::Diff;
-                            this.set_right_sidebar_visible(true, true, cx);
-                            this.diff_view.read(cx).focus_review(window);
-                        }
-                    }
+                    this.open_project_file(path.clone(), window, cx);
                 }),
             )
             // Indent + soft guide for nested rows.
@@ -476,7 +489,7 @@ impl WorkspaceView {
                 action(
                     "explorer-new-file",
                     "chrome-icons/file-plus.svg",
-                    "Nuevo archivo",
+                    "New file",
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.begin_new_entry(false, cx))),
             )
@@ -484,7 +497,7 @@ impl WorkspaceView {
                 action(
                     "explorer-new-folder",
                     "chrome-icons/folder-plus.svg",
-                    "Nueva carpeta",
+                    "New folder",
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.begin_new_entry(true, cx))),
             )
@@ -492,12 +505,12 @@ impl WorkspaceView {
                 action(
                     "explorer-collapse",
                     "chrome-icons/collapse-all.svg",
-                    "Colapsar carpetas",
+                    "Collapse folders",
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.collapse_file_tree(cx))),
             )
             .child(
-                action("explorer-refresh", "chrome-icons/refresh.svg", "Actualizar")
+                action("explorer-refresh", "chrome-icons/refresh.svg", "Refresh")
                     .on_click(cx.listener(|this, _, _, cx| this.refresh_project_files(cx))),
             )
             .into_any_element()

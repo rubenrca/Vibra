@@ -1,14 +1,14 @@
 //! Drag payloads and floating previews for tabs, panes, and projects.
 
-use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, prelude::*, px};
+use gpui::{
+    App, AppContext, Context, Entity, IntoElement, ParentElement, Pixels, Point, Render, Styled,
+    Window, div, prelude::*, px, svg,
+};
 use uuid::Uuid;
 
-use crate::domain::workspace::{PaneBranch, WorkspaceSplitAxis};
+use crate::domain::workspace::{PaneBranch, WorkspaceSplitAxis, WorkspaceTabId};
 use crate::ui::terminal::TerminalDragPreview;
-use crate::ui::theme::{MONO_FONT, colors};
-
-use super::chrome::TAB_LABEL_INSET;
-use super::panes::{TAB_HEIGHT, TAB_RADIUS, TAB_TEXT_SIZE};
+use crate::ui::theme::{colors, floating_surface};
 
 #[derive(Clone)]
 pub(crate) struct PaneDividerDrag {
@@ -22,29 +22,58 @@ pub(crate) struct PaneDividerDragView {
 
 #[derive(Clone)]
 pub(crate) struct TabDrag {
-    pub tab_id: Uuid,
+    pub tab_id: WorkspaceTabId,
     pub title: String,
-    pub selected: bool,
-    pub shortcut: Option<String>,
-    pub tab_count: usize,
+    pub from_pane: bool,
 }
 
 pub(crate) struct TabDragView {
     pub title: String,
-    pub selected: bool,
-    pub shortcut: Option<String>,
-    pub width: f32,
+    pub icon: &'static str,
+    pub kind: &'static str,
+    pub cursor_offset: Point<Pixels>,
+    pub terminal: Option<Entity<TerminalDragPreview>>,
 }
 
 #[derive(Clone)]
 pub(crate) struct PaneDrag {
     pub session_id: Uuid,
+    pub title: String,
     pub preview: TerminalDragPreview,
+}
+
+impl TabDrag {
+    pub fn preview(&self, cursor_offset: Point<Pixels>, cx: &mut App) -> Entity<TabDragView> {
+        cx.new(|_| TabDragView {
+            title: self.title.clone(),
+            icon: if self.tab_id == WorkspaceTabId::Review {
+                "chrome-icons/diff-unified.svg"
+            } else {
+                "chrome-icons/terminal.svg"
+            },
+            kind: if self.from_pane { "Panel" } else { "Tab" },
+            cursor_offset,
+            terminal: None,
+        })
+    }
+}
+
+impl PaneDrag {
+    pub fn preview(&self, cursor_offset: Point<Pixels>, cx: &mut App) -> Entity<TabDragView> {
+        let terminal = cx.new(|_| self.preview.clone().thumbnail(262.0, 120.0));
+        cx.new(|_| TabDragView {
+            title: self.title.clone(),
+            icon: "chrome-icons/terminal.svg",
+            kind: "Panel",
+            cursor_offset,
+            terminal: Some(terminal),
+        })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReorderDrag {
-    Tab(Uuid),
+    Tab(WorkspaceTabId),
     Pane(Uuid),
 }
 
@@ -79,50 +108,74 @@ impl Render for SidebarResizeDragView {
 
 impl Render for TabDragView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.selected;
+        // GPUI anchors a drag at the grab point. Offset the compact preview so
+        // even a grab near the far edge of a wide pane stays beside the cursor.
         div()
-            .h(px(TAB_HEIGHT))
-            .w(px(self.width))
             .relative()
+            .left(self.cursor_offset.x + px(14.0))
+            .top(self.cursor_offset.y + px(18.0))
+            .w(px(264.0))
             .flex()
-            .items_center()
-            .justify_center()
-            .px(px(TAB_LABEL_INSET))
+            .flex_col()
             .overflow_hidden()
-            .rounded(px(TAB_RADIUS))
-            .bg(if selected {
-                colors().selection
-            } else {
-                gpui::rgba(0x00000000)
-            })
-            .text_color(colors().foreground)
-            .shadow_sm()
-            .opacity(0.96)
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(gpui::Hsla::from(colors().accent).opacity(0.45))
+            .bg(floating_surface(colors().elevated))
+            .shadow_lg()
             .child(
                 div()
-                    .min_w(px(0.0))
-                    .flex_1()
-                    .truncate()
-                    .text_center()
-                    .text_size(px(TAB_TEXT_SIZE))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(self.title.clone()),
+                    .h(px(46.0))
+                    .px(px(12.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(
+                        svg()
+                            .path(self.icon)
+                            .size(px(17.0))
+                            .flex_none()
+                            .text_color(colors().accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(colors().muted)
+                                    .child(self.kind),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(12.5))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(colors().foreground)
+                                    .child(self.title.clone()),
+                            ),
+                    )
+                    .child(
+                        svg()
+                            .path("chrome-icons/grip.svg")
+                            .size(px(14.0))
+                            .text_color(colors().subtle),
+                    ),
             )
-            .when_some(self.shortcut.clone(), |tab, shortcut| {
-                tab.child(
+            .when_some(self.terminal.clone(), |card, terminal| {
+                card.child(
                     div()
-                        .absolute()
-                        .right(px(10.0))
-                        .flex_none()
-                        .font_family(MONO_FONT)
-                        .text_size(px(9.5))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(if selected {
-                            colors().muted
-                        } else {
-                            colors().subtle
-                        })
-                        .child(shortcut),
+                        .flex()
+                        .justify_center()
+                        .bg(colors().terminal)
+                        .border_t_1()
+                        .border_color(colors().border_subtle)
+                        .overflow_hidden()
+                        .child(terminal),
                 )
             })
     }

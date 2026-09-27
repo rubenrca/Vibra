@@ -244,7 +244,7 @@ impl WorkspaceView {
         let Some(project_id) = project_id else {
             self.report_automation_failure(
                 &automation,
-                "No hay un proyecto donde ejecutarla.",
+                "No project available to run this automation.",
                 reveal,
             );
             return None;
@@ -261,7 +261,7 @@ impl WorkspaceView {
                 self.inbox.push(
                     InboxKind::AutomationStarted,
                     Some(session_id),
-                    format!("{} se está ejecutando", automation.name),
+                    format!("{} is running", automation.name),
                     detail,
                     now,
                     reveal,
@@ -272,8 +272,8 @@ impl WorkspaceView {
                 self.inbox.push(
                     InboxKind::AutomationFailed,
                     Some(session_id),
-                    format!("{} no pudo iniciar", automation.name),
-                    "La terminal no aceptó el comando.".to_owned(),
+                    format!("{} could not start", automation.name),
+                    "The terminal did not accept the command.".to_owned(),
                     now,
                     reveal,
                 );
@@ -300,7 +300,7 @@ impl WorkspaceView {
         let (_, session_id) = self
             .snapshot
             .open_tab_in_project(project_id, reveal)
-            .ok_or("El proyecto no tiene una carpeta asociada.")?;
+            .ok_or("The project has no associated folder.")?;
         // The tab keeps the automation's name while its shell runs.
         self.pane_names.insert(session_id, title.to_owned());
         self.reconcile_terminal_views(cx);
@@ -323,7 +323,7 @@ impl WorkspaceView {
         self.inbox.push(
             InboxKind::AutomationFailed,
             None,
-            format!("{} no pudo iniciar", automation.name),
+            format!("{} could not start", automation.name),
             reason.to_owned(),
             unix_now(),
             seen,
@@ -355,7 +355,7 @@ impl WorkspaceView {
     pub(super) fn automations_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let now = unix_now();
         let actions = vec![
-            section_button("automations-new", "Nueva automatización", true)
+            section_button("automations-new", "New automation", true)
                 .on_click(
                     cx.listener(|this, _, window, cx| this.open_automation_form(None, window, cx)),
                 )
@@ -368,8 +368,8 @@ impl WorkspaceView {
         if self.library.automations.is_empty() && self.automation_form.is_none() {
             body = body.child(section_empty_state(
                 "chrome-icons/automations.svg",
-                "Tus tareas recurrentes",
-                "Guarda un comando (por ejemplo claude -p \"resume los cambios de ayer\" o cargo test) y ejecútalo cuando quieras o a una hora fija. Cada ejecución abre una pestaña nueva en el proyecto, así ves la salida y puedes seguir trabajando en esa terminal.",
+                "Your recurring tasks",
+                "Save a command (such as claude -p \"summarize yesterday's changes\" or cargo test) and run it whenever you want or on a schedule. Each run opens a new tab in the project so you can see the output and keep working in that terminal.",
             ));
         }
         for automation in self.library.automations.clone() {
@@ -397,12 +397,12 @@ impl WorkspaceView {
         } else if automation.enabled {
             automation.schedule.label()
         } else {
-            format!("{} · pausada", automation.schedule.label())
+            format!("{} · paused", automation.schedule.label())
         };
         let last_run = automation
             .last_run_at
-            .map(|at| format!("Última: {}", relative_time(now, at)))
-            .unwrap_or_else(|| "Nunca ejecutada".to_owned());
+            .map(|at| format!("Last run: {}", relative_time(now, at)))
+            .unwrap_or_else(|| "Never run".to_owned());
         div()
             .id(SharedString::from(format!("automation-{id}")))
             .w_full()
@@ -455,7 +455,7 @@ impl WorkspaceView {
                                 "{} · {schedule} · {last_run}",
                                 project
                                     .map(|(_, name)| name)
-                                    .unwrap_or_else(|| "Proyecto seleccionado".to_owned())
+                                    .unwrap_or_else(|| "Selected project".to_owned())
                             )),
                     ),
             )
@@ -464,9 +464,9 @@ impl WorkspaceView {
                     section_button(
                         SharedString::from(format!("automation-toggle-{id}")),
                         if automation.enabled {
-                            "Pausar"
+                            "Pause"
                         } else {
-                            "Reanudar"
+                            "Resume"
                         },
                         false,
                     )
@@ -476,7 +476,7 @@ impl WorkspaceView {
             .child(
                 section_button(
                     SharedString::from(format!("automation-edit-{id}")),
-                    "Editar",
+                    "Edit",
                     false,
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -486,7 +486,7 @@ impl WorkspaceView {
             .child(
                 section_button(
                     SharedString::from(format!("automation-delete-{id}")),
-                    "Eliminar",
+                    "Delete",
                     false,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.delete_automation(id, cx))),
@@ -494,7 +494,7 @@ impl WorkspaceView {
             .child(
                 section_button(
                     SharedString::from(format!("automation-run-{id}")),
-                    "Ejecutar",
+                    "Run",
                     true,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -573,8 +573,8 @@ impl WorkspaceView {
                 )
         };
         let time_label = match form.schedule {
-            AutomationSchedule::Hourly { .. } => "Minuto de cada hora (MM)",
-            _ => "Hora (HH:MM)",
+            AutomationSchedule::Hourly { .. } => "Minute of each hour (MM)",
+            _ => "Time (HH:MM)",
         };
         div()
             .w_full()
@@ -592,25 +592,25 @@ impl WorkspaceView {
                     .text_size(px(13.5))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(if form.id.is_some() {
-                        "Editar automatización"
+                        "Edit automation"
                     } else {
-                        "Nueva automatización"
+                        "New automation"
                     }),
             )
             .child(field(
                 "automation-field-name",
-                "Nombre",
+                "Name",
                 &form.name,
-                "Resumen diario",
+                "Daily summary",
                 AutomationField::Name,
                 false,
                 cx,
             ))
             .child(field(
                 "automation-field-command",
-                "Comando (se escribe en una terminal nueva y se ejecuta)",
+                "Command (runs in a new terminal)",
                 &form.command,
-                "claude \"revisa los TODO del proyecto\"",
+                "claude \"review the project's TODOs\"",
                 AutomationField::Command,
                 true,
                 cx,
@@ -628,12 +628,12 @@ impl WorkspaceView {
                                 div()
                                     .text_size(px(11.5))
                                     .text_color(colors().subtle)
-                                    .child("Proyecto"),
+                                    .child("Project"),
                             )
                             .child(
                                 section_button(
                                     "automation-field-project",
-                                    project.unwrap_or_else(|| "Proyecto seleccionado".to_owned()),
+                                    project.unwrap_or_else(|| "Selected project".to_owned()),
                                     false,
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| this.cycle_form_project(cx))),
@@ -648,16 +648,16 @@ impl WorkspaceView {
                                 div()
                                     .text_size(px(11.5))
                                     .text_color(colors().subtle)
-                                    .child("Cuándo"),
+                                    .child("When"),
                             )
                             .child(
                                 section_button(
                                     "automation-field-schedule",
                                     match form.schedule {
                                         AutomationSchedule::Manual => "Manual",
-                                        AutomationSchedule::Hourly { .. } => "Cada hora",
-                                        AutomationSchedule::Daily { .. } => "Todos los días",
-                                        AutomationSchedule::Weekdays { .. } => "Lunes a viernes",
+                                        AutomationSchedule::Hourly { .. } => "Hourly",
+                                        AutomationSchedule::Daily { .. } => "Daily",
+                                        AutomationSchedule::Weekdays { .. } => "Weekdays",
                                     },
                                     false,
                                 )
@@ -694,10 +694,10 @@ impl WorkspaceView {
                             .flex_1()
                             .text_size(px(11.5))
                             .text_color(colors().subtle)
-                            .child("Tab cambia de campo · ↩ guarda · Esc cancela. Las programadas corren mientras Vibra está abierta."),
+                            .child("Tab switches fields · ↩ saves · Esc cancels. Scheduled tasks run while Vibra is open."),
                     )
                     .child(
-                        section_button("automation-cancel", "Cancelar", false).on_click(
+                        section_button("automation-cancel", "Cancel", false).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.automation_form = None;
                                 cx.notify();
@@ -705,7 +705,7 @@ impl WorkspaceView {
                         ),
                     )
                     .child(
-                        section_button("automation-save", "Guardar", true)
+                        section_button("automation-save", "Save", true)
                             .on_click(cx.listener(|this, _, _, cx| this.save_automation_form(cx))),
                     ),
             )

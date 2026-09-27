@@ -49,7 +49,7 @@ fn installed_editors_with(mut is_registered: impl FnMut(&str) -> bool) -> Vec<In
 
 pub fn open_in_editor(path: &Path, editor: &InstalledEditor) -> Result<()> {
     if !path.exists() {
-        bail!("No existe nada para abrir en {}", path.display());
+        bail!("Nothing to open at {}", path.display());
     }
     let output = Command::new("/usr/bin/open")
         .arg("-b")
@@ -57,7 +57,7 @@ pub fn open_in_editor(path: &Path, editor: &InstalledEditor) -> Result<()> {
         .arg(path)
         .output()?;
     if !output.status.success() {
-        bail!("{} no pudo abrir {}", editor.name, path.display());
+        bail!("{} could not open {}", editor.name, path.display());
     }
     Ok(())
 }

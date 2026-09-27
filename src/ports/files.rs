@@ -18,6 +18,9 @@ pub struct FileEntry {
 
 /// Boundary for project-scoped file inspection and creation.
 pub trait FileSystemPort: Send + Sync {
+    /// Read a project document for the viewer, with bounded size and no writes.
+    fn read_text_file(&self, project_root: &Path, path: &Path) -> Result<String>;
+
     /// Create an entry without replacing existing content or escaping the project.
     fn create_entry(
         &self,

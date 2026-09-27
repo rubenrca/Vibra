@@ -142,7 +142,7 @@ impl super::WorkspaceSnapshot {
                         };
                     SidebarItemSnapshot::Space {
                         id,
-                        name: "Espacio".into(),
+                        name: "Workspace".into(),
                         collapsed: false,
                         workspace_ids,
                     }
@@ -203,7 +203,7 @@ impl super::WorkspaceSnapshot {
                         String::new()
                     };
                     let name = if name.trim().is_empty() {
-                        "Espacio".into()
+                        "Workspace".into()
                     } else {
                         name.trim().to_owned()
                     };
@@ -276,6 +276,7 @@ impl ProjectSnapshot {
                     title_source: None,
                     tabs: migrated_tabs,
                     selected_tab_id,
+                    review_tab_index: None,
                 }]);
             }
         }

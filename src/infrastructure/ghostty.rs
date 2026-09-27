@@ -101,7 +101,7 @@ unsafe extern "C" {
 }
 fn checked(code: i32) -> Result<()> {
     if code != 0 {
-        bail!("libghostty-vt devolvió {code}")
+        bail!("libghostty-vt returned {code}")
     }
     Ok(())
 }
@@ -265,7 +265,7 @@ impl Engine {
                 (&mut *callbacks as *mut Callbacks).cast(),
             )
         })
-        .context("no se pudo crear libghostty-vt")?;
+        .context("could not create libghostty-vt")?;
         let mut engine = Self {
             ptr,
             callbacks,
@@ -597,7 +597,7 @@ impl GhosttyTerminal {
         worker_signal.set_nonblocking(true)?;
         let child = command
             .spawn()
-            .with_context(|| format!("no se pudo iniciar {program}"))?;
+            .with_context(|| format!("could not start {program}"))?;
         let pid = child.id();
         let (inputs, input_rx) = mpsc::sync_channel(MAX_QUEUED_PTY_INPUTS);
         let wakeup = Arc::new(AtomicBool::new(false));
@@ -655,9 +655,9 @@ impl GhosttyTerminal {
     fn enqueue_input(&self, input: PtyInput) -> Result<()> {
         self.inputs.try_send(input).map_err(|error| match error {
             mpsc::TrySendError::Full(_) => {
-                anyhow::anyhow!("la cola de entrada de la terminal está llena")
+                anyhow::anyhow!("the terminal input queue is full")
             }
-            mpsc::TrySendError::Disconnected(_) => anyhow::anyhow!("PTY cerrado"),
+            mpsc::TrySendError::Disconnected(_) => anyhow::anyhow!("PTY closed"),
         })?;
         // A full socket already contains a wakeup. The input queue is the
         // source of truth, so the signal carries no payload and can coalesce.
@@ -925,16 +925,16 @@ impl TerminalHandle for GhosttyTerminal {
     }
     fn send_input(&self, input: Vec<u8>) -> Result<()> {
         if !self.alive.load(Ordering::Acquire) {
-            bail!("la terminal ya terminó")
+            bail!("the terminal has already exited")
         }
         if input.len() > MAX_PTY_INPUT_BYTES {
-            bail!("entrada de terminal demasiado grande")
+            bail!("terminal input is too large")
         }
         self.enqueue_input(PtyInput::Bytes(input))
     }
     fn send_key_input(&self, input: TerminalKeyInput) -> Result<()> {
         if !self.alive.load(Ordering::Acquire) {
-            bail!("la terminal ya terminó")
+            bail!("the terminal has already exited")
         }
         self.enqueue_input(PtyInput::Key(input))
     }

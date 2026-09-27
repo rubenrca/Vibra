@@ -117,11 +117,9 @@ impl TerminalConfirmation {
         match self {
             Self::Paste { text, .. } => {
                 let line_count = text.lines().count().max(1);
-                format!("Pegar {line_count} líneas en la terminal?")
+                format!("Paste {line_count} lines into the terminal?")
             }
-            Self::ClipboardRead { .. } => {
-                "¿Permitir que la terminal lea el portapapeles?".to_owned()
-            }
+            Self::ClipboardRead { .. } => "Allow the terminal to read the clipboard?".to_owned(),
         }
     }
 
@@ -139,21 +137,21 @@ impl TerminalConfirmation {
             preview.push('…');
         }
         if preview.is_empty() {
-            preview.push_str("(vacío)");
+            preview.push_str("(empty)");
         }
         preview
     }
 
     fn hint(&self) -> &'static str {
         match self {
-            Self::Paste { .. } => "↵ pegar    esc cancelar",
-            Self::ClipboardRead { .. } => "↵ permitir    esc denegar",
+            Self::Paste { .. } => "↵ paste    esc cancel",
+            Self::ClipboardRead { .. } => "↵ allow    esc deny",
         }
     }
 
     fn warning(&self) -> Option<&'static str> {
         matches!(self, Self::ClipboardRead { .. }).then_some(
-            "El proceso activo recibirá el contenido mostrado. Acepta solo si confías en él.",
+            "The active process will receive the content shown. Only allow this if you trust it.",
         )
     }
 }
@@ -232,7 +230,7 @@ impl TerminalView {
             Err(error) => (
                 None,
                 Some(SharedString::from(format!(
-                    "No se pudo abrir {}: {error:#}",
+                    "Could not open {}: {error:#}",
                     terminal_port.backend_name()
                 ))),
             ),
@@ -564,7 +562,7 @@ impl TerminalView {
             }
             Err(error) => {
                 self.input_error =
-                    Some(format!("No se pudo enviar a la terminal: {error:#}").into());
+                    Some(format!("Could not send to the terminal: {error:#}").into());
                 self._input_error_task = Some(cx.spawn(async move |this, cx| {
                     Timer::after(INPUT_ERROR_VISIBLE_DURATION).await;
                     let _ = this.update(cx, |this, cx| {
@@ -1425,6 +1423,17 @@ impl TerminalView {
 }
 
 impl TerminalDragPreview {
+    pub(crate) fn thumbnail(mut self, max_width: f32, max_height: f32) -> Self {
+        let scale = (max_width / self.width.max(1.0))
+            .min(max_height / self.height.max(1.0))
+            .min(1.0);
+        self.width *= scale;
+        self.height *= scale;
+        self.font_size *= scale;
+        self.cursor_visible = false;
+        self
+    }
+
     pub(crate) fn empty() -> Self {
         Self {
             snapshot: Arc::new(TerminalSnapshot {
@@ -1638,13 +1647,13 @@ fn search_overlay(
     pending: bool,
 ) -> impl IntoElement {
     let status = if query.is_empty() {
-        "Escribe para buscar"
+        "Type to search"
     } else if pending {
-        "Buscando…"
+        "Searching…"
     } else if found {
-        "↵ siguiente  ⇧↵ anterior"
+        "↵ next  ⇧↵ previous"
     } else {
-        "Sin resultados"
+        "No results"
     };
     let status_color = if found || pending || query.is_empty() {
         colors().muted
@@ -1673,7 +1682,7 @@ fn search_overlay(
                 .truncate()
                 .text_sm()
                 .text_color(colors().foreground)
-                .child(format!("Buscar  {query}{marked_text}")),
+                .child(format!("Search  {query}{marked_text}")),
         )
         .child(
             div()
@@ -2012,7 +2021,7 @@ impl Render for TerminalView {
                         .bg(popover_surface())
                         .text_xs()
                         .text_color(colors().muted)
-                        .child("proceso finalizado"),
+                        .child("process exited"),
                 )
             })
     }

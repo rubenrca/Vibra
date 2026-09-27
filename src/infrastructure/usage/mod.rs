@@ -48,10 +48,10 @@ impl UsageFailure {
         }
     }
     fn invalid_response() -> Self {
-        Self::new("El servicio devolvió un formato de cuotas no reconocido.")
+        Self::new("The service returned an unrecognized quota format.")
     }
     fn connection() -> Self {
-        Self::new("No se pudo conectar con el servicio de cuotas. Se volverá a intentar.")
+        Self::new("Could not connect to the quota service. Retrying later.")
     }
 }
 
@@ -144,8 +144,7 @@ impl UsageMonitor {
                         self.cache.remove(&provider);
                         result.errors.push(UsageError {
                             provider_id: provider.id().into(),
-                            message: "La sesión cambió durante la consulta. Se volverá a intentar."
-                                .into(),
+                            message: "The session changed during the query. Retrying later.".into(),
                         });
                         continue;
                     }

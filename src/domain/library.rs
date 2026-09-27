@@ -56,7 +56,7 @@ impl Note {
             .map(|line| line.trim().trim_start_matches('#').trim())
             .find(|line| !line.is_empty())
             .map(|line| line.chars().take(80).collect())
-            .unwrap_or_else(|| "Nota sin título".to_owned())
+            .unwrap_or_else(|| "Untitled note".to_owned())
     }
 
     /// The first line after the title, for list previews.
@@ -88,10 +88,10 @@ impl AutomationSchedule {
     pub fn label(self) -> String {
         match self {
             Self::Manual => "Manual".to_owned(),
-            Self::Hourly { minute } => format!("Cada hora, al minuto {minute:02}"),
-            Self::Daily { hour, minute } => format!("Todos los días, {hour:02}:{minute:02}"),
+            Self::Hourly { minute } => format!("Hourly, at minute {minute:02}"),
+            Self::Daily { hour, minute } => format!("Daily, {hour:02}:{minute:02}"),
             Self::Weekdays { hour, minute } => {
-                format!("Lunes a viernes, {hour:02}:{minute:02}")
+                format!("Weekdays, {hour:02}:{minute:02}")
             }
         }
     }
@@ -227,10 +227,10 @@ pub enum AutomationValidationError {
 impl AutomationValidationError {
     pub fn message(&self) -> &'static str {
         match self {
-            Self::MissingName => "Ponle un nombre a la automatización.",
-            Self::MissingCommand => "Escribe el comando que se ejecutará en la terminal.",
-            Self::InvalidTime => "La hora no es válida. Usa HH:MM (o MM si es cada hora).",
-            Self::TooLong => "El nombre o el comando son demasiado largos.",
+            Self::MissingName => "Give the automation a name.",
+            Self::MissingCommand => "Enter the command to run in the terminal.",
+            Self::InvalidTime => "Invalid time. Use HH:MM (or MM for hourly schedules).",
+            Self::TooLong => "The name or command is too long.",
         }
     }
 }
@@ -446,7 +446,7 @@ mod tests {
             body: "   \n".into(),
             ..note
         };
-        assert_eq!(empty.title(), "Nota sin título");
+        assert_eq!(empty.title(), "Untitled note");
         assert!(empty.is_blank());
     }
 

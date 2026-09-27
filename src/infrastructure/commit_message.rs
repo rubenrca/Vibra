@@ -46,14 +46,14 @@ pub fn generate_commit_message(root: &Path, context: &str) -> Result<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("no se pudo abrir la shell")?;
-    let mut stdin = child.stdin.take().context("sin stdin")?;
+        .context("could not start the shell")?;
+    let mut stdin = child.stdin.take().context("stdin unavailable")?;
     let input = format!("{INSTRUCTIONS}\n\n{context}");
     let writer = thread::spawn(move || {
         let _ = stdin.write_all(input.as_bytes());
     });
-    let mut stdout = child.stdout.take().context("sin stdout")?;
-    let mut stderr = child.stderr.take().context("sin stderr")?;
+    let mut stdout = child.stdout.take().context("stdout unavailable")?;
+    let mut stderr = child.stderr.take().context("stderr unavailable")?;
     let reader = thread::spawn(move || {
         let mut output = String::new();
         let _ = stdout.read_to_string(&mut output);
@@ -73,7 +73,7 @@ pub fn generate_commit_message(root: &Path, context: &str) -> Result<String> {
         if started.elapsed() > TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("el agente no respondió en {} s", TIMEOUT.as_secs());
+            bail!("the agent did not respond within {} s", TIMEOUT.as_secs());
         }
         thread::sleep(Duration::from_millis(100));
     };
@@ -81,12 +81,12 @@ pub fn generate_commit_message(root: &Path, context: &str) -> Result<String> {
     let output = reader.join().unwrap_or_default();
     let errors = error_reader.join().unwrap_or_default();
     if status.code() == Some(127) && errors.contains("vibra: no agent CLI") {
-        bail!("instala Claude Code, Gemini CLI o Codex para generar mensajes");
+        bail!("install Claude Code, Gemini CLI, or Codex to generate messages");
     }
     if !status.success() {
         let detail = errors.lines().rev().find(|line| !line.trim().is_empty());
         bail!(
-            "el agente falló{}",
+            "the agent failed{}",
             detail
                 .map(|line| format!(": {}", line.trim()))
                 .unwrap_or_default()
@@ -94,7 +94,7 @@ pub fn generate_commit_message(root: &Path, context: &str) -> Result<String> {
     }
     let message = clean_message(&output);
     if message.is_empty() {
-        bail!("el agente no devolvió un mensaje");
+        bail!("the agent did not return a message");
     }
     Ok(message)
 }

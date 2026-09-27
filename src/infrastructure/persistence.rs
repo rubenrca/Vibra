@@ -34,7 +34,7 @@ impl Clone for WorkspaceRepository {
 }
 
 fn encode_workspace(snapshot: &WorkspaceSnapshot) -> Result<Vec<u8>> {
-    serde_json::to_vec(snapshot).context("no se pudo serializar el workspace")
+    serde_json::to_vec(snapshot).context("could not serialize the workspace")
 }
 
 impl WorkspaceRepository {
@@ -89,10 +89,10 @@ impl WorkspaceRepository {
         }
         let data = read_workspace_file(&self.path)?;
         let mut snapshot: WorkspaceSnapshot = serde_json::from_slice(&data)
-            .with_context(|| format!("JSON inválido en {}", self.path.display()))?;
+            .with_context(|| format!("Invalid JSON in {}", self.path.display()))?;
         if snapshot.schema_version > CURRENT_WORKSPACE_SCHEMA_VERSION {
             bail!(
-                "{} usa el esquema {} pero esta versión de Vibra solo entiende hasta el {}",
+                "{} uses schema {} but this version of Vibra only supports up to {}",
                 self.path.display(),
                 snapshot.schema_version,
                 CURRENT_WORKSPACE_SCHEMA_VERSION
@@ -102,7 +102,7 @@ impl WorkspaceRepository {
             let backup = self.path.with_file_name(PROJECTS_BACKUP_FILE_NAME);
             if !valid_json_backup(&backup) {
                 atomic_write(&backup, &data)
-                    .with_context(|| format!("no se pudo respaldar {}", self.path.display()))?;
+                    .with_context(|| format!("could not back up {}", self.path.display()))?;
             }
         }
         let original = snapshot.clone();
@@ -111,7 +111,7 @@ impl WorkspaceRepository {
         if snapshot != original {
             let normalized = encode_workspace(&snapshot)?;
             if normalized.len() as u64 > MAX_WORKSPACE_BYTES {
-                bail!("el workspace normalizado supera el límite de 16 MiB");
+                bail!("the normalized workspace exceeds the 16 MiB limit");
             }
             self.revision.save(&self.path, &normalized)?;
         }
@@ -121,7 +121,7 @@ impl WorkspaceRepository {
     pub fn save(&self, snapshot: &WorkspaceSnapshot) -> Result<bool> {
         let data = encode_workspace(snapshot)?;
         if data.len() as u64 > MAX_WORKSPACE_BYTES {
-            bail!("el workspace supera el límite de 16 MiB y no se puede guardar");
+            bail!("the workspace exceeds the 16 MiB limit and cannot be saved");
         }
         self.revision.save(&self.path, &data)
     }
@@ -136,18 +136,18 @@ impl WorkspaceRepository {
             let parent = self
                 .path
                 .parent()
-                .context("workspace.json no tiene directorio padre")?;
+                .context("workspace.json has no parent directory")?;
             fs::create_dir_all(parent)
-                .with_context(|| format!("no se pudo crear {}", parent.display()))?;
+                .with_context(|| format!("could not create {}", parent.display()))?;
             let data = read_workspace_file(preview_path)?;
             let preview: WorkspaceSnapshot = serde_json::from_slice(&data)
-                .with_context(|| format!("JSON inválido en {}", preview_path.display()))?;
+                .with_context(|| format!("Invalid JSON in {}", preview_path.display()))?;
             if preview.schema_version > CURRENT_WORKSPACE_SCHEMA_VERSION {
-                bail!("{} usa un esquema futuro", preview_path.display());
+                bail!("{} uses a newer schema", preview_path.display());
             }
             atomic_write(&self.path, &data).with_context(|| {
                 format!(
-                    "no se pudo importar {} a {}",
+                    "could not import {} to {}",
                     preview_path.display(),
                     self.path.display()
                 )
@@ -167,7 +167,7 @@ impl WorkspaceRepository {
             if is_swift_snapshot {
                 atomic_write(&self.swift_backup_path, &data).with_context(|| {
                     format!(
-                        "no se pudo respaldar {} en {}",
+                        "could not back up {} to {}",
                         self.path.display(),
                         self.swift_backup_path.display()
                     )
@@ -181,19 +181,19 @@ impl WorkspaceRepository {
 
 fn read_workspace_file(path: &std::path::Path) -> Result<Vec<u8>> {
     let file =
-        fs::File::open(path).with_context(|| format!("no se pudo abrir {}", path.display()))?;
+        fs::File::open(path).with_context(|| format!("could not open {}", path.display()))?;
     let metadata = file
         .metadata()
-        .with_context(|| format!("no se pudo inspeccionar {}", path.display()))?;
+        .with_context(|| format!("could not inspect {}", path.display()))?;
     if metadata.len() > MAX_WORKSPACE_BYTES {
-        bail!("{} supera el límite de 16 MiB", path.display());
+        bail!("{} exceeds the 16 MiB limit", path.display());
     }
     let mut data = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_WORKSPACE_BYTES + 1)
         .read_to_end(&mut data)
-        .with_context(|| format!("no se pudo leer {}", path.display()))?;
+        .with_context(|| format!("could not read {}", path.display()))?;
     if data.len() as u64 > MAX_WORKSPACE_BYTES {
-        bail!("{} supera el límite de 16 MiB", path.display());
+        bail!("{} exceeds the 16 MiB limit", path.display());
     }
     Ok(data)
 }
@@ -443,7 +443,7 @@ mod tests {
 
         let error = repository.load().unwrap_err();
 
-        assert!(error.to_string().contains("esquema 999"));
+        assert!(error.to_string().contains("schema 999"));
         assert!(repository.save(&WorkspaceSnapshot::default()).is_err());
         assert_eq!(
             fs::read(root.join("workspace.json")).unwrap(),

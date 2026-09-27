@@ -61,11 +61,10 @@ pub fn prepare_prompt_launch(agent: &str, prompt: &str) -> Result<(String, PathB
     use crate::domain::work_items::shell_argument;
     use crate::infrastructure::paths::atomic_write;
     if !matches!(agent, "claude" | "codex" | "gemini") {
-        bail!("Agente no válido.");
+        bail!("Invalid agent.");
     }
     let path = std::env::temp_dir().join(format!("vibra-inbox-{}.txt", Uuid::new_v4()));
-    atomic_write(&path, prompt.as_bytes())
-        .context("No se pudo preparar el contexto de la tarea.")?;
+    atomic_write(&path, prompt.as_bytes()).context("Could not prepare the task context.")?;
     let script = launch_script(agent, &path);
     // zsh guarantees the same expansion even when the project's shell is fish.
     Ok((format!("/bin/zsh -lc {}", shell_argument(&script)), path))
@@ -91,7 +90,7 @@ fn bounded_output(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .context("No se pudo iniciar la consulta del Inbox.")?;
+        .context("Could not start the Inbox query.")?;
     let stdout = child.stdout.take().unwrap();
     let reader = thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -116,9 +115,7 @@ fn bounded_output(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u
                     libc::kill(-(child.id() as i32), libc::SIGKILL);
                 }
                 let _ = child.wait();
-                break Err(anyhow::anyhow!(
-                    "La consulta tardó demasiado. Intenta actualizar."
-                ));
+                break Err(anyhow::anyhow!("The query timed out. Try refreshing."));
             }
         }
     };
@@ -132,12 +129,12 @@ fn bounded_output(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u
     }
     let bytes = reader
         .join()
-        .map_err(|_| anyhow::anyhow!("No se pudo leer la respuesta."))??;
+        .map_err(|_| anyhow::anyhow!("Could not read the response."))??;
     if !status?.success() {
-        bail!("No se pudo consultar el servicio. Revisa tu conexión y la sesión del proveedor.");
+        bail!("Could not query the service. Check your connection and provider session.");
     }
     if bytes.len() as u64 > MAX_OUTPUT {
-        bail!("La respuesta supera el tamaño permitido.");
+        bail!("The response exceeds the size limit.");
     }
     Ok(bytes)
 }
@@ -159,13 +156,13 @@ fn graphql_data(value: Value) -> Result<Value> {
         .get("errors")
         .is_some_and(|errors| !errors.as_array().is_some_and(Vec::is_empty))
     {
-        bail!("El servicio rechazó la consulta. Revisa los permisos de tu cuenta.");
+        bail!("The service rejected the query. Check your account permissions.");
     }
     value
         .get("data")
         .filter(|data| data.is_object())
         .cloned()
-        .context("El servicio devolvió una respuesta no válida.")
+        .context("The service returned an invalid response.")
 }
 
 #[cfg(test)]

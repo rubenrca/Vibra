@@ -104,7 +104,7 @@ pub fn uninstall_agent_hooks() -> Result<AgentHookStatus> {
 fn manage_current_user_agent_hooks(operation: AgentHookOperation) -> Result<AgentHookStatus> {
     let home = BaseDirs::new()
         .map(|directories| directories.home_dir().to_path_buf())
-        .context("no se pudo resolver el directorio de usuario")?;
+        .context("could not resolve the user directory")?;
     let selected = [AgentKind::Claude, AgentKind::Codex].into_iter().collect();
     let report = manage_agent_hooks(&home, &selected, operation, false)?;
     let report = if operation == AgentHookOperation::Status {
@@ -135,7 +135,7 @@ pub(super) fn run_agent_setup_cli(arguments: &[String]) -> Result<()> {
     let (operation, selected, dry_run) = parse_agent_setup_arguments(arguments)?;
     let home = BaseDirs::new()
         .map(|directories| directories.home_dir().to_path_buf())
-        .context("no se pudo resolver el directorio de usuario")?;
+        .context("could not resolve the user directory")?;
     let report = manage_agent_hooks(&home, &selected, operation, dry_run)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -148,7 +148,7 @@ fn parse_agent_setup_arguments(
         Some("setup") | None => AgentHookOperation::Install,
         Some("status") => AgentHookOperation::Status,
         Some("uninstall") => AgentHookOperation::Uninstall,
-        _ => bail!("uso: agent [setup|status|uninstall] [claude|codex|all] [--dry-run]"),
+        _ => bail!("usage: agent [setup|status|uninstall] [claude|codex|all] [--dry-run]"),
     };
     let mut dry_run = false;
     let mut all = false;
@@ -161,19 +161,19 @@ fn parse_agent_setup_arguments(
                 let Some(kind @ (AgentKind::Claude | AgentKind::Codex)) =
                     AgentKind::parse(argument)
                 else {
-                    bail!("agente u opción no reconocido: {argument}");
+                    bail!("unrecognized agent or option: {argument}");
                 };
                 if !selected.insert(kind) {
-                    bail!("agente repetido: {argument}");
+                    bail!("duplicate agent: {argument}");
                 }
             }
         }
     }
     if dry_run && operation != AgentHookOperation::Install {
-        bail!("--dry-run solo se puede usar con agent setup");
+        bail!("--dry-run can only be used with agent setup");
     }
     if all && !selected.is_empty() {
-        bail!("all no se puede combinar con nombres de agente");
+        bail!("all cannot be combined with agent names");
     }
     if all || selected.is_empty() {
         selected.extend([AgentKind::Claude, AgentKind::Codex]);
@@ -206,10 +206,7 @@ pub(super) fn manage_agent_hooks(
                 true,
             )
             .map_err(|error| {
-                anyhow!(
-                    "no se pudo preparar hooks de {}: {error:#}",
-                    kind.display_name()
-                )
+                anyhow!("could not prepare {} hooks: {error:#}", kind.display_name())
             })?;
         }
         prepare_managed_hooks_directory(home, operation == AgentHookOperation::Install)?;
@@ -226,12 +223,12 @@ pub(super) fn manage_agent_hooks(
         )
         .map_err(|error| {
             let action = match operation {
-                AgentHookOperation::Install => "instalar",
-                AgentHookOperation::Status => "consultar",
-                AgentHookOperation::Uninstall => "desinstalar",
+                AgentHookOperation::Install => "install",
+                AgentHookOperation::Status => "query",
+                AgentHookOperation::Uninstall => "uninstall",
             };
             anyhow!(
-                "no se pudo {action} hooks de {} ({} integraciones anteriores completadas): {error:#}",
+                "could not {action} hooks for {} ({} previous integrations completed): {error:#}",
                 kind.display_name(),
                 reports.len(),
             )
@@ -312,9 +309,8 @@ fn manage_one_agent_hooks(
                 Ok(_) => true,
                 Err(error) if error.kind() == ErrorKind::NotFound => false,
                 Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!("no se pudo inspeccionar {}", script_path.display())
-                    });
+                    return Err(error)
+                        .with_context(|| format!("could not inspect {}", script_path.display()));
                 }
             };
             let script_removed = if !dry_run && script_exists {
@@ -349,7 +345,7 @@ fn managed_hooks_directory_secure(home: &Path) -> Result<bool> {
             Ok(metadata) => {
                 if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
                     bail!(
-                        "{} no es un directorio propio y seguro",
+                        "{} is not a secure directory owned by the current user",
                         directory.display()
                     );
                 }
@@ -358,7 +354,7 @@ fn managed_hooks_directory_secure(home: &Path) -> Result<bool> {
             Err(error) if error.kind() == ErrorKind::NotFound => secure = false,
             Err(error) => {
                 return Err(error)
-                    .with_context(|| format!("no se pudo inspeccionar {}", directory.display()));
+                    .with_context(|| format!("could not inspect {}", directory.display()));
             }
         }
     }
@@ -371,7 +367,7 @@ fn prepare_managed_hooks_directory(home: &Path, create: bool) -> Result<()> {
             Ok(metadata) => {
                 if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
                     bail!(
-                        "{} no es un directorio propio y seguro",
+                        "{} is not a secure directory owned by the current user",
                         directory.display()
                     );
                 }
@@ -379,13 +375,13 @@ fn prepare_managed_hooks_directory(home: &Path, create: bool) -> Result<()> {
             }
             Err(error) if error.kind() == ErrorKind::NotFound && create => {
                 fs::create_dir(&directory)
-                    .with_context(|| format!("no se pudo crear {}", directory.display()))?;
+                    .with_context(|| format!("could not create {}", directory.display()))?;
                 fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
             }
             Err(error) if error.kind() == ErrorKind::NotFound => break,
             Err(error) => {
                 return Err(error)
-                    .with_context(|| format!("no se pudo inspeccionar {}", directory.display()));
+                    .with_context(|| format!("could not inspect {}", directory.display()));
             }
         }
     }
@@ -399,18 +395,17 @@ fn read_hook_config(path: &Path) -> Result<Value> {
             return Ok(serde_json::json!({}));
         }
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("no se pudo inspeccionar {}", path.display()));
+            return Err(error).with_context(|| format!("could not inspect {}", path.display()));
         }
     }
     let content =
-        fs::read_to_string(path).with_context(|| format!("no se pudo leer {}", path.display()))?;
+        fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
     let value: Value = serde_json::from_str(&content)
-        .with_context(|| format!("{} no contiene JSON válido", path.display()))?;
+        .with_context(|| format!("{} does not contain valid JSON", path.display()))?;
     value
         .is_object()
         .then_some(value)
-        .ok_or_else(|| anyhow!("{} debe contener un objeto JSON", path.display()))
+        .ok_or_else(|| anyhow!("{} must contain a JSON object", path.display()))
 }
 
 pub(super) fn ensure_hook_entry(
@@ -421,17 +416,17 @@ pub(super) fn ensure_hook_entry(
 ) -> Result<bool> {
     let root = config
         .as_object_mut()
-        .context("configuración JSON inválida")?;
+        .context("invalid JSON configuration")?;
     let hooks = root
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
-        .context("hooks debe contener un objeto")?;
+        .context("hooks must contain an object")?;
     let groups = hooks
         .entry(slot)
         .or_insert_with(|| serde_json::json!([]))
         .as_array_mut()
-        .with_context(|| format!("hooks.{slot} debe contener una lista"))?;
+        .with_context(|| format!("hooks.{slot} must contain a list"))?;
     let handler = serde_json::json!({
         "type": "command",
         "command": command,
@@ -579,15 +574,13 @@ fn hooks_installed(
 fn script_changed(path: &Path, script: &str) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
-            bail!("{} no es un archivo regular", path.display());
+            bail!("{} is not a regular file", path.display());
         }
         Ok(metadata) => Ok(metadata.uid() != unsafe { libc::geteuid() }
             || metadata.permissions().mode() & 0o777 != 0o700
             || fs::read_to_string(path).ok().as_deref() != Some(script)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(true),
-        Err(error) => {
-            Err(error).with_context(|| format!("no se pudo inspeccionar {}", path.display()))
-        }
+        Err(error) => Err(error).with_context(|| format!("could not inspect {}", path.display())),
     }
 }
 
@@ -598,7 +591,7 @@ fn backup_if_exists(path: &Path) -> Result<()> {
         Ok(data) => data,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => {
-            return Err(error).with_context(|| format!("no se pudo leer {}", path.display()));
+            return Err(error).with_context(|| format!("could not read {}", path.display()));
         }
     };
     let mut backup_name = path.as_os_str().to_os_string();
@@ -628,7 +621,7 @@ pub(super) fn write_text_atomically(path: &Path, text: &str, mode: u32) -> Resul
     use crate::infrastructure::paths::{AtomicWriteOptions, atomic_write_with};
     let parent = path
         .parent()
-        .context("ruta de configuración sin directorio padre")?;
+        .context("configuration path has no parent directory")?;
     let parent_exists = parent.exists();
     fs::create_dir_all(parent)?;
     if !parent_exists {

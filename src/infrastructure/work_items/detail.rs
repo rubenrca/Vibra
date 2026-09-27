@@ -31,7 +31,7 @@ const LINEAR_DETAIL_QUERY: &str = r#"query($id: String!) {
 
 pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
     if item.remote_id.is_empty() {
-        bail!("La tarea no tiene un identificador remoto. Actualiza el Inbox.");
+        bail!("The task has no remote ID. Refresh the Inbox.");
     }
     match item.source {
         WorkSource::GitHub => {
@@ -39,7 +39,7 @@ pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
             let node = data
                 .get("node")
                 .filter(|node| node.is_object())
-                .context("La tarea ya no está disponible en GitHub.")?;
+                .context("The task is no longer available on GitHub.")?;
             Ok(parse_github_detail(node))
         }
         WorkSource::Linear => {
@@ -48,7 +48,7 @@ pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
             let issue = data
                 .get("issue")
                 .filter(|issue| issue.is_object())
-                .context("La tarea ya no está disponible en Linear.")?;
+                .context("The task is no longer available on Linear.")?;
             let nodes = array(&issue["comments"]["nodes"]);
             let mut comments: Vec<_> = nodes
                 .iter()
@@ -160,7 +160,7 @@ fn parse_github_detail(node: &Value) -> WorkDetail {
                     .map(|n| format!(":{n}"))
                     .unwrap_or_default(),
                 if thread["isResolved"].as_bool() == Some(true) {
-                    " · Resuelto"
+                    " · Resolved"
                 } else {
                     ""
                 }
@@ -186,26 +186,26 @@ fn github_target(item: &WorkItem) -> Result<(String, u64)> {
     let path = item
         .url
         .strip_prefix("https://github.com/")
-        .context("Enlace de GitHub no válido.")?;
+        .context("Invalid GitHub link.")?;
     let parts: Vec<_> = path.split('/').collect();
     if parts.len() != 4 || !matches!(parts[2], "issues" | "pull") {
-        bail!("Destino de GitHub no válido.");
+        bail!("Invalid GitHub destination.");
     }
     let repo =
         github::repository_from_remote(&format!("https://github.com/{}/{}", parts[0], parts[1]))
-            .context("Repositorio no válido.")?;
+            .context("Invalid repository.")?;
     let number = parts[3]
         .parse::<u64>()
         .ok()
         .filter(|n| *n > 0)
-        .context("Número de tarea no válido.")?;
+        .context("Invalid task number.")?;
     Ok((repo, number))
 }
 
 pub fn load_diff(item: &WorkItem) -> Result<WorkDiff> {
     let (repo, number) = github_target(item)?;
     if item.kind != WorkKind::PullRequest {
-        bail!("Solo los PR tienen diff.");
+        bail!("Only pull requests have diffs.");
     }
     let mut diff = WorkDiff::default();
     for page in 1..=5 {
@@ -213,7 +213,7 @@ pub fn load_diff(item: &WorkItem) -> Result<WorkDiff> {
         let value = github::gh(&["api", "--hostname", "github.com", &endpoint], None)?;
         let files = value
             .as_array()
-            .context("GitHub no devolvió los archivos del PR.")?;
+            .context("GitHub did not return the pull request files.")?;
         for file in files {
             diff.files.push(WorkDiffFile {
                 path: string(file, "filename"),
@@ -247,7 +247,7 @@ pub fn load_checks(item: &WorkItem) -> Result<Vec<WorkCheck>> {
     )?;
     let nodes = data["statusCheckRollup"]
         .as_array()
-        .context("GitHub no devolvió los checks.")?;
+        .context("GitHub did not return the checks.")?;
     Ok(nodes
         .iter()
         .map(|node| WorkCheck {
@@ -288,9 +288,8 @@ pub fn github_check_job(item: &WorkItem, check: &WorkCheck) -> Option<u64> {
 
 pub fn load_check_log(item: &WorkItem, check: &WorkCheck) -> Result<String> {
     let (repo, _) = github_target(item)?;
-    let job = github_check_job(item, check).context(
-        "Este check no tiene un job de GitHub Actions. Abre su enlace para ver el registro.",
-    )?;
+    let job = github_check_job(item, check)
+        .context("This check has no GitHub Actions job. Open its link to view the log.")?;
     let bytes = github::gh_output(
         &[
             "run",
@@ -310,17 +309,17 @@ pub fn load_check_log(item: &WorkItem, check: &WorkCheck) -> Result<String> {
         .take(200_000)
         .collect();
     if text.chars().count() > 200_000 {
-        log.push_str("\n… Registro truncado. Abre GitHub para ver el registro completo.");
+        log.push_str("\n… Log truncated. Open GitHub to view the full log.");
     }
     if log.trim().is_empty() {
-        log = "El job aún no tiene registros disponibles.".into();
+        log = "The job has no logs available yet.".into();
     }
     Ok(log)
 }
 
 pub fn post_comment(item: &WorkItem, body: &str, reply: Option<&str>) -> Result<()> {
     if body.trim().is_empty() || body.len() > 65_536 {
-        bail!("El comentario debe tener entre 1 y 65.536 bytes.");
+        bail!("The comment must be between 1 and 65,536 bytes.");
     }
     match item.source {
         WorkSource::GitHub => {
@@ -347,7 +346,7 @@ pub fn post_comment(item: &WorkItem, body: &str, reply: Option<&str>) -> Result<
                 json!({"input":input}),
             )?;
             if data["commentCreate"]["success"].as_bool() != Some(true) {
-                bail!("Linear no pudo publicar el comentario.");
+                bail!("Linear could not post the comment.");
             }
         }
     }
@@ -356,13 +355,13 @@ pub fn post_comment(item: &WorkItem, body: &str, reply: Option<&str>) -> Result<
 
 pub fn run_pr_action(item: &WorkItem, action: PrAction, head_oid: &str) -> Result<()> {
     if item.source != WorkSource::GitHub || item.kind != WorkKind::PullRequest {
-        bail!("Esta acción requiere un PR de GitHub.");
+        bail!("This action requires a GitHub pull request.");
     }
     let mut variables = json!({"id":item.remote_id});
     let query = match action {
         PrAction::Merge | PrAction::Squash | PrAction::Rebase => {
             if head_oid.is_empty() {
-                bail!("Actualiza el PR antes de integrarlo.");
+                bail!("Refresh the pull request before merging it.");
             }
             variables["head"] = json!(head_oid);
             variables["method"] = json!(match action {
@@ -404,7 +403,7 @@ mod tests {
             .find(|comment| comment.reply_id.is_some())
             .unwrap();
         assert_eq!(thread.replies.len(), 1);
-        assert_eq!(thread.context, "src/main.rs:42 · Resuelto");
+        assert_eq!(thread.context, "src/main.rs:42 · Resolved");
         assert_eq!(thread.reply_id.as_deref(), Some("thread"));
     }
     #[test]

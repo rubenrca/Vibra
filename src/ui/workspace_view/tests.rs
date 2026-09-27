@@ -890,7 +890,7 @@ fn agents_that_finish_in_another_pane_land_in_the_inbox(cx: &mut gpui::TestAppCo
             assert_eq!(items.len(), 2);
             assert_eq!(items[0].pane_id, Some(other));
             assert_eq!(items[0].kind, InboxKind::Finished);
-            assert_eq!(items[0].title, "Codex terminó");
+            assert_eq!(items[0].title, "Codex finished");
             assert!(!items[0].read);
             assert!(
                 items[1].read,
@@ -1079,6 +1079,212 @@ fn new_tabs_and_pane_commands_keep_the_review_and_show_the_terminal(cx: &mut gpu
             // Choosing the project keeps the right panel as the user left it.
             view.select_project(project, window, cx);
             assert!(!view.right_sidebar_visible);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn dragging_tabs_and_panes_preserves_live_terminal_entities(cx: &mut gpui::TestAppContext) {
+    use crate::domain::workspace::WorkspaceTabId::Terminal;
+    let (root, _, _, window) = open_recording_workspace(cx, "tab-pane-moves");
+    window
+        .update(cx, |view, window, cx| {
+            let original_tab = view.snapshot.selected_tab().unwrap().id;
+            let pane = view.snapshot.selected_session().unwrap().id;
+            let live_entities: HashMap<_, _> = view
+                .terminals
+                .iter()
+                .map(|(id, terminal)| (*id, terminal.entity_id()))
+                .collect();
+            view.detach_pane(pane, Some(Terminal(original_tab)), window, cx);
+            let detached_tab = view.snapshot.selected_tab().unwrap().id;
+            assert_ne!(detached_tab, original_tab);
+            assert_eq!(
+                view.snapshot.selected_workspace().unwrap().tabs[0].id,
+                detached_tab
+            );
+            assert_eq!(view.snapshot.selected_session().unwrap().id, pane);
+            assert_eq!(view.snapshot.painted_session_ids(), HashSet::from([pane]));
+            for (id, terminal) in &view.terminals {
+                assert_eq!(terminal.entity_id(), live_entities[id]);
+                assert_eq!(terminal.read(cx).is_surface_visible(), *id == pane);
+            }
+            view.dock_tab(Terminal(detached_tab), Terminal(original_tab), window, cx);
+            assert_eq!(view.snapshot.selected_workspace().unwrap().tabs.len(), 1);
+            assert_eq!(view.snapshot.selected_tab().unwrap().id, original_tab);
+            assert_eq!(view.snapshot.selected_session().unwrap().id, pane);
+            assert_eq!(view.terminals.len(), live_entities.len());
+            for (id, terminal) in &view.terminals {
+                assert_eq!(terminal.entity_id(), live_entities[id]);
+                assert!(terminal.read(cx).is_surface_visible());
+            }
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn review_drag_order_shortcuts_and_detaching_from_a_split_agree(cx: &mut gpui::TestAppContext) {
+    use crate::domain::workspace::WorkspaceTabId::{Review, Terminal};
+    let (root, _, _, window) = open_recording_workspace(cx, "review-drag");
+    window
+        .update(cx, |view, _, cx| {
+            view.diff_view
+                .update(cx, |diff, cx| diff.set_review_expanded(true, cx));
+        })
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            let tab = view.snapshot.selected_tab().unwrap().id;
+            let mut drag = TabDrag {
+                tab_id: Review,
+                title: "Working tree".into(),
+                from_pane: false,
+            };
+            view.drop_tab_in_strip(&drag, Some(Terminal(tab)), window, cx);
+            assert_eq!(view.visible_tab_order(cx), vec![Review, Terminal(tab)]);
+            view.go_to_tab(&crate::GoToTab { index: 2 }, window, cx);
+            assert!(!view.review_visible(cx));
+            view.go_to_tab(&crate::GoToTab { index: 1 }, window, cx);
+            assert!(view.review_covers_terminal(cx));
+            view.dock_tab(Review, Terminal(tab), window, cx);
+            assert_eq!(
+                view.visible_tab_order(cx),
+                vec![Terminal(tab)],
+                "a docked review is a pane, not a second tab"
+            );
+            assert_eq!(view.review_dock_owner(), Some(tab));
+            assert!(view.review_visible(cx));
+            assert!(!view.review_covers_terminal(cx));
+            assert_eq!(view.review_split_direction, PaneSplitDirection::Right);
+            let pane = view.snapshot.selected_session().unwrap().id;
+            view.dock_tab_at_pane(Review, pane, PaneSplitDirection::Up, window, cx);
+            assert_eq!(view.review_split_direction, PaneSplitDirection::Up);
+            for terminal in view.terminals.values() {
+                assert!(terminal.read(cx).is_surface_visible());
+            }
+            drag.from_pane = true;
+            view.drop_tab_in_strip(&drag, None, window, cx);
+            assert_eq!(view.review_dock_owner(), None);
+            assert_eq!(view.visible_tab_order(cx), vec![Terminal(tab), Review]);
+            assert!(view.review_covers_terminal(cx));
+            for terminal in view.terminals.values() {
+                assert!(!terminal.read(cx).is_surface_visible());
+            }
+            view.go_to_tab(&crate::GoToTab { index: 1 }, window, cx);
+            assert!(!view.review_visible(cx));
+            view.go_to_tab(&crate::GoToTab { index: 9 }, window, cx);
+            assert!(view.review_covers_terminal(cx));
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn docked_review_follows_its_owner_when_switching_merging_and_detaching_panes(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::domain::workspace::WorkspaceTabId::{Review, Terminal};
+    let (root, _, _, window) = open_recording_workspace(cx, "review-owner");
+    window
+        .update(cx, |view, _, cx| {
+            view.diff_view
+                .update(cx, |diff, cx| diff.set_review_expanded(true, cx));
+        })
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            let owner = view.snapshot.selected_tab().unwrap().id;
+            let (other, _) = view
+                .snapshot
+                .open_tab_in_project(view.snapshot.selected_project_id.unwrap(), false)
+                .unwrap();
+            view.reconcile_terminal_views(cx);
+            view.dock_tab(Terminal(owner), Review, window, cx);
+            assert_eq!(
+                view.visible_tab_order(cx),
+                vec![Terminal(owner), Terminal(other)]
+            );
+            view.go_to_tab(&crate::GoToTab { index: 9 }, window, cx);
+            assert_eq!(view.snapshot.selected_tab().unwrap().id, other);
+            assert!(!view.review_visible(cx));
+            assert!(!view.visible_tab_order(cx).contains(&Review));
+            view.go_to_tab(&crate::GoToTab { index: 1 }, window, cx);
+            assert!(
+                view.review_visible(cx),
+                "returning to the owner restores its split"
+            );
+            view.dock_tab(Terminal(owner), Terminal(other), window, cx);
+            assert_eq!(view.review_dock_owner(), Some(other));
+            assert!(view.review_visible(cx));
+            assert_eq!(view.visible_tab_order(cx), vec![Terminal(other)]);
+            let pane = view.snapshot.selected_session().unwrap().id;
+            view.detach_pane(pane, None, window, cx);
+            assert_eq!(
+                view.review_dock_owner(),
+                Some(other),
+                "detaching one of several terminals keeps review with the original tab"
+            );
+            assert!(!view.review_visible(cx));
+            view.select_tab(other, window, cx);
+            assert!(view.review_visible(cx));
+            let remaining = view.snapshot.selected_tab().unwrap().layout.terminal_ids();
+            for session in remaining {
+                view.close_pane(session, window, cx);
+            }
+            assert_eq!(view.review_dock_owner(), None);
+            assert!(
+                view.visible_tab_order(cx).contains(&Review),
+                "closing the owner does not strand the review"
+            );
+            assert!(view.diff_view.read(cx).review_focused());
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn explorer_opens_unchanged_documents_without_replacing_terminals(cx: &mut gpui::TestAppContext) {
+    let (root, _, _, window) = open_recording_workspace(cx, "explorer-documents");
+    let path = root.join("README.md");
+    std::fs::write(&path, "# Archivo sin Git\n").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            let terminals: HashMap<_, _> = view
+                .terminals
+                .iter()
+                .map(|(id, terminal)| (*id, terminal.entity_id()))
+                .collect();
+            view.open_project_file(path.clone(), window, cx);
+            assert_eq!(view.selected_file_path, Some(path.clone()));
+            assert_eq!(view.diff_view.read(cx).preview_path(), Some(path.as_path()));
+            assert!(view.review_covers_terminal(cx));
+            assert!(
+                view.terminals
+                    .values()
+                    .all(|terminal| !terminal.read(cx).is_surface_visible())
+            );
+            view.close_review(window, cx);
+            for (id, terminal) in &view.terminals {
+                assert_eq!(terminal.entity_id(), terminals[id]);
+                assert!(terminal.read(cx).is_surface_visible());
+            }
+            view.execute_palette_action(PaletteAction::OpenFile(path.clone()), window, cx);
+            assert_eq!(view.diff_view.read(cx).preview_path(), Some(path.as_path()));
+            let tab = view.snapshot.selected_tab().unwrap().id;
+            view.close_tab(tab, window, cx);
+            assert!(view.terminals.is_empty());
+            assert!(view.review_covers_terminal(cx));
+            assert_eq!(
+                view.visible_tab_order(cx),
+                vec![crate::domain::workspace::WorkspaceTabId::Review],
+                "closing a background terminal leaves the document accessible"
+            );
             window.remove_window();
         })
         .unwrap();

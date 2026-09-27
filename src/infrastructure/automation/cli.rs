@@ -21,7 +21,7 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
         return Ok(true);
     }
     if matches!(mode, "+pane" | "+skill") {
-        bail!("la CLI de orquestación de panes y agentes ya no está disponible");
+        bail!("the pane and agent orchestration CLI is no longer available");
     }
     if mode != "+agent" {
         return Ok(false);
@@ -30,12 +30,12 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
     let command = parse_cli_command(mode, &arguments[1..])?;
     let socket = std::env::var_os("VIBRA_AUTOMATION_SOCKET")
         .map(PathBuf::from)
-        .context("VIBRA_AUTOMATION_SOCKET no está disponible; ejecuta esto dentro de Vibra")?;
+        .context("VIBRA_AUTOMATION_SOCKET is unavailable; run this inside Vibra")?;
     let pane_id = std::env::var("VIBRA_PANE_ID")
-        .context("falta VIBRA_PANE_ID")?
+        .context("missing VIBRA_PANE_ID")?
         .parse()?;
     let token = std::env::var("VIBRA_AUTOMATION_TOKEN")
-        .context("falta VIBRA_AUTOMATION_TOKEN")?
+        .context("missing VIBRA_AUTOMATION_TOKEN")?
         .parse()?;
     let envelope = AutomationEnvelope {
         pane_id,
@@ -43,7 +43,7 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
         command,
     };
     let mut stream = UnixStream::connect(&socket)
-        .with_context(|| format!("no se pudo conectar a {}", socket.display()))?;
+        .with_context(|| format!("could not connect to {}", socket.display()))?;
     stream.write_all(&serde_json::to_vec(&envelope)?)?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let mut response = Vec::new();
@@ -51,14 +51,14 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
         .take(MAX_AUTOMATION_RESPONSE_BYTES + 1)
         .read_to_end(&mut response)?;
     if response.len() as u64 > MAX_AUTOMATION_RESPONSE_BYTES {
-        bail!("la respuesta de seguimiento supera 4 MiB");
+        bail!("the tracking response exceeds 4 MiB");
     }
     let response: AutomationResponse = serde_json::from_slice(&response)?;
     if !response.ok {
         bail!(
             response
                 .error
-                .unwrap_or_else(|| "no se pudo actualizar el seguimiento del agente".into())
+                .unwrap_or_else(|| "could not update agent tracking".into())
         );
     }
     if let Some(data) = response.data {
@@ -86,12 +86,12 @@ pub(super) fn shell_quote(value: &str) -> String {
 
 pub(super) fn parse_cli_command(mode: &str, arguments: &[String]) -> Result<AutomationCommand> {
     if mode != "+agent" {
-        bail!("el puente de agentes solo se puede usar con +agent");
+        bail!("the agent bridge can only be used with +agent");
     }
     let operation = arguments
         .first()
         .map(String::as_str)
-        .context("uso: +agent [presence|attention|hook|clear|idle|working|waiting]")?;
+        .context("usage: +agent [presence|attention|hook|clear|idle|working|waiting]")?;
     match operation {
         "presence" => parse_agent_presence(&arguments[1..]),
         "attention" => parse_agent_attention(&arguments[1..]),
@@ -104,13 +104,13 @@ pub(super) fn parse_cli_command(mode: &str, arguments: &[String]) -> Result<Auto
         }
         "idle" | "working" | "waiting" => {
             if arguments.len() != 1 {
-                bail!("{operation} no acepta argumentos");
+                bail!("{operation} does not accept arguments");
             }
             Ok(AutomationCommand::SetAgentState {
                 state: parse_agent_runtime_state(Some(operation))?,
             })
         }
-        _ => bail!("uso: +agent [presence|attention|hook|clear|idle|working|waiting]"),
+        _ => bail!("usage: +agent [presence|attention|hook|clear|idle|working|waiting]"),
     }
 }
 
@@ -120,7 +120,7 @@ fn parse_agent_presence(arguments: &[String]) -> Result<AutomationCommand> {
         .and_then(|kind| AgentKind::parse(kind))
         .with_context(|| {
             format!(
-                "agent esperado: {}",
+                "expected agent: {}",
                 AgentKind::ALL
                     .iter()
                     .map(|kind| kind.cli_name())
@@ -153,7 +153,7 @@ fn parse_agent_attention(arguments: &[String]) -> Result<AutomationCommand> {
     let kind = arguments
         .first()
         .and_then(|kind| AgentKind::parse(kind))
-        .context("agent esperado después de attention")?;
+        .context("expected agent after attention")?;
     let explicit_attention = arguments.get(1).filter(|value| !value.starts_with("--"));
     let attention = explicit_attention
         .map(|value| parse_attention(value))
@@ -177,29 +177,29 @@ fn parse_agent_hook(arguments: &[String]) -> Result<AutomationCommand> {
     let kind = arguments
         .first()
         .and_then(|kind| AgentKind::parse(kind))
-        .context("uso: +agent hook <claude|codex> <evento>")?;
+        .context("usage: +agent hook <claude|codex> <event>")?;
     let event = arguments
         .get(1)
         .map(String::as_str)
-        .context("falta evento de hook")?;
+        .context("missing hook event")?;
     if arguments.len() != 2 {
-        bail!("uso: +agent hook <claude|codex> <evento>");
+        bail!("usage: +agent hook <claude|codex> <event>");
     }
     if !matches!(kind, AgentKind::Claude | AgentKind::Codex) {
-        bail!("Vibra todavía no incluye hooks para {}", kind.cli_name());
+        bail!("Vibra does not yet include hooks for {}", kind.cli_name());
     }
     let mut input = String::new();
     std::io::stdin()
         .take(MAX_AGENT_HOOK_BYTES + 1)
         .read_to_string(&mut input)
-        .context("no se pudo leer el JSON del hook")?;
+        .context("could not read hook JSON")?;
     if input.len() as u64 > MAX_AGENT_HOOK_BYTES {
-        bail!("el payload del hook supera 1 MiB");
+        bail!("the hook payload exceeds 1 MiB");
     }
     let payload = if input.trim().is_empty() {
         Value::Null
     } else {
-        serde_json::from_str(&input).context("JSON de hook inválido")?
+        serde_json::from_str(&input).context("invalid hook JSON")?
     };
     agent_hook_command(kind, event, &payload)
 }
@@ -250,11 +250,11 @@ pub(super) fn agent_hook_command(
                     Some(AgentAttention::Permission),
                 )),
                 Some("idle_prompt") => Ok(presence(AgentRuntimeState::Idle, None)),
-                _ => bail!("notificación de Claude no soportada"),
+                _ => bail!("unsupported Claude notification"),
             }
         }
-        (AgentKind::Claude | AgentKind::Codex, _) => bail!("evento de hook no soportado: {event}"),
-        _ => bail!("Vibra todavía no incluye hooks para {}", kind.cli_name()),
+        (AgentKind::Claude | AgentKind::Codex, _) => bail!("unsupported hook event: {event}"),
+        _ => bail!("Vibra does not yet include hooks for {}", kind.cli_name()),
     }
 }
 
@@ -281,13 +281,13 @@ fn parse_agent_runtime_state(value: Option<&str>) -> Result<AgentRuntimeState> {
         Some("idle") => Ok(AgentRuntimeState::Idle),
         Some("working") => Ok(AgentRuntimeState::Working),
         Some("waiting") => Ok(AgentRuntimeState::Waiting),
-        _ => bail!("estado esperado: idle, working o waiting"),
+        _ => bail!("expected state: idle, working, or waiting"),
     }
 }
 
 fn parse_attention(value: &str) -> Result<AgentAttention> {
     AgentAttention::parse(value)
-        .context("atención esperada: permission, question, plan o notification")
+        .context("expected attention: permission, question, plan, or notification")
 }
 
 #[derive(Default)]
@@ -303,15 +303,15 @@ fn parse_agent_options(arguments: &[String], allow_model: bool) -> Result<AgentO
         let destination = match flag.as_str() {
             "--model" if allow_model => &mut options.model,
             "--session" => &mut options.session_id,
-            _ => bail!("argumento no reconocido: {flag}"),
+            _ => bail!("unrecognized argument: {flag}"),
         };
         if destination.is_some() {
-            bail!("{flag} aparece más de una vez");
+            bail!("{flag} appears more than once");
         }
         let value = arguments
             .next()
             .filter(|value| !value.is_empty() && !value.starts_with("--"))
-            .with_context(|| format!("falta valor para {flag}"))?;
+            .with_context(|| format!("missing value for {flag}"))?;
         *destination = Some(value.clone());
     }
     Ok(options)

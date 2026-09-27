@@ -41,7 +41,7 @@ impl WorkspaceView {
             .repository
             .save(&self.snapshot)
             .err()
-            .map(|error| SharedString::from(format!("No se pudo guardar: {error}")));
+            .map(|error| SharedString::from(format!("Could not save: {error}")));
         cx.notify();
     }
 
@@ -63,7 +63,7 @@ impl WorkspaceView {
             .settings_repository
             .save(&self.settings)
             .err()
-            .map(|error| format!("No se pudieron guardar settings: {error}").into());
+            .map(|error| format!("Could not save settings: {error}").into());
         cx.notify();
     }
 
@@ -99,9 +99,10 @@ impl WorkspaceView {
         }) {
             return;
         }
-        self.library_save_error = repository.save(&self.library).err().map(|error| {
-            format!("No se pudieron guardar las notas y automatizaciones: {error}").into()
-        });
+        self.library_save_error = repository
+            .save(&self.library)
+            .err()
+            .map(|error| format!("Could not save notes and automations: {error}").into());
         cx.notify();
     }
 
@@ -150,7 +151,7 @@ impl WorkspaceView {
             Ok(()) => {}
             Err(FinishError::Save(error)) => eprintln!("{error}"),
             Err(FinishError::Unavailable) => {
-                eprintln!("El guardado final no está disponible")
+                eprintln!("Final save unavailable")
             }
         }
     }

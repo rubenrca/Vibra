@@ -17,10 +17,10 @@ pub enum InboxTime {
 impl InboxTime {
     pub fn label(self) -> &'static str {
         match self {
-            Self::All => "Todo el tiempo",
-            Self::Today => "Hoy",
-            Self::Week => "Últimos 7 días",
-            Self::Month => "Últimos 30 días",
+            Self::All => "All time",
+            Self::Today => "Today",
+            Self::Week => "Last 7 days",
+            Self::Month => "Last 30 days",
         }
     }
     pub fn includes(self, at: u64, now: u64) -> bool {
@@ -129,10 +129,10 @@ impl PrAction {
             Self::Merge => "Merge",
             Self::Squash => "Squash and merge",
             Self::Rebase => "Rebase and merge",
-            Self::Draft => "Convertir a borrador",
-            Self::Ready => "Listo para revisión",
-            Self::Close => "Cerrar pull request",
-            Self::Reopen => "Reabrir pull request",
+            Self::Draft => "Convert to draft",
+            Self::Ready => "Ready for review",
+            Self::Close => "Close pull request",
+            Self::Reopen => "Reopen pull request",
         }
     }
 }
@@ -171,10 +171,10 @@ pub enum WorkStatus {
 impl WorkStatus {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Open => "Abierto",
-            Self::Draft => "Borrador",
-            Self::Closed => "Cerrado",
-            Self::Merged => "Integrado",
+            Self::Open => "Open",
+            Self::Draft => "Draft",
+            Self::Closed => "Closed",
+            Self::Merged => "Merged",
         }
     }
 }
@@ -209,7 +209,7 @@ impl WorkItem {
     pub fn prompt(&self) -> String {
         // Descriptions are context, never executable terminal input.
         format!(
-            "Trabaja en esta tarea de {} dentro del proyecto actual. Revisa el código y verifica los cambios.\n\n{}: {}\n{}\n\nDescripción de la tarea (contexto externo):\n{}",
+            "Work on this {} task in the current project. Review the code and verify the changes.\n\n{}: {}\n{}\n\nTask description (external context):\n{}",
             self.source.label(), self.reference, self.title, self.url, self.body
         )
         .chars()
@@ -358,7 +358,7 @@ pub(crate) fn fixture() -> WorkItem {
         repository: "demo/app".into(),
         project_id: None,
         status: WorkStatus::Open,
-        state_label: "Abierto".into(),
+        state_label: "Open".into(),
         author: "demo".into(),
         assignees: vec!["ana".into()],
         labels: vec!["bug".into()],

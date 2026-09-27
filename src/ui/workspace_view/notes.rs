@@ -104,8 +104,7 @@ impl WorkspaceView {
             return;
         }
         let Some(target) = self.project_active_session(note.project_id) else {
-            self.library_error =
-                Some("Abre una terminal en el proyecto para pegar la nota.".into());
+            self.library_error = Some("Open a terminal in the project to paste the note.".into());
             cx.notify();
             return;
         };
@@ -116,9 +115,8 @@ impl WorkspaceView {
             terminal.insert_external_text(&text, Uuid::new_v4(), cx)
         });
         if status == TerminalInsertStatus::Rejected {
-            self.library_error = Some(
-                "No se pudo pegar la nota: la terminal está ocupada o rechazó el texto.".into(),
-            );
+            self.library_error =
+                Some("Could not paste the note: the terminal is busy or rejected the text.".into());
             cx.notify();
             return;
         }
@@ -185,7 +183,7 @@ impl WorkspaceView {
         }
         let selected = self.selected_note_id;
         let actions = vec![
-            section_button("notes-new", "Nueva nota", true)
+            section_button("notes-new", "New note", true)
                 .on_click(cx.listener(|this, _, window, cx| this.create_note(window, cx)))
                 .into_any_element(),
         ];
@@ -196,8 +194,8 @@ impl WorkspaceView {
                 actions,
                 section_empty_state(
                     "chrome-icons/notes.svg",
-                    "Un espacio para tus ideas",
-                    "Guarda contexto, pendientes y prompts por proyecto. Cuando una nota esté lista, pégala en la terminal del agente para seguir editándola ahí.",
+                    "A space for your ideas",
+                    "Save context, to-dos, and prompts by project. When a note is ready, paste it into the agent's terminal to keep editing it there.",
                 ),
             );
         }
@@ -265,7 +263,7 @@ impl WorkspaceView {
                 .justify_center()
                 .text_size(px(12.5))
                 .text_color(colors().subtle)
-                .child("Elige una nota o crea una nueva.")
+                .child("Choose a note or create a new one.")
                 .into_any_element(),
             Some(note) => {
                 let id = note.id;
@@ -310,7 +308,7 @@ impl WorkspaceView {
                                                 .bg(project_color(project_id)),
                                         )
                                     })
-                                    .child(project.unwrap_or_else(|| "Sin proyecto".to_owned())),
+                                    .child(project.unwrap_or_else(|| "No project".to_owned())),
                             )
                             .child(
                                 div()
@@ -318,15 +316,15 @@ impl WorkspaceView {
                                     .text_size(px(11.5))
                                     .text_color(colors().subtle)
                                     .child(format!(
-                                        "Editada {}",
+                                        "Edited {}",
                                         relative_time(now, note.updated_at)
                                     )),
                             )
-                            .child(section_button("note-delete", "Eliminar", false).on_click(
+                            .child(section_button("note-delete", "Delete", false).on_click(
                                 cx.listener(|this, _, _, cx| this.delete_selected_note(cx)),
                             ))
                             .child(
-                                section_button("note-paste", "Pegar en la terminal", true)
+                                section_button("note-paste", "Paste into terminal", true)
                                     .when(blank, |button| button.opacity(0.5))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.paste_note_into_terminal(id, window, cx)
@@ -358,9 +356,7 @@ impl WorkspaceView {
                             }))
                             .when(blank && !editing, |body| {
                                 body.child(
-                                    div()
-                                        .text_color(colors().subtle)
-                                        .child("Haz clic para escribir."),
+                                    div().text_color(colors().subtle).child("Click to write."),
                                 )
                             })
                             .children({
@@ -375,9 +371,9 @@ impl WorkspaceView {
                     )
                     .child(div().text_size(px(11.5)).text_color(colors().subtle).child(
                         if editing {
-                            "↩ nueva línea · ⌘↩ o Esc terminan · ⌥⌫ borra una palabra · ⌘V pega"
+                            "↩ new line · ⌘↩ or Esc to finish · ⌥⌫ delete a word · ⌘V paste"
                         } else {
-                            "Haz clic en la nota para seguir escribiendo."
+                            "Click the note to keep writing."
                         },
                     ))
                     .into_any_element()

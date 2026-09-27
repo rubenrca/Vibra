@@ -85,7 +85,7 @@ impl WorkspaceView {
                 .background_spawn(async move {
                     monitor
                         .lock()
-                        .map_err(|_| anyhow::anyhow!("No se pudo actualizar el monitor de cuotas."))
+                        .map_err(|_| anyhow::anyhow!("Could not refresh the quota monitor."))
                         .map(|mut monitor| monitor.refresh(manual))
                 })
                 .await;
@@ -106,9 +106,9 @@ impl WorkspaceView {
         let now = now_timestamp();
         let tooltip = self.usage.error.clone().unwrap_or_else(|| {
             if self.usage.snapshot.providers.is_empty() {
-                "Inicia sesión en tus proveedores para ver las cuotas".to_owned()
+                "Sign in to your providers to see quotas".to_owned()
             } else {
-                "Uso de suscripciones IA · porcentaje consumido".to_owned()
+                "AI subscription usage · percentage used".to_owned()
             }
         });
         div()
@@ -167,18 +167,14 @@ impl WorkspaceView {
                             "{} · {}{}",
                             provider.display_name,
                             quota.map_or_else(
-                                || "Sin cuota disponible".to_owned(),
+                                || "No quota available".to_owned(),
                                 |(key, resource)| format!(
                                     "{}: {}",
                                     resource_label(key),
                                     resource.value_label()
                                 )
                             ),
-                            if stale {
-                                " · Datos desactualizados"
-                            } else {
-                                ""
-                            }
+                            if stale { " · Outdated data" } else { "" }
                         );
                         div()
                             .id(SharedString::from(format!("status-usage-{id}")))
@@ -247,9 +243,9 @@ impl WorkspaceView {
                         div()
                             .text_color(colors().muted)
                             .child(if self.usage.loading {
-                                "Consultando cuotas…"
+                                "Checking quotas…"
                             } else {
-                                "Inicia sesión con Claude Code, Codex o Grok Build y pulsa Actualizar."
+                                "Sign in with Claude Code, Codex, or Grok Build and click Refresh."
                             }),
                     )
                 },
@@ -287,7 +283,7 @@ impl WorkspaceView {
                                     div()
                                         .text_size(px(10.0))
                                         .text_color(colors().warning)
-                                        .child("Desactualizado"),
+                                        .child("Outdated"),
                                 )
                             }),
                     )
@@ -297,9 +293,9 @@ impl WorkspaceView {
                             let minutes = now.saturating_sub(fetched).max(0) / 60;
                             card.child(div().text_size(px(10.0)).text_color(colors().subtle).child(
                                 if minutes == 0 {
-                                    "Actualizado hace menos de 1 min".to_owned()
+                                    "Updated less than 1 min ago".to_owned()
                                 } else {
-                                    format!("Actualizado hace {minutes} min")
+                                    format!("Updated {minutes} min ago")
                                 },
                             ))
                         },
@@ -308,7 +304,7 @@ impl WorkspaceView {
                         card.child(
                             div()
                                 .text_color(colors().muted)
-                                .child("Sin cuotas disponibles"),
+                                .child("No quotas available"),
                         )
                     })
                     .children(provider.resources.iter().map(|(key, resource)| {
@@ -409,7 +405,7 @@ impl WorkspaceView {
                                 .p(px(14.0))
                                 .border_b_1()
                                 .border_color(colors().border_subtle)
-                                .child(div().flex_1().child("Uso de suscripciones"))
+                                .child(div().flex_1().child("Subscription usage"))
                                 .child(
                                     div()
                                         .id("usage-refresh")
@@ -418,17 +414,17 @@ impl WorkspaceView {
                                         .hover(|button| button.text_color(colors().foreground))
                                         .tooltip(|_, cx| {
                                             sidebar_tooltip(
-                                                "Consultar cuotas · puede solicitar acceso al llavero",
+                                                "Check quotas · may request Keychain access",
                                                 cx,
                                             )
                                         })
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.refresh_usage(true, cx)),
-                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.refresh_usage(true, cx)
+                                        }))
                                         .child(if self.usage.loading {
-                                            "Consultando…"
+                                            "Checking…"
                                         } else {
-                                            "Actualizar"
+                                            "Refresh"
                                         }),
                                 ),
                         )
@@ -442,9 +438,7 @@ impl WorkspaceView {
                                 .border_color(colors().border_subtle)
                                 .text_size(px(10.0))
                                 .text_color(colors().subtle)
-                                .child(
-                                    "Porcentaje consumido · Consulta directa · Actualización cada 5 min",
-                                ),
+                                .child("Percentage used · Direct query · Refreshes every 5 min"),
                         ),
                 )
                 .into_any_element(),

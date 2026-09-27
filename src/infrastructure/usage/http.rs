@@ -68,7 +68,7 @@ fn header_config(headers: &[(&str, &str)]) -> Result<String, UsageFailure> {
     for (name, value) in headers {
         if name.chars().chain(value.chars()).any(|c| c.is_control()) {
             return Err(UsageFailure::new(
-                "Credencial no válida. Vuelve a iniciar sesión en el CLI.",
+                "Invalid credential. Sign in again in the CLI.",
             ));
         }
         let header = format!("{name}: {value}")
@@ -104,7 +104,7 @@ fn parse_response(mut bytes: &[u8]) -> Result<Value, UsageFailure> {
             }
             401 | 403 => {
                 return Err(UsageFailure::new(
-                    "La sesión no permite consultar cuotas. Abre el CLI y vuelve a iniciar sesión.",
+                    "The session cannot query quotas. Open the CLI and sign in again.",
                 ));
             }
             429 => {
@@ -114,14 +114,13 @@ fn parse_response(mut bytes: &[u8]) -> Result<Value, UsageFailure> {
                     .find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
                     .and_then(|(_, value)| retry_after(value.trim(), now_timestamp()));
                 return Err(UsageFailure {
-                    message: "El servicio limitó las consultas. Vibra reintentará más tarde."
-                        .into(),
+                    message: "The service rate-limited requests. Vibra will retry later.".into(),
                     retry_after: Some(retry.unwrap_or(900).max(300)),
                 });
             }
             _ => {
                 return Err(UsageFailure::new(format!(
-                    "No se pudieron consultar las cuotas (HTTP {status})."
+                    "Could not query quotas (HTTP {status})."
                 )));
             }
         }

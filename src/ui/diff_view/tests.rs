@@ -1,6 +1,70 @@
 use super::*;
 
 #[gpui::test]
+fn file_preview_loads_without_git_and_late_files_cannot_replace_the_latest_choice(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::infrastructure::files::LocalFileSystemPort;
+    use crate::infrastructure::git::GitCliPort;
+    let root = std::env::temp_dir().join(format!("vibra-preview-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let first = root.join("first.md");
+    let second = root.join("second.rs");
+    std::fs::write(&first, "# Primero\n").unwrap();
+    std::fs::write(&second, "fn main() {}\n").unwrap();
+    let (view, cx) = cx
+        .add_window_view(|_, cx| DiffView::new(root.clone(), Arc::new(GitCliPort::default()), cx));
+    view.update(cx, |view, cx| {
+        view.open_file_preview(first, Arc::new(LocalFileSystemPort), cx);
+        view.open_file_preview(second.clone(), Arc::new(LocalFileSystemPort), cx);
+        assert!(view.review_expanded());
+        assert_eq!(view.review_title(), "second.rs");
+        assert_eq!(view.review_icon(), "file-icons/file.svg");
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        assert_eq!(view.preview_path(), Some(second.as_path()));
+        assert_eq!(
+            view.file_preview.as_ref().unwrap().1.read(cx).text(),
+            Some("fn main() {}\n")
+        );
+        assert!(
+            view.snapshot.is_none(),
+            "the viewer does not require a repository"
+        );
+        view.snapshot = Some(GitRepositorySnapshot {
+            root: root.clone(),
+            branch: "main".into(),
+            changes: vec![GitFileChange {
+                path: "second.rs".into(),
+                old_path: None,
+                status: GitFileStatus::Modified,
+                staged: false,
+                unstaged: true,
+                untracked: false,
+                additions: Some(1),
+                deletions: Some(0),
+            }],
+            additions: 1,
+            deletions: 0,
+        });
+        assert!(view.select_path_if_changed("second.rs", cx));
+        assert!(
+            view.preview_path().is_none(),
+            "opening Changes restores the diff view"
+        );
+        view.open_file_preview(second.clone(), Arc::new(LocalFileSystemPort), cx);
+        view.set_root(root.join("another-project"), cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, _| {
+        assert!(view.preview_path().is_none());
+        assert!(!view.review_expanded());
+    });
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn late_review_delivery_does_not_unlock_another_projects_pending_review(
     cx: &mut gpui::TestAppContext,
 ) {

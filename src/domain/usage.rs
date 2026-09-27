@@ -82,22 +82,22 @@ impl UsageResource {
     pub fn value_label(&self) -> String {
         if self.kind == "balance" {
             return self.available.map_or_else(
-                || "Sin datos".to_owned(),
-                |available| format!("{} disponibles", self.format_value(available)),
+                || "No data".to_owned(),
+                |available| format!("{} available", self.format_value(available)),
             );
         }
         if let Some(percent) = self.percent_used() {
             if self.unit == "percent" {
-                return format!("{percent:.0}% usado");
+                return format!("{percent:.0}% used");
             }
             if let (Some(used), Some(limit)) = (self.used, self.limit) {
                 return format!("{} / {}", self.format_value(used), self.format_value(limit));
             }
-            return format!("{percent:.0}% usado");
+            return format!("{percent:.0}% used");
         }
         self.used.map_or_else(
-            || "Sin datos".to_owned(),
-            |used| format!("{} usados", self.format_value(used)),
+            || "No data".to_owned(),
+            |used| format!("{} used", self.format_value(used)),
         )
     }
 
@@ -105,9 +105,9 @@ impl UsageResource {
         match self.unit.as_str() {
             "usd" => format!("US${value:.2}"),
             "percent" => format!("{value:.0}%"),
-            "credits" => format!("{value:.0} créditos"),
-            "requests" => format!("{value:.0} solicitudes"),
-            "resets" => format!("{value:.0} reinicios"),
+            "credits" => format!("{value:.0} credits"),
+            "requests" => format!("{value:.0} requests"),
+            "resets" => format!("{value:.0} resets"),
             unit => format!("{value:.0} {unit}"),
         }
     }
@@ -115,23 +115,23 @@ impl UsageResource {
 
 pub fn resource_label(key: &str) -> &str {
     match key {
-        "session" => "Sesión",
-        "weekly" => "Semana",
-        "monthly" => "Mes",
-        "daily" => "Día",
-        "totalUsage" => "Uso total",
-        "extraUsage" => "Uso extra",
-        "credits" => "Créditos",
-        "creditValue" | "balance" => "Saldo",
-        "rateLimitResets" => "Reinicios de cuota",
-        "premiumCredits" => "Créditos premium",
-        "onDemand" => "Bajo demanda",
-        "requests" => "Solicitudes",
+        "session" => "Session",
+        "weekly" => "Week",
+        "monthly" => "Month",
+        "daily" => "Day",
+        "totalUsage" => "Total usage",
+        "extraUsage" => "Extra usage",
+        "credits" => "Credits",
+        "creditValue" | "balance" => "Balance",
+        "rateLimitResets" => "Quota resets",
+        "premiumCredits" => "Premium credits",
+        "onDemand" => "On demand",
+        "requests" => "Requests",
         "sonnet" => "Sonnet",
         "opus" => "Opus",
         "fable" => "Fable",
-        "spark" => "Spark · sesión",
-        "sparkWeekly" => "Spark · semana",
+        "spark" => "Spark · session",
+        "sparkWeekly" => "Spark · week",
         _ => key,
     }
 }
@@ -151,20 +151,20 @@ pub fn timestamp(value: &str) -> Option<i64> {
 
 pub fn reset_label(value: &str, now: i64) -> String {
     let Some(reset) = timestamp(value) else {
-        return "Reinicio sin fecha válida".to_owned();
+        return "Reset date unavailable".to_owned();
     };
     let seconds = reset.saturating_sub(now);
     if seconds <= 0 {
-        return "Reinicio pendiente de actualizar".to_owned();
+        return "Reset pending refresh".to_owned();
     }
     let minutes = (seconds + 59) / 60;
     if minutes < 60 {
-        format!("Reinicia en {minutes} min")
+        format!("Resets in {minutes} min")
     } else if minutes < 24 * 60 {
-        format!("Reinicia en {} h {} min", minutes / 60, minutes % 60)
+        format!("Resets in {} h {} min", minutes / 60, minutes % 60)
     } else {
         format!(
-            "Reinicia en {} d {} h",
+            "Resets in {} d {} h",
             minutes / (24 * 60),
             minutes / 60 % 24
         )
@@ -189,13 +189,13 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(resource.percent_used(), None);
-        assert_eq!(resource.value_label(), "0 créditos disponibles");
+        assert_eq!(resource.value_label(), "0 credits available");
         let resource: UsageResource = serde_json::from_value(json!({
             "kind": "consumption", "unit": "percent"
         }))
         .unwrap();
         assert_eq!(resource.percent_used(), None);
-        assert_eq!(resource.value_label(), "Sin datos");
+        assert_eq!(resource.value_label(), "No data");
     }
 
     #[test]
@@ -215,11 +215,11 @@ mod tests {
         assert!(provider.is_stale(now + 300));
         assert_eq!(
             reset_label("2026-09-26T10:30:00-03:00", now),
-            "Reinicia en 1 h 30 min"
+            "Resets in 1 h 30 min"
         );
         assert_eq!(
             reset_label("2026-09-26T12:00:00Z", now),
-            "Reinicio pendiente de actualizar"
+            "Reset pending refresh"
         );
     }
 }

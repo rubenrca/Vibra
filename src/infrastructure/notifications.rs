@@ -99,17 +99,16 @@ pub fn play_completion_sound() {
 
 pub fn agent_notification_copy(kind: AgentNotificationKind, agent: &str) -> (String, String) {
     match kind {
-        AgentNotificationKind::Finished => (
-            format!("{agent} terminó"),
-            "El agente está en espera.".to_owned(),
-        ),
+        AgentNotificationKind::Finished => {
+            (format!("{agent} finished"), "The agent is idle.".to_owned())
+        }
         AgentNotificationKind::NeedsPermission => (
-            format!("{agent} pide permiso"),
-            "Hay una acción que requiere tu aprobación.".to_owned(),
+            format!("{agent} needs permission"),
+            "An action needs your approval.".to_owned(),
         ),
         AgentNotificationKind::NeedsAttention => (
-            format!("{agent} necesita tu atención"),
-            "El agente está esperando una respuesta.".to_owned(),
+            format!("{agent} needs your attention"),
+            "The agent is waiting for a response.".to_owned(),
         ),
     }
 }

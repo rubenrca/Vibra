@@ -27,7 +27,7 @@ impl super::WorkspaceView {
                 let mut files = Vec::new();
                 let error = collect_search_files(port.as_ref(), &root, &root, &mut files)
                     .err()
-                    .map(|error| format!("No se pudieron buscar archivos: {error}"));
+                    .map(|error| format!("Could not search files: {error}"));
                 (files, error)
             });
             self._palette_task = Some(cx.spawn(async move |this, cx| {
@@ -86,52 +86,52 @@ impl super::WorkspaceView {
         let mut items = match mode {
             PaletteMode::Commands => vec![
                 PaletteItem {
-                    label: "Terminal: Nueva pestaña".into(),
+                    label: "Terminal: New tab".into(),
                     detail: "⌘T".into(),
                     action: PaletteAction::NewTerminalTab,
                 },
                 PaletteItem {
-                    label: "Pane: Dividir a la derecha".into(),
+                    label: "Pane: Split right".into(),
                     detail: "⌘D".into(),
                     action: PaletteAction::Split(PaneSplitDirection::Right),
                 },
                 PaletteItem {
-                    label: "Pane: Dividir hacia abajo".into(),
+                    label: "Pane: Split down".into(),
                     detail: "⇧⌘D".into(),
                     action: PaletteAction::Split(PaneSplitDirection::Down),
                 },
                 PaletteItem {
-                    label: "Pane: Dividir a la izquierda".into(),
+                    label: "Pane: Split left".into(),
                     detail: String::new(),
                     action: PaletteAction::Split(PaneSplitDirection::Left),
                 },
                 PaletteItem {
-                    label: "Pane: Dividir hacia arriba".into(),
+                    label: "Pane: Split up".into(),
                     detail: String::new(),
                     action: PaletteAction::Split(PaneSplitDirection::Up),
                 },
                 PaletteItem {
-                    label: "Pane: Igualar tamaños".into(),
+                    label: "Pane: Equalize sizes".into(),
                     detail: "⌃⌥E".into(),
                     action: PaletteAction::EqualizePanes,
                 },
                 PaletteItem {
-                    label: "Pane: Agrandar o restaurar".into(),
+                    label: "Pane: Zoom or restore".into(),
                     detail: "⇧⌘↵".into(),
                     action: PaletteAction::TogglePaneZoom,
                 },
                 PaletteItem {
-                    label: "Proyecto: Agregar carpeta…".into(),
+                    label: "Project: Add folder…".into(),
                     detail: "⇧⌘O".into(),
                     action: PaletteAction::AddProject,
                 },
                 PaletteItem {
-                    label: "Proyecto: Abrir en el IDE".into(),
+                    label: "Project: Open in IDE".into(),
                     detail: "⇧⌘E".into(),
                     action: PaletteAction::OpenIde,
                 },
                 PaletteItem {
-                    label: "Workspace: Mostrar u ocultar panel".into(),
+                    label: "Workspace: Toggle panel".into(),
                     detail: "⌥⌘B".into(),
                     action: PaletteAction::ToggleWorkspacePanel,
                 },
@@ -141,32 +141,32 @@ impl super::WorkspaceView {
                     action: PaletteAction::ShowFiles,
                 },
                 PaletteItem {
-                    label: "Inbox: Abrir".into(),
-                    detail: "Actividad de los agentes".into(),
+                    label: "Inbox: Open".into(),
+                    detail: "Agent activity".into(),
                     action: PaletteAction::ShowSection(WorkspaceSection::Inbox),
                 },
                 PaletteItem {
-                    label: "Notes: Abrir".into(),
-                    detail: "Notas por proyecto".into(),
+                    label: "Notes: Open".into(),
+                    detail: "Project notes".into(),
                     action: PaletteAction::ShowSection(WorkspaceSection::Notes),
                 },
                 PaletteItem {
-                    label: "Notes: Nueva nota".into(),
+                    label: "Notes: New note".into(),
                     detail: String::new(),
                     action: PaletteAction::NewNote,
                 },
                 PaletteItem {
-                    label: "Automations: Abrir".into(),
-                    detail: "Comandos guardados y programados".into(),
+                    label: "Automations: Open".into(),
+                    detail: "Saved and scheduled commands".into(),
                     action: PaletteAction::ShowSection(WorkspaceSection::Automations),
                 },
                 PaletteItem {
-                    label: "Automations: Nueva automatización".into(),
+                    label: "Automations: New automation".into(),
                     detail: String::new(),
                     action: PaletteAction::NewAutomation,
                 },
                 PaletteItem {
-                    label: "Settings: Abrir".into(),
+                    label: "Settings: Open".into(),
                     detail: "⌘,".into(),
                     action: PaletteAction::ShowSettings,
                 },
@@ -208,13 +208,13 @@ impl super::WorkspaceView {
                     .automations
                     .iter()
                     .map(|automation| PaletteItem {
-                        label: format!("Automations: Ejecutar {}", automation.name),
+                        label: format!("Automations: Run {}", automation.name),
                         detail: automation.command.clone(),
                         action: PaletteAction::RunAutomation(automation.id),
                     }),
             );
             items.extend(self.snapshot.projects.iter().map(|project| PaletteItem {
-                label: format!("Proyecto: {}", project.name),
+                label: format!("Project: {}", project.name),
                 detail: project.root_path.clone(),
                 action: PaletteAction::SelectProject(project.id),
             }));
@@ -270,9 +270,8 @@ impl super::WorkspaceView {
                 self.open_settings(cx);
             }
             PaletteAction::OpenFile(path) => {
-                self.select_file_path(path, cx);
                 self.set_workspace_mode(RightSidebarMode::Files, cx);
-                self.focus_selected_terminal(window, cx);
+                self.open_project_file(path, window, cx);
             }
         }
     }
@@ -282,7 +281,7 @@ impl super::WorkspaceView {
         let items = self.palette_items();
         let empty = items.is_empty();
         let empty_message = if self.palette_loading {
-            "Buscando archivos…".into()
+            "Searching files…".into()
         } else if let Some(error) = &self.palette_error {
             error.to_string()
         } else {

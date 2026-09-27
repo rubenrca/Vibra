@@ -274,7 +274,7 @@ impl WorkspaceView {
                                 .hover(|button| {
                                     button.bg(surface_tint(colors().hover, colors().sidebar))
                                 })
-                                .tooltip(|_, cx| sidebar_tooltip("Agregar proyecto · ⇧⌘O", cx))
+                                .tooltip(|_, cx| sidebar_tooltip("Add project · ⇧⌘O", cx))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.choose_project_folder(None, false, window, cx)
                                 }))
@@ -337,14 +337,14 @@ impl WorkspaceView {
                                         .text_size(px(12.5))
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(colors().foreground)
-                                        .child("Agrega tu primer proyecto"),
+                                        .child("Add your first project"),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(12.0))
                                         .line_height(px(17.0))
                                         .text_color(colors().subtle)
-                                        .child("Elige una carpeta; sus terminales, archivos y cambios quedan juntos."),
+                                        .child("Choose a folder to keep its terminals, files, and changes together."),
                                 ),
                         )
                     }),

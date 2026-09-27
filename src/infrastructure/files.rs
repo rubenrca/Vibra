@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -10,7 +11,45 @@ use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LocalFileSystemPort;
 
+const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
+
 impl FileSystemPort for LocalFileSystemPort {
+    fn read_text_file(&self, project_root: &Path, path: &Path) -> Result<String> {
+        let root = canonical_root(project_root)?;
+        let path = path
+            .canonicalize()
+            .with_context(|| format!("Could not open {}", path.display()))?;
+        if !path.starts_with(&root) {
+            bail!("The file is outside the project.");
+        }
+        if !path.metadata()?.is_file() {
+            bail!("This entry is not a regular file.");
+        }
+        let file = fs::File::open(&path)?;
+        if file.metadata()?.len() > MAX_DOCUMENT_BYTES {
+            bail!("The file exceeds the viewer's 2 MB limit. You can open it in its application.");
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_DOCUMENT_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+            bail!("The file exceeds the viewer's 2 MB limit. You can open it in its application.");
+        }
+        if bytes.contains(&0) {
+            bail!("This is not a text document. You can open it in its application.");
+        }
+        let text = String::from_utf8(bytes).map_err(|_| {
+            anyhow::anyhow!(
+                "The viewer supports UTF-8 text. You can open this file in its application."
+            )
+        })?;
+        if text.lines().any(|line| line.len() > 32_768) {
+            bail!(
+                "This file contains lines that are too long for the viewer. You can open it in its application."
+            );
+        }
+        Ok(text)
+    }
+
     fn create_entry(
         &self,
         root: &Path,
@@ -44,7 +83,7 @@ impl FileSystemPort for LocalFileSystemPort {
         }
         let mut entries = BinaryHeap::new();
         for entry in fs::read_dir(&directory)
-            .with_context(|| format!("no se pudo leer {}", directory.display()))?
+            .with_context(|| format!("could not read {}", directory.display()))?
         {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -89,7 +128,7 @@ fn create_project_entry(
 ) -> Result<PathBuf, String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("Escribe un nombre.".to_owned());
+        return Err("Enter a name.".to_owned());
     }
     // Nested names (`src/lib.rs`) are allowed; escaping the project is not.
     let relative = Path::new(name);
@@ -98,7 +137,7 @@ fn create_project_entry(
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err("El nombre no puede salir de la carpeta del proyecto.".to_owned());
+        return Err("The name must stay within the project folder.".to_owned());
     }
     let canonical_root = canonical_root(root).map_err(|error| error.to_string())?;
     canonical_directory(&canonical_root, directory).map_err(|error| error.to_string())?;
@@ -112,10 +151,10 @@ fn create_project_entry(
                 .ancestors()
                 .find(|ancestor| ancestor.symlink_metadata().is_ok())
         })
-        .ok_or_else(|| "La carpeta no está disponible.".to_owned())?;
+        .ok_or_else(|| "The folder is unavailable.".to_owned())?;
     canonical_directory(&canonical_root, existing_parent).map_err(|error| error.to_string())?;
     if path.symlink_metadata().is_ok() {
-        return Err(format!("Ya existe {}.", path.display()));
+        return Err(format!("{} already exists.", path.display()));
     }
     let result = if folder {
         std::fs::create_dir_all(&path)
@@ -130,7 +169,7 @@ fn create_project_entry(
                     .map(|_| ())
             })
     };
-    result.map_err(|error| format!("No se pudo crear {}: {error}", path.display()))?;
+    result.map_err(|error| format!("Could not create {}: {error}", path.display()))?;
     Ok(path)
 }
 
@@ -169,18 +208,18 @@ fn entry_rank(kind: FileEntryKind) -> u8 {
 
 fn canonical_root(root: &Path) -> Result<PathBuf> {
     root.canonicalize()
-        .with_context(|| format!("no se pudo resolver {}", root.display()))
+        .with_context(|| format!("could not resolve {}", root.display()))
 }
 
 fn canonical_directory(root: &Path, directory: &Path) -> Result<PathBuf> {
     let directory = directory
         .canonicalize()
-        .with_context(|| format!("no se pudo resolver {}", directory.display()))?;
+        .with_context(|| format!("could not resolve {}", directory.display()))?;
     if !directory.starts_with(root) {
-        bail!("{} está fuera del proyecto", directory.display());
+        bail!("{} is outside the project", directory.display());
     }
     if !directory.is_dir() {
-        bail!("{} no es un directorio", directory.display());
+        bail!("{} is not a directory", directory.display());
     }
     Ok(directory)
 }
@@ -194,6 +233,62 @@ mod tests {
         let root = std::env::temp_dir().join(format!("vibra-files-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn documents_open_without_git_and_never_modify_the_source() {
+        let root = temporary_root();
+        let path = root.join("notas.md");
+        let text = "# Documento\nTexto sin cambios ni repositorio.\n";
+        fs::write(&path, text).unwrap();
+        assert_eq!(
+            LocalFileSystemPort.read_text_file(&root, &path).unwrap(),
+            text
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        fs::write(root.join("empty.txt"), "").unwrap();
+        assert_eq!(
+            LocalFileSystemPort
+                .read_text_file(&root, &root.join("empty.txt"))
+                .unwrap(),
+            ""
+        );
+        assert!(LocalFileSystemPort.read_text_file(&root, &root).is_err());
+        assert!(
+            LocalFileSystemPort
+                .read_text_file(&root, &root.join("missing.txt"))
+                .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn document_reads_bound_size_and_reject_binary_and_external_links() {
+        use std::os::unix::fs::symlink;
+        let root = temporary_root();
+        let outside = temporary_root();
+        let port = LocalFileSystemPort;
+        let large = root.join("large.txt");
+        fs::File::create(&large)
+            .unwrap()
+            .set_len(MAX_DOCUMENT_BYTES + 1)
+            .unwrap();
+        assert!(
+            port.read_text_file(&root, &large)
+                .unwrap_err()
+                .to_string()
+                .contains("2 MB")
+        );
+        let binary = root.join("binary.dat");
+        fs::write(&binary, [0, 1, 2]).unwrap();
+        assert!(port.read_text_file(&root, &binary).is_err());
+        fs::write(&binary, [255, 254]).unwrap();
+        assert!(port.read_text_file(&root, &binary).is_err());
+        fs::write(outside.join("external.txt"), "outside").unwrap();
+        symlink(outside.join("external.txt"), root.join("link.txt")).unwrap();
+        assert!(port.read_text_file(&root, &root.join("link.txt")).is_err());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]

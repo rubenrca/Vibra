@@ -113,7 +113,7 @@ impl PersistenceQueue {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .workspace = Some((generation, snapshot));
         self.wake()
-            .map_err(|_| "el guardado de proyectos ya no está disponible".into())
+            .map_err(|_| "project saving is no longer available".into())
     }
 
     pub fn save_settings(&self, generation: u64, settings: AppSettings) -> Result<(), String> {
@@ -122,7 +122,7 @@ impl PersistenceQueue {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .settings = Some((generation, settings));
         self.wake()
-            .map_err(|_| "el guardado de settings ya no está disponible".into())
+            .map_err(|_| "settings saving is no longer available".into())
     }
 
     fn wake(&self) -> Result<(), ()> {
@@ -142,7 +142,7 @@ impl PersistenceQueue {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .library = Some((generation, library));
         self.wake()
-            .map_err(|_| "el guardado de notas y automatizaciones ya no está disponible".into())
+            .map_err(|_| "notes and automations saving is no longer available".into())
     }
 
     /// Wait for the last state to reach disk before the process can exit. A
@@ -200,20 +200,18 @@ pub(super) fn save_final_blocking(
     if let Some(workspace) = workspace
         && let Err(error) = workspace_repository.save(&workspace)
     {
-        errors.push(format!("No se pudieron guardar proyectos: {error}"));
+        errors.push(format!("Could not save projects: {error}"));
     }
     if let Some(settings) = settings
         && let Err(error) = settings_repository.save(&settings)
     {
-        errors.push(format!("No se pudieron guardar settings: {error}"));
+        errors.push(format!("Could not save settings: {error}"));
     }
     if let Some(library) = library
         && let Some(repository) = library_repository
         && let Err(error) = repository.save(&library)
     {
-        errors.push(format!(
-            "No se pudieron guardar las notas y automatizaciones: {error}"
-        ));
+        errors.push(format!("Could not save notes and automations: {error}"));
     }
     if errors.is_empty() {
         Ok(())
@@ -308,7 +306,7 @@ fn persist_batch(
         let error = workspace_repository
             .save(&snapshot)
             .err()
-            .map(|error| format!("No se pudieron guardar proyectos: {error}"));
+            .map(|error| format!("Could not save projects: {error}"));
         if let Some(error) = &error {
             errors.push(error.clone());
         }
@@ -318,7 +316,7 @@ fn persist_batch(
         let error = settings_repository
             .save(&settings)
             .err()
-            .map(|error| format!("No se pudieron guardar settings: {error}"));
+            .map(|error| format!("Could not save settings: {error}"));
         if let Some(error) = &error {
             errors.push(error.clone());
         }
@@ -326,10 +324,11 @@ fn persist_batch(
     }
     if let Some((generation, library)) = library {
         let error = match library_repository {
-            Some(repository) => repository.save(&library).err().map(|error| {
-                format!("No se pudieron guardar las notas y automatizaciones: {error}")
-            }),
-            None => Some("El guardado de notas y automatizaciones no está disponible".into()),
+            Some(repository) => repository
+                .save(&library)
+                .err()
+                .map(|error| format!("Could not save notes and automations: {error}")),
+            None => Some("Notes and automations saving is unavailable".into()),
         };
         if let Some(error) = &error {
             errors.push(error.clone());
@@ -406,7 +405,7 @@ mod tests {
         let error = queue
             .finish(Some((1, WorkspaceSnapshot::default())), None, None)
             .unwrap_err();
-        assert!(matches!(error, FinishError::Save(message) if message.contains("proyectos")));
+        assert!(matches!(error, FinishError::Save(message) if message.contains("projects")));
         assert!(matches!(
             results.try_recv(),
             Ok(SaveResult::Workspace {

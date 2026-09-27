@@ -49,17 +49,17 @@ impl WorkspaceView {
             list = list.child(message(error, true));
         }
         if feed.loading && feed.items.is_empty() {
-            list = list.child(message("Cargando Inbox…", false));
+            list = list.child(message("Loading Inbox…", false));
         } else if visible.is_empty() {
             list = list.child(message(
                 if feed.connected == Some(false) {
-                    "Añade una conexión para empezar."
+                    "Add a connection to get started."
                 } else if self.settings.inbox.filters_active()
                     || !self.work_inbox.filter.query.is_empty()
                 {
-                    "Ninguna tarea coincide con estos filtros."
+                    "No tasks match these filters."
                 } else {
-                    "No hay issues ni pull requests en tus proyectos."
+                    "No issues or pull requests in your projects."
                 },
                 false,
             ));
@@ -68,7 +68,10 @@ impl WorkspaceView {
             list = list.child(self.inbox_task_card(item, cx));
         }
         if feed.truncated {
-            list=list.child(message("Se alcanzó el límite de resultados. Ajusta los filtros para consultar otras tareas.",false));
+            list = list.child(message(
+                "The result limit was reached. Adjust filters to find other tasks.",
+                false,
+            ));
         }
         let sidebar = div()
             .id("inbox-list-pane")
@@ -134,7 +137,7 @@ impl WorkspaceView {
                         icon_button(
                             "inbox-connections",
                             "chrome-icons/plus.svg",
-                            "Añadir conexión",
+                            "Add connection",
                         )
                         .on_click(cx.listener(|this, event, _, cx| {
                             this.open_inbox_menu(InboxMenu::Connections, event, cx)
@@ -187,14 +190,14 @@ impl WorkspaceView {
                                         colors().muted
                                     })
                                     .child(if self.work_inbox.filter.query.is_empty() {
-                                        "Filtrar inbox".into()
+                                        "Filter Inbox".into()
                                     } else {
                                         self.work_inbox.filter.query.clone()
                                     }),
                             ),
                     )
                     .child(
-                        icon_button("inbox-filter-menu", "chrome-icons/filter.svg", "Filtros")
+                        icon_button("inbox-filter-menu", "chrome-icons/filter.svg", "Filters")
                             .when(self.settings.inbox.filters_active(), |button| {
                                 button.bg(surface_tint(colors().selection, colors().background))
                             })
@@ -206,7 +209,7 @@ impl WorkspaceView {
                         icon_button(
                             "inbox-read-all",
                             "chrome-icons/check-all.svg",
-                            "Marcar todos como leídos",
+                            "Mark all as read",
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             for item in &this.work_inbox.feed(source).items {
@@ -220,9 +223,9 @@ impl WorkspaceView {
                             "inbox-refresh",
                             "chrome-icons/refresh.svg",
                             if feed.loading {
-                                "Actualizando…"
+                                "Refreshing…"
                             } else {
-                                "Actualizar"
+                                "Refresh"
                             },
                         )
                         .when(feed.loading, |button| button.opacity(0.4))
@@ -293,7 +296,7 @@ impl WorkspaceView {
                     .child(
                         quiet_button(
                             "inbox-activity",
-                            format!("Actividad · {}", self.inbox.unread_count()),
+                            format!("Activity · {}", self.inbox.unread_count()),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.work_inbox.activity = true;
@@ -456,7 +459,7 @@ impl WorkspaceView {
                 let preferences = &self.settings.inbox;
                 content = content
                     .child(
-                        MenuRow::new("Asignados a mí")
+                        MenuRow::new("Assigned to me")
                             .checked(preferences.assigned_to_me)
                             .render("inbox-filter-assigned")
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -465,7 +468,7 @@ impl WorkspaceView {
                                 this.inbox_filters_changed(cx);
                             })),
                     )
-                    .child(menu_heading("ESTADO"));
+                    .child(menu_heading("STATUS"));
                 for status in [
                     WorkStatus::Open,
                     WorkStatus::Draft,
@@ -487,7 +490,7 @@ impl WorkspaceView {
                             })),
                     );
                 }
-                content = content.child(menu_heading("TIEMPO"));
+                content = content.child(menu_heading("TIME"));
                 for time in [
                     InboxTime::All,
                     InboxTime::Today,
@@ -505,7 +508,7 @@ impl WorkspaceView {
                     );
                 }
                 if self.settings.inbox.source == WorkSource::GitHub {
-                    content = content.child(menu_heading("TIPO"));
+                    content = content.child(menu_heading("TYPE"));
                     for (kind, label) in [
                         (WorkKind::Issue, "Issues"),
                         (WorkKind::PullRequest, "Pull requests"),
@@ -520,7 +523,7 @@ impl WorkspaceView {
                                 })),
                         );
                     }
-                    content = content.child(menu_heading("PROYECTOS"));
+                    content = content.child(menu_heading("PROJECTS"));
                     for project in &self.snapshot.projects {
                         let id = project.id;
                         content = content.child(
@@ -534,7 +537,7 @@ impl WorkspaceView {
                         );
                     }
                 } else {
-                    content = content.child(menu_heading("EQUIPOS / PROYECTOS"));
+                    content = content.child(menu_heading("TEAMS / PROJECTS"));
                     let groups: std::collections::BTreeSet<_> = self
                         .work_inbox
                         .linear
@@ -558,7 +561,7 @@ impl WorkspaceView {
                     }
                 }
                 content = content.child(menu_separator()).child(
-                    MenuRow::new("Limpiar filtros")
+                    MenuRow::new("Clear filters")
                         .render("inbox-clear-filters")
                         .on_click(cx.listener(|this, _, _, cx| {
                             let source = this.settings.inbox.source;
@@ -579,7 +582,7 @@ impl WorkspaceView {
                 );
             }
             InboxMenu::Projects => {
-                content = content.child(menu_heading("PROYECTO"));
+                content = content.child(menu_heading("PROJECT"));
                 for project in self
                     .snapshot
                     .projects
@@ -600,7 +603,7 @@ impl WorkspaceView {
                 }
             }
             InboxMenu::Agents => {
-                content = content.child(menu_heading("AGENTE"));
+                content = content.child(menu_heading("AGENT"));
                 for (index, (label, _)) in AGENTS.iter().enumerate() {
                     content = content.child(
                         MenuRow::new(*label)
@@ -616,9 +619,9 @@ impl WorkspaceView {
             }
             InboxMenu::Connections => {
                 content = content
-                    .child(menu_heading("CONEXIONES"))
+                    .child(menu_heading("CONNECTIONS"))
                     .child(
-                        MenuRow::new("GitHub · usar sesión de gh")
+                        MenuRow::new("GitHub · use gh session")
                             .icon("chrome-icons/github.svg")
                             .render("connect-github")
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -749,7 +752,7 @@ fn label_chip(label: &str) -> gpui::Div {
 
 fn short_time(at: u64) -> String {
     let value = relative_time(unix_now(), at);
-    value.strip_prefix("hace ").unwrap_or(&value).to_owned()
+    value.strip_suffix(" ago").unwrap_or(&value).to_owned()
 }
 
 fn status_mark(item: &WorkItem) -> (&'static str, Rgba) {

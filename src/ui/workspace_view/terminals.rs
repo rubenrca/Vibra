@@ -88,6 +88,7 @@ impl WorkspaceView {
     }
 
     pub(super) fn reconcile_terminal_views(&mut self, cx: &mut Context<Self>) {
+        self.sync_review_docking(cx);
         let sessions: Vec<_> = self.snapshot.terminal_sessions().cloned().collect();
         let live_ids: HashSet<_> = sessions.iter().map(|session| session.id).collect();
 
@@ -371,13 +372,12 @@ impl WorkspaceView {
             .or(selected);
         let Some(target) = target else {
             self.persistence_error =
-                Some("Abre una terminal con un agente para enviarle la revisión.".into());
+                Some("Open a terminal with an agent to send the review.".into());
             cx.notify();
             return TerminalInsertStatus::Rejected;
         };
         let Some(terminal) = self.terminals.get(&target).cloned() else {
-            self.persistence_error =
-                Some("No se pudo encontrar la terminal para enviarle la revisión.".into());
+            self.persistence_error = Some("Could not find the terminal to send the review.".into());
             cx.notify();
             return TerminalInsertStatus::Rejected;
         };
@@ -387,8 +387,8 @@ impl WorkspaceView {
         if status == TerminalInsertStatus::Rejected {
             self.persistence_error = Some(
                 concat!(
-                    "No se pudo pegar la revisión: la terminal está ocupada o rechazó el texto. ",
-                    "Los comentarios siguen disponibles."
+                    "Could not paste the review: the terminal is busy or rejected the text. ",
+                    "The comments are still available."
                 )
                 .into(),
             );
@@ -400,9 +400,9 @@ impl WorkspaceView {
         }
         if self.persistence_error.as_ref().is_some_and(|error| {
             let error = error.to_string();
-            error.starts_with("No se pudo pegar la revisión:")
-                || error.starts_with("Abre una terminal con un agente")
-                || error.starts_with("No se pudo encontrar la terminal para enviarle la revisión")
+            error.starts_with("Could not paste the review:")
+                || error.starts_with("Open a terminal with an agent")
+                || error.starts_with("Could not find the terminal to send the review")
         }) {
             self.persistence_error = None;
         }

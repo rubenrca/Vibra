@@ -116,9 +116,9 @@ fn resolve_launch_directory(
 
 fn run() -> Result<()> {
     let repository = WorkspaceRepository::for_current_user()
-        .context("no se pudo resolver el directorio de datos de Vibra")?;
-    let settings_repository = SettingsRepository::for_current_user()
-        .context("no se pudo resolver settings.json de Vibra")?;
+        .context("could not resolve the Vibra data directory")?;
+    let settings_repository =
+        SettingsRepository::for_current_user().context("could not resolve Vibra settings.json")?;
     let initial_settings = settings_repository.load().unwrap_or_default();
     let launch_directory = launch_directory();
 
@@ -132,7 +132,7 @@ fn run() -> Result<()> {
                         "../Resources/Fonts/JetBrainsMono-Italic[wght].ttf"
                     )),
                 ])
-                .expect("no se pudo cargar JetBrains Mono");
+                .expect("could not load JetBrains Mono");
 
             cx.bind_keys([
                 KeyBinding::new("shift-cmd-o", AddProject, None),
@@ -311,7 +311,7 @@ fn run() -> Result<()> {
                     })
                 },
             )
-            .expect("no se pudo abrir la ventana principal de Vibra");
+            .expect("could not open the main Vibra window");
 
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {

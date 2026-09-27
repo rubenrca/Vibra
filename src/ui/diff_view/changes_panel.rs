@@ -31,8 +31,8 @@ impl CommitAction {
     fn label(self) -> &'static str {
         match self {
             Self::Commit => "Commit",
-            Self::CommitAndPush => "Commit y push",
-            Self::Amend => "Modificar último commit",
+            Self::CommitAndPush => "Commit and push",
+            Self::Amend => "Amend last commit",
         }
     }
 }
@@ -160,58 +160,6 @@ impl DiffView {
                         .child(format!("−{deletions}")),
                 )
             })
-    }
-
-    /// Title bar of the review when it sits beside the terminal: what is
-    /// shown, back to the full tab, and close.
-    pub(super) fn review_pane_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let focused = self.review_focused;
-        let icon = if self.selected_commit.is_some() && self.mode == GitPanelMode::History {
-            "chrome-icons/git-commit.svg"
-        } else {
-            "chrome-icons/diff-unified.svg"
-        };
-        div()
-            .w_full()
-            .h(px(36.0))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .border_b_1()
-            .border_color(colors().border_subtle)
-            .child(
-                svg()
-                    .path(icon)
-                    .size(px(14.0))
-                    .flex_none()
-                    .text_color(colors().muted),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .text_size(px(13.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().foreground)
-                    .child(self.review_title()),
-            )
-            .child(icon_button(
-                "review-toggle-focus",
-                "chrome-icons/maximize.svg",
-                true,
-                cx.listener(move |this, _, _, cx| this.set_review_focused(!focused, cx)),
-            ))
-            .child(icon_button(
-                "review-close",
-                "chrome-icons/close.svg",
-                true,
-                cx.listener(|this, _, window, cx| {
-                    this.toggle_review_expanded(window, cx);
-                }),
-            ))
     }
 
     /// The whole Changes sidebar.
@@ -606,12 +554,12 @@ impl DiffView {
             return;
         }
         if !self.has_worktree_changes() {
-            self.changes.feedback = Some(("No hay cambios para describir.".into(), true));
+            self.changes.feedback = Some(("There are no changes to describe.".into(), true));
             cx.notify();
             return;
         }
         self.changes.generating = true;
-        self.changes.feedback = Some(("Generando el mensaje con tu agente…".into(), false));
+        self.changes.feedback = Some(("Generating a message with your agent…".into(), false));
         cx.notify();
         let generation = self.changes.generation;
         let root = self.context_root.clone();
@@ -684,12 +632,12 @@ impl DiffView {
         let amend = action == CommitAction::Amend;
         let message = self.changes.message.trim().to_owned();
         if message.is_empty() && !amend {
-            self.changes.feedback = Some(("Escribe un mensaje para el commit.".into(), true));
+            self.changes.feedback = Some(("Enter a commit message.".into(), true));
             cx.notify();
             return;
         }
         if !amend && !self.has_worktree_changes() {
-            self.changes.feedback = Some(("No hay cambios para hacer commit.".into(), true));
+            self.changes.feedback = Some(("There are no changes to commit.".into(), true));
             cx.notify();
             return;
         }
@@ -698,7 +646,7 @@ impl DiffView {
         let root = self.context_root.clone();
         let port = self.git_port.clone();
         self.changes.busy = Some(if push {
-            "Commit y push…"
+            "Committing and pushing…"
         } else {
             "Commit…"
         });
@@ -708,7 +656,7 @@ impl DiffView {
             let sha = port.commit(&root, &message, GitCommitOptions { amend })?;
             if push {
                 port.sync(&root, GitSyncOperation::Push)
-                    .map_err(|error| anyhow::anyhow!("commit {sha} creado, pero {error:#}"))?;
+                    .map_err(|error| anyhow::anyhow!("commit {sha} created, but {error:#}"))?;
             }
             anyhow::Ok(sha)
         });
@@ -724,9 +672,9 @@ impl DiffView {
                         this.changes.message.clear();
                         this.changes.feedback = Some((
                             if push {
-                                format!("Commit {sha} creado y publicado.")
+                                format!("Commit {sha} created and pushed.")
                             } else {
-                                format!("Commit {sha} creado.")
+                                format!("Commit {sha} created.")
                             }
                             .into(),
                             false,
@@ -765,7 +713,7 @@ impl DiffView {
                 }
                 this.changes.busy = None;
                 this.changes.feedback = Some(match result {
-                    Ok(()) => (format!("{} completado.", operation.label()).into(), false),
+                    Ok(()) => (format!("{} completed.", operation.label()).into(), false),
                     Err(error) => (format!("{error:#}").into(), true),
                 });
                 this.after_repository_write(cx);

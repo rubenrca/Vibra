@@ -417,13 +417,12 @@ impl WorkspaceView {
             item.body = detail.body.clone();
         }
         if !self.work_inbox.composer_note.trim().is_empty() {
-            item.body
-                .push_str("\n\nIndicaciones adicionales del usuario:\n");
+            item.body.push_str("\n\nAdditional user instructions:\n");
             item.body.push_str(&self.work_inbox.composer_note);
         }
         let Some(project) = self.work_inbox.target_project else {
             self.work_inbox.action_error =
-                Some("Elige un proyecto con carpeta para iniciar la tarea.".into());
+                Some("Choose a project with a folder to start the task.".into());
             cx.notify();
             return;
         };
@@ -435,7 +434,7 @@ impl WorkspaceView {
             .any(|candidate| candidate.id == project && candidate.directory().is_some())
         {
             self.work_inbox.action_error =
-                Some("El proyecto ya no está disponible. Elige otro proyecto.".into());
+                Some("The project is no longer available. Choose another project.".into());
             cx.notify();
             return;
         }
@@ -478,7 +477,7 @@ impl WorkspaceView {
             }
             Ok((_, false)) => {
                 let _ = std::fs::remove_file(&prompt_path);
-                self.work_inbox.action_error = Some("Se abrió el tab, pero la terminal no pudo iniciar el agente. Revisa la terminal e inténtalo de nuevo.".into());
+                self.work_inbox.action_error = Some("The tab opened, but the terminal could not start the agent. Check the terminal and try again.".into());
             }
             Err(message) => {
                 let _ = std::fs::remove_file(&prompt_path);
@@ -583,20 +582,20 @@ impl WorkspaceView {
                     .gap_2()
                     .child(div().text_size(px(12.0)).text_color(colors().muted).child(
                         if connected {
-                            "Linear conectado"
+                            "Linear connected"
                         } else {
-                            "Linear · API key personal"
+                            "Linear · Personal API key"
                         },
                     ))
                     .child(
                         section_button(
                             "linear-connect",
                             if self.work_inbox.connecting {
-                                "Verificando…"
+                                "Verifying…"
                             } else if connected {
-                                "Cambiar clave desde portapapeles"
+                                "Change key from clipboard"
                             } else {
-                                "Conectar Linear desde portapapeles"
+                                "Connect Linear from clipboard"
                             },
                             false,
                         )
@@ -606,13 +605,13 @@ impl WorkspaceView {
                     )
                     .when(connected, |row| {
                         row.child(
-                            section_button("linear-disconnect", "Desconectar", false).on_click(
+                            section_button("linear-disconnect", "Disconnect", false).on_click(
                                 cx.listener(|this, _, _, cx| this.connect_inbox_linear(true, cx)),
                             ),
                         )
                     })
                     .child(
-                        section_button("linear-key-help", "Obtener API key ↗", false)
+                        section_button("linear-key-help", "Get API key ↗", false)
                             .on_click(|_, _, cx| cx.open_url("https://linear.app/settings/api")),
                     ),
             )
@@ -632,9 +631,8 @@ impl WorkspaceView {
             .values()
             .any(|state| state.posting || state.mutation_busy)
         {
-            self.work_inbox.connection_error = Some(
-                "Espera a que termine la acción del Inbox antes de cambiar la conexión.".into(),
-            );
+            self.work_inbox.connection_error =
+                Some("Wait for the Inbox action to finish before changing the connection.".into());
             cx.notify();
             return;
         }
@@ -647,7 +645,7 @@ impl WorkspaceView {
         };
         if !disconnect && token.trim().is_empty() {
             self.work_inbox.connection_error =
-                Some("Copia tu API key personal de Linear y vuelve a conectar.".into());
+                Some("Copy your Linear personal API key and reconnect.".into());
             cx.notify();
             return;
         }
@@ -858,7 +856,7 @@ mod tests {
                 let path = std::env::temp_dir().join(format!("vibra-inbox-{name}.txt"));
                 let prompt = std::fs::read_to_string(&path).unwrap();
                 assert!(prompt.contains(&item.url));
-                assert!(prompt.contains("consultas remotas de lectura"));
+                assert!(prompt.contains("read-only remote queries"));
                 std::fs::remove_file(path).unwrap();
                 let writes = sent.len();
                 drop(sent);

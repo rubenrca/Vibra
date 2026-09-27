@@ -139,7 +139,7 @@ impl WorkspaceView {
             .when_some(self.current_branch_summary().cloned(), |bar, summary| {
                 bar.child(
                     item("status-branch")
-                        .tooltip(|_, cx| sidebar_tooltip("Abrir Changes", cx))
+                        .tooltip(|_, cx| sidebar_tooltip("Open Changes", cx))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.set_workspace_mode(RightSidebarMode::Diff, cx);
                             this.focus_selected_terminal(window, cx);
@@ -157,7 +157,7 @@ impl WorkspaceView {
             })
             .child(
                 item("status-agents")
-                    .tooltip(|_, cx| sidebar_tooltip("Ver agentes en el Inbox", cx))
+                    .tooltip(|_, cx| sidebar_tooltip("View agents in Inbox", cx))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.work_inbox.activity = true;
                         this.select_section(WorkspaceSection::Inbox, window, cx)
@@ -166,12 +166,12 @@ impl WorkspaceView {
                         if counts == AgentCounts::default() {
                             item.text_color(colors().subtle)
                                 .child(dot(colors().subtle))
-                                .child("Sin agentes activos")
+                                .child("No active agents")
                         } else {
                             let groups = [
-                                (counts.working, colors().accent, "trabajando"),
-                                (counts.waiting, colors().warning, "esperan"),
-                                (counts.permission, colors().danger, "piden permiso"),
+                                (counts.working, colors().accent, "working"),
+                                (counts.waiting, colors().warning, "waiting"),
+                                (counts.permission, colors().danger, "need permission"),
                             ];
                             let mut first = true;
                             groups.into_iter().filter(|(count, _, _)| *count > 0).fold(
@@ -196,9 +196,9 @@ impl WorkspaceView {
                     .when(unread > 0, |item| item.text_color(colors().accent))
                     .child(icon("chrome-icons/inbox.svg"))
                     .child(if unread > 0 {
-                        format!("{unread} sin leer")
+                        format!("{unread} unread")
                     } else {
-                        "Al día".to_owned()
+                        "Up to date".to_owned()
                     }),
             )
             .into_any_element()

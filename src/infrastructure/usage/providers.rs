@@ -16,7 +16,7 @@ pub(super) fn fetch(
 ) -> Result<ProviderUsage, UsageFailure> {
     if credential.is_expired() {
         return Err(UsageFailure::new(format!(
-            "La sesión venció. Abre {} para renovarla y pulsa Actualizar.",
+            "The session expired. Open {} to renew it, then click Refresh.",
             provider.name()
         )));
     }
@@ -107,7 +107,7 @@ fn claude(body: &Value, now: i64) -> Result<ProviderUsage, UsageFailure> {
                     "sonnet" => "sonnet".to_owned(),
                     "opus" => "opus".to_owned(),
                     "fable" => "fable".to_owned(),
-                    _ => format!("{name} · semana"),
+                    _ => format!("{name} · week"),
                 };
                 usage.resources.insert(
                     key,
@@ -192,7 +192,7 @@ fn codex_windows(
             Some(604800.0) => "weekly".to_owned(),
             Some(86400.0) => "daily".to_owned(),
             Some(seconds) if seconds > 0.0 && seconds <= 18000.0 => "session".to_owned(),
-            Some(seconds) if seconds > 0.0 => format!("Ventana de {:.0} h", seconds / 3600.0),
+            Some(seconds) if seconds > 0.0 => format!("{:.0} h window", seconds / 3600.0),
             _ => fallback.into(),
         };
         let key = if prefix.is_empty() {
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(usage.resources["weekly"].percent_used(), Some(71.0));
         assert_eq!(usage.resources["credits"].available, Some(0.0));
         assert_eq!(usage.resources["rateLimitResets"].available, Some(2.0));
-        assert_eq!(usage.resources["Spark · Sesión"].percent_used(), Some(5.0));
+        assert_eq!(usage.resources["Spark · Session"].percent_used(), Some(5.0));
     }
 
     #[test]

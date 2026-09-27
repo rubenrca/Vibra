@@ -39,7 +39,7 @@ pub(super) fn load(
     interactive: bool,
 ) -> Result<Option<Credential>, UsageFailure> {
     let home = directories::BaseDirs::new()
-        .ok_or_else(|| UsageFailure::new("No se encontró la carpeta de usuario."))?;
+        .ok_or_else(|| UsageFailure::new("Could not find the user folder."))?;
     match provider {
         Provider::Claude => {
             let custom = std::env::var("CLAUDE_CONFIG_DIR")
@@ -96,15 +96,13 @@ fn read_json(path: &Path) -> Result<Option<Value>, UsageFailure> {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => {
-            return Err(UsageFailure::new(
-                "No se pudo leer la sesión local del CLI.",
-            ));
+            return Err(UsageFailure::new("Could not read the local CLI session."));
         }
     };
     let mut bytes = Vec::new();
     file.take(1_048_577)
         .read_to_end(&mut bytes)
-        .map_err(|_| UsageFailure::new("No se pudo leer la sesión local del CLI."))?;
+        .map_err(|_| UsageFailure::new("Could not read the local CLI session."))?;
     if bytes.len() > 1_048_576 {
         return Err(invalid_auth());
     }
@@ -150,10 +148,10 @@ fn keychain_json(
         return match status {
             -25300 => Ok(None), // errSecItemNotFound
             -25308 | -25293 | -128 => Err(UsageFailure::new(
-                "Pulsa Actualizar para autorizar el acceso al llavero de macOS.",
+                "Click Refresh to authorize access to the macOS Keychain.",
             )),
             _ => Err(UsageFailure::new(
-                "No se pudo leer la sesión del llavero de macOS.",
+                "Could not read the session from the macOS Keychain.",
             )),
         };
     }
@@ -171,7 +169,7 @@ fn parse_claude(value: &Value) -> Result<Credential, UsageFailure> {
             .any(|scope| scope.as_str() == Some("user:profile"))
     {
         return Err(UsageFailure::new(
-            "Esta sesión de Claude no permite leer cuotas. Inicia sesión con claude auth login.",
+            "This Claude session cannot read quotas. Sign in with claude auth login.",
         ));
     }
     let token = token(&oauth["accessToken"])?;
@@ -193,7 +191,7 @@ fn parse_codex(value: &Value) -> Result<Credential, UsageFailure> {
             .is_some_and(|value| !value.is_empty())
     {
         return Err(UsageFailure::new(
-            "Las cuotas de Codex requieren una sesión de ChatGPT. Ejecuta codex login.",
+            "Codex quotas require a ChatGPT session. Run codex login.",
         ));
     }
     let token = token(&value["tokens"]["access_token"])?;
@@ -214,7 +212,7 @@ fn parse_grok(value: &Value) -> Result<Credential, UsageFailure> {
         .find(|(key, _)| key.as_str() == "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828")
         .map(|(_, entry)| entry)
         .ok_or_else(|| {
-            UsageFailure::new("No se encontró la sesión de Grok Build. Ejecuta grok login.")
+            UsageFailure::new("Could not find the Grok Build session. Run grok login.")
         })?;
     let token = token(&entry["key"])?;
     Ok(Credential {
@@ -249,7 +247,7 @@ fn digest(value: &str) -> String {
 }
 
 fn invalid_auth() -> UsageFailure {
-    UsageFailure::new("La sesión local no es válida. Vuelve a iniciar sesión en el CLI.")
+    UsageFailure::new("The local session is invalid. Sign in again in the CLI.")
 }
 
 #[cfg(test)]

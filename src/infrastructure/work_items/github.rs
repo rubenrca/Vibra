@@ -28,7 +28,7 @@ const QUERY: &str = r#"query($search: String!) {
 
 pub(super) fn gh(arguments: &[&str], input: Option<Vec<u8>>) -> Result<Value> {
     let bytes = gh_output(arguments, input)?;
-    serde_json::from_slice(&bytes).context("GitHub devolvió una respuesta no válida.")
+    serde_json::from_slice(&bytes).context("GitHub returned an invalid response.")
 }
 
 pub(super) fn gh_output(arguments: &[&str], input: Option<Vec<u8>>) -> Result<Vec<u8>> {
@@ -45,7 +45,7 @@ pub(super) fn gh_output(arguments: &[&str], input: Option<Vec<u8>>) -> Result<Ve
             .env("GH_HOST", "github.com"),
         input,
     )
-    .context("GitHub: instala gh e inicia sesión con gh auth login.")?;
+    .context("GitHub: install gh and sign in with gh auth login.")?;
     Ok(bytes)
 }
 
@@ -54,7 +54,7 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
     let login = viewer["login"]
         .as_str()
         .filter(|s| !s.is_empty())
-        .context("GitHub no devolvió la cuenta activa.")?;
+        .context("GitHub did not return the active account.")?;
     let mut repositories = BTreeMap::new();
     for project in &query.projects {
         if let Ok(bytes) = bounded_output(
@@ -78,7 +78,7 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
         return Ok(WorkItemsPage {
             connected: true,
             warning: Some(
-                "Agrega un proyecto con un remoto de GitHub para ver sus issues y PRs.".into(),
+                "Add a project with a GitHub remote to see its issues and pull requests.".into(),
             ),
             ..Default::default()
         });
@@ -121,8 +121,8 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
             jobs.into_iter().map(|job| job.join()).collect::<Vec<_>>()
         });
         for result in results {
-            let (repo, kind, result) = result
-                .map_err(|_| anyhow::anyhow!("No se pudo completar la consulta de GitHub."))?;
+            let (repo, kind, result) =
+                result.map_err(|_| anyhow::anyhow!("Could not complete the GitHub query."))?;
             match result {
                 Ok(mut batch) => {
                     page.items.append(&mut batch.items);
@@ -144,7 +144,7 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
     }
     if !failed.is_empty() {
         page.warning = Some(format!(
-            "No se pudieron consultar: {}. Comprueba el acceso y vuelve a actualizar.",
+            "Could not query: {}. Check access and refresh again.",
             failed.join(", ")
         ));
     }
@@ -204,7 +204,7 @@ pub(super) fn repository_from_remote(remote: &str) -> Option<String> {
 fn parse_page(data: &Value, repositories: &BTreeMap<String, uuid::Uuid>) -> Result<WorkItemsPage> {
     let nodes = data["search"]["nodes"]
         .as_array()
-        .context("GitHub no devolvió las tareas.")?;
+        .context("GitHub did not return the tasks.")?;
     let mut items = Vec::new();
     for node in nodes {
         let kind = match node["__typename"].as_str() {
@@ -214,7 +214,7 @@ fn parse_page(data: &Value, repositories: &BTreeMap<String, uuid::Uuid>) -> Resu
         };
         let url = string(node, "url");
         if !url.starts_with("https://github.com/") || node["number"].as_u64().is_none() {
-            bail!("GitHub devolvió una tarea no válida.");
+            bail!("GitHub returned an invalid task.");
         }
         let repository = string(&node["repository"], "nameWithOwner");
         let status = if node["merged"].as_bool() == Some(true) {

@@ -6,13 +6,14 @@ use gpui::{
 };
 use uuid::Uuid;
 
+use crate::domain::workspace::{PaneSplitDirection, WorkspaceTabId};
 use crate::infrastructure::settings::{MAX_REVIEW_SPLIT, MIN_REVIEW_SPLIT};
 use crate::ui::theme::{colors, surface_tint};
 use crate::{GoToTab, NavigateBack, NavigateForward};
 
 use super::panes::{TAB_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS, TAB_TEXT_SIZE, tab_shortcut};
 use super::titlebar::{TITLEBAR_BUTTON_GAP, titlebar_button, titlebar_icon};
-use super::{WorkspaceSection, WorkspaceView, sidebar_tooltip};
+use super::{ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const MAX_NAVIGATION_HISTORY: usize = 50;
 
@@ -129,10 +130,57 @@ impl Navigation {
 }
 
 impl WorkspaceView {
+    pub(super) fn review_dock_owner(&self) -> Option<Uuid> {
+        self.review_docked_tab_id.filter(|id| {
+            self.snapshot
+                .selected_workspace()
+                .is_some_and(|workspace| workspace.tabs.iter().any(|tab| tab.id == *id))
+        })
+    }
+
+    /// The review is transient, but while open a dock belongs to one tab.
+    pub(super) fn sync_review_docking(&mut self, cx: &mut Context<Self>) {
+        let diff = self.diff_view.read(cx);
+        if !diff.review_expanded() || diff.review_focused() {
+            self.review_docked_tab_id = None;
+        } else if self.review_docked_tab_id.is_none() {
+            self.review_docked_tab_id = self.snapshot.selected_tab().map(|tab| tab.id);
+        } else if self.review_dock_owner().is_none() {
+            // Closing the owner leaves the review available as an independent tab.
+            self.review_docked_tab_id = None;
+            self.diff_view
+                .update(cx, |diff, cx| diff.set_review_focused(true, cx));
+        }
+    }
+
+    pub(super) fn review_has_tab(&self, cx: &gpui::App) -> bool {
+        self.diff_view.read(cx).review_expanded() && self.review_dock_owner().is_none()
+    }
+
+    pub(super) fn visible_tab_order(&self, cx: &gpui::App) -> Vec<WorkspaceTabId> {
+        let review_open = self.review_has_tab(cx);
+        self.snapshot
+            .selected_workspace()
+            .map(|workspace| workspace.tab_order(review_open))
+            .unwrap_or_else(|| {
+                if review_open {
+                    vec![WorkspaceTabId::Review]
+                } else {
+                    Vec::new()
+                }
+            })
+    }
+
     /// The review tab is open and in front.
     pub(super) fn review_visible(&self, cx: &gpui::App) -> bool {
         self.workspace_section == WorkspaceSection::Workspace
-            && self.review_tab_active
+            && match self.review_dock_owner() {
+                Some(tab_id) => self
+                    .snapshot
+                    .selected_tab()
+                    .is_some_and(|tab| tab.id == tab_id),
+                None => self.review_tab_active,
+            }
             && self.diff_view.read(cx).review_expanded()
     }
 
@@ -147,7 +195,7 @@ impl WorkspaceView {
         }
         let project_id = self.snapshot.selected_project_id?;
         let workspace = self.snapshot.selected_workspace()?;
-        if self.review_visible(cx) {
+        if self.review_visible(cx) && self.review_dock_owner().is_none() {
             return Some(NavLocation::Review {
                 project_id,
                 workspace_id: workspace.id,
@@ -168,6 +216,9 @@ impl WorkspaceView {
     pub(super) fn activate_review_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.diff_view.read(cx).review_expanded() {
             return;
+        }
+        if let Some(tab_id) = self.review_dock_owner() {
+            self.snapshot.select_tab(tab_id);
         }
         self.leave_library_section(WorkspaceSection::Workspace);
         self.workspace_section = WorkspaceSection::Workspace;
@@ -192,6 +243,7 @@ impl WorkspaceView {
     /// Shared transition for interactive navigation and commands that focus
     /// their new terminal on the next frame (for example, automations).
     pub(super) fn prepare_terminal_tab(&mut self, cx: &mut Context<Self>) {
+        self.sync_review_docking(cx);
         self.leave_library_section(WorkspaceSection::Workspace);
         self.workspace_section = WorkspaceSection::Workspace;
         self.review_tab_active = false;
@@ -278,7 +330,7 @@ impl WorkspaceView {
         self.navigate(false, window, cx);
     }
 
-    /// `⌘1`–`⌘8` count the review tab after the terminal tabs; `⌘9` is the last tab.
+    /// `⌘1`–`⌘8` follow the visible strip, including review; `⌘9` is the last tab.
     pub(super) fn go_to_tab(
         &mut self,
         action: &GoToTab,
@@ -288,27 +340,14 @@ impl WorkspaceView {
         if self.palette_mode.is_some() || self.settings_open || self.rename_prompt.is_some() {
             return;
         }
-        let terminal_tabs = self
-            .snapshot
-            .selected_workspace()
-            .map_or(0, |workspace| workspace.tabs.len());
-        let review_open = self.diff_view.read(cx).review_expanded();
-        let Some(index) =
-            numbered_tab_index(action.index, terminal_tabs + usize::from(review_open))
-        else {
+        let order = self.visible_tab_order(cx);
+        let Some(index) = numbered_tab_index(action.index, order.len()) else {
             return;
         };
-        if index == terminal_tabs {
-            self.activate_review_tab(window, cx);
-            return;
+        match order[index] {
+            WorkspaceTabId::Review => self.activate_review_tab(window, cx),
+            WorkspaceTabId::Terminal(tab_id) => self.select_tab(tab_id, window, cx),
         }
-        let tab_id = self
-            .snapshot
-            .selected_workspace()
-            .expect("terminal tab exists")
-            .tabs[index]
-            .id;
-        self.select_tab(tab_id, window, cx);
     }
 
     /// Navigation arrows for the titlebar.
@@ -328,7 +367,7 @@ impl WorkspaceView {
                 button(
                     "navigate-back",
                     "chrome-icons/chevron-left.svg",
-                    "Atrás · ⌃⌘←",
+                    "Back · ⌃⌘←",
                     self.navigation.can_go_back(),
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.navigate(true, window, cx))),
@@ -337,7 +376,7 @@ impl WorkspaceView {
                 button(
                     "navigate-forward",
                     "chrome-icons/chevron-right.svg",
-                    "Adelante · ⌃⌘→",
+                    "Forward · ⌃⌘→",
                     self.navigation.can_go_forward(),
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.navigate(false, window, cx))),
@@ -346,18 +385,33 @@ impl WorkspaceView {
     }
 
     /// The review, drawn like the terminal tabs so switching is one click.
-    pub(super) fn review_tab(&self, number: usize, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn review_tab(
+        &self,
+        index: usize,
+        count: usize,
+        after: Option<WorkspaceTabId>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let selected = self.review_visible(cx);
         let diff = self.diff_view.read(cx);
         let title = diff.review_title();
-        let icon = if diff.review_is_commit() {
-            "chrome-icons/git-commit.svg"
+        let icon = diff.review_icon();
+        let close_label = if diff.preview_path().is_some() {
+            "Close file · ⌘W"
         } else {
-            "chrome-icons/diff-unified.svg"
+            "Close review · ⌘W"
         };
-        let shortcut = tab_shortcut_label(number - 1, number);
+        let shortcut = tab_shortcut_label(index, count);
+        let drag = TabDrag {
+            tab_id: WorkspaceTabId::Review,
+            title: title.to_string(),
+            from_pane: false,
+        };
+        let is_source = self.reorder_drag == Some(ReorderDrag::Tab(WorkspaceTabId::Review))
+            && cx.has_active_drag();
         div()
             .id("review-tab")
+            .relative()
             .group("title-tab")
             .h(px(TAB_HEIGHT))
             .min_w(px(0.0))
@@ -370,7 +424,8 @@ impl WorkspaceView {
             .gap(px(8.0))
             .overflow_hidden()
             .rounded(px(TAB_RADIUS))
-            .cursor_pointer()
+            .cursor_move()
+            .when(is_source, |tab| tab.opacity(0.45))
             .bg(if selected {
                 surface_tint(colors().selection, colors().terminal)
             } else {
@@ -388,7 +443,14 @@ impl WorkspaceView {
                     tab.bg(colors().hover).text_color(colors().foreground)
                 }
             })
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.reorder_drag = Some(ReorderDrag::Tab(WorkspaceTabId::Review));
+                    cx.stop_propagation();
+                }),
+            )
+            .on_drag(drag, |drag, offset, _, cx| drag.preview(offset, cx))
             .on_click(cx.listener(|this, _, window, cx| this.activate_review_tab(window, cx)))
             .child(
                 svg()
@@ -415,6 +477,7 @@ impl WorkspaceView {
                     .child(title),
             )
             .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
+            .child(self.tab_drop_targets(WorkspaceTabId::Review, after, cx))
             .child(
                 div()
                     .id("close-review-tab")
@@ -428,7 +491,7 @@ impl WorkspaceView {
                     .cursor_pointer()
                     .text_color(colors().subtle)
                     .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
-                    .tooltip(|_, cx| sidebar_tooltip("Cerrar revisión · ⌘W", cx))
+                    .tooltip(move |_, cx| sidebar_tooltip(close_label, cx))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
@@ -448,7 +511,7 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    /// Terminal and review side by side, split by a draggable divider.
+    /// Review can dock on any edge of the terminal area.
     pub(super) fn review_split(
         &mut self,
         terminal: AnyElement,
@@ -456,44 +519,135 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let ratio = self.settings.review_split;
+        let vertical = matches!(
+            self.review_split_direction,
+            PaneSplitDirection::Up | PaneSplitDirection::Down
+        );
+        let review_first = matches!(
+            self.review_split_direction,
+            PaneSplitDirection::Left | PaneSplitDirection::Up
+        );
+        let review = div()
+            .size_full()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .flex()
+            .flex_col()
+            .child(self.review_pane_header(cx))
+            .child(review)
+            .into_any_element();
+        let (first, second) = if review_first {
+            (review, terminal)
+        } else {
+            (terminal, review)
+        };
         div()
             .id("review-split")
             .flex_1()
             .min_w(px(0.0))
+            .min_h(px(0.0))
             .h_full()
             .flex()
+            .when(vertical, |split| split.flex_col())
             .on_drag_move(cx.listener(Self::on_review_split_move))
             .child(
                 div()
-                    .h_full()
                     .flex_none()
-                    .w(relative(ratio))
-                    .min_w(px(240.0))
                     .flex()
-                    .child(terminal),
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .when(vertical, |pane| pane.h(relative(ratio)).w_full())
+                    .when(!vertical, |pane| pane.w(relative(ratio)).h_full())
+                    .child(first),
             )
             .child(
                 div()
                     .id("review-split-divider")
-                    .h_full()
-                    .w(px(5.0))
                     .flex_none()
-                    .cursor_ew_resize()
                     .flex()
+                    .items_center()
                     .justify_center()
+                    .when(vertical, |divider| {
+                        divider.w_full().h(px(5.0)).cursor_ns_resize()
+                    })
+                    .when(!vertical, |divider| {
+                        divider.h_full().w(px(5.0)).cursor_ew_resize()
+                    })
                     .hover(|divider| divider.bg(surface_tint(colors().hover, colors().panel)))
                     .on_drag(ReviewSplitDrag, |_, _, _, cx| {
                         cx.new(|_| ReviewSplitDragView)
                     })
-                    .child(div().w(px(1.0)).h_full().bg(colors().border_subtle)),
+                    .child(
+                        div()
+                            .bg(colors().border_subtle)
+                            .when(vertical, |line| line.w_full().h(px(1.0)))
+                            .when(!vertical, |line| line.h_full().w(px(1.0))),
+                    ),
             )
             .child(
                 div()
-                    .h_full()
                     .flex_1()
-                    .min_w(px(280.0))
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
                     .flex()
-                    .child(review),
+                    .child(second),
+            )
+            .into_any_element()
+    }
+
+    fn review_pane_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let title = self.diff_view.read(cx).review_title();
+        let drag = TabDrag {
+            tab_id: WorkspaceTabId::Review,
+            title: title.to_string(),
+            from_pane: true,
+        };
+        div()
+            .id("review-pane-header")
+            .h(px(30.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(8.0))
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .cursor_move()
+            .text_size(px(12.5))
+            .text_color(colors().foreground)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.reorder_drag = Some(ReorderDrag::Tab(WorkspaceTabId::Review));
+                    cx.stop_propagation();
+                }),
+            )
+            .on_drag(drag, |drag, offset, _, cx| drag.preview(offset, cx))
+            .child(
+                svg()
+                    .path("chrome-icons/grip.svg")
+                    .size(px(14.0))
+                    .text_color(colors().subtle),
+            )
+            .child(div().flex_1().min_w(px(0.0)).truncate().child(title))
+            .child(
+                titlebar_button("review-pane-detach", true)
+                    .tooltip(|_, cx| sidebar_tooltip("Open as tab", cx))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.review_docked_tab_id = None;
+                        this.diff_view
+                            .update(cx, |diff, cx| diff.set_review_focused(true, cx));
+                        this.activate_review_tab(window, cx);
+                    }))
+                    .child(titlebar_icon("chrome-icons/maximize.svg")),
+            )
+            .child(
+                titlebar_button("review-pane-close", true)
+                    .tooltip(|_, cx| sidebar_tooltip("Close review", cx))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _, window, cx| this.close_review(window, cx)))
+                    .child(titlebar_icon("chrome-icons/close.svg")),
             )
             .into_any_element()
     }
@@ -504,13 +658,27 @@ impl WorkspaceView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let x: f32 = event.event.position.x.into();
-        let left: f32 = event.bounds.left().into();
-        let width: f32 = event.bounds.size.width.into();
-        if width <= 1.0 {
+        let vertical = matches!(
+            self.review_split_direction,
+            PaneSplitDirection::Up | PaneSplitDirection::Down
+        );
+        let (position, origin, length): (f32, f32, f32) = if vertical {
+            (
+                event.event.position.y.into(),
+                event.bounds.top().into(),
+                event.bounds.size.height.into(),
+            )
+        } else {
+            (
+                event.event.position.x.into(),
+                event.bounds.left().into(),
+                event.bounds.size.width.into(),
+            )
+        };
+        if length <= 1.0 {
             return;
         }
-        let ratio = ((x - left) / width).clamp(MIN_REVIEW_SPLIT, MAX_REVIEW_SPLIT);
+        let ratio = ((position - origin) / length).clamp(MIN_REVIEW_SPLIT, MAX_REVIEW_SPLIT);
         if (ratio - self.settings.review_split).abs() > 0.002 {
             self.settings.review_split = ratio;
             self.sidebar_resize_dirty = true;

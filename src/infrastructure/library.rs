@@ -49,22 +49,22 @@ impl LibraryRepository {
             }
             Err(error) => {
                 return Err(error)
-                    .with_context(|| format!("no se pudo leer {}", self.path.display()));
+                    .with_context(|| format!("could not read {}", self.path.display()));
             }
         };
         if file.metadata()?.len() > MAX_LIBRARY_BYTES {
-            bail!("{} supera el límite de 8 MiB", self.path.display());
+            bail!("{} exceeds the 8 MiB limit", self.path.display());
         }
         let mut bytes = Vec::new();
         file.take(MAX_LIBRARY_BYTES + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 > MAX_LIBRARY_BYTES {
-            bail!("{} supera el límite de 8 MiB", self.path.display());
+            bail!("{} exceeds the 8 MiB limit", self.path.display());
         }
         let mut library: Library = serde_json::from_slice(&bytes)
-            .with_context(|| format!("JSON inválido en {}", self.path.display()))?;
+            .with_context(|| format!("Invalid JSON in {}", self.path.display()))?;
         if library.schema_version > CURRENT_LIBRARY_SCHEMA_VERSION {
             bail!(
-                "{} usa library schema {} pero esta versión entiende hasta {}",
+                "{} uses library schema {} but this version supports up to {}",
                 self.path.display(),
                 library.schema_version,
                 CURRENT_LIBRARY_SCHEMA_VERSION
@@ -80,7 +80,7 @@ impl LibraryRepository {
         library.normalize();
         let data = serde_json::to_vec_pretty(&library)?;
         if data.len() as u64 > MAX_LIBRARY_BYTES {
-            bail!("las notas y automatizaciones superan el límite de 8 MiB");
+            bail!("notes and automations exceed the 8 MiB limit");
         }
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;

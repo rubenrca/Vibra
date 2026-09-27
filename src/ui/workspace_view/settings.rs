@@ -26,9 +26,9 @@ impl SettingsPage {
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
-            Self::Appearance => "Apariencia",
-            Self::Agents => "Agentes",
-            Self::Security => "Privacidad",
+            Self::Appearance => "Appearance",
+            Self::Agents => "Agents",
+            Self::Security => "Privacy",
         }
     }
 
@@ -143,9 +143,9 @@ impl WorkspaceView {
             )
             .child(self.settings_status_chip(
                 if installed {
-                    "Instalado"
+                    "Installed"
                 } else {
-                    "No instalado"
+                    "Not installed"
                 },
                 installed,
             ))
@@ -314,7 +314,7 @@ impl WorkspaceView {
                         colors().foreground
                     })
                     .child(if empty {
-                        "Filtrar temas…".to_string()
+                        "Filter themes…".to_string()
                     } else {
                         query
                     }),
@@ -470,13 +470,13 @@ impl WorkspaceView {
                                                 .text_size(px(13.0))
                                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                                 .text_color(colors().foreground)
-                                                .child("Ajustes"),
+                                                .child("Settings"),
                                         )
                                         .child(
                                             div()
                                                 .text_size(px(9.0))
                                                 .text_color(colors().subtle)
-                                                .child("Configura tu espacio de trabajo"),
+                                                .child("Configure your workspace"),
                                         ),
                                 )
                                 .child(
@@ -515,7 +515,7 @@ impl WorkspaceView {
                                 .border_color(colors().border_subtle)
                                 .text_xs()
                                 .text_color(colors().subtle)
-                                .child("Los cambios se guardan automáticamente."),
+                                .child("Changes are saved automatically."),
                         ),
                 )
                 .into_any_element(),
@@ -606,8 +606,8 @@ impl WorkspaceView {
         let preview_tone = theme::resolve_tone(appearance, system_dark);
         panel
             .child(self.settings_section_heading(
-                "Apariencia",
-                "Elige cómo se ve Vibra y ajusta la lectura de la terminal.",
+                "Appearance",
+                "Choose how Vibra looks and adjust terminal readability.",
             ))
             .child(
                 div()
@@ -635,12 +635,13 @@ impl WorkspaceView {
                                             .text_size(px(10.5))
                                             .font_weight(gpui::FontWeight::MEDIUM)
                                             .text_color(colors().foreground)
-                                            .child("Modo de apariencia"),
+                                            .child("Appearance mode"),
                                     )
                                     .child(
-                                        div().text_size(px(9.0)).text_color(colors().subtle).child(
-                                            "Sigue macOS o fija un modo para la aplicación.",
-                                        ),
+                                        div()
+                                            .text_size(px(9.0))
+                                            .text_color(colors().subtle)
+                                            .child("Follow macOS or choose an app appearance."),
                                     ),
                             )
                             .child(
@@ -648,19 +649,15 @@ impl WorkspaceView {
                                     [
                                         (
                                             AppearanceMode::System,
-                                            "Sistema",
+                                            "System",
                                             "settings-appearance-system",
                                         ),
                                         (
                                             AppearanceMode::Light,
-                                            "Claro",
+                                            "Light",
                                             "settings-appearance-light",
                                         ),
-                                        (
-                                            AppearanceMode::Dark,
-                                            "Oscuro",
-                                            "settings-appearance-dark",
-                                        ),
+                                        (AppearanceMode::Dark, "Dark", "settings-appearance-dark"),
                                     ]
                                     .into_iter()
                                     .map(
@@ -690,10 +687,10 @@ impl WorkspaceView {
                                     .text_size(px(10.5))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(colors().foreground)
-                                    .child("Tema"),
+                                    .child("Theme"),
                             )
                             .child(div().text_size(px(9.0)).text_color(colors().subtle).child(
-                                "La paleta también se aplica al terminal y al resaltado de código.",
+                                "The palette also applies to the terminal and syntax highlighting.",
                             )),
                     )
                     .child(self.settings_theme_search())
@@ -724,7 +721,7 @@ impl WorkspaceView {
                                 div()
                                     .text_size(px(9.0))
                                     .text_color(colors().subtle)
-                                    .child("Ningún tema coincide."),
+                                    .child("No matching themes."),
                             );
                         } else {
                             if !bundled.is_empty() {
@@ -743,7 +740,7 @@ impl WorkspaceView {
                                             .text_size(px(9.0))
                                             .font_weight(gpui::FontWeight::MEDIUM)
                                             .text_color(colors().muted)
-                                            .child("Tus temas"),
+                                            .child("Your themes"),
                                     )
                                     .child(self.settings_theme_grid(
                                         &user,
@@ -760,7 +757,7 @@ impl WorkspaceView {
                             .text_size(px(9.0))
                             .text_color(colors().subtle)
                             .child(format!(
-                                "Añade YAML de Warp o temas Ghostty en {}.",
+                                "Add Warp YAML or Ghostty themes to {}.",
                                 theme::user_themes_directory()
                                     .map(|path| path.display().to_string())
                                     .unwrap_or_else(|| "~/.vibra/themes".to_string())
@@ -779,8 +776,8 @@ impl WorkspaceView {
                     .gap_3()
                     .child(self.settings_font_row(
                         FontSizeRow {
-                            label: "Tamaño del texto",
-                            description: "Fuente JetBrains Mono en todas las terminales.",
+                            label: "Text size",
+                            description: "JetBrains Mono font in all terminals.",
                             size: font_size,
                             ids: [
                                 "settings-font-down",
@@ -794,8 +791,8 @@ impl WorkspaceView {
                     .child(div().h(px(1.0)).bg(colors().border_subtle))
                     .child(self.settings_font_row(
                         FontSizeRow {
-                            label: "Texto del diff",
-                            description: "Código en el panel Git, independiente de la terminal.",
+                            label: "Diff text",
+                            description: "Code in the Git panel, independent of the terminal.",
                             size: self.settings.diff_font_size,
                             ids: [
                                 "settings-diff-font-down",
@@ -861,11 +858,9 @@ impl WorkspaceView {
             .child(self.settings_button("−", down, cx, move |this, cx| {
                 set(this, size - 1.0, cx);
             }))
-            .child(
-                self.settings_button("Restablecer", reset, cx, move |this, cx| {
-                    set(this, 12.0, cx);
-                }),
-            )
+            .child(self.settings_button("Reset", reset, cx, move |this, cx| {
+                set(this, 12.0, cx);
+            }))
             .child(self.settings_button("+", up, cx, move |this, cx| {
                 set(this, size + 1.0, cx);
             }))
@@ -873,11 +868,11 @@ impl WorkspaceView {
 
     fn general_settings(&self, panel: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
         panel
-            .child(self.settings_section_heading("Inbox", "GitHub usa tu sesión de gh. Conecta Linear con una API key personal guardada solo en este Mac."))
+            .child(self.settings_section_heading("Inbox", "GitHub uses your gh session. Connect Linear with a personal API key stored only on this Mac."))
             .child(self.inbox_connection_controls(cx))
             .child(self.settings_section_heading(
-                "Al abrir Vibra",
-                "Configura qué elementos estarán disponibles al abrir Vibra.",
+                "On startup",
+                "Choose which elements appear when Vibra opens.",
             ))
             .child(
                 div()
@@ -888,8 +883,8 @@ impl WorkspaceView {
                     .bg(surface_tint(colors().panel, colors().sidebar))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
-                            label: "Archivos ocultos",
-                            description: "Incluye archivos y carpetas que comienzan con punto.",
+                            label: "Hidden files",
+                            description: "Include files and folders whose names start with a dot.",
                             enabled: self.settings.show_hidden_files,
                             divider: true,
                             id: "settings-hidden",
@@ -903,8 +898,8 @@ impl WorkspaceView {
                     ))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
-                            label: "Navegación global",
-                            description: "Muestra proyectos y accesos globales al abrir la aplicación.",
+                            label: "Global navigation",
+                            description: "Show projects and global shortcuts when the app opens.",
                             enabled: self.settings.left_sidebar_visible,
                             divider: true,
                             id: "settings-sidebar-visible",
@@ -916,8 +911,8 @@ impl WorkspaceView {
                     ))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
-                            label: "Panel Workspace",
-                            description: "Muestra Explorer y Changes a la derecha.",
+                            label: "Workspace panel",
+                            description: "Show Explorer and Changes on the right.",
                             enabled: self.settings.right_sidebar_visible,
                             divider: false,
                             id: "settings-git-visible",
@@ -939,16 +934,16 @@ impl WorkspaceView {
         let all_agent_hooks_installed = agent_hooks.all_installed();
         let any_agent_hooks_installed = agent_hooks.any_installed();
         let agent_hooks_status = if all_agent_hooks_installed {
-            "Configurados"
+            "Configured"
         } else if any_agent_hooks_installed {
-            "Parciales"
+            "Partially configured"
         } else {
-            "Opcionales"
+            "Optional"
         };
         panel
             .child(self.settings_section_heading(
-                "Agentes y notificaciones",
-                "Sigue el estado de los asistentes que ejecutas dentro de Vibra.",
+                "Agents and notifications",
+                "Track the status of assistants running inside Vibra.",
             ))
             .child(
                 div()
@@ -969,9 +964,9 @@ impl WorkspaceView {
                                     .flex_1()
                                     .text_size(px(10.5))
                                     .text_color(colors().foreground)
-                                    .child("Detección automática"),
+                                    .child("Automatic detection"),
                             )
-                            .child(self.settings_status_chip("Siempre activa", true)),
+                            .child(self.settings_status_chip("Always on", true)),
                     )
                     .child(
                         div()
@@ -979,8 +974,8 @@ impl WorkspaceView {
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
                             .child(concat!(
-                                "Vibra reconoce los agentes que ejecutas en sus terminales ",
-                                "y muestra su actividad en panes y pestañas."
+                                "Vibra recognizes agents running in its terminals ",
+                                "and shows their activity in panes and tabs."
                             )),
                     )
                     .child(div().h(px(1.0)).bg(colors().border_subtle))
@@ -993,7 +988,7 @@ impl WorkspaceView {
                                     .flex_1()
                                     .text_size(px(10.5))
                                     .text_color(colors().foreground)
-                                    .child("Hooks para estados precisos"),
+                                    .child("Hooks for precise status"),
                             )
                             .child(self.settings_status_chip(
                                 agent_hooks_status,
@@ -1006,9 +1001,9 @@ impl WorkspaceView {
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
                             .child(concat!(
-                                "Opcional: instala hooks para que Claude y Codex informen cuándo ",
-                                "trabajan, terminan o piden permiso. Los demás agentes se detectan ",
-                                "por el proceso y la pantalla."
+                                "Optional: install hooks so Claude and Codex report when they ",
+                                "work, finish, or ask for permission. Other agents are detected ",
+                                "through their process and screen output."
                             )),
                     )
                     .child(self.settings_hook_status_row("Claude", agent_hooks.claude_installed))
@@ -1019,7 +1014,7 @@ impl WorkspaceView {
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
                             .child(
-                                "En Codex tendrás que aprobar la configuración una vez con /hooks.",
+                                "In Codex, approve the configuration once using /hooks.",
                             ),
                     )
                     .when_some(self.agent_hook_error.clone(), |card, error| {
@@ -1038,11 +1033,11 @@ impl WorkspaceView {
                             .gap_2()
                             .child(self.settings_primary_button(
                                 if all_agent_hooks_installed {
-                                    "Actualizar hooks"
+                                    "Update hooks"
                                 } else if any_agent_hooks_installed {
-                                    "Instalar hooks faltantes"
+                                    "Install missing hooks"
                                 } else {
-                                    "Instalar hooks"
+                                    "Install hooks"
                                 },
                                 "settings-agent-hooks-install",
                                 cx,
@@ -1050,7 +1045,7 @@ impl WorkspaceView {
                             ))
                             .when(any_agent_hooks_installed, |buttons| {
                                 buttons.child(self.settings_button(
-                                    "Desactivar",
+                                    "Disable",
                                     "settings-agent-hooks-uninstall",
                                     cx,
                                     |this, cx| this.uninstall_agent_hooks_from_settings(cx),
@@ -1067,8 +1062,8 @@ impl WorkspaceView {
                     .bg(surface_tint(colors().panel, colors().sidebar))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
-                            label: "Notificaciones de actividad",
-                            description: "Avisa si un agente termina o necesita atención fuera del pane actual.",
+                            label: "Activity notifications",
+                            description: "Notify when an agent finishes or needs attention outside the current pane.",
                             enabled: self.settings.agent_notifications,
                             divider: false,
                             id: "settings-agent-notifications",
@@ -1088,8 +1083,8 @@ impl WorkspaceView {
     fn security_settings(&self, panel: Stateful<Div>) -> Stateful<Div> {
         panel
             .child(self.settings_section_heading(
-                "Privacidad de la terminal",
-                "Protecciones aplicadas a las integraciones locales de la terminal.",
+                "Terminal privacy",
+                "Protections for local terminal integrations.",
             ))
             .child(
                 div()
@@ -1111,9 +1106,9 @@ impl WorkspaceView {
                                     .text_size(px(10.5))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(colors().foreground)
-                                    .child("Lectura del portapapeles (OSC 52)"),
+                                    .child("Clipboard access (OSC 52)"),
                             )
-                            .child(self.settings_status_chip("Confirmación obligatoria", true)),
+                            .child(self.settings_status_chip("Confirmation required", true)),
                     )
                     .child(
                         div()
@@ -1121,8 +1116,8 @@ impl WorkspaceView {
                             .line_height(px(13.0))
                             .text_color(colors().subtle)
                             .child(concat!(
-                                "Cada lectura requiere confirmación. La comunicación local usa ",
-                                "un socket privado y un token distinto por pane."
+                                "Each read requires confirmation. Local communication uses ",
+                                "a private socket and a separate token for each pane."
                             )),
                     ),
             )
@@ -1143,7 +1138,7 @@ impl WorkspaceView {
                     self.agent_hook_status = Some(status);
                 }
                 self.agent_hook_error =
-                    Some(format!("No se pudo actualizar las integraciones: {error}").into());
+                    Some(format!("Could not update integrations: {error}").into());
             }
         }
         cx.notify();

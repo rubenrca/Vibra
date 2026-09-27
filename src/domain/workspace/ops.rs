@@ -328,7 +328,7 @@ impl super::WorkspaceSnapshot {
         let removed_id = tab.sessions.remove(session_index).id;
 
         if tab.sessions.is_empty() {
-            workspace.tabs.remove(tab_index);
+            workspace.remove_tab(tab_index);
         } else {
             tab.layout = tab
                 .layout
@@ -391,37 +391,30 @@ impl super::WorkspaceSnapshot {
         }
     }
 
-    /// Moves `tab_id` so it sits before `before_tab_id`, or at the end when
-    /// `before_tab_id` is `None`.
-    pub fn move_tab(&mut self, tab_id: Uuid, before_tab_id: Option<Uuid>) -> bool {
-        if before_tab_id == Some(tab_id) {
-            return false;
-        }
+    /// Close a complete tab, including its split panes.
+    pub fn close_tab(&mut self, tab_id: Uuid) -> bool {
         let Some((project_index, workspace_index)) = self.selected_workspace_indices() else {
             return false;
         };
-        let project = &mut self.projects[project_index];
-        let workspace = &mut project.workspaces.as_mut().expect("normalized")[workspace_index];
-        let Some(from) = workspace.tabs.iter().position(|tab| tab.id == tab_id) else {
+        let workspaces = self.projects[project_index]
+            .workspaces
+            .as_mut()
+            .expect("normalized");
+        let workspace = &mut workspaces[workspace_index];
+        let Some(index) = workspace.tabs.iter().position(|tab| tab.id == tab_id) else {
             return false;
         };
-        let to = match before_tab_id {
-            Some(target_id) => {
-                let Some(index) = workspace.tabs.iter().position(|tab| tab.id == target_id) else {
-                    return false;
-                };
-                index
-            }
-            None => workspace.tabs.len(),
-        };
-        if from == to || from + 1 == to {
-            return false;
+        workspace.remove_tab(index);
+        if workspace.selected_tab_id == Some(tab_id) {
+            workspace.selected_tab_id = workspace
+                .tabs
+                .get(index.min(workspace.tabs.len().saturating_sub(1)))
+                .map(|tab| tab.id);
         }
-        let tab = workspace.tabs.remove(from);
-        let insert_at = if from < to { to - 1 } else { to };
-        workspace.tabs.insert(insert_at, tab);
-        workspace.selected_tab_id = Some(tab_id);
-        project.normalize();
+        if workspace.tabs.is_empty() {
+            workspaces.remove(workspace_index);
+        }
+        self.normalize();
         true
     }
 
@@ -552,7 +545,7 @@ impl super::WorkspaceSnapshot {
         true
     }
 
-    fn selected_workspace_indices(&self) -> Option<(usize, usize)> {
+    pub(super) fn selected_workspace_indices(&self) -> Option<(usize, usize)> {
         let project_index = self
             .projects
             .iter()

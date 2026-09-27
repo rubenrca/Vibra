@@ -138,14 +138,14 @@ fn is_automation(item: &InboxItem) -> bool {
     )
 }
 
-/// Short Spanish relative time for list rows.
+/// Short relative time for list rows.
 pub fn relative_time(now: u64, then: u64) -> String {
     let seconds = now.saturating_sub(then);
     match seconds {
-        0..=59 => "ahora".to_owned(),
-        60..=3_599 => format!("hace {} min", seconds / 60),
-        3_600..=86_399 => format!("hace {} h", seconds / 3_600),
-        _ => format!("hace {} d", seconds / 86_400),
+        0..=59 => "now".to_owned(),
+        60..=3_599 => format!("{} min ago", seconds / 60),
+        3_600..=86_399 => format!("{} h ago", seconds / 3_600),
+        _ => format!("{} d ago", seconds / 86_400),
     }
 }
 
@@ -204,10 +204,10 @@ mod tests {
 
     #[test]
     fn relative_times_are_short() {
-        assert_eq!(relative_time(100, 90), "ahora");
-        assert_eq!(relative_time(600, 0), "hace 10 min");
-        assert_eq!(relative_time(7_200, 0), "hace 2 h");
-        assert_eq!(relative_time(172_800, 0), "hace 2 d");
-        assert_eq!(relative_time(0, 10), "ahora");
+        assert_eq!(relative_time(100, 90), "now");
+        assert_eq!(relative_time(600, 0), "10 min ago");
+        assert_eq!(relative_time(7_200, 0), "2 h ago");
+        assert_eq!(relative_time(172_800, 0), "2 d ago");
+        assert_eq!(relative_time(0, 10), "now");
     }
 }

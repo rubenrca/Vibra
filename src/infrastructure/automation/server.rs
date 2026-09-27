@@ -26,12 +26,12 @@ impl AutomationServer {
         // new server start without ever unlinking another process's socket.
         let path = directory.join(format!("{}.sock", uuid::Uuid::new_v4().simple()));
         let listener = UnixListener::bind(&path)
-            .with_context(|| format!("no se pudo abrir {}", path.display()))?;
+            .with_context(|| format!("could not open {}", path.display()))?;
         if let Err(error) = fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
             .and_then(|_| listener.set_nonblocking(true))
         {
             let _ = fs::remove_file(&path);
-            return Err(error).with_context(|| format!("no se pudo preparar {}", path.display()));
+            return Err(error).with_context(|| format!("could not prepare {}", path.display()));
         }
         let (sender, receiver) = async_channel::bounded(AUTOMATION_QUEUE_CAPACITY);
         let stopped = Arc::new(AtomicBool::new(false));
@@ -64,9 +64,7 @@ impl AutomationServer {
                         client_threads.fetch_sub(1, Ordering::AcqRel);
                         let _ = write_automation_response(
                             stream,
-                            &AutomationResponse::failure(
-                                "demasiadas solicitudes de automatización",
-                            ),
+                            &AutomationResponse::failure("too many automation requests"),
                         );
                         continue;
                     }
@@ -124,7 +122,7 @@ fn handle_connection(mut stream: UnixStream, sender: &async_channel::Sender<Auto
                 .take(MAX_AUTOMATION_REQUEST_BYTES + 1)
                 .read_to_string(&mut request)?;
             if request.len() as u64 > MAX_AUTOMATION_REQUEST_BYTES {
-                bail!("la solicitud supera 1 MiB");
+                bail!("the request exceeds 1 MiB");
             }
             serde_json::from_str::<AutomationEnvelope>(&request).map_err(Into::into)
         });
@@ -141,10 +139,12 @@ fn handle_connection(mut stream: UnixStream, sender: &async_channel::Sender<Auto
                 Err(error) => AutomationResponse::failure(error),
                 Ok(()) => response_rx
                     .recv_timeout(AUTOMATION_IO_TIMEOUT)
-                    .unwrap_or_else(|_| AutomationResponse::failure("la UI no respondió a tiempo")),
+                    .unwrap_or_else(|_| {
+                        AutomationResponse::failure("the UI did not respond in time")
+                    }),
             }
         }
-        Err(error) => AutomationResponse::failure(format!("solicitud inválida: {error}")),
+        Err(error) => AutomationResponse::failure(format!("invalid request: {error}")),
     };
     let _ = write_automation_response(stream, &response);
 }
@@ -160,8 +160,8 @@ pub(super) fn enqueue_automation_request(
     incoming: AutomationIncoming,
 ) -> Result<(), &'static str> {
     sender.try_send(incoming).map_err(|error| match error {
-        async_channel::TrySendError::Full(_) => "demasiadas solicitudes de automatización",
-        async_channel::TrySendError::Closed(_) => "Vibra se está cerrando",
+        async_channel::TrySendError::Full(_) => "too many automation requests",
+        async_channel::TrySendError::Closed(_) => "Vibra is shutting down",
     })
 }
 
@@ -172,11 +172,11 @@ fn automation_directory() -> PathBuf {
 
 fn prepare_automation_directory(directory: &Path) -> Result<()> {
     fs::create_dir_all(directory)
-        .with_context(|| format!("no se pudo crear {}", directory.display()))?;
+        .with_context(|| format!("could not create {}", directory.display()))?;
     let metadata = fs::symlink_metadata(directory)?;
     if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
         bail!(
-            "{} no es un directorio privado del usuario",
+            "{} is not a private directory owned by the current user",
             directory.display()
         );
     }

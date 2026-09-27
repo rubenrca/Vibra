@@ -263,10 +263,10 @@ impl SettingsRepository {
         }
         let bytes = read_settings_file(&self.path)?;
         let mut settings: AppSettings = serde_json::from_slice(&bytes)
-            .with_context(|| format!("JSON inválido en {}", self.path.display()))?;
+            .with_context(|| format!("Invalid JSON in {}", self.path.display()))?;
         if settings.schema_version > CURRENT_SETTINGS_SCHEMA_VERSION {
             bail!(
-                "{} usa settings schema {} pero esta versión entiende hasta {}",
+                "{} uses settings schema {} but this version supports up to {}",
                 self.path.display(),
                 settings.schema_version,
                 CURRENT_SETTINGS_SCHEMA_VERSION
@@ -281,7 +281,7 @@ impl SettingsRepository {
         self.import_preview_settings()?;
         let data = serde_json::to_vec(settings)?;
         if data.len() as u64 > MAX_SETTINGS_BYTES {
-            bail!("los settings superan el límite de 1 MiB y no se pueden guardar");
+            bail!("settings exceed the 1 MiB limit and cannot be saved");
         }
         self.revision.save(&self.path, &data)?;
         Ok(())
@@ -298,17 +298,20 @@ impl SettingsRepository {
         else {
             return Ok(());
         };
-        let parent = self.path.parent().context("settings.json no tiene padre")?;
+        let parent = self
+            .path
+            .parent()
+            .context("settings.json has no parent directory")?;
         fs::create_dir_all(parent)?;
         let data = read_settings_file(preview_path)?;
         let preview: AppSettings = serde_json::from_slice(&data)
-            .with_context(|| format!("JSON inválido en {}", preview_path.display()))?;
+            .with_context(|| format!("Invalid JSON in {}", preview_path.display()))?;
         if preview.schema_version > CURRENT_SETTINGS_SCHEMA_VERSION {
-            bail!("{} usa un esquema futuro", preview_path.display());
+            bail!("{} uses a newer schema", preview_path.display());
         }
         atomic_write(&self.path, &data).with_context(|| {
             format!(
-                "no se pudo importar {} a {}",
+                "could not import {} to {}",
                 preview_path.display(),
                 self.path.display()
             )
@@ -321,12 +324,12 @@ fn read_settings_file(path: &std::path::Path) -> Result<Vec<u8>> {
     let file = fs::File::open(path)?;
     let metadata = file.metadata()?;
     if metadata.len() > MAX_SETTINGS_BYTES {
-        bail!("{} supera el límite de 1 MiB", path.display());
+        bail!("{} exceeds the 1 MiB limit", path.display());
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_SETTINGS_BYTES {
-        bail!("{} supera el límite de 1 MiB", path.display());
+        bail!("{} exceeds the 1 MiB limit", path.display());
     }
     Ok(bytes)
 }

@@ -81,14 +81,14 @@ impl WorkspaceView {
             _ => {}
         }
         if name.is_empty() {
-            self.persistence_error = Some("El nombre no puede estar vacío".into());
+            self.persistence_error = Some("The name cannot be empty".into());
             cx.notify();
             return;
         }
         if name.chars().count() > crate::domain::workspace::MAX_NAME_CHARS {
             self.persistence_error = Some(
                 format!(
-                    "El nombre es demasiado largo (máx. {} caracteres)",
+                    "The name is too long (max. {} characters)",
                     crate::domain::workspace::MAX_NAME_CHARS
                 )
                 .into(),
@@ -203,43 +203,43 @@ impl WorkspaceView {
                 let pinned = self.settings.pinned_project_ids.contains(project_id);
                 vec![
                     row(
-                        "Nueva pestaña",
+                        "New tab",
                         "chrome-icons/plus.svg",
                         ContextMenuAction::NewTab,
                     )
                     .map(|(item, action)| (item.shortcut("⌘T"), action)),
                     row(
-                        "Renombrar proyecto",
+                        "Rename project",
                         "chrome-icons/pencil.svg",
                         ContextMenuAction::Rename,
                     ),
                     if pinned {
                         row(
-                            "Desfijar proyecto",
+                            "Unpin project",
                             "chrome-icons/pin-off.svg",
                             ContextMenuAction::ToggleProjectPin,
                         )
                     } else {
                         row(
-                            "Fijar proyecto",
+                            "Pin project",
                             "chrome-icons/pin.svg",
                             ContextMenuAction::ToggleProjectPin,
                         )
                     },
                     None,
                     row(
-                        "Mostrar en Finder",
+                        "Reveal in Finder",
                         "chrome-icons/folder-open.svg",
                         ContextMenuAction::RevealProject,
                     ),
                     row(
-                        "Asociar carpeta…",
+                        "Link folder…",
                         "chrome-icons/folder.svg",
                         ContextMenuAction::AssociateFolder,
                     ),
                     None,
                     row(
-                        "Quitar proyecto…",
+                        "Remove project…",
                         "chrome-icons/trash.svg",
                         ContextMenuAction::RemoveProject,
                     )
@@ -248,7 +248,7 @@ impl WorkspaceView {
             }
             ContextMenuKind::SidebarBackground => vec![
                 row(
-                    "Agregar proyecto…",
+                    "Add project…",
                     "chrome-icons/folder-plus.svg",
                     ContextMenuAction::AddProject,
                 )
@@ -256,32 +256,32 @@ impl WorkspaceView {
             ],
             ContextMenuKind::Pane { .. } => vec![
                 row(
-                    "Renombrar",
+                    "Rename",
                     "chrome-icons/pencil.svg",
                     ContextMenuAction::Rename,
                 ),
                 None,
                 row(
-                    "Dividir a la derecha",
+                    "Split right",
                     "chrome-icons/split-view.svg",
                     ContextMenuAction::SplitRight,
                 )
                 .map(|(item, action)| (item.shortcut("⌘D"), action)),
                 row(
-                    "Dividir abajo",
+                    "Split down",
                     "chrome-icons/rows.svg",
                     ContextMenuAction::SplitDown,
                 )
                 .map(|(item, action)| (item.shortcut("⇧⌘D"), action)),
                 row(
-                    "Agrandar o restaurar",
+                    "Zoom or restore",
                     "chrome-icons/maximize.svg",
                     ContextMenuAction::ToggleZoom,
                 )
                 .map(|(item, action)| (item.shortcut("⇧⌘↩"), action)),
                 None,
                 row(
-                    "Cerrar pane",
+                    "Close pane",
                     "chrome-icons/close.svg",
                     ContextMenuAction::ClosePane,
                 )
@@ -385,13 +385,13 @@ impl WorkspaceView {
     pub(super) fn rename_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prompt = self.rename_prompt.clone()?;
         let title = match prompt.kind {
-            RenamePromptKind::Pane { .. } => "Renombrar pane",
-            RenamePromptKind::Project { .. } => "Renombrar proyecto",
-            RenamePromptKind::NewFile { .. } => "Nuevo archivo",
-            RenamePromptKind::NewFolder { .. } => "Nueva carpeta",
+            RenamePromptKind::Pane { .. } => "Rename pane",
+            RenamePromptKind::Project { .. } => "Rename project",
+            RenamePromptKind::NewFile { .. } => "New file",
+            RenamePromptKind::NewFolder { .. } => "New folder",
         };
         let value = if prompt.value.is_empty() {
-            "Escribe un nombre…".to_owned()
+            "Enter a name…".to_owned()
         } else {
             prompt.value
         };
@@ -446,7 +446,7 @@ impl WorkspaceView {
                                 .items_center()
                                 .font_family(MONO_FONT)
                                 .text_size(px(11.0))
-                                .text_color(if value == "Escribe un nombre…" {
+                                .text_color(if value == "Enter a name…" {
                                     colors().subtle
                                 } else {
                                     colors().foreground
@@ -462,7 +462,7 @@ impl WorkspaceView {
                                     div()
                                         .text_xs()
                                         .text_color(colors().subtle)
-                                        .child("↵ confirmar · esc cancelar"),
+                                        .child("↵ confirm · esc cancel"),
                                 )
                                 .child(
                                     div()
@@ -483,7 +483,7 @@ impl WorkspaceView {
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.confirm_rename_prompt(cx);
                                         }))
-                                        .child("Confirmar"),
+                                        .child("Confirm"),
                                 ),
                         ),
                 )

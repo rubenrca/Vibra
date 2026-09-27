@@ -42,9 +42,9 @@ impl WorkspaceView {
             multiple: false,
             prompt: Some(
                 if project_id.is_some() {
-                    "Asociar carpeta"
+                    "Link folder"
                 } else {
-                    "Agregar proyecto"
+                    "Add project"
                 }
                 .into(),
             ),
@@ -60,7 +60,7 @@ impl WorkspaceView {
                     Ok(Ok(None)) | Err(_) => return,
                     Ok(Err(error)) => {
                         this.persistence_error =
-                            Some(format!("No se pudo elegir la carpeta: {error}").into());
+                            Some(format!("Could not choose the folder: {error}").into());
                         cx.notify();
                         return;
                     }
@@ -69,7 +69,7 @@ impl WorkspaceView {
                     Ok(root) if root.is_dir() => root,
                     _ => {
                         this.persistence_error =
-                            Some("La carpeta seleccionada ya no está disponible".into());
+                            Some("The selected folder is no longer available".into());
                         cx.notify();
                         return;
                     }
@@ -160,9 +160,9 @@ impl WorkspaceView {
         };
         let confirmation = window.prompt(
             PromptLevel::Warning,
-            &format!("¿Quitar {} de Vibra?", project.name),
-            Some("Se cerrarán sus pestañas y procesos. La carpeta y sus archivos se conservarán en el disco."),
-            &["Cancelar", "Quitar proyecto"], cx,
+            &format!("Remove {} from Vibra?", project.name),
+            Some("Its tabs and processes will be closed. The folder and its files will remain on disk."),
+            &["Cancel", "Remove project"], cx,
         );
         cx.spawn_in(window, async move |this, cx| {
             if confirmation.await.ok() != Some(1) {
@@ -218,21 +218,16 @@ impl WorkspaceView {
         let selected = self.snapshot.selected_project_id == Some(id)
             && self.workspace_section == WorkspaceSection::Workspace;
         let project_padding = 6.0;
-        let avatar_size = 20.0;
-        // Avatar, two 10 px gaps, and the status/new-tab slot.
+        let icon_slot_size = 20.0;
+        // Folder icon, two 10 px gaps, and the status/new-tab slot.
         let label_width = (row_width
             - project_padding
             - SIDEBAR_ROW_END_PADDING
-            - avatar_size
+            - icon_slot_size
             - 20.0
             - controls_width)
             .max(48.0);
         let color = super::navigation::project_color(id);
-        let initial = name
-            .chars()
-            .find(|character| character.is_alphanumeric())
-            .map(|character| character.to_uppercase().collect::<String>())
-            .unwrap_or_else(|| "·".to_owned());
         let activity = self.project_agent_activity(id);
         let drag = ProjectDrag {
             project_id: id,
@@ -293,17 +288,17 @@ impl WorkspaceView {
             }))
             .child(
                 div()
-                    .size(px(avatar_size))
+                    .size(px(icon_slot_size))
                     .flex_none()
-                    .rounded(px(5.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(gpui::Rgba { a: 0.12, ..color })
-                    .text_size(px(11.0))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(color)
-                    .child(initial),
+                    .child(
+                        svg()
+                            .path("chrome-icons/folder.svg")
+                            .size(px(14.0))
+                            .text_color(color),
+                    ),
             )
             .child(
                 div()
@@ -360,7 +355,7 @@ impl WorkspaceView {
                             .id(SharedString::from(format!("project-new-tab-{id}")))
                             .absolute()
                             .inset_0()
-                            .tooltip(|_, cx| sidebar_tooltip("Nueva pestaña · ⌘T", cx))
+                            .tooltip(|_, cx| sidebar_tooltip("New tab · ⌘T", cx))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -392,9 +387,9 @@ impl WorkspaceView {
             .unwrap_or_else(|| "Vibra".into());
         let path = project.and_then(|p| p.directory()).map(PathBuf::from);
         let button = if project.is_some() {
-            "Nueva terminal · ⌘T"
+            "New terminal · ⌘T"
         } else {
-            "Agregar proyecto · ⇧⌘O"
+            "Add project · ⇧⌘O"
         };
         div()
             .size_full()
@@ -421,7 +416,7 @@ impl WorkspaceView {
                 div()
                     .text_size(px(12.0))
                     .text_color(colors().muted)
-                    .child("Abre una terminal en esta carpeta para empezar"),
+                    .child("Open a terminal in this folder to get started"),
             )
             .child(
                 div()

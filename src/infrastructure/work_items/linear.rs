@@ -24,17 +24,17 @@ const QUERY: &str = r#"query($filter: IssueFilter) {
 
 fn token_path() -> Result<PathBuf> {
     Ok(application_support_directory()
-        .context("No se encontró la carpeta de Vibra.")?
+        .context("Could not find the Vibra folder.")?
         .join("linear-token"))
 }
 
 pub(super) fn authenticated_graphql(query: &str, variables: Value) -> Result<Value> {
     let mut token = String::new();
     fs::File::open(token_path()?)
-        .context("Conecta Linear para consultar la tarea.")?
+        .context("Connect Linear to query the task.")?
         .take(4097)
         .read_to_string(&mut token)
-        .context("No se pudo leer la clave de Linear.")?;
+        .context("Could not read the Linear key.")?;
     graphql(token.trim(), query, variables)
 }
 
@@ -47,16 +47,16 @@ pub fn connect_linear(token: &str) -> Result<()> {
     validate_token(token)?;
     let data = graphql(token, "query { viewer { id } }", json!({}))?;
     if data["viewer"]["id"].as_str().is_none() {
-        bail!("Linear no pudo verificar la clave.");
+        bail!("Linear could not verify the key.");
     }
-    atomic_write(&token_path()?, token.as_bytes()).context("No se pudo guardar la clave de Linear.")
+    atomic_write(&token_path()?, token.as_bytes()).context("Could not save the Linear key.")
 }
 
 pub fn disconnect_linear() -> Result<()> {
     match fs::remove_file(token_path()?) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => bail!("No se pudo eliminar la clave de Linear."),
+        Err(_) => bail!("Could not delete the Linear key."),
     }
 }
 
@@ -65,7 +65,7 @@ fn validate_token(token: &str) -> Result<()> {
         || token.len() > 4096
         || token.chars().any(|c| c.is_control() || c.is_whitespace())
     {
-        bail!("Copia una API key personal de Linear válida.");
+        bail!("Copy a valid Linear personal API key.");
     }
     Ok(())
 }
@@ -99,22 +99,20 @@ pub(super) fn graphql(token: &str, query: &str, variables: Value) -> Result<Valu
         ]),
         Some(config.into_bytes()),
     )
-    .context("Linear: no se pudo consultar la API. Revisa la clave y tu conexión.")?;
-    graphql_data(
-        serde_json::from_slice(&bytes).context("Linear devolvió una respuesta no válida.")?,
-    )
+    .context("Linear: could not query the API. Check your key and connection.")?;
+    graphql_data(serde_json::from_slice(&bytes).context("Linear returned an invalid response.")?)
 }
 
 pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
     let file = match fs::File::open(token_path()?) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(WorkItemsPage::default()),
-        Err(_) => bail!("No se pudo leer la clave de Linear."),
+        Err(_) => bail!("Could not read the Linear key."),
     };
     let mut token = String::new();
     file.take(4097)
         .read_to_string(&mut token)
-        .context("No se pudo leer la clave de Linear.")?;
+        .context("Could not read the Linear key.")?;
     let mut filter = json!({});
     if query.assigned_to_me {
         filter["assignee"] = json!({"isMe": {"eq": true}});
@@ -134,12 +132,12 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
 fn parse_page(data: &Value) -> Result<WorkItemsPage> {
     let nodes = data["issues"]["nodes"]
         .as_array()
-        .context("Linear no devolvió las tareas.")?;
+        .context("Linear did not return the tasks.")?;
     let mut items = Vec::new();
     for node in nodes {
         let url = string(node, "url");
         if !url.starts_with("https://linear.app/") || node["identifier"].as_str().is_none() {
-            bail!("Linear devolvió una tarea no válida.");
+            bail!("Linear returned an invalid task.");
         }
         let team = string(&node["team"], "name");
         let project = string(&node["project"], "name");

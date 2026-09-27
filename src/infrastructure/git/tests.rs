@@ -1410,7 +1410,7 @@ fn push_sets_the_upstream_on_first_push_and_reports_missing_remotes() {
     let root = repository();
     let port = GitCliPort::default();
     let error = port.sync(&root, GitSyncOperation::Push).unwrap_err();
-    assert!(error.to_string().contains("remoto"), "{error}");
+    assert!(error.to_string().contains("remote"), "{error}");
 
     let remote = std::env::temp_dir().join(format!("vibra-remote-{}", Uuid::new_v4()));
     fs::create_dir_all(&remote).unwrap();

@@ -542,7 +542,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert_eq!(error, "demasiadas solicitudes de automatización");
+        assert_eq!(error, "too many automation requests");
         drop(receiver);
     }
 }

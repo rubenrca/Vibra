@@ -117,6 +117,42 @@ impl PaneLayoutSnapshot {
         }
     }
 
+    pub(super) fn split_with_layout(
+        &mut self,
+        terminal_id: Uuid,
+        inserted: &Self,
+        direction: PaneSplitDirection,
+    ) -> bool {
+        match self {
+            Self::Terminal { id } if *id == terminal_id => {
+                let (axis, insert_first) = match direction {
+                    PaneSplitDirection::Left => (WorkspaceSplitAxis::Horizontal, true),
+                    PaneSplitDirection::Right => (WorkspaceSplitAxis::Horizontal, false),
+                    PaneSplitDirection::Up => (WorkspaceSplitAxis::Vertical, true),
+                    PaneSplitDirection::Down => (WorkspaceSplitAxis::Vertical, false),
+                };
+                let existing = self.clone();
+                let (first, second) = if insert_first {
+                    (inserted.clone(), existing)
+                } else {
+                    (existing, inserted.clone())
+                };
+                *self = Self::Split {
+                    axis,
+                    ratio: DEFAULT_PANE_SPLIT_RATIO,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                };
+                true
+            }
+            Self::Split { first, second, .. } => {
+                first.split_with_layout(terminal_id, inserted, direction)
+                    || second.split_with_layout(terminal_id, inserted, direction)
+            }
+            _ => false,
+        }
+    }
+
     pub fn adjacent_terminal(
         &self,
         terminal_id: Uuid,

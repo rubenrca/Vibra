@@ -2,6 +2,7 @@ pub mod layout;
 mod migrate;
 mod ops;
 mod projects;
+mod tab_moves;
 mod types;
 
 pub use types::*;

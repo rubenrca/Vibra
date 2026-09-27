@@ -47,17 +47,17 @@ pub fn parse_theme_text(text: &str) -> Result<ImportedScheme, ParseError> {
 
 pub fn parse_theme_file(path: &Path) -> Result<ImportedScheme, ParseError> {
     let metadata = std::fs::metadata(path)
-        .map_err(|error| ParseError::new(format!("no se pudo leer {}: {error}", path.display())))?;
+        .map_err(|error| ParseError::new(format!("could not read {}: {error}", path.display())))?;
     if metadata.len() > MAX_THEME_BYTES {
         return Err(ParseError::new(format!(
-            "{} supera el límite de 64 KiB",
+            "{} exceeds the 64 KiB limit",
             path.display()
         )));
     }
     let bytes = std::fs::read(path)
-        .map_err(|error| ParseError::new(format!("no se pudo leer {}: {error}", path.display())))?;
+        .map_err(|error| ParseError::new(format!("could not read {}: {error}", path.display())))?;
     let text = std::str::from_utf8(&bytes)
-        .map_err(|_| ParseError::new(format!("{} no está en UTF-8", path.display())))?;
+        .map_err(|_| ParseError::new(format!("{} is not UTF-8", path.display())))?;
     parse_theme_text(text)
 }
 
@@ -210,8 +210,8 @@ fn finish_scheme(
     cursor: Option<u32>,
     ansi: [Option<u32>; 16],
 ) -> Result<ImportedScheme, ParseError> {
-    let background = background.ok_or_else(|| ParseError::new("falta background"))?;
-    let foreground = foreground.ok_or_else(|| ParseError::new("falta foreground"))?;
+    let background = background.ok_or_else(|| ParseError::new("missing background"))?;
+    let foreground = foreground.ok_or_else(|| ParseError::new("missing foreground"))?;
     Ok(ImportedScheme {
         name: name.filter(|name| !name.is_empty()),
         dark,

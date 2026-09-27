@@ -25,6 +25,7 @@ impl WorkspaceSnapshot {
                 name: project.name.clone(),
                 title_source: Some(WorkspaceTitleSource::Automatic),
                 selected_tab_id: Some(tab.id),
+                review_tab_index: None,
                 tabs: vec![tab],
             });
         project.selected_workspace_id = Some(workspace_id);

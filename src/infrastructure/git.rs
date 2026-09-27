@@ -261,11 +261,11 @@ impl GitCliPort {
 impl GitPort for GitCliPort {
     fn commit(&self, root: &Path, message: &str, options: GitCommitOptions) -> Result<String> {
         let Some(root) = repository_root(root)? else {
-            bail!("este proyecto no es un repositorio Git");
+            bail!("this project is not a Git repository");
         };
         let message = message.trim();
         if message.is_empty() && !options.amend {
-            bail!("escribe un mensaje para el commit");
+            bail!("enter a commit message");
         }
         let nothing_staged = git_write_command(&root)
             .args(["diff", "--cached", "--quiet"])
@@ -278,7 +278,7 @@ impl GitPort for GitCliPort {
                 .status()
                 .is_ok_and(|status| status.success());
             if still_empty {
-                bail!("no hay cambios para hacer commit");
+                bail!("there are no changes to commit");
             }
         }
         let mut arguments = vec!["commit"];
@@ -299,7 +299,7 @@ impl GitPort for GitCliPort {
 
     fn sync(&self, root: &Path, operation: GitSyncOperation) -> Result<()> {
         let Some(root) = repository_root(root)? else {
-            bail!("este proyecto no es un repositorio Git");
+            bail!("this project is not a Git repository");
         };
         match operation {
             GitSyncOperation::Fetch => {
@@ -320,7 +320,7 @@ impl GitPort for GitCliPort {
                     .or_else(|| remotes.lines().next())
                     .map(str::to_owned);
                 let Some(remote) = remote else {
-                    bail!("el repositorio no tiene un remoto configurado");
+                    bail!("the repository has no remote configured");
                 };
                 run_git_write(&root, &["push", "-u", &remote, "HEAD"], "git push")?;
             }
@@ -331,7 +331,7 @@ impl GitPort for GitCliPort {
 
     fn stage(&self, root: &Path, paths: &[String]) -> Result<()> {
         let Some(root) = repository_root(root)? else {
-            bail!("este proyecto no es un repositorio Git");
+            bail!("this project is not a Git repository");
         };
         if paths.is_empty() {
             return Ok(());
@@ -347,7 +347,7 @@ impl GitPort for GitCliPort {
 
     fn unstage(&self, root: &Path, paths: &[String]) -> Result<()> {
         let Some(root) = repository_root(root)? else {
-            bail!("este proyecto no es un repositorio Git");
+            bail!("this project is not a Git repository");
         };
         if paths.is_empty() {
             return Ok(());
@@ -369,7 +369,7 @@ impl GitPort for GitCliPort {
     fn commit_message_context(&self, root: &Path) -> Result<String> {
         const LIMIT: usize = 48 * 1024;
         let Some(root) = repository_root(root)? else {
-            bail!("este proyecto no es un repositorio Git");
+            bail!("this project is not a Git repository");
         };
         let has_head = rev_parse(&root, "HEAD")?.is_some();
         let staged = !git_write_command(&root)
@@ -2040,7 +2040,7 @@ fn run_git_write(root: &Path, arguments: &[&str], operation: &str) -> Result<Out
         let message = [stderr.trim(), stdout.trim()]
             .into_iter()
             .find(|text| !text.is_empty())
-            .unwrap_or("sin detalles")
+            .unwrap_or("no details")
             .lines()
             .take(6)
             .collect::<Vec<_>>()

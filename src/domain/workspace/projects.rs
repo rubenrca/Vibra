@@ -83,6 +83,7 @@ impl WorkspaceSnapshot {
                 title_source: Some(WorkspaceTitleSource::Automatic),
                 tabs: Vec::new(),
                 selected_tab_id: None,
+                review_tab_index: None,
             });
         }
         let index = workspaces

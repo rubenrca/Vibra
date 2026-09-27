@@ -98,6 +98,15 @@ pub struct TerminalWorkspaceSnapshot {
     pub tabs: Vec<TabSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_tab_id: Option<Uuid>,
+    /// Insertion position of the review among terminal tabs; absent means last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_tab_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceTabId {
+    Terminal(Uuid),
+    Review,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

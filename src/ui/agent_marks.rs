@@ -6,10 +6,7 @@ use gpui::{
 };
 
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
-use crate::ui::theme::{MONO_FONT, colors};
-
-/// Glyph used when a pane has no detected agent mark.
-pub const TERMINAL_GLYPH: &str = ">_";
+use crate::ui::theme::colors;
 macro_rules! bundled_assets {
     ($(($key:literal, $rel:literal)),+ $(,)?) => {
         impl AssetSource for VibraAssets {
@@ -60,6 +57,7 @@ bundled_assets! {
     ("file-icons/folder-open.svg", "FileIcons/folder-open.svg"),
     ("file-icons/file.svg", "FileIcons/file.svg"),
     ("chrome-icons/files.svg", "ChromeIcons/files.svg"),
+    ("chrome-icons/terminal.svg", "ChromeIcons/terminal.svg"),
     ("chrome-icons/folder.svg", "ChromeIcons/folder.svg"),
     ("chrome-icons/plus.svg", "ChromeIcons/plus.svg"),
     ("chrome-icons/ellipsis.svg", "ChromeIcons/ellipsis.svg"),
@@ -160,25 +158,19 @@ fn brand_mark(kind: Option<&str>, mark_color: Rgba, size: f32) -> AnyElement {
     match kind.and_then(agent_mark) {
         Some((path, AgentMarkStyle::Template, scale)) => svg()
             .path(path)
-            .size(px(size * scale))
+            .size(px(size * scale * 0.75))
             .flex_none()
             .text_color(mark_color)
             .into_any_element(),
         Some((path, AgentMarkStyle::Original, scale)) => img(path)
-            .size(px(size * scale))
+            .size(px(size * scale * 0.75))
             .flex_none()
             .into_any_element(),
-        None => div()
+        None => svg()
+            .path("chrome-icons/terminal.svg")
             .size(px(size))
             .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .font_family(MONO_FONT)
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_size(px((size * 9.5 / 16.0).max(8.0)))
             .text_color(mark_color)
-            .child(TERMINAL_GLYPH)
             .into_any_element(),
     }
 }
@@ -216,10 +208,10 @@ pub fn agent_compact_badge(
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(5.0))
+        .gap(px(4.0))
         .child(
             div()
-                .size(px(18.0))
+                .size(px(16.0))
                 .flex_none()
                 .flex()
                 .items_center()
@@ -227,7 +219,7 @@ pub fn agent_compact_badge(
                 .child(brand_mark(kind, mark_color, 16.0)),
         )
         .when_some(status, |badge, color| {
-            badge.child(div().size(px(5.0)).flex_none().rounded_full().bg(color))
+            badge.child(div().size(px(4.0)).flex_none().rounded_full().bg(color))
         })
         .into_any_element()
 }

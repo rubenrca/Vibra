@@ -32,12 +32,12 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn atomic_write_with(path: &Path, bytes: &[u8], options: AtomicWriteOptions) -> Result<()> {
     let parent = path
         .parent()
-        .context("la ruta de escritura no tiene directorio padre")?;
-    fs::create_dir_all(parent).with_context(|| format!("no se pudo crear {}", parent.display()))?;
+        .context("the output path has no parent directory")?;
+    fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .context("la ruta de escritura no tiene nombre")?;
+        .context("the output path has no filename")?;
     // A process can write the same target from multiple threads. A unique name
     // also prevents an existing temporary symlink from redirecting the write.
     let temporary = parent.join(format!(".{name}.{}.tmp", Uuid::new_v4().simple()));
@@ -46,16 +46,16 @@ pub fn atomic_write_with(path: &Path, bytes: &[u8], options: AtomicWriteOptions)
         let _ = fs::remove_file(&temporary);
         return Err(error).with_context(|| {
             format!(
-                "no se pudo mover {} a {}",
+                "could not move {} to {}",
                 temporary.display(),
                 path.display()
             )
         });
     }
     fs::File::open(parent)
-        .with_context(|| format!("no se pudo abrir {} para sincronizar", parent.display()))?
+        .with_context(|| format!("could not open {} for syncing", parent.display()))?
         .sync_all()
-        .with_context(|| format!("no se pudo sincronizar {}", parent.display()))?;
+        .with_context(|| format!("could not sync {}", parent.display()))?;
     Ok(())
 }
 
@@ -70,7 +70,7 @@ fn write_temp(temporary: &Path, bytes: &[u8], options: &AtomicWriteOptions) -> R
         // temporary private before any bytes are written.
         .mode(options.unix_mode.unwrap_or(0o600))
         .open(temporary)
-        .with_context(|| format!("no se pudo crear {}", temporary.display()))?;
+        .with_context(|| format!("could not create {}", temporary.display()))?;
     let result = (|| {
         if let Some(mode) = options.unix_mode {
             use std::os::unix::fs::PermissionsExt;
@@ -98,11 +98,11 @@ pub fn with_exclusive_file_lock<T>(
 
     let parent = path
         .parent()
-        .context("la ruta de bloqueo no tiene directorio padre")?;
+        .context("the lock path has no parent directory")?;
     fs::create_dir_all(parent)?;
     let mut name = path
         .file_name()
-        .context("la ruta de bloqueo no tiene nombre")?
+        .context("the lock path has no filename")?
         .to_os_string();
     name.push(".lock");
     let lock_path = parent.join(name);
@@ -113,15 +113,14 @@ pub fn with_exclusive_file_lock<T>(
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(&lock_path)
-        .with_context(|| format!("no se pudo abrir {}", lock_path.display()))?;
+        .with_context(|| format!("could not open {}", lock_path.display()))?;
     loop {
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } == 0 {
             break;
         }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(error)
-                .with_context(|| format!("no se pudo bloquear {}", lock_path.display()));
+            return Err(error).with_context(|| format!("could not lock {}", lock_path.display()));
         }
     }
     operation()
@@ -165,7 +164,7 @@ impl RevisionGuard {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let FileRevision::Blocked(error) = &*revision {
-            bail!("no se puede guardar porque falló la carga original: {error}");
+            bail!("cannot save because the initial load failed: {error}");
         }
         with_exclusive_file_lock(path, || {
             let comparison_limit = match &*revision {
@@ -190,7 +189,7 @@ impl RevisionGuard {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, false),
                 Err(error) => {
                     return Err(error)
-                        .with_context(|| format!("no se pudo leer {}", path.display()));
+                        .with_context(|| format!("could not read {}", path.display()));
                 }
             };
             match &*revision {
@@ -215,18 +214,21 @@ impl RevisionGuard {
                     };
                     atomic_write(&recovery_path, bytes).with_context(|| {
                         format!(
-                            "no se pudo conservar la copia local en {}",
+                            "could not preserve the local copy at {}",
                             recovery_path.display()
                         )
                     })?;
                     bail!(
-                        "{} cambió en otro proceso; se conservó el archivo nuevo y tu copia local quedó en {}",
+                        "{} changed in another process; the newer file was preserved and your local copy was saved at {}",
                         path.display(),
                         recovery_path.display()
                     );
                 }
                 FileRevision::Unloaded if current.is_some() => {
-                    bail!("{} debe cargarse antes de sobrescribirlo", path.display());
+                    bail!(
+                        "{} must be loaded before it can be overwritten",
+                        path.display()
+                    );
                 }
                 FileRevision::Blocked(_) => unreachable!("checked above"),
                 _ => {}

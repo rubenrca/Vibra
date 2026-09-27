@@ -20,6 +20,7 @@ mod projects;
 mod settings;
 mod status_bar;
 mod storage;
+mod tab_drag;
 mod tabs;
 mod terminals;
 mod titlebar;
@@ -225,6 +226,9 @@ pub struct WorkspaceView {
     workspace_section: WorkspaceSection,
     /// The open review's tab is in front of the terminal tabs.
     review_tab_active: bool,
+    review_split_direction: PaneSplitDirection,
+    review_docked_tab_id: Option<Uuid>,
+    pane_drop_preview: Option<(Uuid, PaneSplitDirection)>,
     navigation: tabs::Navigation,
     /// Agent and automation events, newest last; lives only while the app runs.
     inbox: Inbox,
@@ -326,8 +330,8 @@ impl WorkspaceView {
                 Err(error) => {
                     let message: SharedString = format!(
                         concat!(
-                            "No se pudo restaurar el workspace: {error}. ",
-                            "Los cambios no se guardarán hasta reparar el archivo."
+                            "Could not restore the workspace: {error}. ",
+                            "Changes will not be saved until the file is repaired."
                         ),
                         error = error
                     )
@@ -340,7 +344,7 @@ impl WorkspaceView {
             Ok(settings) => (settings, None),
             Err(error) => {
                 let message: SharedString = format!(
-                    "No se pudieron cargar los settings: {error}. Los cambios no se guardarán hasta reparar el archivo."
+                    "Could not load settings: {error}. Changes will not be saved until the file is repaired."
                 )
                 .into();
                 (AppSettings::default(), Some(message))
@@ -357,7 +361,7 @@ impl WorkspaceView {
             Some(Err(error)) => (
                 Library::default(),
                 Some(SharedString::from(format!(
-                    "No se pudieron cargar las notas y automatizaciones: {error}. No se guardarán cambios hasta reparar el archivo."
+                    "Could not load notes and automations: {error}. Changes will not be saved until the file is repaired."
                 ))),
             ),
             None => (Library::default(), None),
@@ -378,7 +382,7 @@ impl WorkspaceView {
             && workspace_load_error.is_none()
             && let Err(error) = repository.save(&snapshot)
         {
-            persistence_error = Some(format!("No se pudo guardar el workspace: {error}").into());
+            persistence_error = Some(format!("Could not save the workspace: {error}").into());
         }
 
         let (automation_server, automation_socket, automation_task) =
@@ -403,7 +407,7 @@ impl WorkspaceView {
                 Err(error) => {
                     if persistence_error.is_none() {
                         persistence_error =
-                            Some(format!("Automatización local no disponible: {error}").into());
+                            Some(format!("Local automation unavailable: {error}").into());
                     }
                     (None, None, None)
                 }
@@ -428,11 +432,16 @@ impl WorkspaceView {
             &diff_view,
             |this, _diff_view, event: &DiffViewEvent, cx| match event {
                 DiffViewEvent::ReviewOpened => {
+                    this.sync_review_docking(cx);
+                    if let Some(tab_id) = this.review_dock_owner() {
+                        this.snapshot.select_tab(tab_id);
+                    }
                     this.review_tab_active = true;
                     this.sync_terminal_surface_visibility(cx);
                     cx.notify();
                 }
                 DiffViewEvent::Changed => {
+                    this.sync_review_docking(cx);
                     if !this.diff_view.read(cx).review_expanded() {
                         this.review_tab_active = false;
                     }
@@ -488,7 +497,7 @@ impl WorkspaceView {
             Ok(status) => (Some(status), None),
             Err(error) => (
                 None,
-                Some(format!("No se pudo consultar las integraciones: {error}").into()),
+                Some(format!("Could not query integrations: {error}").into()),
             ),
         };
         let (persistence_queue, persistence_result_task) = match PersistenceQueue::start(
@@ -512,7 +521,7 @@ impl WorkspaceView {
             Err(error) => {
                 if persistence_error.is_none() {
                     persistence_error =
-                        Some(format!("Guardado en segundo plano no disponible: {error}").into());
+                        Some(format!("Background saving unavailable: {error}").into());
                 }
                 (None, None)
             }
@@ -575,6 +584,9 @@ impl WorkspaceView {
             },
             workspace_section: WorkspaceSection::Workspace,
             review_tab_active: false,
+            review_split_direction: PaneSplitDirection::Right,
+            review_docked_tab_id: None,
+            pane_drop_preview: None,
             navigation: tabs::Navigation::default(),
             inbox: Inbox::default(),
             work_inbox: work_inbox::WorkInbox::default(),
@@ -804,25 +816,12 @@ impl WorkspaceView {
     }
 
     fn close_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.review_docked_tab_id = None;
         self.diff_view
             .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
         self.sync_terminal_surface_visibility(cx);
         self.sync_git_panel_visibility(cx);
         self.focus_selected_terminal(window, cx);
-        cx.notify();
-    }
-
-    fn reorder_tab(
-        &mut self,
-        tab_id: Uuid,
-        before_tab_id: Option<Uuid>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.reorder_drag = None;
-        if self.snapshot.move_tab(tab_id, before_tab_id) {
-            self.show_terminal_tab(window, cx);
-        }
         cx.notify();
     }
 
@@ -955,7 +954,10 @@ impl WorkspaceView {
             self.select_section(WorkspaceSection::Workspace, window, cx);
             return;
         }
-        if self.review_visible(cx) {
+        if self.review_visible(cx)
+            && (self.review_covers_terminal(cx)
+                || self.diff_view.read(cx).review_has_focus(window, cx))
+        {
             self.close_review(window, cx);
             return;
         }
@@ -1067,9 +1069,9 @@ impl WorkspaceView {
                 .text_size(px(12.0))
                 .text_color(colors().muted)
                 .child(if self.snapshot.selected_project().is_some() {
-                    "Asocia una carpeta a este proyecto"
+                    "Link a folder to this project"
                 } else {
-                    "Selecciona un proyecto"
+                    "Select a project"
                 })
                 .into_any_element()
         } else {
@@ -1223,6 +1225,7 @@ impl Render for WorkspaceView {
         if self.workspace_section == WorkspaceSection::Workspace {
             let review_pane = || {
                 div()
+                    .id("review-pane")
                     .flex_1()
                     .min_w(px(0.0))
                     .h_full()
@@ -1230,7 +1233,21 @@ impl Render for WorkspaceView {
                     .bg(surface(colors().panel))
             };
             if expanded_review && self.diff_view.read(cx).review_focused() {
-                layout = layout.child(review_pane().child(self.diff_view.clone()));
+                layout = layout.child(
+                    review_pane()
+                        .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
+                            this.dock_tab(
+                                drag.tab_id,
+                                crate::domain::workspace::WorkspaceTabId::Review,
+                                window,
+                                cx,
+                            );
+                        }))
+                        .drag_over::<TabDrag>(|style, _, _, _| {
+                            style.border_2().border_color(colors().accent)
+                        })
+                        .child(self.diff_view.clone()),
+                );
             } else if expanded_review {
                 // The review opens beside the terminal, like an editor split.
                 let terminal = self.center_panel(window, cx).into_any_element();
