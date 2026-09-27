@@ -16,12 +16,17 @@ use crate::ui::theme_import::{self, ImportedScheme};
 /// Family name of the bundled JetBrains Mono Variable font.
 pub const MONO_FONT: &str = "JetBrains Mono";
 
-/// Use the theme background across the window as one continuous translucent fill.
+/// Use one continuous window fill with 12% transparency over the native backdrop.
+/// Keep this separate from floating fills, which need more opacity for readability.
 pub fn window_surface() -> Hsla {
-    floating_surface(colors().background)
+    let mut color: Hsla = colors().background.into();
+    if cfg!(target_os = "macos") {
+        color.a *= 0.88;
+    }
+    color
 }
 
-/// Main panels tint the continuous window base. Never paint another 94% layer
+/// Main panels tint the continuous window base. Never paint another full fill
 /// here: stacking those layers would hide the native backdrop.
 pub fn surface(color: impl Into<Hsla>) -> Hsla {
     surface_tint(color.into().into(), colors().background).into()

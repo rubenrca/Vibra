@@ -44,7 +44,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
 - panel Workspace a la derecha con Explorer y Changes; elegir un proyecto no lo abre ni lo cambia, queda como lo dejaste;
 - menús contextuales en proyectos y panes (renombrar, cerrar, dividir, zoom);
-- transparencia base del 6 % sobre el desenfoque nativo de macOS en el fondo, las sidebars, la barra superior y el terminal, manteniendo opacos el texto y los iconos;
+- transparencia base del 12 % sobre el desenfoque nativo de macOS en el fondo, las sidebars, la barra superior y el terminal, manteniendo opacos el texto y los iconos;
 - command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`);
 - temas de aplicación (familias claras/oscuras y paletas de terminal) más YAML de Warp o Ghostty en `~/.vibra/themes`.
 
