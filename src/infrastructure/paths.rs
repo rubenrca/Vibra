@@ -140,14 +140,21 @@ enum FileRevision {
 pub struct RevisionGuard {
     revision: Mutex<FileRevision>,
     recovery_path: Mutex<Option<PathBuf>>,
+    /// Last submitted settings, which may differ from the merged file on disk.
+    merge_input: Mutex<Option<Vec<u8>>>,
 }
 
 impl RevisionGuard {
     pub fn loaded(&self, bytes: Option<Vec<u8>>) {
-        *self
+        let mut revision = self
             .revision
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = FileRevision::Loaded(bytes);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *self
+            .merge_input
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *revision = FileRevision::Loaded(bytes);
     }
 
     pub fn blocked(&self, error: &anyhow::Error) {
@@ -156,6 +163,107 @@ impl RevisionGuard {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =
             FileRevision::Blocked(error.to_string());
+    }
+
+    /// Merge only locally changed preferences into the latest file while holding
+    /// the process lock. Workspaces and libraries continue to use strict `save`.
+    pub fn save_merging(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        limit: u64,
+        merge: impl FnOnce(Option<&[u8]>, Option<&[u8]>) -> Result<Vec<u8>>,
+    ) -> Result<bool> {
+        let mut revision = self
+            .revision
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let FileRevision::Blocked(error) = &*revision {
+            bail!("cannot save because the initial load failed: {error}");
+        }
+        let mut merge_input = self
+            .merge_input
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        with_exclusive_file_lock(path, || {
+            let current = match fs::File::open(path) {
+                Ok(file) => {
+                    let mut contents = Vec::new();
+                    file.take(limit + 1).read_to_end(&mut contents)?;
+                    if contents.len() as u64 > limit {
+                        let recovery = self.preserve_local_copy(path, bytes)?;
+                        bail!(
+                            "{} exceeds the settings size limit; your local copy was saved at {}",
+                            path.display(),
+                            recovery.display()
+                        );
+                    }
+                    Some(contents)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error).context("could not read the latest settings"),
+            };
+            let loaded = match &*revision {
+                FileRevision::Unloaded if current.is_some() => {
+                    bail!(
+                        "{} must be loaded before it can be overwritten",
+                        path.display()
+                    );
+                }
+                FileRevision::Loaded(loaded) => loaded.as_deref(),
+                _ => None,
+            };
+            let merged = match merge(merge_input.as_deref().or(loaded), current.as_deref()) {
+                Ok(merged) => merged,
+                Err(error) => {
+                    let recovery = self.preserve_local_copy(path, bytes)?;
+                    bail!(
+                        "{error}; the settings file was preserved and your local copy was saved at {}",
+                        recovery.display()
+                    );
+                }
+            };
+            if merged.len() as u64 > limit {
+                bail!("merged settings exceed the size limit and cannot be saved");
+            }
+            let changed = current.as_deref() != Some(merged.as_slice());
+            if changed {
+                atomic_write(path, &merged)?;
+            }
+            *revision = FileRevision::Loaded(Some(merged));
+            // Remember what the caller submitted, not the merged values it has
+            // not seen. A later resize must not undo another instance's theme.
+            *merge_input = Some(bytes.to_vec());
+            Ok(changed)
+        })
+    }
+
+    fn preserve_local_copy(&self, path: &Path, bytes: &[u8]) -> Result<PathBuf> {
+        let recovery_path = {
+            let mut slot = self
+                .recovery_path
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            slot.get_or_insert_with(|| {
+                let name = path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("snapshot");
+                path.with_file_name(format!(
+                    "{name}-recovery-{}-{}.json",
+                    std::process::id(),
+                    Uuid::new_v4().simple()
+                ))
+            })
+            .clone()
+        };
+        atomic_write(&recovery_path, bytes).with_context(|| {
+            format!(
+                "could not preserve the local copy at {}",
+                recovery_path.display()
+            )
+        })?;
+        Ok(recovery_path)
     }
 
     pub fn save(&self, path: &Path, bytes: &[u8]) -> Result<bool> {
@@ -194,30 +302,7 @@ impl RevisionGuard {
             };
             match &*revision {
                 FileRevision::Loaded(expected) if oversized || *expected != current => {
-                    let recovery_path = {
-                        let mut slot = self
-                            .recovery_path
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        slot.get_or_insert_with(|| {
-                            let name = path
-                                .file_stem()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("snapshot");
-                            path.with_file_name(format!(
-                                "{name}-recovery-{}-{}.json",
-                                std::process::id(),
-                                Uuid::new_v4().simple()
-                            ))
-                        })
-                        .clone()
-                    };
-                    atomic_write(&recovery_path, bytes).with_context(|| {
-                        format!(
-                            "could not preserve the local copy at {}",
-                            recovery_path.display()
-                        )
-                    })?;
+                    let recovery_path = self.preserve_local_copy(path, bytes)?;
                     bail!(
                         "{} changed in another process; the newer file was preserved and your local copy was saved at {}",
                         path.display(),

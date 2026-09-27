@@ -262,8 +262,14 @@ impl SettingsRepository {
             return Ok(AppSettings::default());
         }
         let bytes = read_settings_file(&self.path)?;
-        let mut settings: AppSettings = serde_json::from_slice(&bytes)
-            .with_context(|| format!("Invalid JSON in {}", self.path.display()))?;
+        let settings = self.decode(&bytes)?;
+        self.revision.loaded(Some(bytes));
+        Ok(settings)
+    }
+
+    fn decode(&self, bytes: &[u8]) -> Result<AppSettings> {
+        let mut settings: AppSettings = serde_json::from_slice(bytes)
+            .with_context(|| format!("Invalid settings in {}", self.path.display()))?;
         if settings.schema_version > CURRENT_SETTINGS_SCHEMA_VERSION {
             bail!(
                 "{} uses settings schema {} but this version supports up to {}",
@@ -273,7 +279,6 @@ impl SettingsRepository {
             );
         }
         settings.normalize();
-        self.revision.loaded(Some(bytes));
         Ok(settings)
     }
 
@@ -283,7 +288,32 @@ impl SettingsRepository {
         if data.len() as u64 > MAX_SETTINGS_BYTES {
             bail!("settings exceed the 1 MiB limit and cannot be saved");
         }
-        self.revision.save(&self.path, &data)?;
+        self.revision
+            .save_merging(&self.path, &data, MAX_SETTINGS_BYTES, |base, current| {
+                let base = base
+                    .map(|bytes| self.decode(bytes))
+                    .transpose()?
+                    .unwrap_or_default();
+                let mut current = if let Some(bytes) = current {
+                    // Validate before merging, retaining unknown fields in supported schemas.
+                    self.decode(bytes)?;
+                    serde_json::from_slice(bytes)?
+                } else {
+                    serde_json::to_value(AppSettings::default())?
+                };
+                if let Some(object) = current.as_object_mut()
+                    && let Some(value) = object.remove("gitPanelVisible")
+                {
+                    object.insert("rightSidebarVisible".into(), value);
+                }
+                merge_changed_settings(
+                    &serde_json::to_value(base)?,
+                    &serde_json::to_value(settings)?,
+                    &mut current,
+                );
+                current["schemaVersion"] = CURRENT_SETTINGS_SCHEMA_VERSION.into();
+                Ok(serde_json::to_vec(&current)?)
+            })?;
         Ok(())
     }
 
@@ -317,6 +347,37 @@ impl SettingsRepository {
             )
         })?;
         Ok(())
+    }
+}
+
+/// Apply this instance's edits; unchanged values and unknown fields stay on disk.
+/// A preference explicitly changed in both instances uses the latest save.
+fn merge_changed_settings(
+    base: &serde_json::Value,
+    local: &serde_json::Value,
+    current: &mut serde_json::Value,
+) {
+    if base == local {
+        return;
+    }
+    if let (Some(base), Some(local), Some(current)) =
+        (base.as_object(), local.as_object(), current.as_object_mut())
+    {
+        for (key, value) in local {
+            if base.get(key) == Some(value) {
+                continue;
+            }
+            if let (Some(base), Some(current)) = (base.get(key), current.get_mut(key)) {
+                merge_changed_settings(base, value, current);
+            } else {
+                current.insert(key.clone(), value.clone());
+            }
+        }
+        for key in base.keys().filter(|key| !local.contains_key(*key)) {
+            current.remove(key);
+        }
+    } else {
+        *current = local.clone();
     }
 }
 
@@ -430,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_settings_instances_detect_conflicting_changes() {
+    fn concurrent_settings_instances_merge_only_their_own_changes() {
         let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
         let path = root.join("settings.json");
         let first = SettingsRepository::at(&path);
@@ -440,9 +501,181 @@ mod tests {
         first_settings.show_hidden_files = true;
         second_settings.agent_notifications = false;
         first.save(&first_settings).unwrap();
-        assert!(second.save(&second_settings).is_err());
-        assert_eq!(first.load().unwrap(), first_settings);
+        second.save(&second_settings).unwrap();
+        let reader = SettingsRepository::at(&path);
+        let mut expected = first_settings.clone();
+        expected.agent_notifications = false;
+        assert_eq!(reader.load().unwrap(), expected);
+
+        // Both views still hold their own settings. Subsequent geometry saves
+        // must not restore stale values for unrelated preferences.
+        second_settings.set_window_size(1500.0, 900.0);
+        second.save(&second_settings).unwrap();
+        first_settings.diff_wrap = true;
+        first.save(&first_settings).unwrap();
+        expected.set_window_size(1500.0, 900.0);
+        expected.diff_wrap = true;
+        assert_eq!(reader.load().unwrap(), expected);
+        // A close-time save without new edits leaves the merged state intact.
+        second.save(&second_settings).unwrap();
+        assert_eq!(reader.load().unwrap(), expected);
+        assert!(!fs::read_dir(&root).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("recovery")
+        }));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_preferences_and_cleared_lists_survive_other_instances_saves() {
+        let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
+        let path = root.join("settings.json");
+        SettingsRepository::at(&path)
+            .save(&AppSettings {
+                pinned_project_ids: vec![Uuid::new_v4()],
+                ..AppSettings::default()
+            })
+            .unwrap();
+        let first = SettingsRepository::at(&path);
+        let second = SettingsRepository::at(&path);
+        let mut first_settings = first.load().unwrap();
+        let mut second_settings = second.load().unwrap();
+        first_settings.pinned_project_ids.clear();
+        first_settings.inbox.assigned_to_me = true;
+        first_settings.inbox.seen.insert("first-item".into(), 10);
+        second_settings.inbox.list_width = 350.0;
+        second_settings.inbox.seen.insert("second-item".into(), 20);
+        first.save(&first_settings).unwrap();
+        second.save(&second_settings).unwrap();
+        second_settings.diff_wrap = true;
+        second.save(&second_settings).unwrap();
+        let saved = SettingsRepository::at(&path).load().unwrap();
+        assert!(saved.pinned_project_ids.is_empty());
+        assert!(saved.inbox.assigned_to_me);
+        assert_eq!(saved.inbox.list_width, 350.0);
+        assert_eq!(saved.inbox.seen.get("first-item"), Some(&10));
+        assert_eq!(saved.inbox.seen.get("second-item"), Some(&20));
+        assert!(saved.diff_wrap);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn simultaneous_settings_writes_preserve_both_changes() {
+        let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
+        let path = root.join("settings.json");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let writers: Vec<_> = (0..2)
+            .map(|index| {
+                let repository = SettingsRepository::at(&path);
+                let mut settings = repository.load().unwrap();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    if index == 0 {
+                        settings.show_hidden_files = true;
+                    } else {
+                        settings.agent_notifications = false;
+                    }
+                    barrier.wait();
+                    repository.save(&settings).unwrap();
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let saved = SettingsRepository::at(&path).load().unwrap();
+        assert!(saved.show_hidden_files);
+        assert!(!saved.agent_notifications);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_window_resizes_use_the_latest_changed_dimensions() {
+        let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
+        let path = root.join("settings.json");
+        let first = SettingsRepository::at(&path);
+        let second = SettingsRepository::at(&path);
+        let mut first_settings = first.load().unwrap();
+        let mut second_settings = second.load().unwrap();
+        first_settings.set_window_size(1500.0, 900.0);
+        second_settings.set_window_size(1600.0, 950.0);
+        first.save(&first_settings).unwrap();
+        second.save(&second_settings).unwrap();
+        // Saving unchanged local geometry must not win over a newer resize.
+        first.save(&first_settings).unwrap();
+        assert_eq!(
+            SettingsRepository::at(&path).load().unwrap(),
+            second_settings
+        );
+        first_settings.set_window_size(1700.0, 1000.0);
+        first.save(&first_settings).unwrap();
+        assert_eq!(
+            SettingsRepository::at(&path).load().unwrap(),
+            first_settings
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settings_merge_preserves_unknown_fields_and_migrates_aliases() {
+        let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
+        let path = root.join("settings.json");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &path,
+            br#"{"gitPanelVisible":true,"extraPreference":"keep"}"#,
+        )
+        .unwrap();
+        let repository = SettingsRepository::at(&path);
+        let mut settings = repository.load().unwrap();
+        settings.right_sidebar_visible = false;
+        repository.save(&settings).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["extraPreference"], "keep");
+        assert!(saved.get("gitPanelVisible").is_none());
+        assert!(!repository.load().unwrap().right_sidebar_visible);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn external_invalid_or_future_settings_keep_the_file_and_a_local_recovery() {
+        for external in [
+            b"invalid json".as_slice(),
+            br#"{"schemaVersion":999,"agentNotifications":false}"#,
+            br#"{"windowWidth":"invalid"}"#,
+        ] {
+            let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
+            let path = root.join("settings.json");
+            let repository = SettingsRepository::at(&path);
+            let mut settings = repository.load().unwrap();
+            repository.save(&settings).unwrap();
+            fs::write(&path, external).unwrap();
+            settings.show_hidden_files = true;
+            assert!(repository.save(&settings).is_err());
+            assert_eq!(fs::read(&path).unwrap(), external);
+            let recovery = fs::read_dir(&root)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .contains("recovery")
+                })
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<AppSettings>(&fs::read(recovery).unwrap()).unwrap(),
+                settings
+            );
+            // Repairing the file lets the next save succeed without a restart.
+            fs::write(&path, b"{}").unwrap();
+            repository.save(&settings).unwrap();
+            assert!(repository.load().unwrap().show_hidden_files);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
