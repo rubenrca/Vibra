@@ -1,40 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.3.30 — 2026-09-27
 
-- Restore missing Search, pane and toolbar icons by assigning SVG colors explicitly, and render sidebar shortcuts as readable macOS keycaps.
-
-- Refine Midnight with near-black surfaces and neutral light tones, simplify workspace separators and navigation styling, and add directional show/hide icons and tooltips for both sidebars while preserving Vibra's project navigation.
-
-- Rebuild Inbox around MonoCode’s open-source interaction model: a resizable list, connection tabs, checkbox filters, fixed detail header, Markdown discussion and comments, PR Summary/Code/Checks, Actions job logs, repair drafts, confirmed PR lifecycle actions, and a reusable Ask terminal. Scope GitHub to local project remotes, prepare task drafts before launching agents, persist related sessions, and keep local agent events under Activity.
-
-- Keep pane focus visible through zoom and full-tab reviews; restore the workspace from numbered tab shortcuts and show ⌘9 only on the actual last tab.
-- Clear stale Explorer rows on project changes, cancel dismissed quick-open searches, and isolate review delivery acknowledgements so late results cannot unlock another send.
-- Preserve manual pane names and automation labels across agent restarts; remove obsolete CLI alias restrictions from display names.
-- Separate terminal lifecycle and Explorer rendering from workspace coordination, isolate legacy session constructors in test fixtures, and avoid cloning sessions during status/Inbox rendering.
-
-- Remove the obsolete session sidebar model, share project tab creation, and separate workspace menus and persistence coordination into focused modules.
-- Serialize notes and automation saves with workspace/settings writes, including final saves on close, and keep load errors separate from note actions.
-- Keep branch summaries and asynchronous Changes results scoped to their project; prevent notes and automations from falling through to another project's terminal, and pause automations when their project is removed.
-- Reveal Inbox panes hidden by another pane's zoom, clean up library editors when opening Explorer/Changes, and validate nested file creation through the filesystem port.
-
-- Show one row of tabs per project: ⌘N now opens a tab like ⌘T instead of a hidden session, earlier sessions are merged into the project's tabs on load, and automations and Create PR open tabs. ⌃⌘[ / ⌃⌘] move between projects, and the session commands and the Info panel are gone from the palette.
-- Keep the open review when opening tabs or switching terminal tabs, show the terminal before running pane commands from a full-tab review, keep the right panel as it was when choosing a project, and add a + button to the tab bar.
-
-- Replace the sessions sidebar with global navigation (Search, Inbox, Notes, Automations, Settings), pinned projects, and a right Workspace panel with Explorer and Changes; picking a changed file opens its review in a central tab that ⌘W closes back to the terminal.
-- Add the Inbox: running agents across every project with their state, plus unread events when an agent finishes, asks for permission, or waits for an answer in a pane you are not watching. Opening an event jumps to its terminal.
-- Add Notes: per-project text notes, saved to `library.json`, that can be pasted into the project's terminal without being submitted.
-- Add Automations: named commands run on demand or hourly, daily, or on weekdays while Vibra is open. Each run opens a visible session in the project and types the command into its shell, so any CLI works; scheduled runs keep your current session and report to the Inbox.
-- Redesign Changes like an IDE's source control view: branch and a … menu for scopes, fetch, pull, push, and refresh; a commit box with Commit (⌘↩), Commit and push, and Amend; Create PR (runs `gh pr create` in a new session); the file list; and a collapsible commit graph with branch labels.
-- Open reviews beside the terminal instead of replacing it, with a focus button to give the review the whole center. Commits opened from the graph return to Changes when closed.
-- Show the open review as a tab after the terminal tabs that fills the center like any tab; an optional split shows it beside the terminal (resizable and remembered) and highlights both tabs. Terminal tabs, Explorer/Changes, and the Inbox leave it open; ⌘1–⌘9 include it, and ⌘W closes it.
-- Redesign the navigation sidebar: a filled search field with keycap shortcuts, uniform rows, hover-revealed section actions, project avatars with an agent activity dot, and Settings pinned to the bottom.
-- Add back/forward navigation (⌃⌘← / ⌃⌘→ and titlebar arrows) across tabs, sessions, and the review.
-- Give split panes a header with a drag grip to reorder them, their agent and title, and buttons to enlarge or restore (also double-click or ⇧⌘↵) and close. Panes are now dragged only from that grip, not from the terminal.
-- Add a status bar with the branch, running agents, and unread Inbox events.
-- Stage or unstage single files or whole groups from Changes, and draft commit messages with the installed agent CLI (Claude Code, Gemini CLI, or Codex).
-- Add an Explorer toolbar to create files and folders, collapse the tree, and refresh it.
-- Fold unchanged lines between diff hunks into expandable “N unmodified lines” bars, add expand/collapse-all for files, and use a single line-number column in the unified layout.
+- Reorganize the workspace around global Search, Inbox, Notes, Automations, and Settings, pinned projects, and a right panel with Explorer and Changes. Add project agent indicators, back/forward navigation, and a status bar with the branch, active agents, and unread events.
+- Keep one row of tabs per project: ⌘N and ⌘T open tabs, earlier sessions merge into the project's tabs on load, and automations and Create PR open visible tabs. ⌃⌘[ / ⌃⌘] move between projects.
+- Reorder terminal and review tabs by dragging, drop terminal tabs onto other tabs or terminal content to create directional splits, and detach panes back into tabs without restarting their processes. Preserve nested layouts and the review's position in numbered shortcuts.
+- Give split panes a drag grip, agent and title, and enlarge, restore, and close controls. Double-clicking the header or pressing ⇧⌘↵ toggles zoom; pane focus stays visible through zoom and full-tab reviews.
+- Rebuild Inbox around MonoCode's open-source interaction model, with GitHub issues and pull requests, Linear tasks, a resizable list, connection tabs, persisted filters, Markdown discussion and comments, and related agent sessions. GitHub stays scoped to local project remotes.
+- Add PR Summary, Code, and Checks views, GitHub Actions job logs, repair drafts, confirmed PR lifecycle actions, and a reusable Ask terminal. Prepare editable task drafts before launching an agent in the selected project.
+- Keep local agent activity in Inbox, including unread events when an agent finishes, asks for permission, or waits for an answer in another pane. Opening an event reveals its terminal even when it was hidden by zoom.
+- Add per-project Notes that save to library.json and paste into the project's terminal without submitting the text. Add manual, hourly, daily, and weekday Automations that run in visible tabs while Vibra is open; scheduled runs preserve focus and report to Inbox.
+- Show Claude Code, Codex, and Grok Build subscription usage in the status bar, with quota windows, reported balances, reset times, manual refresh, rate-limit handling, and stale-data indicators. Use each CLI's current login without storing or changing its credentials.
+- Redesign Changes with staging controls, Commit, Commit and push, Amend, Fetch, Pull, Push, Create PR, agent-generated commit messages, and a collapsible commit graph. Keep asynchronous Git results scoped to their original project.
+- Open reviews as persistent central tabs or resizable panes beside a terminal. Switching terminal tabs, panels, or Inbox preserves the review; ⌘W closes it without closing the terminal process.
+- Open Explorer and quick-open files in read-only tabs, including text files outside Git repositories, with line numbers, syntax highlighting, copying, and reload. Show diffs for changed files and offer Open in App for unsupported formats.
+- Add Explorer file and folder creation, collapse-all, and refresh controls. Validate nested paths, clear stale rows on project changes, and cancel dismissed quick-open searches.
+- Fold unchanged diff lines into expandable “N unmodified lines” bars, add expand/collapse-all controls, and use a single line-number column in unified layout.
+- Standardize app-owned UI text in English, restore missing SVG icons, improve sidebar keycaps and tooltips, refine the Midnight palette, and apply 12% base transparency over native macOS blur while keeping text and icons opaque.
+- Serialize workspace, settings, notes, and automation saves, including final saves on close. Preserve manual pane names and automation labels across agent restarts, prevent actions from reaching another project's terminal, and pause automations when their project is removed.
 
 ## 0.3.29 — 2026-09-23
 
