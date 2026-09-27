@@ -12,7 +12,8 @@ use crate::domain::usage::{
     ProviderUsage, UsageSnapshot, now_timestamp, reset_label, resource_label, timestamp,
 };
 use crate::infrastructure::usage::UsageMonitor;
-use crate::ui::theme::{colors, popover_surface, surface_tint};
+use crate::ui::menu::{menu_hover, menu_panel};
+use crate::ui::theme::{colors, surface_tint};
 
 use super::{WorkspaceView, sidebar_tooltip};
 
@@ -225,14 +226,20 @@ impl WorkspaceView {
         }
         let now = now_timestamp();
         let height: f32 = window.bounds().size.height.into();
+        let refresh_tooltip = if self.usage.loading {
+            "Checking quotas…"
+        } else {
+            "Refresh usage · May request Keychain access"
+        };
         let content = div()
             .id("usage-provider-list")
             .min_h(px(0.0))
             .overflow_y_scroll()
-            .p(px(14.0))
+            .px(px(14.0))
+            .pb(px(14.0))
             .flex()
             .flex_col()
-            .gap(px(18.0))
+            .gap(px(14.0))
             .when_some(self.usage.error.clone(), |content, error| {
                 content.child(div().text_color(colors().warning).child(error))
             })
@@ -250,115 +257,177 @@ impl WorkspaceView {
                     )
                 },
             )
-            .children(self.usage.snapshot.providers.iter().map(|(id, provider)| {
-                let stale = self.usage.provider_stale(id, provider, now);
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(7.0))
-                            .child(provider_icon(id, 13.0, colors().foreground))
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .flex_1()
-                                    .truncate()
-                                    .child(provider.display_name.clone()),
-                            )
-                            .when_some(provider.plan.clone(), |header, plan| {
-                                header.child(
-                                    div()
-                                        .max_w(px(140.0))
-                                        .truncate()
-                                        .text_color(colors().muted)
-                                        .child(plan),
-                                )
-                            })
-                            .when(stale, |header| {
-                                header.child(
-                                    div()
-                                        .text_size(px(10.0))
-                                        .text_color(colors().warning)
-                                        .child("Outdated"),
-                                )
-                            }),
-                    )
-                    .when_some(
-                        provider.fetched_at.as_deref().and_then(timestamp),
-                        |card, fetched| {
-                            let minutes = now.saturating_sub(fetched).max(0) / 60;
-                            card.child(div().text_size(px(10.0)).text_color(colors().subtle).child(
+            .children(self.usage.snapshot.providers.iter().enumerate().map(
+                |(index, (id, provider))| {
+                    let stale = self.usage.provider_stale(id, provider, now);
+                    let updated =
+                        provider
+                            .fetched_at
+                            .as_deref()
+                            .and_then(timestamp)
+                            .map(|fetched| {
+                                let minutes = now.saturating_sub(fetched).max(0) / 60;
                                 if minutes == 0 {
                                     "Updated less than 1 min ago".to_owned()
                                 } else {
                                     format!("Updated {minutes} min ago")
-                                },
-                            ))
-                        },
-                    )
-                    .when(provider.resources.is_empty(), |card| {
-                        card.child(
+                                }
+                            });
+                    let details = [provider.plan.clone(), updated]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    div()
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .when(index > 0, |section| {
+                            section
+                                .pt(px(14.0))
+                                .border_t_1()
+                                .border_color(colors().border_subtle)
+                        })
+                        .child(
                             div()
-                                .text_color(colors().muted)
-                                .child("No quotas available"),
-                        )
-                    })
-                    .children(provider.resources.iter().map(|(key, resource)| {
-                        let percent = resource.percent_used();
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(5.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_between()
-                                    .gap(px(12.0))
-                                    .child(
-                                        div()
-                                            .min_w(px(0.0))
-                                            .truncate()
-                                            .text_color(colors().muted)
-                                            .child(resource_label(key).to_owned()),
-                                    )
-                                    .child(resource.value_label()),
-                            )
-                            .when_some(percent, |row, percent| {
-                                row.child(
+                                .id(SharedString::from(format!("usage-provider-{id}")))
+                                .flex()
+                                .items_center()
+                                .gap(px(7.0))
+                                .text_size(px(12.0))
+                                .when(!details.is_empty(), |header| {
+                                    header
+                                        .tooltip(move |_, cx| sidebar_tooltip(details.clone(), cx))
+                                })
+                                .child(provider_icon(id, 13.0, colors().foreground))
+                                .child(
                                     div()
-                                        .h(px(4.0))
-                                        .w_full()
-                                        .rounded_full()
-                                        .overflow_hidden()
-                                        .bg(colors().border_subtle)
+                                        .min_w(px(0.0))
+                                        .flex_1()
+                                        .truncate()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .child(provider.display_name.clone()),
+                                )
+                                .when_some(provider.plan.clone(), |header, plan| {
+                                    header.child(
+                                        div()
+                                            .max_w(px(100.0))
+                                            .truncate()
+                                            .text_size(px(10.0))
+                                            .text_color(colors().subtle)
+                                            .child(plan),
+                                    )
+                                })
+                                .when(stale, |header| {
+                                    header.child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .text_color(colors().warning)
+                                            .child("Outdated"),
+                                    )
+                                }),
+                        )
+                        .when(provider.resources.is_empty(), |card| {
+                            card.child(
+                                div()
+                                    .text_color(colors().muted)
+                                    .child("No quotas available"),
+                            )
+                        })
+                        .children(
+                            provider
+                                .resources
+                                .iter()
+                                .filter(|(_, resource)| resource.kind != "balance")
+                                .chain(
+                                    provider
+                                        .resources
+                                        .iter()
+                                        .filter(|(_, resource)| resource.kind == "balance"),
+                                )
+                                .map(|(key, resource)| {
+                                    let percent = resource.percent_used();
+                                    let value = resource.value_label();
+                                    let compact_value = value
+                                        .strip_suffix(" used")
+                                        .filter(|_| percent.is_some())
+                                        .or_else(|| value.strip_suffix(" available"))
+                                        .unwrap_or(&value)
+                                        .to_owned();
+                                    let reset = resource
+                                        .resets_at
+                                        .as_deref()
+                                        .map(|reset| reset_label(reset, now));
+                                    let details = format!(
+                                        "{}: {}{}",
+                                        resource_label(key),
+                                        value,
+                                        reset.as_ref().map_or_else(String::new, |reset| format!(
+                                            " · {reset}"
+                                        ))
+                                    );
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "usage-resource-{id}-{key}"
+                                        )))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(5.0))
+                                        .tooltip(move |_, cx| sidebar_tooltip(details.clone(), cx))
                                         .child(
                                             div()
-                                                .h_full()
-                                                .w(relative(
-                                                    (percent / 100.0).clamp(0.0, 1.0) as f32
-                                                ))
-                                                .bg(if stale {
-                                                    colors().subtle
-                                                } else {
-                                                    quota_color(Some(percent))
-                                                }),
-                                        ),
-                                )
-                            })
-                            .when_some(resource.resets_at.as_deref(), |row, reset| {
-                                row.child(
-                                    div()
-                                        .text_size(px(10.0))
-                                        .text_color(colors().subtle)
-                                        .child(reset_label(reset, now)),
-                                )
-                            })
-                    }))
-            }))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.0))
+                                                .child(
+                                                    div()
+                                                        .min_w(px(0.0))
+                                                        .truncate()
+                                                        .text_color(colors().muted)
+                                                        .child(resource_label(key).to_owned()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .min_w(px(0.0))
+                                                        .flex_1()
+                                                        .truncate()
+                                                        .text_size(px(10.0))
+                                                        .text_color(colors().subtle)
+                                                        .when_some(reset, |label, reset| {
+                                                            label.child(reset)
+                                                        }),
+                                                )
+                                                .child(div().flex_none().child(compact_value)),
+                                        )
+                                        .when_some(percent, |row, percent| {
+                                            row.child(
+                                                div()
+                                                    .h(px(3.0))
+                                                    .w_full()
+                                                    .rounded_full()
+                                                    .overflow_hidden()
+                                                    .bg(colors().border_subtle)
+                                                    .child(
+                                                        div()
+                                                            .h_full()
+                                                            .rounded_full()
+                                                            .w(relative(
+                                                                (percent / 100.0).clamp(0.0, 1.0)
+                                                                    as f32,
+                                                            ))
+                                                            .bg(if stale {
+                                                                colors().subtle
+                                                            } else {
+                                                                quota_color(Some(percent))
+                                                            }),
+                                                    ),
+                                            )
+                                        })
+                                }),
+                        )
+                },
+            ))
             .children(self.usage.snapshot.errors.iter().map(|error| {
                 div()
                     .text_color(colors().warning)
@@ -378,22 +447,18 @@ impl WorkspaceView {
                     cx.listener(|this, _, window, cx| this.close_usage(window, cx)),
                 )
                 .child(
-                    div()
+                    menu_panel()
                         .id("usage-popover")
+                        .p(px(0.0))
                         .absolute()
                         .right(px(8.0))
                         .bottom(px(super::status_bar::STATUS_BAR_HEIGHT + 6.0))
-                        .w(px(390.0))
+                        .w(px(330.0))
                         .max_w_full()
                         .max_h(px((height - 90.0).max(100.0)))
-                        .flex()
-                        .flex_col()
+                        .text_size(px(11.0))
+                        .text_color(colors().foreground)
                         .overflow_hidden()
-                        .rounded(px(10.0))
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(popover_surface())
-                        .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                         .child(
@@ -402,44 +467,54 @@ impl WorkspaceView {
                                 .flex()
                                 .items_center()
                                 .gap(px(10.0))
-                                .p(px(14.0))
-                                .border_b_1()
-                                .border_color(colors().border_subtle)
-                                .child(div().flex_1().child("Subscription usage"))
+                                .px(px(14.0))
+                                .py(px(10.0))
                                 .child(
                                     div()
-                                        .id("usage-refresh")
-                                        .cursor_pointer()
+                                        .id("usage-title")
+                                        .flex_1()
+                                        .text_size(px(12.0))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(colors().muted)
-                                        .hover(|button| button.text_color(colors().foreground))
                                         .tooltip(|_, cx| {
                                             sidebar_tooltip(
-                                                "Check quotas · may request Keychain access",
+                                                "Subscription usage · Refreshes every 5 min",
                                                 cx,
                                             )
                                         })
+                                        .child("Usage"),
+                                )
+                                .child(
+                                    div()
+                                        .id("usage-refresh")
+                                        .group("usage-refresh")
+                                        .size(px(24.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(5.0))
+                                        .cursor_pointer()
+                                        .text_color(colors().muted)
+                                        .hover(|button| button.bg(menu_hover()))
+                                        .tooltip(move |_, cx| sidebar_tooltip(refresh_tooltip, cx))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.refresh_usage(true, cx)
                                         }))
-                                        .child(if self.usage.loading {
-                                            "Checking…"
-                                        } else {
-                                            "Refresh"
+                                        .when(self.usage.loading, |button| button.child("…"))
+                                        .when(!self.usage.loading, |button| {
+                                            button.child(
+                                                svg()
+                                                    .path("chrome-icons/refresh.svg")
+                                                    .size(px(13.0))
+                                                    .text_color(colors().muted)
+                                                    .group_hover("usage-refresh", |icon| {
+                                                        icon.text_color(colors().foreground)
+                                                    }),
+                                            )
                                         }),
                                 ),
                         )
-                        .child(content)
-                        .child(
-                            div()
-                                .flex_none()
-                                .px(px(14.0))
-                                .py(px(10.0))
-                                .border_t_1()
-                                .border_color(colors().border_subtle)
-                                .text_size(px(10.0))
-                                .text_color(colors().subtle)
-                                .child("Percentage used · Direct query · Refreshes every 5 min"),
-                        ),
+                        .child(content),
                 )
                 .into_any_element(),
         )
@@ -478,6 +553,25 @@ fn provider_icon(id: &str, size: f32, color: Rgba) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn usage_popover_can_open_during_refresh(cx: &mut gpui::TestAppContext) {
+        let (root, _, _, window) =
+            super::super::tests::open_recording_workspace(cx, "usage-refresh");
+        window
+            .update(cx, |view, window, cx| {
+                view.usage.open = true;
+                for loading in [false, true, false] {
+                    view.usage.loading = loading;
+                    assert!(view.usage_popover(window, cx).is_some());
+                }
+                view.close_usage(window, cx);
+                assert!(view.usage_popover(window, cx).is_none());
+                window.remove_window();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn connection_failure_retains_values_and_recovery_replaces_them() {
