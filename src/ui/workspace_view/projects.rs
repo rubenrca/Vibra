@@ -11,17 +11,19 @@ use uuid::Uuid;
 
 use crate::AddProject;
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
-use crate::ui::agent_marks::agent_status_color;
+use crate::ui::agent_marks::{agent_compact_badge, agent_status_color};
 use crate::ui::theme::{colors, surface_tint};
 
 use super::chrome::sidebar_row_width;
+use super::inbox::agent_state_label;
 use super::{
-    ContextMenuKind, DragGhost, ProjectDrag, ReorderDrag, ReorderSlot, RightSidebarMode,
-    SIDEBAR_CONTROL_SIZE, WorkspaceSection, WorkspaceView, sidebar_tooltip,
+    ContextMenuKind, DragGhost, PaneIdentity, ProjectDrag, ReorderDrag, ReorderSlot,
+    RightSidebarMode, SIDEBAR_CONTROL_SIZE, WorkspaceSection, WorkspaceView, sidebar_tooltip,
 };
 
 /// A project row and the space below it.
 const PROJECT_ROW_PITCH: f32 = 34.0;
+const PROJECT_AGENT_ROW_PITCH: f32 = 30.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ProjectDiffStats {
@@ -497,6 +499,117 @@ impl WorkspaceView {
             .into_any_element()
     }
 
+    /// Keep live agent sessions visible across tabs, including idle agents
+    /// between turns. Ordinary shells and remembered task titles stay out.
+    pub(super) fn project_agent_sessions(
+        &self,
+        project_id: Uuid,
+        cx: &Context<Self>,
+    ) -> Vec<(Uuid, PaneIdentity)> {
+        self.snapshot
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .into_iter()
+            .flat_map(|project| project.terminal_sessions())
+            .enumerate()
+            .filter_map(|(index, session)| {
+                let identity = self.pane_identity(session, index, cx);
+                identity
+                    .agent_kind
+                    .is_some()
+                    .then_some((session.id, identity))
+            })
+            .collect()
+    }
+
+    fn project_agent_row(
+        &self,
+        session_id: Uuid,
+        identity: PaneIdentity,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.workspace_section == WorkspaceSection::Workspace
+            && !self.review_covers_terminal(cx)
+            && self
+                .snapshot
+                .selected_session()
+                .is_some_and(|session| session.id == session_id);
+        let state = identity.agent_state.unwrap_or(AgentRuntimeState::Idle);
+        let status = agent_state_label(state, identity.agent_attention);
+        let tooltip = format!(
+            "{} · {}\n{}{}",
+            identity.agent_kind.as_deref().unwrap_or("Agent"),
+            status,
+            identity.title,
+            identity
+                .detail
+                .as_ref()
+                .map(|detail| format!("\n{detail}"))
+                .unwrap_or_default(),
+        );
+        div()
+            .id(SharedString::from(format!("project-agent-{session_id}")))
+            .w(px(sidebar_row_width(self.left_sidebar_width())))
+            .h(px(PROJECT_AGENT_ROW_PITCH - 2.0))
+            .mb(px(2.0))
+            .pl(px(6.0))
+            .pr(px(8.0))
+            .rounded(px(7.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .cursor_pointer()
+            .when(selected, |row| {
+                row.bg(surface_tint(colors().selection, colors().sidebar))
+            })
+            .hover(move |row| {
+                if selected {
+                    row
+                } else {
+                    row.bg(surface_tint(colors().hover, colors().sidebar))
+                }
+            })
+            .tooltip(move |_, cx| sidebar_tooltip(tooltip.clone(), cx))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_pane(session_id, window, cx);
+                cx.stop_propagation();
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.open_context_menu(
+                        ContextMenuKind::Pane { session_id },
+                        event.position.x.into(),
+                        event.position.y.into(),
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }),
+            )
+            .child(agent_compact_badge(
+                identity.agent_kind.as_deref(),
+                identity.agent_state,
+                identity.agent_attention,
+                selected,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(12.0))
+                    .line_height(px(18.0))
+                    .text_color(if selected {
+                        colors().foreground
+                    } else {
+                        colors().muted
+                    })
+                    .child(identity.title),
+            )
+            .into_any_element()
+    }
+
     /// One sidebar section, with a gap where a project dragged within it lands.
     pub(super) fn project_rows(
         &self,
@@ -504,6 +617,10 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let order: Vec<_> = projects.iter().map(|(id, _)| *id).collect();
+        let mut agents: std::collections::HashMap<_, _> = order
+            .iter()
+            .map(|id| (*id, self.project_agent_sessions(*id, cx)))
+            .collect();
         let source = match self.reorder_drag {
             Some(ReorderDrag::Project(id)) if cx.has_active_drag() && order.contains(&id) => {
                 Some(id)
@@ -517,7 +634,16 @@ impl WorkspaceView {
             .is_some_and(|id| self.settings.pinned_project_ids.contains(id));
         let mut motion = self.project_motion.borrow_mut();
         let motion = &mut motion[usize::from(section)];
-        motion.update(&slots, px(PROJECT_ROW_PITCH));
+        let project_height = |id: Uuid| {
+            PROJECT_ROW_PITCH + agents.get(&id).map_or(0, Vec::len) as f32 * PROJECT_AGENT_ROW_PITCH
+        };
+        let gap_height = source.map_or(PROJECT_ROW_PITCH, project_height);
+        motion.update_with_sizes(&slots, |slot| {
+            px(match slot {
+                ReorderSlot::Item(id) => project_height(id),
+                ReorderSlot::Gap => gap_height,
+            })
+        });
         let mut projects = projects;
         slots
             .into_iter()
@@ -531,7 +657,12 @@ impl WorkspaceView {
                     super::slide_into_place(
                         div()
                             .relative()
-                            .child(self.project_sidebar_header(id, name, cx)),
+                            .child(self.project_sidebar_header(id, name, cx))
+                            .children(agents.remove(&id).unwrap_or_default().into_iter().map(
+                                |(session_id, identity)| {
+                                    self.project_agent_row(session_id, identity, cx)
+                                },
+                            )),
                         motion.slide(id),
                         "project",
                         true,
@@ -539,7 +670,7 @@ impl WorkspaceView {
                 }
                 ReorderSlot::Gap => super::reorder_gap()
                     .w(px(sidebar_row_width(self.left_sidebar_width())))
-                    .h(px(32.0))
+                    .h(px(gap_height - 2.0))
                     .mb(px(2.0))
                     .rounded(px(7.0))
                     .into_any_element(),

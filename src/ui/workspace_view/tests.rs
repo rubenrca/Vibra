@@ -1430,6 +1430,93 @@ fn project_diff_counts_follow_folders_and_ignore_removed_projects(cx: &mut gpui:
 }
 
 #[gpui::test]
+fn project_agent_sessions_follow_presence_across_tabs_and_projects(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "project-agents");
+    let first_project = snapshot.selected_project_id.unwrap();
+    let first_pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            // A saved title alone must never turn a shell into an agent row.
+            view.snapshot
+                .update_agent_task_title(first_pane, "Review sidebar");
+            assert!(view.project_agent_sessions(first_project, cx).is_empty());
+            view.snapshot.open_tab_in_project(first_project, true);
+            let second_pane = view.snapshot.selected_session().unwrap().id;
+            let second_project = view.snapshot.add_project(&root.join("second"));
+            view.snapshot.open_tab_in_project(second_project, true);
+            let third_pane = view.snapshot.selected_session().unwrap().id;
+            view.reconcile_terminal_views(cx);
+            view.show_terminal_tab(window, cx);
+
+            for (pane, kind, state) in [
+                (first_pane, "Codex", AgentRuntimeState::Working),
+                (second_pane, "Claude", AgentRuntimeState::Waiting),
+                (third_pane, "Gemini", AgentRuntimeState::Idle),
+            ] {
+                view.handle_terminal_view_event(
+                    &TerminalViewEvent::AgentPresenceChanged {
+                        session_id: pane,
+                        presence: Some(TerminalAgentPresence {
+                            kind: kind.into(),
+                            kind_source: TerminalAgentKindSource::Process,
+                            state,
+                            process_id: Some(7),
+                        }),
+                    },
+                    cx,
+                );
+            }
+            let sessions = view.project_agent_sessions(first_project, cx);
+            assert_eq!(
+                sessions.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                vec![first_pane, second_pane]
+            );
+            assert_eq!(sessions[0].1.title, "Review sidebar");
+            assert_eq!(sessions[0].1.agent_state, Some(AgentRuntimeState::Working));
+            assert_eq!(sessions[1].1.agent_state, Some(AgentRuntimeState::Waiting));
+            let sessions = view.project_agent_sessions(second_project, cx);
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].0, third_pane);
+            assert_eq!(sessions[0].1.agent_state, Some(AgentRuntimeState::Idle));
+
+            // The row uses the existing global navigation, including hidden panes.
+            view.open_pane(first_pane, window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(first_project));
+            assert_eq!(view.snapshot.selected_session().unwrap().id, first_pane);
+            assert!(view.visible_terminal_ids(cx).contains(&first_pane));
+            assert!(
+                view.terminals[&first_pane]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: first_pane,
+                    presence: None,
+                },
+                cx,
+            );
+            let sessions = view.project_agent_sessions(first_project, cx);
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].0, second_pane);
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::Exited {
+                    session_id: second_pane,
+                    code: Some(0),
+                },
+                cx,
+            );
+            assert!(view.project_agent_sessions(first_project, cx).is_empty());
+            assert_eq!(view.project_agent_sessions(second_project, cx).len(), 1);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn workspace_panel_navigation_leaves_library_editors(cx: &mut gpui::TestAppContext) {
     let (root, _, _, window) = open_recording_workspace(cx, "section-cleanup");
     window

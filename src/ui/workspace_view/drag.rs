@@ -358,10 +358,11 @@ impl Slide {
 }
 
 /// Lets items in a live reordered list glide into their new place. Positions
-/// come from slot indices, so the offset is known before layout and nothing
+/// come from slot sizes, so the offset is known before layout and nothing
 /// flashes at the destination first.
 pub(crate) struct SlotMotion<T> {
     previous: Vec<ReorderSlot<T>>,
+    previous_sizes: Vec<Pixels>,
     slides: Vec<(T, Slide)>,
     next_id: u64,
 }
@@ -370,6 +371,7 @@ impl<T> Default for SlotMotion<T> {
     fn default() -> Self {
         Self {
             previous: Vec::new(),
+            previous_sizes: Vec::new(),
             slides: Vec::new(),
             next_id: 0,
         }
@@ -380,10 +382,21 @@ impl<T: Copy + PartialEq> SlotMotion<T> {
     /// Record the slots about to be drawn. Only a rearrangement of the same
     /// items slides; opening, closing, or switching lists stays instant.
     pub fn update(&mut self, slots: &[ReorderSlot<T>], pitch: Pixels) {
+        self.update_with_sizes(slots, |_| pitch);
+    }
+
+    /// Project groups include a varying number of agent rows. Their drag gap
+    /// and slide offsets must reserve the entire group, not just its header.
+    pub fn update_with_sizes(
+        &mut self,
+        slots: &[ReorderSlot<T>],
+        size: impl Fn(ReorderSlot<T>) -> Pixels,
+    ) {
+        let sizes: Vec<_> = slots.iter().copied().map(size).collect();
         let now = Instant::now();
         self.slides
             .retain(|(_, slide)| now - slide.started < SLIDE_DURATION);
-        if slots == self.previous.as_slice() {
+        if slots == self.previous.as_slice() && sizes == self.previous_sizes {
             return;
         }
         let items = |slots: &[ReorderSlot<T>]| {
@@ -396,7 +409,13 @@ impl<T: Copy + PartialEq> SlotMotion<T> {
             && slots
                 .iter()
                 .all(|slot| matches!(slot, ReorderSlot::Gap) || self.previous.contains(slot));
-        if same_items {
+        let same_sizes = slots.iter().zip(&sizes).all(|(slot, size)| {
+            self.previous
+                .iter()
+                .position(|previous| previous == slot)
+                .is_none_or(|old| self.previous_sizes[old] == *size)
+        });
+        if same_items && same_sizes {
             for (index, slot) in slots.iter().enumerate() {
                 let ReorderSlot::Item(item) = *slot else {
                     continue;
@@ -404,7 +423,12 @@ impl<T: Copy + PartialEq> SlotMotion<T> {
                 let Some(old) = self.previous.iter().position(|previous| previous == slot) else {
                     continue;
                 };
-                if old == index {
+                let old_position: f32 = self.previous_sizes[..old]
+                    .iter()
+                    .map(|size| f32::from(*size))
+                    .sum();
+                let new_position: f32 = sizes[..index].iter().map(|size| f32::from(*size)).sum();
+                if old_position == new_position {
                     continue;
                 }
                 // Continue from wherever an interrupted slide currently is.
@@ -415,13 +439,16 @@ impl<T: Copy + PartialEq> SlotMotion<T> {
                     item,
                     Slide {
                         id: self.next_id,
-                        from: current + (old as f32 - index as f32) * f32::from(pitch),
+                        from: current + old_position - new_position,
                         started: now,
                     },
                 ));
             }
+        } else {
+            self.slides.clear();
         }
         self.previous = slots.to_vec();
+        self.previous_sizes = sizes;
     }
 
     pub fn slide(&self, item: T) -> Option<Slide> {
@@ -489,6 +516,29 @@ mod reorder_tests {
         assert!(motion.slide(3).is_none());
         motion.update(&[Item(2), Item(1), Item(3), Item(4)], px(100.0));
         assert!(motion.slide(1).is_none(), "new items appear in place");
+    }
+
+    #[test]
+    fn project_groups_slide_by_their_full_height() {
+        let mut motion = SlotMotion::default();
+        let size = |slot| px(if slot == Item(2) { 34.0 } else { 94.0 });
+        motion.update_with_sizes(&[Gap, Item(2), Item(3)], size);
+        motion.update_with_sizes(&[Item(2), Item(3), Gap], size);
+        assert_eq!(motion.slide(2).map(|slide| slide.from), Some(94.0));
+        assert_eq!(motion.slide(3).map(|slide| slide.from), Some(94.0));
+        // An agent leaving changes a group's height without reordering it.
+        motion.update_with_sizes(&[Item(2), Item(3), Gap], |_| px(34.0));
+        assert!(motion.slide(2).is_none());
+        assert!(motion.slide(3).is_none());
+    }
+
+    #[test]
+    fn unequal_groups_can_move_an_item_without_changing_its_index() {
+        let mut motion = SlotMotion::default();
+        let size = |slot| px(if slot == Item(1) { 94.0 } else { 34.0 });
+        motion.update_with_sizes(&[Item(1), Item(2), Item(3)], size);
+        motion.update_with_sizes(&[Item(3), Item(2), Item(1)], size);
+        assert_eq!(motion.slide(2).map(|slide| slide.from), Some(60.0));
     }
 
     #[test]
