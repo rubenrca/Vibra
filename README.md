@@ -45,7 +45,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - panel Workspace a la derecha con Explorer y Changes; elegir un proyecto no lo abre ni lo cambia, queda como lo dejaste;
 - menús contextuales en proyectos y panes (renombrar, cerrar, dividir, zoom);
 - transparencia base del 12 % sobre el desenfoque nativo de macOS en el fondo, las sidebars, la barra superior y el terminal, manteniendo opacos el texto y los iconos;
-- command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings modal (`⌘,`);
+- command palette (`⇧⌘P`), apertura rápida de archivos (`⌘P`) y Settings como página dedicada (`⌘,`);
 - temas de aplicación (familias claras/oscuras y paletas de terminal) más YAML de Warp o Ghostty en `~/.vibra/themes`.
 
 ### Cuotas de suscripciones IA
@@ -268,11 +268,11 @@ misma versión, más Sparkle descargado con `./Scripts/fetch_sparkle.sh`
 del certificado Developer ID de Vibra:
 
 ```bash
-./Scripts/release.sh 0.3.31 --dry-run
-./Scripts/release.sh 0.3.31
-./Scripts/release.sh 0.3.31-beta.1 --prerelease
-./Scripts/release.sh 0.3.31 --dry-run --no-notarize  # empaquetado local sin notarizar
-./Scripts/release.sh 0.3.31 --resume-dmg    # valida y publica el DMG tras una espera interrumpida
+./Scripts/release.sh 0.3.32 --dry-run
+./Scripts/release.sh 0.3.32
+./Scripts/release.sh 0.3.32-beta.1 --prerelease
+./Scripts/release.sh 0.3.32 --dry-run --no-notarize  # empaquetado local sin notarizar
+./Scripts/release.sh 0.3.32 --resume-dmg    # valida y publica el DMG tras una espera interrumpida
 ```
 
 Un release **estable** crea el DMG universal, firma con Developer ID, notariza

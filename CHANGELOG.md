@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.32 — 2026-09-27
+
+- Move Settings into a dedicated workspace page with General, Appearance, Agents, Privacy, and Inbox sections, back/forward navigation, theme previews, and automatic saving.
+- Refine the command palette and quick-open styling while preserving keyboard routing over Settings.
+- Show detected agent sessions beneath each project without indentation, with live status, task names, and direct navigation to their terminals. Keep idle agents visible between turns and account for session rows when reordering projects.
+- Add a close button to the error banner. Dismiss current messages while preserving save protections and allowing new errors to appear.
+
 ## 0.3.31 — 2026-09-27
 
 - Redesign Inbox details with a persistent pull request header and Summary, Code, and Checks tabs. Default to the active project's open issues and pull requests, with closed and merged work available through filters.
