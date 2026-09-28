@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.33 — 2026-09-28
+
+- Switch projects with numbered keyboard shortcuts (⌥1–⌥9, last project on ⌥9).
+- Stop macOS from repeatedly asking to authorize Vibra for the "Claude Code-credentials" Keychain item. Subscription quotas now read the Claude CLI session through the system `security` tool, which the CLI already trusts.
+
 ## 0.3.32 — 2026-09-27
 
 - Move Settings into a dedicated workspace page with General, Appearance, Agents, Privacy, and Inbox sections, back/forward navigation, theme previews, and automatic saving.
