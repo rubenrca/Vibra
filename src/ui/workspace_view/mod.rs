@@ -286,6 +286,7 @@ pub struct WorkspaceView {
     pane_resize_dirty: bool,
     sidebar_resize_dirty: bool,
     reorder_drag: Option<ReorderDrag>,
+    dismissed_banner_errors: HashSet<SharedString>,
     persistence_error: Option<SharedString>,
     workspace_save_error: Option<SharedString>,
     settings_save_error: Option<SharedString>,
@@ -651,6 +652,7 @@ impl WorkspaceView {
             pane_resize_dirty: false,
             sidebar_resize_dirty: false,
             reorder_drag: None,
+            dismissed_banner_errors: HashSet::new(),
             persistence_error,
             workspace_save_error: workspace_load_error.clone(),
             settings_save_error: settings_load_error.clone(),
@@ -1116,8 +1118,8 @@ impl WorkspaceView {
         })
     }
 
-    fn error_banner(&self) -> Option<impl IntoElement> {
-        let errors: Vec<_> = [
+    fn current_banner_errors(&self) -> Vec<SharedString> {
+        [
             self.persistence_error.as_ref(),
             self.workspace_save_error.as_ref(),
             self.settings_save_error.as_ref(),
@@ -1127,11 +1129,32 @@ impl WorkspaceView {
         ]
         .into_iter()
         .flatten()
-        .map(ToString::to_string)
-        .collect();
+        .cloned()
+        .collect()
+    }
+
+    fn dismiss_error_banner(&mut self, cx: &mut Context<Self>) {
+        // Load errors also prevent unsafe saves; dismiss only their presentation.
+        self.dismissed_banner_errors
+            .extend(self.current_banner_errors());
+        cx.notify();
+    }
+
+    fn error_banner(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let mut errors = self.current_banner_errors();
+        // Once an error clears, a later occurrence may be shown again.
+        self.dismissed_banner_errors
+            .retain(|error| errors.contains(error));
+        errors.retain(|error| !self.dismissed_banner_errors.contains(error));
         (!errors.is_empty()).then(|| {
-            let error = errors.join(" · ");
+            let error = errors
+                .iter()
+                .map(|error| error.as_ref())
+                .collect::<Vec<_>>()
+                .join(" · ");
             div()
+                .w_full()
+                .min_w(px(0.0))
                 .h(px(30.0))
                 .flex_none()
                 .flex()
@@ -1151,6 +1174,29 @@ impl WorkspaceView {
                         .bg(colors().danger),
                 )
                 .child(div().min_w(px(0.0)).flex_1().truncate().child(error))
+                .child(
+                    div()
+                        .id("dismiss-error-banner")
+                        .size(px(22.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|button| button.bg(colors().hover))
+                        .tooltip(|_, cx| sidebar_tooltip("Dismiss errors", cx))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dismiss_error_banner(cx);
+                            cx.stop_propagation();
+                        }))
+                        .child(
+                            gpui::svg()
+                                .path("chrome-icons/close.svg")
+                                .size(px(12.0))
+                                .text_color(colors().danger),
+                        ),
+                )
         })
     }
 }
@@ -1219,7 +1265,7 @@ impl Render for WorkspaceView {
         self.record_navigation(cx);
         body = body.child(self.titlebar(cx));
 
-        if let Some(banner) = self.error_banner() {
+        if let Some(banner) = self.error_banner(cx) {
             body = body.child(banner);
         }
 

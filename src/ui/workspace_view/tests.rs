@@ -1571,6 +1571,25 @@ fn library_load_errors_survive_note_actions_and_cannot_enable_saving(
         .update(cx, |view, window, cx| {
             assert!(view.library_repository.as_ref().unwrap().load().is_err());
             view.library_load_error = Some("No se pudieron cargar las notas".into());
+            assert!(view.error_banner(cx).is_some());
+            view.dismiss_error_banner(cx);
+            assert!(view.error_banner(cx).is_none());
+
+            // New errors still surface while the dismissed load error stays hidden.
+            let error = SharedString::from("Could not open the folder");
+            view.persistence_error = Some(error.clone());
+            assert!(view.error_banner(cx).is_some());
+            view.dismiss_error_banner(cx);
+            assert!(view.error_banner(cx).is_none());
+            assert_eq!(view.persistence_error.as_ref(), Some(&error));
+            view.persistence_error = None;
+            assert!(view.error_banner(cx).is_none());
+            view.persistence_error = Some(error);
+            assert!(
+                view.error_banner(cx).is_some(),
+                "a later occurrence is visible"
+            );
+
             let note = view.library.create_note(Some(Uuid::new_v4()), 1);
             view.library.set_note_body(note, "Prompt".into(), 2);
             view.paste_note_into_terminal(note, window, cx);
