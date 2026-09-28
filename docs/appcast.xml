@@ -3,20 +3,18 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.32</title>
-            <pubDate>Sun, 27 Sep 2026 21:56:44 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.32</link>
-            <sparkle:version>227</sparkle:version>
-            <sparkle:shortVersionString>0.3.32</sparkle:shortVersionString>
+            <title>0.3.33</title>
+            <pubDate>Mon, 28 Sep 2026 19:54:14 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.33</link>
+            <sparkle:version>232</sparkle:version>
+            <sparkle:shortVersionString>0.3.33</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Move Settings into a dedicated workspace page with General, Appearance, Agents, Privacy, and Inbox sections, back/forward navigation, theme previews, and automatic saving.</li>
-  <li>Refine the command palette and quick-open styling while preserving keyboard routing over Settings.</li>
-  <li>Show detected agent sessions beneath each project without indentation, with live status, task names, and direct navigation to their terminals. Keep idle agents visible between turns and account for session rows when reordering projects.</li>
-  <li>Add a close button to the error banner. Dismiss current messages while preserving save protections and allowing new errors to appear.</li>
+  <li>Switch projects with numbered keyboard shortcuts (⌥1–⌥9, last project on ⌥9).</li>
+  <li>Stop macOS from repeatedly asking to authorize Vibra for the "Claude Code-credentials" Keychain item. Subscription quotas now read the Claude CLI session through the system `security` tool, which the CLI already trusts.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.32/Vibra-0.3.32.dmg" length="15432402" type="application/octet-stream" sparkle:edSignature="Vf6kVKC10c0EvOqvHYRDEomVST3fxIA3p+KZohm4Cbr3NH+AxJJzJKyesdFGaI9qifF4Ssq6ZIrTGtdgOCd1Ag=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.33/Vibra-0.3.33.dmg" length="15443842" type="application/octet-stream" sparkle:edSignature="A7bxolncP2lpEGy3oIeg5gtlq+VZWz8RQAZUPlhhtE33odN7U7qYsTD16jT2115xMH3iAnYaWw2FiT7Zy8IGDw=="/>
         </item>
     </channel>
 </rss>
