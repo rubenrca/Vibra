@@ -3,6 +3,8 @@
 use std::ffi::CString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde_json::Value;
@@ -54,9 +56,11 @@ pub(super) fn load(
                 |path| format!("Claude Code-credentials-{}", &digest(&path)[..8]),
             );
             let account = std::env::var("USER").ok();
-            let data = match keychain_json(&service, account.as_deref(), interactive)? {
+            // Claude Code writes this item through /usr/bin/security, so that tool is
+            // already trusted by the item's ACL and reads it without a Keychain prompt.
+            let data = match security_cli_json(&service, account.as_deref())? {
                 Some(data) => Some(data),
-                None => match keychain_json(&service, None, interactive)? {
+                None => match security_cli_json(&service, None)? {
                     Some(data) => Some(data),
                     None => read_json(&directory.join(".credentials.json"))?,
                 },
@@ -109,6 +113,70 @@ fn read_json(path: &Path) -> Result<Option<Value>, UsageFailure> {
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|_| invalid_auth())
+}
+
+/// Reads a generic password through `/usr/bin/security`. Unlike a direct Keychain query
+/// from this app, this never asks the user to authorize Vibra for the CLI's item.
+fn security_cli_json(service: &str, account: Option<&str>) -> Result<Option<Value>, UsageFailure> {
+    let failure = || UsageFailure::new("Could not read the session from the macOS Keychain.");
+    let mut command = Command::new("/usr/bin/security");
+    command.args(["find-generic-password", "-s", service]);
+    if let Some(account) = account {
+        command.args(["-a", account]);
+    }
+    let mut child = command
+        .arg("-w")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| failure())?;
+    let mut stdout = child.stdout.take().ok_or_else(failure)?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = (&mut stdout).take(1_048_577).read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                // Never leave a blocked prompt behind a background poll.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(failure());
+            }
+        }
+    };
+    let bytes = reader.join().map_err(|_| failure())?;
+    match status.code() {
+        Some(0) => {}
+        Some(44) => return Ok(None), // errSecItemNotFound
+        _ => return Err(failure()),
+    }
+    if bytes.len() > 1_048_576 {
+        return Err(invalid_auth());
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim();
+    // `security -w` prints hex when the stored bytes are not plain text.
+    let decoded = decode_hex(text);
+    serde_json::from_slice(decoded.as_deref().unwrap_or(text.as_bytes()))
+        .map(Some)
+        .map_err(|_| invalid_auth())
+}
+
+fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    if text.is_empty() || text.len() % 2 != 0 || !text.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&text[index..index + 2], 16).ok())
+        .collect()
 }
 
 fn keychain_json(
