@@ -3,22 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.31</title>
-            <pubDate>Sun, 27 Sep 2026 20:13:43 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.31</link>
-            <sparkle:version>222</sparkle:version>
-            <sparkle:shortVersionString>0.3.31</sparkle:shortVersionString>
+            <title>0.3.32</title>
+            <pubDate>Sun, 27 Sep 2026 21:56:44 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.32</link>
+            <sparkle:version>227</sparkle:version>
+            <sparkle:shortVersionString>0.3.32</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Redesign Inbox details with a persistent pull request header and Summary, Code, and Checks tabs. Default to the active project's open issues and pull requests, with closed and merged work available through filters.</li>
-  <li>Reuse the Workspace diff viewer in Inbox, including syntax highlighting, Unified/Split layouts, wrapping, sticky file headers, shared text preferences, and expandable full-file context. Review comments prepare an editable agent draft.</li>
-  <li>Preload Inbox feeds and restore the last successful list while refreshing GitHub and Linear. Preserve visible tasks when a provider cannot be reached.</li>
-  <li>Show added and removed line counts beside projects, and improve tab and project dragging with matching previews, animated insertion gaps, and Escape to cancel.</li>
-  <li>Refine the subscription quota popover, translucent borders, terminal padding, and alignment of Git controls.</li>
-  <li>Merge concurrent settings updates without overwriting unrelated preferences from another Vibra instance, and preserve recovery copies when the settings file cannot be safely updated.</li>
+  <li>Move Settings into a dedicated workspace page with General, Appearance, Agents, Privacy, and Inbox sections, back/forward navigation, theme previews, and automatic saving.</li>
+  <li>Refine the command palette and quick-open styling while preserving keyboard routing over Settings.</li>
+  <li>Show detected agent sessions beneath each project without indentation, with live status, task names, and direct navigation to their terminals. Keep idle agents visible between turns and account for session rows when reordering projects.</li>
+  <li>Add a close button to the error banner. Dismiss current messages while preserving save protections and allowing new errors to appear.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.31/Vibra-0.3.31.dmg" length="15378049" type="application/octet-stream" sparkle:edSignature="4vTuha3JMkJXKw0uyGwwCHiGN2ngl6yhG+IhyyAF3awtN0POYhVUXG07L7LmIUEY659ED0FXjmc8z2mcGGZ4AA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.32/Vibra-0.3.32.dmg" length="15432402" type="application/octet-stream" sparkle:edSignature="Vf6kVKC10c0EvOqvHYRDEomVST3fxIA3p+KZohm4Cbr3NH+AxJJzJKyesdFGaI9qifF4Ssq6ZIrTGtdgOCd1Ag=="/>
         </item>
     </channel>
 </rss>
