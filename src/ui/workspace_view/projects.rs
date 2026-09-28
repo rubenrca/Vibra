@@ -207,7 +207,7 @@ impl WorkspaceView {
         pinned.into_iter().chain(others).collect()
     }
 
-    /// `⌃⌘1`–`⌃⌘8` select by sidebar position; `⌃⌘9` selects the last project.
+    /// `⌥1`–`⌥8` select by sidebar position; `⌥9` selects the last project.
     pub(super) fn go_to_project(
         &mut self,
         action: &GoToProject,
