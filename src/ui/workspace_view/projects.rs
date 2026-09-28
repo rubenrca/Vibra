@@ -9,10 +9,10 @@ use gpui::{
 };
 use uuid::Uuid;
 
-use crate::AddProject;
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 use crate::ui::agent_marks::{agent_compact_badge, agent_status_color};
 use crate::ui::theme::{colors, surface_tint};
+use crate::{AddProject, GoToProject};
 
 use super::chrome::sidebar_row_width;
 use super::inbox::agent_state_label;
@@ -194,6 +194,39 @@ impl WorkspaceView {
             // Keep the right panel as the user left it.
             self.show_terminal_tab(window, cx);
         }
+    }
+
+    /// Sidebar order: pinned projects first, preserving the order within each group.
+    pub(super) fn visible_project_order(&self) -> Vec<Uuid> {
+        let (pinned, others): (Vec<Uuid>, Vec<Uuid>) = self
+            .snapshot
+            .projects
+            .iter()
+            .map(|project| project.id)
+            .partition(|id| self.settings.pinned_project_ids.contains(id));
+        pinned.into_iter().chain(others).collect()
+    }
+
+    /// `⌃⌘1`–`⌃⌘8` select by sidebar position; `⌃⌘9` selects the last project.
+    pub(super) fn go_to_project(
+        &mut self,
+        action: &GoToProject,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.palette_mode.is_some() || self.rename_prompt.is_some() || action.index == 0 {
+            return;
+        }
+        let order = self.visible_project_order();
+        if order.is_empty() {
+            return;
+        }
+        let index = if action.index >= 9 {
+            order.len() - 1
+        } else {
+            (action.index - 1).min(order.len() - 1)
+        };
+        self.select_project(order[index], window, cx);
     }
 
     pub(super) fn confirm_remove_project(

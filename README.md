@@ -312,6 +312,7 @@ en `workspace.pre-projects.backup.json`, junto a `workspace.json`.
 | `⇧⌘O` | Agregar proyecto desde una carpeta |
 | `⌘T` o `⌘N` / `⌘W` | Nuevo tab en el proyecto / cerrar el pane, la revisión o la página abierta |
 | `⌃⌘[` / `⌃⌘]` | Proyecto anterior / siguiente |
+| `⌃⌘1`–`⌃⌘8` / `⌃⌘9` | Ir al proyecto 1–8 / al último, en orden de la sidebar (fijados primero); si no hay suficientes, va al último |
 | `⌘1`–`⌘8` / `⌘9` | Ir al tab 1–8 / ir al último tab (incluye la revisión) |
 | `⌃⌘←` / `⌃⌘→` | Atrás / adelante entre tabs, proyectos y la revisión |
 | `⌘D` / `⇧⌘D` | Dividir a la derecha / abajo |

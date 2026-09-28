@@ -1026,13 +1026,7 @@ impl WorkspaceView {
 
     /// Moves through projects in sidebar order (pinned first).
     fn cycle_project(&mut self, offset: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let (pinned, others): (Vec<Uuid>, Vec<Uuid>) = self
-            .snapshot
-            .projects
-            .iter()
-            .map(|project| project.id)
-            .partition(|id| self.settings.pinned_project_ids.contains(id));
-        let order: Vec<Uuid> = pinned.into_iter().chain(others).collect();
+        let order = self.visible_project_order();
         if order.is_empty() {
             return;
         }
@@ -1228,6 +1222,7 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::toggle_right_sidebar))
             .on_action(cx.listener(Self::previous_project))
             .on_action(cx.listener(Self::next_project))
+            .on_action(cx.listener(Self::go_to_project))
             .on_action(cx.listener(Self::go_to_tab))
             .on_action(cx.listener(Self::navigate_back))
             .on_action(cx.listener(Self::navigate_forward))

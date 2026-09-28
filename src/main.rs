@@ -76,6 +76,13 @@ pub struct GoToTab {
     pub index: usize,
 }
 
+/// Jump to a project in sidebar order, using the same numbering as tabs.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = vibra, no_json)]
+pub struct GoToProject {
+    pub index: usize,
+}
+
 fn launch_directory() -> PathBuf {
     resolve_launch_directory(
         std::env::args_os().skip(1).map(PathBuf::from),
@@ -143,6 +150,15 @@ fn run() -> Result<()> {
                 KeyBinding::new("alt-cmd-b", ToggleRightSidebar, None),
                 KeyBinding::new("ctrl-cmd-[", PreviousProject, None),
                 KeyBinding::new("ctrl-cmd-]", NextProject, None),
+                KeyBinding::new("ctrl-cmd-1", GoToProject { index: 1 }, None),
+                KeyBinding::new("ctrl-cmd-2", GoToProject { index: 2 }, None),
+                KeyBinding::new("ctrl-cmd-3", GoToProject { index: 3 }, None),
+                KeyBinding::new("ctrl-cmd-4", GoToProject { index: 4 }, None),
+                KeyBinding::new("ctrl-cmd-5", GoToProject { index: 5 }, None),
+                KeyBinding::new("ctrl-cmd-6", GoToProject { index: 6 }, None),
+                KeyBinding::new("ctrl-cmd-7", GoToProject { index: 7 }, None),
+                KeyBinding::new("ctrl-cmd-8", GoToProject { index: 8 }, None),
+                KeyBinding::new("ctrl-cmd-9", GoToProject { index: 9 }, None),
                 KeyBinding::new("ctrl-cmd-left", NavigateBack, None),
                 KeyBinding::new("ctrl-cmd-right", NavigateForward, None),
                 KeyBinding::new("cmd-c", CopyTerminal, Some("Terminal")),
@@ -241,6 +257,16 @@ fn run() -> Result<()> {
                         MenuItem::action("Next Project", NextProject),
                         MenuItem::action("Back", NavigateBack),
                         MenuItem::action("Forward", NavigateForward),
+                        MenuItem::separator(),
+                        MenuItem::action("Go to Project 1", GoToProject { index: 1 }),
+                        MenuItem::action("Go to Project 2", GoToProject { index: 2 }),
+                        MenuItem::action("Go to Project 3", GoToProject { index: 3 }),
+                        MenuItem::action("Go to Project 4", GoToProject { index: 4 }),
+                        MenuItem::action("Go to Project 5", GoToProject { index: 5 }),
+                        MenuItem::action("Go to Project 6", GoToProject { index: 6 }),
+                        MenuItem::action("Go to Project 7", GoToProject { index: 7 }),
+                        MenuItem::action("Go to Project 8", GoToProject { index: 8 }),
+                        MenuItem::action("Go to Last Project", GoToProject { index: 9 }),
                         MenuItem::separator(),
                         MenuItem::action("Go to Tab 1", GoToTab { index: 1 }),
                         MenuItem::action("Go to Tab 2", GoToTab { index: 2 }),

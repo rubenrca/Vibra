@@ -1663,6 +1663,94 @@ fn pane_navigation_never_focuses_a_terminal_hidden_by_zoom(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
+fn project_shortcuts_follow_pins_and_reordering(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "project-shortcuts");
+    window
+        .update(cx, |view, window, cx| {
+            let first = snapshot.selected_project_id.unwrap();
+            let mut projects = vec![first];
+            for index in 2..=10 {
+                projects.push(
+                    view.snapshot
+                        .add_project(&root.join(format!("project-{index}"))),
+                );
+            }
+            view.settings.pinned_project_ids = vec![projects[8], projects[2]];
+            for (number, expected) in [
+                (1, projects[2]),
+                (2, projects[8]),
+                (3, first),
+                (9, projects[9]),
+            ] {
+                view.go_to_project(&crate::GoToProject { index: number }, window, cx);
+                assert_eq!(view.snapshot.selected_project_id, Some(expected));
+            }
+
+            view.snapshot.move_project(projects[9], Some(first));
+            view.go_to_project(&crate::GoToProject { index: 3 }, window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(projects[9]));
+            view.next_project(&NextProject, window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(first));
+
+            view.open_palette(PaletteMode::Commands, cx);
+            view.go_to_project(&crate::GoToProject { index: 1 }, window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(first));
+            view.close_palette(cx);
+
+            view.snapshot
+                .projects
+                .retain(|project| project.id == first || project.id == projects[2]);
+            view.go_to_project(&crate::GoToProject { index: 1 }, window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(projects[2]));
+            view.go_to_project(&crate::GoToProject { index: 8 }, window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(first));
+            view.go_to_project(&crate::GoToProject { index: 0 }, window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(first));
+
+            view.snapshot.projects.clear();
+            view.snapshot.selected_project_id = None;
+            view.go_to_project(&crate::GoToProject { index: 1 }, window, cx);
+            assert_eq!(view.snapshot.selected_project_id, None);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn project_shortcuts_restore_the_selected_terminal_from_global_pages(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "project-shortcut-focus");
+    let pane = snapshot.selected_session().unwrap().id;
+    let tab = snapshot.selected_tab().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            for section in [
+                WorkspaceSection::Inbox,
+                WorkspaceSection::Notes,
+                WorkspaceSection::Automations,
+                WorkspaceSection::Settings,
+            ] {
+                view.select_section(section, window, cx);
+                view.go_to_project(&crate::GoToProject { index: 1 }, window, cx);
+                assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
+                assert_eq!(view.snapshot.selected_tab().unwrap().id, tab);
+                assert!(view.terminals[&pane].read(cx).is_surface_visible());
+                assert!(
+                    view.terminals[&pane]
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                );
+            }
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn tab_shortcuts_return_from_global_pages_even_when_the_tab_is_selected(
     cx: &mut gpui::TestAppContext,
 ) {
