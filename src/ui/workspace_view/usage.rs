@@ -217,11 +217,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.usage.open
-            || self.settings_open
-            || self.palette_mode.is_some()
-            || self.rename_prompt.is_some()
-        {
+        if !self.usage.open || self.palette_mode.is_some() || self.rename_prompt.is_some() {
             return None;
         }
         let now = now_timestamp();

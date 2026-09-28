@@ -100,8 +100,13 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.record_navigation(cx);
         let entering_inbox =
             section == WorkspaceSection::Inbox && self.workspace_section != WorkspaceSection::Inbox;
+        if section == WorkspaceSection::Settings && self.workspace_section != section {
+            self.theme_query.clear();
+            crate::ui::theme::refresh_user_themes();
+        }
         self.leave_library_section(section);
         self.usage.open = false;
         self.workspace_section = section;
@@ -341,13 +346,22 @@ impl WorkspaceView {
                     .py(px(8.0))
                     .child(
                         rail_row("global-settings")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
+                            .when(self.workspace_section == WorkspaceSection::Settings, |row| {
+                                row.bg(surface_tint(colors().selection, colors().sidebar))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(colors().foreground)
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
                             .child(
                                 svg()
                                     .path("chrome-icons/settings.svg")
                                     .size(px(15.0))
                                     .flex_none()
-                                    .text_color(colors().subtle),
+                                    .text_color(if self.workspace_section == WorkspaceSection::Settings {
+                                        colors().foreground
+                                    } else {
+                                        colors().subtle
+                                    }),
                             )
                             .child(div().flex_1().child("Settings"))
                             .child(keycap("⌘,")),
@@ -356,11 +370,16 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    pub(super) fn global_section_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn global_section_content(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match self.workspace_section {
             WorkspaceSection::Inbox => self.inbox_content(cx),
             WorkspaceSection::Notes => self.notes_content(cx),
             WorkspaceSection::Automations => self.automations_content(cx),
+            WorkspaceSection::Settings => self.settings_content(window, cx),
             WorkspaceSection::Workspace => unreachable!("workspace renders its terminal canvas"),
         }
     }

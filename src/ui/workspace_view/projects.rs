@@ -272,7 +272,7 @@ impl WorkspaceView {
         } else {
             colors().hover
         };
-        let color = super::navigation::project_color(id);
+        let color = colors().muted;
         let activity = self.project_agent_activity(id);
         let drag = ProjectDrag { project_id: id };
         let ghost = {

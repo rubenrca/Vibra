@@ -1,14 +1,12 @@
 //! Settings navigation, pages, controls, and application of workspace preferences.
 
-use gpui::{
-    AnyElement, Context, Div, MouseButton, SharedString, Stateful, Window, div, prelude::*, px,
-};
+mod appearance;
 
-use crate::ui::theme::{
-    self, AppearanceMode, MONO_FONT, ThemeFamily, ThemeTone, colors, popover_surface, surface_tint,
-};
+use gpui::{AnyElement, Context, Div, SharedString, Stateful, Window, div, prelude::*, px, svg};
 
-use super::WorkspaceView;
+use crate::ui::theme::{self, AppearanceMode, MONO_FONT, ThemeTone, colors, surface, surface_tint};
+
+use super::{WorkspaceSection, WorkspaceView};
 use crate::infrastructure::automation::{
     AgentHookStatus, agent_hook_status, install_agent_hooks, uninstall_agent_hooks,
 };
@@ -20,15 +18,17 @@ pub(super) enum SettingsPage {
     Appearance,
     Agents,
     Security,
+    Inbox,
 }
 
 impl SettingsPage {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Agents => "Agents",
             Self::Security => "Privacy",
+            Self::Inbox => "Inbox",
         }
     }
 
@@ -38,6 +38,27 @@ impl SettingsPage {
             Self::Appearance => "settings-appearance",
             Self::Agents => "settings-agents",
             Self::Security => "settings-privacy",
+            Self::Inbox => "settings-inbox",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::General => "Choose how Vibra opens and keeps you up to date.",
+            Self::Appearance => "Make Vibra your own, from colors to terminal text.",
+            Self::Agents => "Connect the assistants working in your terminals.",
+            Self::Security => "Control how terminal integrations access your Mac.",
+            Self::Inbox => "Connect the services that bring your work into Vibra.",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::General => "chrome-icons/settings.svg",
+            Self::Appearance => "chrome-icons/palette.svg",
+            Self::Agents => "chrome-icons/sparkles.svg",
+            Self::Security => "chrome-icons/shield.svg",
+            Self::Inbox => "chrome-icons/inbox.svg",
         }
     }
 }
@@ -50,14 +71,6 @@ struct SettingsToggleRow {
     id: &'static str,
 }
 
-fn theme_matches(family: &ThemeFamily, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    family.label.to_ascii_lowercase().contains(query)
-        || family.id.to_ascii_lowercase().contains(query)
-}
-
 struct FontSizeRow {
     label: &'static str,
     description: &'static str,
@@ -68,7 +81,7 @@ struct FontSizeRow {
 fn settings_button_base(label: &'static str, id: &'static str) -> Stateful<Div> {
     div()
         .id(id)
-        .h(px(26.0))
+        .h(px(32.0))
         .flex_none()
         .whitespace_nowrap()
         .px_3()
@@ -77,7 +90,7 @@ fn settings_button_base(label: &'static str, id: &'static str) -> Stateful<Div> 
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(9.0))
+        .text_size(px(12.0))
         .child(label)
 }
 
@@ -94,14 +107,15 @@ impl WorkspaceView {
             .gap_1()
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(14.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(colors().foreground)
                     .child(title),
             )
             .child(
                 div()
-                    .text_size(px(9.0))
+                    .text_size(px(12.0))
+                    .line_height(px(19.0))
                     .text_color(colors().subtle)
                     .child(description),
             )
@@ -120,7 +134,7 @@ impl WorkspaceView {
             } else {
                 colors().selection
             })
-            .text_size(px(8.0))
+            .text_size(px(11.0))
             .text_color(if active {
                 colors().success
             } else {
@@ -137,7 +151,7 @@ impl WorkspaceView {
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(10.0))
+                    .text_size(px(13.0))
                     .text_color(colors().muted)
                     .child(label),
             )
@@ -160,13 +174,13 @@ impl WorkspaceView {
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         settings_button_base(label, id)
-            .bg(surface_tint(colors().selection, colors().panel))
+            .bg(surface_tint(colors().selection, colors().elevated))
             .border_1()
             .border_color(colors().border_subtle)
             .text_color(colors().muted)
             .hover(|button| {
                 button
-                    .bg(surface_tint(colors().hover, colors().panel))
+                    .bg(surface_tint(colors().hover, colors().elevated))
                     .text_color(colors().foreground)
             })
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
@@ -187,141 +201,6 @@ impl WorkspaceView {
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
     }
 
-    fn settings_mode_button(
-        &self,
-        label: &'static str,
-        id: &'static str,
-        selected: bool,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
-        settings_button_base(label, id)
-            .when(selected, |button| {
-                button.bg(surface_tint(colors().selection, colors().panel))
-            })
-            .border_1()
-            .border_color(if selected {
-                colors().accent
-            } else {
-                colors().border_subtle
-            })
-            .text_color(if selected {
-                colors().foreground
-            } else {
-                colors().muted
-            })
-            .hover(|button| {
-                button
-                    .bg(surface_tint(colors().hover, colors().panel))
-                    .text_color(colors().foreground)
-            })
-            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-    }
-
-    fn settings_theme_grid(
-        &self,
-        families: &[ThemeFamily],
-        active_theme_id: &str,
-        preview_tone: ThemeTone,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut grid = div().flex().flex_col().gap_2();
-        for families in families.chunks(2) {
-            let mut row = div().flex().gap_2();
-            for family in families {
-                let selected = family.id == active_theme_id;
-                let theme_id = family.id.clone();
-                let [sidebar, panel, accent] = family.preview(preview_tone);
-                let card = div()
-                    .id(SharedString::from(format!("settings-theme-{theme_id}")))
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .px_2()
-                    .py_1()
-                    .rounded(px(6.0))
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(if selected {
-                        colors().accent
-                    } else {
-                        colors().border_subtle
-                    })
-                    .when(selected, |card| {
-                        card.bg(surface_tint(colors().selection, colors().panel))
-                    })
-                    .hover(|card| card.bg(surface_tint(colors().hover, colors().panel)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_theme_id(&theme_id, window, cx);
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(div().size(px(9.0)).rounded_full().bg(sidebar))
-                                    .child(div().size(px(9.0)).rounded_full().bg(panel))
-                                    .child(div().size(px(9.0)).rounded_full().bg(accent)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .text_size(px(10.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(colors().foreground)
-                                    .child(family.label.clone()),
-                            ),
-                    );
-                row = row.child(card);
-            }
-            if families.len() == 1 {
-                row = row.child(div().flex_1());
-            }
-            grid = grid.child(row);
-        }
-        grid.into_any_element()
-    }
-
-    fn settings_theme_search(&self) -> AnyElement {
-        let query = self.theme_query.clone();
-        let empty = query.is_empty();
-        div()
-            .h(px(28.0))
-            .flex_none()
-            .px_2()
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(colors().border_subtle)
-            .flex()
-            .items_center()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .text_size(px(10.0))
-                    .font_family(MONO_FONT)
-                    .text_color(if empty {
-                        colors().subtle
-                    } else {
-                        colors().foreground
-                    })
-                    .child(if empty {
-                        "Filter themes…".to_string()
-                    } else {
-                        query
-                    }),
-            )
-            .into_any_element()
-    }
-
     fn settings_toggle_row(
         &self,
         row: SettingsToggleRow,
@@ -330,9 +209,9 @@ impl WorkspaceView {
     ) -> Stateful<Div> {
         div()
             .id(row.id)
-            .min_h(px(52.0))
-            .px_3()
-            .py_2()
+            .min_h(px(82.0))
+            .px_5()
+            .py_4()
             .flex()
             .items_center()
             .gap_3()
@@ -340,7 +219,7 @@ impl WorkspaceView {
             .when(row.divider, |row| {
                 row.border_b_1().border_color(colors().border_subtle)
             })
-            .hover(|row| row.bg(surface_tint(colors().hover, colors().panel)))
+            .hover(|row| row.bg(surface_tint(colors().hover, colors().elevated)))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
             .child(
                 div()
@@ -351,22 +230,23 @@ impl WorkspaceView {
                     .gap_1()
                     .child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(colors().foreground)
                             .child(row.label),
                     )
                     .child(
                         div()
-                            .text_size(px(8.5))
+                            .text_size(px(12.0))
+                            .line_height(px(19.0))
                             .text_color(colors().subtle)
                             .child(row.description),
                     ),
             )
             .child(
                 div()
-                    .w(px(30.0))
-                    .h(px(16.0))
+                    .w(px(36.0))
+                    .h(px(22.0))
                     .flex_none()
                     .p(px(2.0))
                     .rounded_full()
@@ -374,436 +254,222 @@ impl WorkspaceView {
                     .items_center()
                     .justify_end()
                     .bg(if row.enabled {
-                        colors().success
+                        colors().accent
                     } else {
                         colors().selection
                     })
                     .when(!row.enabled, |toggle| toggle.justify_start())
                     .child(
                         div()
-                            .size(px(12.0))
+                            .size(px(18.0))
                             .flex_none()
                             .rounded_full()
-                            .bg(colors().foreground),
+                            .bg(gpui::rgb(0xffffff)),
                     ),
             )
     }
 
-    pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
-        self.usage.open = false;
-        self.settings_open = true;
+    pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_palette(cx);
-        self.context_menu = None;
-        self.ide_menu_open = false;
         self.rename_prompt = None;
-        self.theme_query.clear();
-        theme::refresh_user_themes();
-        cx.notify();
+        self.select_section(WorkspaceSection::Settings, window, cx);
     }
 
-    pub(super) fn close_settings(&mut self, cx: &mut Context<Self>) {
-        if self.settings_open {
-            self.settings_open = false;
-            cx.notify();
+    pub(super) fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.navigation.can_go_back() {
+            self.navigate_back(&crate::NavigateBack, window, cx);
+        }
+        if self.workspace_section == WorkspaceSection::Settings {
+            self.select_section(WorkspaceSection::Workspace, window, cx);
         }
     }
 
-    pub(super) fn settings_modal(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if !self.settings_open {
-            return None;
-        }
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(colors().overlay())
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.close_settings(cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .id("settings-modal")
-                        .w(px(780.0))
-                        .h(px(660.0))
-                        .max_w_full()
-                        .max_h_full()
-                        .mx_4()
-                        .rounded(px(12.0))
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(popover_surface())
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
-                        .overflow_hidden()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .child(
-                            div()
-                                .h(px(56.0))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .px_5()
-                                .border_b_1()
-                                .border_color(colors().border_subtle)
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_1()
-                                        .child(
-                                            div()
-                                                .text_size(px(13.0))
-                                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                .text_color(colors().foreground)
-                                                .child("Settings"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(9.0))
-                                                .text_color(colors().subtle)
-                                                .child("Configure your workspace"),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded(px(4.0))
-                                        .border_1()
-                                        .border_color(colors().border_subtle)
-                                        .text_size(px(8.0))
-                                        .text_color(colors().subtle)
-                                        .child("ESC"),
-                                )
-                                .child(self.sidebar_close_button(
-                                    "close-settings-modal",
-                                    cx,
-                                    |this, cx| {
-                                        this.close_settings(cx);
-                                    },
-                                )),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_1()
-                                .min_h(px(0.0))
-                                .child(self.settings_navigation(cx))
-                                .child(self.settings_modal_content(window, cx)),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .px_5()
-                                .py_2()
-                                .border_t_1()
-                                .border_color(colors().border_subtle)
-                                .text_xs()
-                                .text_color(colors().subtle)
-                                .child("Changes are saved automatically."),
-                        ),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn settings_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn settings_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let groups: &[(&str, &[SettingsPage])] = &[
+            (
+                "App",
+                &[
+                    SettingsPage::General,
+                    SettingsPage::Appearance,
+                    SettingsPage::Security,
+                ],
+            ),
+            ("Agents", &[SettingsPage::Agents]),
+            ("Workspace", &[SettingsPage::Inbox]),
+        ];
         let mut navigation = div()
             .id("settings-navigation")
-            .w(px(150.0))
-            .flex_none()
-            .p_3()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .px(px(10.0))
+            .py_4()
             .flex()
             .flex_col()
-            .gap_1()
-            .border_r_1()
-            .border_color(colors().border_subtle);
-        for page in [
-            SettingsPage::General,
-            SettingsPage::Appearance,
-            SettingsPage::Agents,
-            SettingsPage::Security,
-        ] {
-            let selected = self.settings_page == page;
+            .gap_5();
+        for (label, pages) in groups {
             navigation = navigation.child(
                 div()
-                    .id(page.id())
-                    .px_3()
-                    .py_2()
-                    .rounded(px(6.0))
-                    .cursor_pointer()
-                    .text_sm()
-                    .when(selected, |item| {
-                        item.bg(surface_tint(colors().selection, colors().sidebar))
-                    })
-                    .text_color(if selected {
-                        colors().foreground
-                    } else {
-                        colors().muted
-                    })
-                    .hover(|style| style.bg(surface_tint(colors().selection, colors().sidebar)))
-                    .child(page.label())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.settings_page = page;
-                        if page == SettingsPage::Appearance {
-                            theme::refresh_user_themes();
-                        }
-                        cx.notify();
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .px_2()
+                            .pb_1()
+                            .text_size(px(11.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(colors().subtle)
+                            .child(*label),
+                    )
+                    .children(pages.iter().map(|&page| {
+                        let selected = self.settings_page == page;
+                        div()
+                            .id(page.id())
+                            .h(px(34.0))
+                            .px_2()
+                            .rounded(px(7.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .cursor_pointer()
+                            .text_size(px(13.0))
+                            .text_color(if selected {
+                                colors().foreground
+                            } else {
+                                colors().muted
+                            })
+                            .when(selected, |row| {
+                                row.bg(surface_tint(colors().selection, colors().sidebar))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                            })
+                            .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
+                            .child(
+                                svg()
+                                    .path(page.icon())
+                                    .size(px(16.0))
+                                    .flex_none()
+                                    .text_color(if selected {
+                                        colors().foreground
+                                    } else {
+                                        colors().muted
+                                    }),
+                            )
+                            .child(page.label())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.settings_page = page;
+                                if page == SettingsPage::Appearance {
+                                    theme::refresh_user_themes();
+                                }
+                                cx.notify();
+                            }))
                     })),
             );
         }
-        navigation.into_any_element()
+        div()
+            .w(px(self.left_sidebar_width()))
+            .h_full()
+            .flex_none()
+            .bg(surface(colors().sidebar))
+            .border_r_1()
+            .border_color(colors().border_subtle)
+            .flex()
+            .flex_col()
+            .child(navigation)
+            .child(
+                div().p(px(10.0)).child(
+                    div()
+                        .id("settings-back")
+                        .h(px(34.0))
+                        .px_2()
+                        .rounded(px(7.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .cursor_pointer()
+                        .text_size(px(13.0))
+                        .text_color(colors().muted)
+                        .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
+                        .child(
+                            svg()
+                                .path("chrome-icons/chevron-left.svg")
+                                .size(px(16.0))
+                                .text_color(colors().muted),
+                        )
+                        .child("Back")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.leave_settings(window, cx)),
+                        ),
+                ),
+            )
+            .into_any_element()
     }
 
-    fn settings_modal_content(
+    pub(super) fn settings_content(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let panel = div()
             .id(self.settings_page.id())
+            .w_full()
+            .max_w(px(1120.0))
             .min_w(px(0.0))
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .p_5()
+            .flex_none()
+            .px(px(40.0))
+            .pt(px(36.0))
+            .pb(px(48.0))
             .flex()
             .flex_col()
-            .gap_4();
+            .gap(px(24.0))
+            .child(
+                div()
+                    .mb_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(23.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.settings_page.label()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .line_height(px(20.0))
+                            .text_color(colors().muted)
+                            .child(self.settings_page.description()),
+                    ),
+            );
         let panel = match self.settings_page {
             SettingsPage::Appearance => self.appearance_settings(panel, window, cx),
             SettingsPage::General => self.general_settings(panel, cx),
             SettingsPage::Agents => self.agent_settings(panel, cx),
             SettingsPage::Security => self.security_settings(panel),
+            SettingsPage::Inbox => panel
+                .child(self.settings_section_heading("Connections", "GitHub uses your gh session. Connect Linear with a personal API key stored only on this Mac."))
+                .child(div().py_3().rounded(px(12.0)).border_1()
+                    .border_color(colors().border_subtle)
+                    .bg(surface_tint(colors().elevated, colors().background))
+                    .child(self.inbox_connection_controls(cx))),
         };
-        panel.child(div().h(px(1.0))).into_any_element()
-    }
-
-    fn appearance_settings(
-        &self,
-        panel: Stateful<Div>,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let font_size = self.settings.terminal_font_size;
-        let appearance = self.appearance_mode();
-        let system_dark = ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
-        let preview_tone = theme::resolve_tone(appearance, system_dark);
-        panel
-            .child(self.settings_section_heading(
-                "Appearance",
-                "Choose how Vibra looks and adjust terminal readability.",
-            ))
-            .child(
-                div()
-                    .p_4()
-                    .rounded(px(9.0))
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().panel, colors().sidebar))
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_size(px(10.5))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(colors().foreground)
-                                            .child("Appearance mode"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(9.0))
-                                            .text_color(colors().subtle)
-                                            .child("Follow macOS or choose an app appearance."),
-                                    ),
-                            )
-                            .child(
-                                div().flex().items_center().gap_1().children(
-                                    [
-                                        (
-                                            AppearanceMode::System,
-                                            "System",
-                                            "settings-appearance-system",
-                                        ),
-                                        (
-                                            AppearanceMode::Light,
-                                            "Light",
-                                            "settings-appearance-light",
-                                        ),
-                                        (AppearanceMode::Dark, "Dark", "settings-appearance-dark"),
-                                    ]
-                                    .into_iter()
-                                    .map(
-                                        |(mode, label, id)| {
-                                            self.settings_mode_button(
-                                                label,
-                                                id,
-                                                appearance == mode,
-                                                cx,
-                                                move |this, window, cx| {
-                                                    this.set_appearance_mode(mode, window, cx);
-                                                },
-                                            )
-                                        },
-                                    ),
-                                ),
-                            ),
-                    )
-                    .child(div().h(px(1.0)).bg(colors().border_subtle))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(colors().foreground)
-                                    .child("Theme"),
-                            )
-                            .child(div().text_size(px(9.0)).text_color(colors().subtle).child(
-                                "The palette also applies to the terminal and syntax highlighting.",
-                            )),
-                    )
-                    .child(self.settings_theme_search())
-                    .child({
-                        let query = self.theme_query.to_ascii_lowercase();
-                        let bundled: Vec<ThemeFamily> = theme::built_in_themes()
-                            .iter()
-                            .filter(|family| theme_matches(family, &query))
-                            .cloned()
-                            .collect();
-                        let user: Vec<ThemeFamily> = theme::user_themes()
-                            .into_iter()
-                            .filter(|family| theme_matches(family, &query))
-                            .collect();
-                        let empty = bundled.is_empty() && user.is_empty();
-                        let mut list = div()
-                            .id("settings-theme-list")
-                            .max_h(px(280.0))
-                            .pr_1()
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            // Keep the outer settings pane still while scrolling themes.
-                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
-                        if empty {
-                            list = list.child(
-                                div()
-                                    .text_size(px(9.0))
-                                    .text_color(colors().subtle)
-                                    .child("No matching themes."),
-                            );
-                        } else {
-                            if !bundled.is_empty() {
-                                list = list.child(self.settings_theme_grid(
-                                    &bundled,
-                                    &self.settings.theme_id,
-                                    preview_tone,
-                                    cx,
-                                ));
-                            }
-                            if !user.is_empty() {
-                                list = list
-                                    .child(
-                                        div()
-                                            .pt_1()
-                                            .text_size(px(9.0))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(colors().muted)
-                                            .child("Your themes"),
-                                    )
-                                    .child(self.settings_theme_grid(
-                                        &user,
-                                        &self.settings.theme_id,
-                                        preview_tone,
-                                        cx,
-                                    ));
-                            }
-                        }
-                        list
-                    })
-                    .child(
-                        div()
-                            .text_size(px(9.0))
-                            .text_color(colors().subtle)
-                            .child(format!(
-                                "Add Warp YAML or Ghostty themes to {}.",
-                                theme::user_themes_directory()
-                                    .map(|path| path.display().to_string())
-                                    .unwrap_or_else(|| "~/.vibra/themes".to_string())
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .p_4()
-                    .rounded(px(9.0))
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().panel, colors().sidebar))
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(self.settings_font_row(
-                        FontSizeRow {
-                            label: "Text size",
-                            description: "JetBrains Mono font in all terminals.",
-                            size: font_size,
-                            ids: [
-                                "settings-font-down",
-                                "settings-font-reset",
-                                "settings-font-up",
-                            ],
-                        },
-                        cx,
-                        |this, size, cx| this.set_terminal_font_size(size, cx),
-                    ))
-                    .child(div().h(px(1.0)).bg(colors().border_subtle))
-                    .child(self.settings_font_row(
-                        FontSizeRow {
-                            label: "Diff text",
-                            description: "Code in the Git panel, independent of the terminal.",
-                            size: self.settings.diff_font_size,
-                            ids: [
-                                "settings-diff-font-down",
-                                "settings-diff-font-reset",
-                                "settings-diff-font-up",
-                            ],
-                        },
-                        cx,
-                        |this, size, cx| this.set_diff_font_size(size, cx),
-                    )),
-            )
+        div()
+            .id(SharedString::from(format!(
+                "{}-scroll",
+                self.settings_page.id()
+            )))
+            .flex_1()
+            .h_full()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .bg(surface(colors().background))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(panel)
+            .into_any_element()
     }
 
     fn settings_font_row(
@@ -826,14 +492,15 @@ impl WorkspaceView {
                     .gap_1()
                     .child(
                         div()
-                            .text_size(px(10.5))
+                            .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(colors().foreground)
                             .child(row.label),
                     )
                     .child(
                         div()
-                            .text_size(px(9.0))
+                            .text_size(px(12.0))
+                            .line_height(px(19.0))
                             .text_color(colors().subtle)
                             .child(row.description),
                     ),
@@ -841,17 +508,17 @@ impl WorkspaceView {
             .child(
                 div()
                     .w(px(52.0))
-                    .h(px(26.0))
+                    .h(px(32.0))
                     .flex_none()
                     .rounded(px(5.0))
-                    .bg(surface_tint(colors().terminal, colors().panel))
+                    .bg(surface_tint(colors().terminal, colors().elevated))
                     .border_1()
                     .border_color(colors().border_subtle)
                     .flex()
                     .items_center()
                     .justify_center()
                     .font_family(MONO_FONT)
-                    .text_size(px(9.0))
+                    .text_size(px(12.0))
                     .text_color(colors().foreground)
                     .child(format!("{size:.0} px")),
             )
@@ -868,19 +535,46 @@ impl WorkspaceView {
 
     fn general_settings(&self, panel: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
         panel
-            .child(self.settings_section_heading("Inbox", "GitHub uses your gh session. Connect Linear with a personal API key stored only on this Mac."))
-            .child(self.inbox_connection_controls(cx))
+            .child(self.settings_section_heading(
+                "Alerts",
+                "Choose how Vibra gets your attention while you work elsewhere.",
+            ))
+            .child(
+                div()
+                    .rounded(px(12.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .bg(surface_tint(colors().elevated, colors().background))
+                    .child(self.settings_toggle_row(
+                        SettingsToggleRow {
+                            label: "Activity notifications",
+                            description: "Notify when an agent finishes or needs attention outside the current pane.",
+                            enabled: self.settings.agent_notifications,
+                            divider: false,
+                            id: "settings-agent-notifications",
+                        },
+                        cx,
+                        |this, cx| {
+                            this.settings.agent_notifications = !this.settings.agent_notifications;
+                            if this.settings.agent_notifications {
+                                crate::infrastructure::notifications::request_authorization();
+                            }
+                            this.persist_settings(cx);
+                        },
+                    )),
+            )
             .child(self.settings_section_heading(
                 "On startup",
                 "Choose which elements appear when Vibra opens.",
             ))
             .child(
                 div()
-                    .rounded(px(9.0))
+                    .rounded(px(12.0))
                     .overflow_hidden()
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().panel, colors().sidebar))
+                    .bg(surface_tint(colors().elevated, colors().background))
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
                             label: "Hidden files",
@@ -942,16 +636,16 @@ impl WorkspaceView {
         };
         panel
             .child(self.settings_section_heading(
-                "Agents and notifications",
+                "Agent activity",
                 "Track the status of assistants running inside Vibra.",
             ))
             .child(
                 div()
                     .p_4()
-                    .rounded(px(9.0))
+                    .rounded(px(12.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().panel, colors().sidebar))
+                    .bg(surface_tint(colors().elevated, colors().background))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -962,7 +656,7 @@ impl WorkspaceView {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(10.5))
+                                    .text_size(px(13.0))
                                     .text_color(colors().foreground)
                                     .child("Automatic detection"),
                             )
@@ -970,8 +664,8 @@ impl WorkspaceView {
                     )
                     .child(
                         div()
-                            .text_size(px(9.0))
-                            .line_height(px(13.0))
+                            .text_size(px(12.0))
+                            .line_height(px(20.0))
                             .text_color(colors().subtle)
                             .child(concat!(
                                 "Vibra recognizes agents running in its terminals ",
@@ -986,7 +680,7 @@ impl WorkspaceView {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(10.5))
+                                    .text_size(px(13.0))
                                     .text_color(colors().foreground)
                                     .child("Hooks for precise status"),
                             )
@@ -997,8 +691,8 @@ impl WorkspaceView {
                     )
                     .child(
                         div()
-                            .text_size(px(9.0))
-                            .line_height(px(13.0))
+                            .text_size(px(12.0))
+                            .line_height(px(20.0))
                             .text_color(colors().subtle)
                             .child(concat!(
                                 "Optional: install hooks so Claude and Codex report when they ",
@@ -1010,18 +704,16 @@ impl WorkspaceView {
                     .child(self.settings_hook_status_row("Codex", agent_hooks.codex_installed))
                     .child(
                         div()
-                            .text_size(px(9.0))
-                            .line_height(px(13.0))
+                            .text_size(px(12.0))
+                            .line_height(px(20.0))
                             .text_color(colors().subtle)
-                            .child(
-                                "In Codex, approve the configuration once using /hooks.",
-                            ),
+                            .child("In Codex, approve the configuration once using /hooks."),
                     )
                     .when_some(self.agent_hook_error.clone(), |card, error| {
                         card.child(
                             div()
-                                .text_size(px(9.0))
-                                .line_height(px(13.0))
+                                .text_size(px(12.0))
+                                .line_height(px(20.0))
                                 .text_color(colors().danger)
                                 .child(error),
                         )
@@ -1053,31 +745,6 @@ impl WorkspaceView {
                             }),
                     ),
             )
-            .child(
-                div()
-                    .rounded(px(9.0))
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().panel, colors().sidebar))
-                    .child(self.settings_toggle_row(
-                        SettingsToggleRow {
-                            label: "Activity notifications",
-                            description: "Notify when an agent finishes or needs attention outside the current pane.",
-                            enabled: self.settings.agent_notifications,
-                            divider: false,
-                            id: "settings-agent-notifications",
-                        },
-                        cx,
-                        |this, cx| {
-                            this.settings.agent_notifications = !this.settings.agent_notifications;
-                            if this.settings.agent_notifications {
-                                crate::infrastructure::notifications::request_authorization();
-                            }
-                            this.persist_settings(cx);
-                        },
-                    )),
-            )
     }
 
     fn security_settings(&self, panel: Stateful<Div>) -> Stateful<Div> {
@@ -1089,10 +756,10 @@ impl WorkspaceView {
             .child(
                 div()
                     .p_4()
-                    .rounded(px(9.0))
+                    .rounded(px(12.0))
                     .border_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().panel, colors().sidebar))
+                    .bg(surface_tint(colors().elevated, colors().background))
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -1103,7 +770,7 @@ impl WorkspaceView {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(10.5))
+                                    .text_size(px(13.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(colors().foreground)
                                     .child("Clipboard access (OSC 52)"),
@@ -1112,8 +779,8 @@ impl WorkspaceView {
                     )
                     .child(
                         div()
-                            .text_size(px(9.0))
-                            .line_height(px(13.0))
+                            .text_size(px(12.0))
+                            .line_height(px(20.0))
                             .text_color(colors().subtle)
                             .child(concat!(
                                 "Each read requires confirmation. Local communication uses ",

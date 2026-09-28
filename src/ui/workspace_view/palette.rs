@@ -1,9 +1,12 @@
 //! Command palette and quick-open.
 
-use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px, relative};
+use gpui::{
+    AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px, relative, svg,
+};
 
 use crate::domain::workspace::PaneSplitDirection;
-use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface_tint};
+use crate::ui::menu::{menu_border, menu_hover, menu_panel};
+use crate::ui::theme::{colors, surface_tint};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
 use super::files::collect_search_files;
@@ -14,7 +17,6 @@ impl super::WorkspaceView {
         self.usage.open = false;
         self.close_palette(cx);
         self.palette_mode = Some(mode);
-        self.settings_open = false;
         self.context_menu = None;
         self.ide_menu_open = false;
         self.rename_prompt = None;
@@ -267,7 +269,7 @@ impl super::WorkspaceView {
                 self.run_automation(id, None, true, cx);
             }
             PaletteAction::ShowSettings => {
-                self.open_settings(cx);
+                self.open_settings(window, cx);
             }
             PaletteAction::OpenFile(path) => {
                 self.set_workspace_mode(RightSidebarMode::Files, cx);
@@ -311,18 +313,12 @@ impl super::WorkspaceView {
                     }),
                 )
                 .child(
-                    div()
+                    menu_panel()
                         .w(px(560.0))
                         .max_w_full()
                         .max_h(px(460.0))
                         .mx_4()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(popover_surface())
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
+                        .p_0()
                         .overflow_hidden()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
@@ -334,21 +330,20 @@ impl super::WorkspaceView {
                                 .gap_2()
                                 .px_4()
                                 .border_b_1()
-                                .border_color(colors().border_subtle)
+                                .border_color(menu_border())
                                 .child(
-                                    div()
+                                    svg()
+                                        .path("chrome-icons/search.svg")
+                                        .size(px(16.0))
                                         .flex_none()
-                                        .font_family(MONO_FONT)
-                                        .text_color(colors().subtle)
-                                        .child(">"),
+                                        .text_color(colors().muted),
                                 )
                                 .child(
                                     div()
                                         .flex_1()
                                         .min_w(px(0.0))
                                         .truncate()
-                                        .font_family(MONO_FONT)
-                                        .text_size(px(12.0))
+                                        .text_size(px(13.0))
                                         .text_color(if query.is_empty() {
                                             colors().subtle
                                         } else {
@@ -391,12 +386,10 @@ impl super::WorkspaceView {
                                         .when(active, |row| {
                                             row.bg(surface_tint(
                                                 colors().selection,
-                                                colors().sidebar,
+                                                colors().elevated,
                                             ))
                                         })
-                                        .hover(|row| {
-                                            row.bg(surface_tint(colors().hover, colors().sidebar))
-                                        })
+                                        .when(!active, |row| row.hover(|row| row.bg(menu_hover())))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.execute_palette_action(action.clone(), window, cx);
                                         }))
@@ -407,7 +400,6 @@ impl super::WorkspaceView {
                                                 .flex()
                                                 .items_center()
                                                 .justify_center()
-                                                .font_family(MONO_FONT)
                                                 .text_color(if active {
                                                     colors().muted
                                                 } else {
@@ -420,12 +412,8 @@ impl super::WorkspaceView {
                                                 .min_w(px(0.0))
                                                 .flex_1()
                                                 .truncate()
-                                                .text_size(px(11.0))
-                                                .text_color(if active {
-                                                    colors().foreground
-                                                } else {
-                                                    colors().muted
-                                                })
+                                                .text_size(px(13.0))
+                                                .text_color(colors().foreground)
                                                 .child(item.label),
                                         )
                                         .child(
@@ -433,8 +421,7 @@ impl super::WorkspaceView {
                                                 .max_w(relative(0.4))
                                                 .flex_none()
                                                 .truncate()
-                                                .font_family(MONO_FONT)
-                                                .text_size(px(8.5))
+                                                .text_size(px(11.0))
                                                 .text_color(colors().subtle)
                                                 .child(item.detail),
                                         )
@@ -461,7 +448,7 @@ impl super::WorkspaceView {
                                 .justify_end()
                                 .px_3()
                                 .border_t_1()
-                                .border_color(colors().border_subtle)
+                                .border_color(menu_border())
                                 .text_xs()
                                 .text_color(colors().subtle)
                                 .child("↑↓ navigate · ↵ run"),

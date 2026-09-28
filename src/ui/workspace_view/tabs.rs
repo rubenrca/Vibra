@@ -45,6 +45,7 @@ pub(super) fn tab_shortcut_label(index: usize, count: usize) -> Option<String> {
 /// A place the user can go back to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NavLocation {
+    Section(WorkspaceSection),
     Terminal {
         project_id: Uuid,
         workspace_id: Uuid,
@@ -193,7 +194,7 @@ impl WorkspaceView {
 
     pub(super) fn current_location(&self, cx: &gpui::App) -> Option<NavLocation> {
         if self.workspace_section != WorkspaceSection::Workspace {
-            return None;
+            return Some(NavLocation::Section(self.workspace_section));
         }
         let project_id = self.snapshot.selected_project_id?;
         let workspace = self.snapshot.selected_workspace()?;
@@ -270,6 +271,10 @@ impl WorkspaceView {
     ) -> bool {
         let current_workspace = self.snapshot.selected_workspace().map(|item| item.id);
         match location {
+            NavLocation::Section(section) => {
+                self.select_section(section, window, cx);
+                true
+            }
             NavLocation::Review {
                 project_id,
                 workspace_id,
@@ -339,7 +344,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.palette_mode.is_some() || self.settings_open || self.rename_prompt.is_some() {
+        if self.palette_mode.is_some() || self.rename_prompt.is_some() {
             return;
         }
         let order = self.visible_tab_order(cx);

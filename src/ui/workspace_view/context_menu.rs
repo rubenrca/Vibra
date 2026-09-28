@@ -60,7 +60,6 @@ impl WorkspaceView {
         self.context_menu = None;
         self.rename_prompt = Some(RenamePrompt { kind, value });
         self.close_palette(cx);
-        self.settings_open = false;
         cx.notify();
     }
 

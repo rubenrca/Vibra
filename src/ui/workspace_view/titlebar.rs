@@ -72,7 +72,10 @@ impl super::WorkspaceView {
         }
     }
 
-    pub(super) fn titlebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn titlebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.workspace_section == WorkspaceSection::Settings {
+            return self.settings_titlebar(cx);
+        }
         let left_progress = self.left_sidebar_progress;
         let right_progress = if self.workspace_section == WorkspaceSection::Workspace {
             self.right_sidebar_progress
@@ -108,6 +111,7 @@ impl super::WorkspaceView {
             WorkspaceSection::Inbox => "Inbox",
             WorkspaceSection::Notes => "Notes",
             WorkspaceSection::Automations => "Automations",
+            WorkspaceSection::Settings => "Settings",
         }
         .to_owned();
         let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();
@@ -216,6 +220,64 @@ impl super::WorkspaceView {
                         },
                     )),
             )
+            .into_any_element()
+    }
+
+    fn settings_titlebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .h(px(TITLEBAR_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .bg(surface(colors().titlebar))
+            .child(
+                div()
+                    .w(px(self.left_sidebar_width()))
+                    .h_full()
+                    .flex_none()
+                    .pl(px(TRAFFIC_LIGHTS_INSET))
+                    .pr_2()
+                    .flex()
+                    .items_center()
+                    .border_r_1()
+                    .border_color(colors().border_subtle)
+                    .bg(surface_tint(colors().sidebar, colors().titlebar))
+                    .child(div().flex_1())
+                    .child(self.navigation_buttons(cx)),
+            )
+            .child(
+                div()
+                    .h_full()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .px_4()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .border_b_1()
+                    .border_color(colors().border_subtle)
+                    .text_size(px(13.0))
+                    .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(MouseButton::Left, |_, _, _| {
+                        crate::infrastructure::window::start_drag();
+                    })
+                    .child(div().text_color(colors().muted).child("Settings"))
+                    .child(div().text_color(colors().subtle).child("/"))
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(self.settings_page.label()),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(colors().subtle)
+                            .child("Saved automatically"),
+                    ),
+            )
+            .into_any_element()
     }
 
     pub(super) fn utility_mode_tabs(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -287,36 +349,6 @@ impl super::WorkspaceView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
             .child(titlebar_icon(icon))
-    }
-
-    pub(super) fn sidebar_close_button(
-        &self,
-        id: &'static str,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
-        div()
-            .id(id)
-            .group("sidebar-close")
-            .size(px(18.0))
-            .flex_none()
-            .rounded(px(4.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .text_color(colors().subtle)
-            .hover(|close| close.bg(colors().hover).text_color(colors().foreground))
-            .active(|close| close.opacity(0.72))
-            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
-            .child(
-                svg()
-                    .path("chrome-icons/close.svg")
-                    .size(px(12.0))
-                    .flex_none()
-                    .text_color(colors().muted)
-                    .group_hover("sidebar-close", |icon| icon.text_color(colors().foreground)),
-            )
     }
 
     pub(super) fn sidebar_button(

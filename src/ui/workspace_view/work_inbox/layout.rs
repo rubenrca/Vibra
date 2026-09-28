@@ -472,7 +472,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if self.workspace_section != WorkspaceSection::Inbox || self.settings_open {
+        if self.workspace_section != WorkspaceSection::Inbox {
             return None;
         }
         let menu = self.work_inbox.menu?;
@@ -685,11 +685,10 @@ impl WorkspaceView {
                         MenuRow::new("Linear · API key")
                             .icon("chrome-icons/linear.svg")
                             .render("connect-linear")
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 this.work_inbox.menu = None;
-                                this.open_settings(cx);
-                                this.settings_page =
-                                    crate::ui::workspace_view::SettingsPage::General;
+                                this.open_settings(window, cx);
+                                this.settings_page = crate::ui::workspace_view::SettingsPage::Inbox;
                                 cx.notify();
                             })),
                     );

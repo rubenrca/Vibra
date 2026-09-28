@@ -418,6 +418,7 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
                 WorkspaceSection::Inbox,
                 WorkspaceSection::Notes,
                 WorkspaceSection::Automations,
+                WorkspaceSection::Settings,
             ] {
                 view.select_section(section, window, cx);
                 assert!(
@@ -1567,6 +1568,7 @@ fn tab_shortcuts_return_from_global_pages_even_when_the_tab_is_selected(
                 WorkspaceSection::Inbox,
                 WorkspaceSection::Notes,
                 WorkspaceSection::Automations,
+                WorkspaceSection::Settings,
             ] {
                 view.select_section(section, window, cx);
                 view.go_to_tab(&crate::GoToTab { index: 1 }, window, cx);
@@ -1749,13 +1751,103 @@ fn delayed_focus_cannot_return_to_a_hidden_tab_or_cover_a_global_page(
             );
 
             view.usage.open = true;
-            view.open_settings(cx);
+            view.open_settings(window, cx);
             assert!(!view.usage.open);
-            view.close_settings(cx);
+            view.select_section(WorkspaceSection::Workspace, window, cx);
             view.usage.open = true;
             view.open_palette(PaletteMode::Commands, cx);
             assert!(!view.usage.open);
             view.close_palette(cx);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn settings_navigation_preserves_the_workspace_and_returns_through_history(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "settings-navigation");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.show_settings(&ShowSettings, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Settings);
+            assert_eq!(view.snapshot, snapshot);
+            assert!(view.visible_terminal_ids(cx).is_empty());
+            assert!(view.focus_handle.is_focused(window));
+            view.focus_terminal(pane, window, cx);
+            assert!(view.focus_handle.is_focused(window));
+
+            // Reopening Settings keeps the active page instead of toggling it closed.
+            view.settings_page = SettingsPage::Appearance;
+            view.theme_query = "vibra".into();
+            view.show_settings(&ShowSettings, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Settings);
+            assert_eq!(view.theme_query, "vibra");
+
+            view.navigate_back(&crate::NavigateBack, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
+            assert!(view.terminals[&pane].read(cx).is_surface_visible());
+            assert!(
+                view.terminals[&pane]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+            view.navigate_forward(&crate::NavigateForward, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Settings);
+            assert!(view.settings_page == SettingsPage::Appearance);
+
+            // Cmd-W leaves the page without closing the retained terminal.
+            view.close_terminal(&CloseTerminal, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
+            assert_eq!(view.snapshot, snapshot);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn settings_search_routes_keys_to_the_frontmost_overlay(cx: &mut gpui::TestAppContext) {
+    let (root, _, _, window) = open_recording_workspace(cx, "settings-search");
+    window
+        .update(cx, |view, window, cx| {
+            view.execute_palette_action(PaletteAction::ShowSettings, window, cx);
+            view.settings_page = SettingsPage::Appearance;
+            for mode in [PaletteMode::Commands, PaletteMode::Files] {
+                view.theme_query = "vibra".into();
+                view.open_palette(mode, cx);
+                view.on_workspace_key_down(
+                    &gpui::KeyDownEvent {
+                        keystroke: gpui::Keystroke {
+                            key_char: Some("x".into()),
+                            ..gpui::Keystroke::parse("x").unwrap()
+                        },
+                        is_held: false,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(view.palette_query, "x");
+                assert_eq!(view.theme_query, "vibra");
+                let escape = gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                    is_held: false,
+                };
+                view.on_workspace_key_down(&escape, window, cx);
+                assert!(view.palette_mode.is_none());
+                assert_eq!(view.workspace_section, WorkspaceSection::Settings);
+                assert_eq!(view.theme_query, "vibra");
+                view.on_workspace_key_down(&escape, window, cx);
+                assert!(view.theme_query.is_empty());
+                view.on_workspace_key_down(&escape, window, cx);
+                assert_eq!(view.workspace_section, WorkspaceSection::Settings);
+            }
+            view.usage.open = true;
+            assert!(view.usage_popover(window, cx).is_some());
             window.remove_window();
         })
         .unwrap();

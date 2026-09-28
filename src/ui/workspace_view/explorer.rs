@@ -378,7 +378,6 @@ impl WorkspaceView {
         let directory = self.new_entry_directory();
         self.context_menu = None;
         self.close_palette(cx);
-        self.settings_open = false;
         self.rename_prompt = Some(RenamePrompt {
             kind: if folder {
                 RenamePromptKind::NewFolder { directory }

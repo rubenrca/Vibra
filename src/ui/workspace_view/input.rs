@@ -1,4 +1,4 @@
-//! Workspace-level key routing for overlays (settings, menus, rename, palette).
+//! Workspace-level key routing for overlays and global pages.
 
 use gpui::{Context, KeyDownEvent, Window};
 
@@ -22,44 +22,9 @@ impl super::WorkspaceView {
             cx.stop_propagation();
             return;
         }
-        if self.usage.open
-            && !self.settings_open
-            && self.palette_mode.is_none()
-            && self.rename_prompt.is_none()
-        {
+        if self.usage.open && self.palette_mode.is_none() && self.rename_prompt.is_none() {
             if matches!(key.as_str(), "escape" | "esc") {
                 self.close_usage(window, cx);
-            }
-            cx.stop_propagation();
-            return;
-        }
-        if self.settings_open {
-            if matches!(key.as_str(), "escape" | "esc") {
-                if self.settings_page == super::SettingsPage::Appearance
-                    && !self.theme_query.is_empty()
-                {
-                    self.theme_query.clear();
-                    cx.notify();
-                } else {
-                    self.close_settings(cx);
-                }
-            } else if self.settings_page == super::SettingsPage::Appearance
-                && !event.keystroke.modifiers.platform
-                && !event.keystroke.modifiers.control
-                && !event.keystroke.modifiers.alt
-            {
-                match key.as_str() {
-                    "backspace" => {
-                        self.theme_query.pop();
-                        cx.notify();
-                    }
-                    _ => {
-                        if let Some(text) = event.keystroke.key_char.as_ref() {
-                            self.theme_query.push_str(text);
-                            cx.notify();
-                        }
-                    }
-                }
             }
             cx.stop_propagation();
             return;
@@ -147,6 +112,41 @@ impl super::WorkspaceView {
                 _ => {}
             }
             cx.stop_propagation();
+            return;
+        }
+        if self.workspace_section == super::WorkspaceSection::Settings {
+            if matches!(key.as_str(), "escape" | "esc") {
+                if self.settings_page == super::SettingsPage::Appearance
+                    && !self.theme_query.is_empty()
+                {
+                    self.theme_query.clear();
+                    cx.notify();
+                }
+            } else if self.settings_page == super::SettingsPage::Appearance
+                && !event.keystroke.modifiers.platform
+                && !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.alt
+            {
+                match key.as_str() {
+                    "backspace" => {
+                        self.theme_query.pop();
+                        cx.notify();
+                    }
+                    _ => {
+                        if let Some(text) = event.keystroke.key_char.as_ref() {
+                            self.theme_query.push_str(text);
+                            cx.notify();
+                        }
+                    }
+                }
+            }
+            // Keep app shortcuts available while editing settings.
+            if !event.keystroke.modifiers.platform
+                && !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.alt
+            {
+                cx.stop_propagation();
+            }
             return;
         }
         if self.handle_inbox_key(event, window, cx)

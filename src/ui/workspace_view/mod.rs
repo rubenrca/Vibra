@@ -98,6 +98,7 @@ enum WorkspaceSection {
     Inbox,
     Notes,
     Automations,
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,7 +268,6 @@ pub struct WorkspaceView {
     palette_files: Vec<PathBuf>,
     palette_loading: bool,
     palette_error: Option<SharedString>,
-    settings_open: bool,
     settings_page: SettingsPage,
     theme_query: String,
     context_menu: Option<ContextMenuState>,
@@ -630,7 +630,6 @@ impl WorkspaceView {
             palette_files: Vec::new(),
             palette_loading: false,
             palette_error: None,
-            settings_open: false,
             settings_page: SettingsPage::General,
             theme_query: String::new(),
             context_menu: None,
@@ -997,12 +996,8 @@ impl WorkspaceView {
         self.set_left_sidebar_visible(!self.left_sidebar_visible, true, cx);
     }
 
-    fn show_settings(&mut self, _: &ShowSettings, _: &mut Window, cx: &mut Context<Self>) {
-        if self.settings_open {
-            self.close_settings(cx);
-        } else {
-            self.open_settings(cx);
-        }
+    fn show_settings(&mut self, _: &ShowSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings(window, cx);
     }
 
     fn toggle_right_sidebar(
@@ -1237,7 +1232,9 @@ impl Render for WorkspaceView {
             .flex()
             .on_drag_move(cx.listener(Self::on_sidebar_resize_move));
         // Keep both navigators visible while reviewing code in the center.
-        if self.left_sidebar_progress > 0.001 {
+        if self.workspace_section == WorkspaceSection::Settings {
+            layout = layout.child(self.settings_sidebar(cx));
+        } else if self.left_sidebar_progress > 0.001 {
             layout = layout.child(self.sidebar(cx));
         }
         if self.workspace_section == WorkspaceSection::Workspace {
@@ -1280,11 +1277,13 @@ impl Render for WorkspaceView {
                 layout = layout.child(self.right_sidebar(cx));
             }
         } else {
-            layout = layout.child(self.global_section_content(cx));
+            layout = layout.child(self.global_section_content(window, cx));
         }
 
         body = body.child(layout);
-        body = body.child(self.status_bar(cx));
+        if self.workspace_section != WorkspaceSection::Settings {
+            body = body.child(self.status_bar(cx));
+        }
         if let Some(popover) = self.inbox_popover(window, cx) {
             body = body.child(popover);
         }
@@ -1294,8 +1293,6 @@ impl Render for WorkspaceView {
         if let Some(modal) = self.palette_modal(cx) {
             body = body.child(modal);
         } else if let Some(modal) = self.rename_modal(cx) {
-            body = body.child(modal);
-        } else if let Some(modal) = self.settings_modal(window, cx) {
             body = body.child(modal);
         }
         if let Some(menu) = self.context_menu_overlay(cx) {
