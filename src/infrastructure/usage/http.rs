@@ -1,65 +1,56 @@
 //! Small bounded HTTPS reader. Secrets travel through stdin, never process args.
 
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 use serde_json::Value;
 
 use super::UsageFailure;
 use crate::domain::usage::{now_timestamp, timestamp};
+use crate::infrastructure::process::{CommandLimits, command_output};
 
 const MAX_RESPONSE: u64 = 1_048_576;
 
 pub(super) fn get_json(url: &str, headers: &[(&str, &str)]) -> Result<Value, UsageFailure> {
     let config = header_config(headers)?;
-    let mut child = Command::new("/usr/bin/curl")
-        .args([
-            "--disable",
-            "--silent",
-            "--proto",
-            "=https",
-            "--connect-timeout",
-            "5",
-            "--max-time",
-            "15",
-            "--max-filesize",
-            "1048576",
-            "--suppress-connect-headers",
-            "--dump-header",
-            "-",
-            "--user-agent",
-            "Vibra/0.3 subscription-usage",
-            "--config",
-            "-",
-            url,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| UsageFailure::connection())?;
-    let written = child.stdin.take().unwrap().write_all(config.as_bytes());
-    if written.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(UsageFailure::connection());
-    }
-    let mut response = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .unwrap()
-        .take(MAX_RESPONSE + 1)
-        .read_to_end(&mut response);
-    if read.is_err() || response.len() as u64 > MAX_RESPONSE {
-        let _ = child.kill();
-        let _ = child.wait();
+    let mut command = Command::new("/usr/bin/curl");
+    command.args([
+        "--disable",
+        "--silent",
+        "--proto",
+        "=https",
+        "--connect-timeout",
+        "5",
+        "--max-time",
+        "15",
+        "--max-filesize",
+        "1048576",
+        "--suppress-connect-headers",
+        "--dump-header",
+        "-",
+        "--user-agent",
+        "Vibra/0.3 subscription-usage",
+        "--config",
+        "-",
+        url,
+    ]);
+    let output = command_output(
+        &mut command,
+        Some(config.into_bytes()),
+        CommandLimits {
+            timeout: Duration::from_secs(20),
+            stdout: MAX_RESPONSE as usize,
+            stderr: 0,
+        },
+    )
+    .map_err(|_| UsageFailure::connection())?;
+    if output.stdout.len() as u64 > MAX_RESPONSE {
         return Err(UsageFailure::invalid_response());
     }
-    let status = child.wait().map_err(|_| UsageFailure::connection())?;
-    if !status.success() {
+    if !output.status.success() {
         return Err(UsageFailure::connection());
     }
+    let response = output.stdout;
     parse_response(&response)
 }
 

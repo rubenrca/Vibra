@@ -5,7 +5,9 @@ use std::time::Duration;
 use gpui::{Context, SharedString, Timer};
 
 use super::WorkspaceView;
-use super::persistence::{FinishError, SaveResult, save_final_blocking};
+use crate::infrastructure::persistence::{
+    DocumentKind, FinishError, SaveResult, save_final_blocking,
+};
 
 impl WorkspaceView {
     pub(super) fn persist(&mut self, cx: &mut Context<Self>) {
@@ -107,25 +109,14 @@ impl WorkspaceView {
     }
 
     pub(super) fn apply_persistence_result(&mut self, result: SaveResult, cx: &mut Context<Self>) {
-        match result {
-            SaveResult::Library { generation, error } => {
-                if error.is_some() || generation == self.library_generation {
-                    self.library_save_error = error.map(Into::into);
-                    cx.notify();
-                }
-            }
-            SaveResult::Workspace { generation, error } => {
-                if error.is_some() || generation == self.persist_generation {
-                    self.workspace_save_error = error.map(Into::into);
-                    cx.notify();
-                }
-            }
-            SaveResult::Settings { generation, error } => {
-                if error.is_some() || generation == self.settings_generation {
-                    self.settings_save_error = error.map(Into::into);
-                    cx.notify();
-                }
-            }
+        let (generation, error) = match result.kind {
+            DocumentKind::Workspace => (self.persist_generation, &mut self.workspace_save_error),
+            DocumentKind::Settings => (self.settings_generation, &mut self.settings_save_error),
+            DocumentKind::Library => (self.library_generation, &mut self.library_save_error),
+        };
+        if result.error.is_some() || result.generation == generation {
+            *error = result.error.map(Into::into);
+            cx.notify();
         }
     }
 

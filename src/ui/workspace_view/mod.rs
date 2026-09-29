@@ -15,7 +15,6 @@ mod navigation;
 mod notes;
 mod palette;
 mod panes;
-mod persistence;
 mod projects;
 mod settings;
 mod status_bar;
@@ -32,7 +31,6 @@ use automations_page::AutomationForm;
 use chrome::*;
 pub(crate) use drag::*;
 pub(crate) use files::{file_tree_icon, file_tree_icon_color};
-use persistence::{FinishError, PersistenceQueue};
 use settings::SettingsPage;
 
 use std::cell::{Cell, RefCell};
@@ -50,14 +48,16 @@ use uuid::Uuid;
 
 use crate::domain::inbox::Inbox;
 use crate::domain::library::Library;
-use crate::domain::workspace::{PaneSplitDirection, WorkspaceSnapshot};
+use crate::domain::workspace::{
+    PaneFocusDirection, PaneResizeDirection, PaneSplitDirection, WorkspaceSnapshot,
+};
 use crate::infrastructure::automation::{
     AgentAttention, AgentHookStatus, AgentRuntimeState, AutomationServer, agent_hook_status,
 };
 use crate::infrastructure::editor::InstalledEditor;
 use crate::infrastructure::library::LibraryRepository;
 use crate::infrastructure::notifications::AgentActivitySnapshot;
-use crate::infrastructure::persistence::WorkspaceRepository;
+use crate::infrastructure::persistence::{FinishError, PersistenceQueue, WorkspaceRepository};
 use crate::infrastructure::settings::{
     AppSettings, MAX_LEFT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH, MIN_LEFT_SIDEBAR_WIDTH,
     MIN_RIGHT_SIDEBAR_WIDTH, SettingsRepository,
@@ -70,8 +70,10 @@ use crate::ui::diff_view::{DiffFileIndexView, DiffView, DiffViewEvent};
 use crate::ui::terminal::{TerminalInsertStatus, TerminalView};
 use crate::ui::theme::{self, colors, surface, window_surface};
 use crate::{
-    CloseTerminal, NewTerminalTab, NextProject, PreviousProject, ShowSettings, ToggleLeftSidebar,
-    ToggleRightSidebar,
+    CloseTerminal, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NewTerminalTab,
+    NextPane, NextProject, PreviousPane, PreviousProject, ResizePaneDown, ResizePaneLeft,
+    ResizePaneRight, ResizePaneUp, ShowSettings, SplitPaneDown, SplitPaneLeft, SplitPaneRight,
+    SplitPaneUp, ToggleLeftSidebar, ToggleRightSidebar,
 };
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
@@ -224,7 +226,6 @@ pub struct WorkspaceView {
     agent_hook_error: Option<SharedString>,
     window_is_active: bool,
     focus_handle: FocusHandle,
-    left_sidebar_visible: bool,
     /// Visual open amount for the left sidebar (`0.0` closed … `1.0` open).
     left_sidebar_progress: f32,
     workspace_section: WorkspaceSection,
@@ -276,7 +277,6 @@ pub struct WorkspaceView {
     installed_editors: Vec<InstalledEditor>,
     ide_icons: HashMap<&'static str, Arc<gpui::Image>>,
     rename_prompt: Option<RenamePrompt>,
-    right_sidebar_visible: bool,
     /// Visual open amount for the right sidebar (`0.0` closed … `1.0` open).
     right_sidebar_progress: f32,
     right_sidebar_mode: RightSidebarMode,
@@ -590,7 +590,6 @@ impl WorkspaceView {
             agent_hook_error,
             window_is_active: true,
             focus_handle,
-            left_sidebar_visible: settings.left_sidebar_visible,
             left_sidebar_progress: if settings.left_sidebar_visible {
                 1.0
             } else {
@@ -639,7 +638,6 @@ impl WorkspaceView {
             installed_editors: Vec::new(),
             ide_icons: HashMap::new(),
             rename_prompt: None,
-            right_sidebar_visible: settings.right_sidebar_visible,
             right_sidebar_progress: if settings.right_sidebar_visible {
                 1.0
             } else {
@@ -697,7 +695,7 @@ impl WorkspaceView {
         let visible = self.has_project_context()
             && self.workspace_section == WorkspaceSection::Workspace
             && (self.review_visible(cx)
-                || self.right_sidebar_visible
+                || self.settings.right_sidebar_visible
                 || self.right_sidebar_progress > 0.001);
         self.diff_view
             .update(cx, |diff_view, cx| diff_view.set_panel_visible(visible, cx));
@@ -741,20 +739,19 @@ impl WorkspaceView {
             self.focus_selected_terminal(window, cx);
             return;
         }
-        self.set_right_sidebar_visible(!self.right_sidebar_visible, true, cx);
-        if self.right_sidebar_visible {
+        self.set_right_sidebar_visible(!self.settings.right_sidebar_visible, true, cx);
+        if self.settings.right_sidebar_visible {
             self.sync_diff_root(cx);
         }
     }
 
     /// Desired open/closed state for the left sidebar, with a light width animation.
     fn set_left_sidebar_visible(&mut self, visible: bool, persist: bool, cx: &mut Context<Self>) {
-        if self.left_sidebar_visible == visible {
+        if self.settings.left_sidebar_visible == visible {
             // Caller may have changed mode/content; repaint without restarting motion.
             cx.notify();
             return;
         }
-        self.left_sidebar_visible = visible;
         self.settings.left_sidebar_visible = visible;
         if persist {
             self.persist_settings(cx);
@@ -764,13 +761,12 @@ impl WorkspaceView {
 
     /// Desired open/closed state for the right sidebar, with a light width animation.
     fn set_right_sidebar_visible(&mut self, visible: bool, persist: bool, cx: &mut Context<Self>) {
-        if self.right_sidebar_visible == visible {
+        if self.settings.right_sidebar_visible == visible {
             self.sync_git_panel_visibility(cx);
             self.sync_files_watcher(cx);
             cx.notify();
             return;
         }
-        self.right_sidebar_visible = visible;
         self.settings.right_sidebar_visible = visible;
         self.sync_git_panel_visibility(cx);
         if persist {
@@ -783,8 +779,16 @@ impl WorkspaceView {
     /// Interpolates left/right sidebar progress toward their targets (~160ms ease-out).
     /// Cheap: only schedules frames while mid-animation; drops previous task on restart.
     fn start_sidebar_animation(&mut self, cx: &mut Context<Self>) {
-        let left_to = if self.left_sidebar_visible { 1.0 } else { 0.0 };
-        let right_to = if self.right_sidebar_visible { 1.0 } else { 0.0 };
+        let left_to = if self.settings.left_sidebar_visible {
+            1.0
+        } else {
+            0.0
+        };
+        let right_to = if self.settings.right_sidebar_visible {
+            1.0
+        } else {
+            0.0
+        };
         let left_from = self.left_sidebar_progress;
         let right_from = self.right_sidebar_progress;
 
@@ -995,7 +999,7 @@ impl WorkspaceView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_left_sidebar_visible(!self.left_sidebar_visible, true, cx);
+        self.set_left_sidebar_visible(!self.settings.left_sidebar_visible, true, cx);
     }
 
     fn show_settings(&mut self, _: &ShowSettings, window: &mut Window, cx: &mut Context<Self>) {
@@ -1226,20 +1230,48 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::go_to_tab))
             .on_action(cx.listener(Self::navigate_back))
             .on_action(cx.listener(Self::navigate_forward))
-            .on_action(cx.listener(Self::split_pane_left))
-            .on_action(cx.listener(Self::split_pane_right))
-            .on_action(cx.listener(Self::split_pane_up))
-            .on_action(cx.listener(Self::split_pane_down))
-            .on_action(cx.listener(Self::focus_pane_left))
-            .on_action(cx.listener(Self::focus_pane_right))
-            .on_action(cx.listener(Self::focus_pane_up))
-            .on_action(cx.listener(Self::focus_pane_down))
-            .on_action(cx.listener(Self::previous_pane))
-            .on_action(cx.listener(Self::next_pane))
-            .on_action(cx.listener(Self::resize_pane_left))
-            .on_action(cx.listener(Self::resize_pane_right))
-            .on_action(cx.listener(Self::resize_pane_up))
-            .on_action(cx.listener(Self::resize_pane_down))
+            .on_action(cx.listener(|this, _: &SplitPaneLeft, window, cx| {
+                this.split_pane(PaneSplitDirection::Left, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SplitPaneRight, window, cx| {
+                this.split_pane(PaneSplitDirection::Right, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SplitPaneUp, window, cx| {
+                this.split_pane(PaneSplitDirection::Up, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SplitPaneDown, window, cx| {
+                this.split_pane(PaneSplitDirection::Down, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneLeft, window, cx| {
+                this.focus_pane(PaneFocusDirection::Left, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneRight, window, cx| {
+                this.focus_pane(PaneFocusDirection::Right, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneUp, window, cx| {
+                this.focus_pane(PaneFocusDirection::Up, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneDown, window, cx| {
+                this.focus_pane(PaneFocusDirection::Down, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PreviousPane, window, cx| {
+                this.cycle_pane(-1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextPane, window, cx| {
+                this.cycle_pane(1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ResizePaneLeft, _, cx| {
+                this.resize_pane(PaneResizeDirection::Left, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ResizePaneRight, _, cx| {
+                this.resize_pane(PaneResizeDirection::Right, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ResizePaneUp, _, cx| {
+                this.resize_pane(PaneResizeDirection::Up, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ResizePaneDown, _, cx| {
+                this.resize_pane(PaneResizeDirection::Down, cx);
+            }))
             .on_action(cx.listener(Self::equalize_panes))
             .on_action(cx.listener(Self::toggle_pane_zoom))
             .on_action(cx.listener(Self::toggle_command_palette))

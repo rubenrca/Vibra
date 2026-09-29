@@ -456,7 +456,7 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
             view.set_workspace_mode(RightSidebarMode::Files, cx);
             assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
             assert_eq!(view.right_sidebar_mode, RightSidebarMode::Files);
-            assert!(view.right_sidebar_visible);
+            assert!(view.settings.right_sidebar_visible);
             assert!(
                 view.terminals[&second_session]
                     .read(cx)
@@ -469,7 +469,7 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
             view.select_section(WorkspaceSection::Notes, window, cx);
             view.toggle_right_sidebar(&ToggleRightSidebar, window, cx);
             assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
-            assert!(view.right_sidebar_visible);
+            assert!(view.settings.right_sidebar_visible);
             assert!(
                 view.terminals[&second_session]
                     .read(cx)
@@ -632,7 +632,7 @@ fn central_review_preserves_terminals_when_sidebar_closes_and_restores_terminal_
             assert_eq!(view.snapshot, snapshot);
             assert_eq!(spawns.load(Ordering::SeqCst), initial_spawns);
             view.set_right_sidebar_visible(false, false, cx);
-            assert!(!view.right_sidebar_visible);
+            assert!(!view.settings.right_sidebar_visible);
             assert!(
                 view.diff_view.read(cx).review_expanded(),
                 "the file navigator can close independently of the central review"
@@ -1079,7 +1079,7 @@ fn new_tabs_and_pane_commands_keep_the_review_and_show_the_terminal(cx: &mut gpu
 
             // Choosing the project keeps the right panel as the user left it.
             view.select_project(project, window, cx);
-            assert!(!view.right_sidebar_visible);
+            assert!(!view.settings.right_sidebar_visible);
             window.remove_window();
         })
         .unwrap();

@@ -13,11 +13,7 @@ use crate::domain::workspace::{
 use crate::ui::agent_marks::agent_compact_badge;
 use crate::ui::terminal::TerminalDragPreview;
 use crate::ui::theme::{MONO_FONT, colors, surface, surface_tint};
-use crate::{
-    EqualizePanes, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NextPane,
-    PreviousPane, ResizePaneDown, ResizePaneLeft, ResizePaneRight, ResizePaneUp, SplitPaneDown,
-    SplitPaneLeft, SplitPaneRight, SplitPaneUp, TogglePaneZoom,
-};
+use crate::{EqualizePanes, TogglePaneZoom};
 
 use super::{
     ContextMenuKind, DragGhost, PaneDividerDrag, PaneDividerDragView, PaneDrag, ReorderDrag,
@@ -895,127 +891,6 @@ impl super::WorkspaceView {
             self.focus_terminal(from, window, cx);
         }
         cx.notify();
-    }
-
-    pub(super) fn split_pane_left(
-        &mut self,
-        _: &SplitPaneLeft,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.split_pane(PaneSplitDirection::Left, window, cx);
-    }
-
-    pub(super) fn split_pane_right(
-        &mut self,
-        _: &SplitPaneRight,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.split_pane(PaneSplitDirection::Right, window, cx);
-    }
-
-    pub(super) fn split_pane_up(
-        &mut self,
-        _: &SplitPaneUp,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.split_pane(PaneSplitDirection::Up, window, cx);
-    }
-
-    pub(super) fn split_pane_down(
-        &mut self,
-        _: &SplitPaneDown,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.split_pane(PaneSplitDirection::Down, window, cx);
-    }
-
-    pub(super) fn focus_pane_left(
-        &mut self,
-        _: &FocusPaneLeft,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.focus_pane(PaneFocusDirection::Left, window, cx);
-    }
-
-    pub(super) fn focus_pane_right(
-        &mut self,
-        _: &FocusPaneRight,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.focus_pane(PaneFocusDirection::Right, window, cx);
-    }
-
-    pub(super) fn focus_pane_up(
-        &mut self,
-        _: &FocusPaneUp,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.focus_pane(PaneFocusDirection::Up, window, cx);
-    }
-
-    pub(super) fn focus_pane_down(
-        &mut self,
-        _: &FocusPaneDown,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.focus_pane(PaneFocusDirection::Down, window, cx);
-    }
-
-    pub(super) fn previous_pane(
-        &mut self,
-        _: &PreviousPane,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.cycle_pane(-1, window, cx);
-    }
-
-    pub(super) fn next_pane(&mut self, _: &NextPane, window: &mut Window, cx: &mut Context<Self>) {
-        self.cycle_pane(1, window, cx);
-    }
-
-    pub(super) fn resize_pane_left(
-        &mut self,
-        _: &ResizePaneLeft,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.resize_pane(PaneResizeDirection::Left, cx);
-    }
-
-    pub(super) fn resize_pane_right(
-        &mut self,
-        _: &ResizePaneRight,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.resize_pane(PaneResizeDirection::Right, cx);
-    }
-
-    pub(super) fn resize_pane_up(
-        &mut self,
-        _: &ResizePaneUp,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.resize_pane(PaneResizeDirection::Up, cx);
-    }
-
-    pub(super) fn resize_pane_down(
-        &mut self,
-        _: &ResizePaneDown,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.resize_pane(PaneResizeDirection::Down, cx);
     }
 
     pub(super) fn equalize_panes(

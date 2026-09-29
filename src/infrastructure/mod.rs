@@ -8,6 +8,7 @@ pub mod library;
 pub mod notifications;
 pub mod paths;
 pub mod persistence;
+mod process;
 pub mod settings;
 pub mod sparkle;
 pub mod terminal_keyboard;

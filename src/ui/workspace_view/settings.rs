@@ -78,6 +78,36 @@ struct FontSizeRow {
     ids: [&'static str; 3],
 }
 
+fn settings_card() -> Div {
+    div()
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(colors().border_subtle)
+        .bg(surface_tint(colors().elevated, colors().background))
+}
+
+fn settings_row_label(label: &'static str, description: &'static str) -> Div {
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(colors().foreground)
+                .child(label),
+        )
+        .child(
+            div()
+                .text_size(px(12.0))
+                .line_height(px(19.0))
+                .text_color(colors().subtle)
+                .child(description),
+        )
+}
+
 fn settings_button_base(label: &'static str, id: &'static str) -> Stateful<Div> {
     div()
         .id(id)
@@ -221,28 +251,7 @@ impl WorkspaceView {
             })
             .hover(|row| row.bg(surface_tint(colors().hover, colors().elevated)))
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(colors().foreground)
-                            .child(row.label),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .line_height(px(19.0))
-                            .text_color(colors().subtle)
-                            .child(row.description),
-                    ),
-            )
+            .child(settings_row_label(row.label, row.description).min_w(px(0.0)))
             .child(
                 div()
                     .w(px(36.0))
@@ -484,27 +493,7 @@ impl WorkspaceView {
             .flex()
             .items_center()
             .gap_3()
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(colors().foreground)
-                            .child(row.label),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .line_height(px(19.0))
-                            .text_color(colors().subtle)
-                            .child(row.description),
-                    ),
-            )
+            .child(settings_row_label(row.label, row.description))
             .child(
                 div()
                     .w(px(52.0))
@@ -540,12 +529,7 @@ impl WorkspaceView {
                 "Choose how Vibra gets your attention while you work elsewhere.",
             ))
             .child(
-                div()
-                    .rounded(px(12.0))
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().background))
+                settings_card().overflow_hidden()
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
                             label: "Activity notifications",
@@ -569,12 +553,7 @@ impl WorkspaceView {
                 "Choose which elements appear when Vibra opens.",
             ))
             .child(
-                div()
-                    .rounded(px(12.0))
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().background))
+                settings_card().overflow_hidden()
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
                             label: "Hidden files",
@@ -600,7 +579,7 @@ impl WorkspaceView {
                         },
                         cx,
                         |this, cx| {
-                            this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
+                            this.set_left_sidebar_visible(!this.settings.left_sidebar_visible, true, cx);
                         },
                     ))
                     .child(self.settings_toggle_row(
@@ -613,7 +592,7 @@ impl WorkspaceView {
                         },
                         cx,
                         |this, cx| {
-                            let open = !this.right_sidebar_visible;
+                            let open = !this.settings.right_sidebar_visible;
                             this.set_right_sidebar_visible(open, true, cx);
                             if open {
                                 this.sync_diff_root(cx);
@@ -640,12 +619,8 @@ impl WorkspaceView {
                 "Track the status of assistants running inside Vibra.",
             ))
             .child(
-                div()
+                settings_card()
                     .p_4()
-                    .rounded(px(12.0))
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().background))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -754,12 +729,8 @@ impl WorkspaceView {
                 "Protections for local terminal integrations.",
             ))
             .child(
-                div()
+                settings_card()
                     .p_4()
-                    .rounded(px(12.0))
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().background))
                     .flex()
                     .flex_col()
                     .gap_2()

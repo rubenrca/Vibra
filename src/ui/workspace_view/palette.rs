@@ -9,7 +9,6 @@ use crate::ui::menu::{menu_border, menu_hover, menu_panel};
 use crate::ui::theme::{colors, surface_tint};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
-use super::files::collect_search_files;
 use super::{PaletteAction, PaletteItem, PaletteMode, RightSidebarMode, WorkspaceSection};
 
 impl super::WorkspaceView {
@@ -27,7 +26,8 @@ impl super::WorkspaceView {
             let port = self.file_port.clone();
             let task = cx.background_spawn(async move {
                 let mut files = Vec::new();
-                let error = collect_search_files(port.as_ref(), &root, &root, &mut files)
+                let error = port
+                    .search_files(&root, &mut files)
                     .err()
                     .map(|error| format!("Could not search files: {error}"));
                 (files, error)

@@ -46,16 +46,8 @@ pub fn parse_theme_text(text: &str) -> Result<ImportedScheme, ParseError> {
 }
 
 pub fn parse_theme_file(path: &Path) -> Result<ImportedScheme, ParseError> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|error| ParseError::new(format!("could not read {}: {error}", path.display())))?;
-    if metadata.len() > MAX_THEME_BYTES {
-        return Err(ParseError::new(format!(
-            "{} exceeds the 64 KiB limit",
-            path.display()
-        )));
-    }
-    let bytes = std::fs::read(path)
-        .map_err(|error| ParseError::new(format!("could not read {}: {error}", path.display())))?;
+    let bytes = crate::infrastructure::paths::read_file_limited(path, MAX_THEME_BYTES, "64 KiB")
+        .map_err(|error| ParseError::new(format!("{error:#}")))?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| ParseError::new(format!("{} is not UTF-8", path.display())))?;
     parse_theme_text(text)
@@ -306,6 +298,36 @@ fn strip_yaml_comment(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_files_are_bounded_and_require_utf8() {
+        let root = std::env::temp_dir().join(format!("vibra-theme-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("theme.conf");
+        std::fs::write(&path, TOKYO_GHOSTTY).unwrap();
+        assert_eq!(
+            parse_theme_file(&path).unwrap(),
+            parse_theme_text(TOKYO_GHOSTTY).unwrap()
+        );
+        std::fs::write(&path, [0xff]).unwrap();
+        assert!(
+            parse_theme_file(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("not UTF-8")
+        );
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_THEME_BYTES + 1)
+            .unwrap();
+        assert!(
+            parse_theme_file(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("64 KiB limit")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     const NORD_YAML: &str = r###"
 name: Nord

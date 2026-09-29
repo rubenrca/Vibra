@@ -1,8 +1,6 @@
 //! Last successful list, shown while the provider is refreshed in the background.
 //! This is disposable data, separate from Inbox preferences and comment drafts.
 
-use std::fs;
-use std::io::Read;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +9,7 @@ use sha2::{Digest, Sha256};
 use super::{WorkItemsPage, WorkQuery, github, linear};
 use crate::domain::work_items::WorkSource;
 use crate::infrastructure::library::unix_now;
-use crate::infrastructure::paths::atomic_write;
+use crate::infrastructure::paths::{atomic_write, read_file_limited};
 
 const VERSION: u32 = 1;
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -40,16 +38,7 @@ impl ListCache {
                 github::gh_output(&["auth", "token", "--hostname", "github.com"], None).ok()?
             }
             WorkSource::Linear => {
-                let mut bytes = Vec::new();
-                fs::File::open(linear::token_path().ok()?)
-                    .ok()?
-                    .take(4097)
-                    .read_to_end(&mut bytes)
-                    .ok()?;
-                if bytes.len() > 4096 {
-                    return None;
-                }
-                bytes
+                read_file_limited(&linear::token_path().ok()?, 4096, "4 KiB").ok()?
             }
         };
         let credential = credential.trim_ascii();
@@ -75,15 +64,7 @@ impl ListCache {
     }
 
     pub fn load(&self) -> Option<WorkItemsPage> {
-        let mut bytes = Vec::new();
-        fs::File::open(&self.path)
-            .ok()?
-            .take(MAX_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .ok()?;
-        if bytes.len() as u64 > MAX_BYTES {
-            return None;
-        }
+        let bytes = read_file_limited(&self.path, MAX_BYTES, "16 MiB").ok()?;
         let snapshot: Snapshot<WorkItemsPage> = serde_json::from_slice(&bytes).ok()?;
         let now = unix_now();
         (snapshot.version == VERSION
@@ -118,6 +99,7 @@ mod tests {
     use super::*;
     use crate::domain::work_items::{WorkKind, WorkStatus, fixture};
     use crate::infrastructure::work_items::InboxProject;
+    use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]

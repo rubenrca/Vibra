@@ -1,7 +1,5 @@
 //! `library.json`: notes and automations, next to `settings.json`.
 
-use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 
 use crate::domain::library::{CURRENT_LIBRARY_SCHEMA_VERSION, Library, LocalMinute};
-use crate::infrastructure::paths::RevisionGuard;
+use crate::infrastructure::paths::{RevisionGuard, read_file_limited};
 
 const LIBRARY_FILE_NAME: &str = "library.json";
 const MAX_LIBRARY_BYTES: u64 = 8 * 1024 * 1024;
@@ -41,25 +39,20 @@ impl LibraryRepository {
     }
 
     fn load_inner(&self) -> Result<Library> {
-        let file = match fs::File::open(&self.path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        let bytes = match read_file_limited(&self.path, MAX_LIBRARY_BYTES, "8 MiB") {
+            Ok(bytes) => bytes,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
                 self.revision.loaded(None);
                 return Ok(Library::default());
             }
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("could not read {}", self.path.display()));
+                return Err(error);
             }
         };
-        if file.metadata()?.len() > MAX_LIBRARY_BYTES {
-            bail!("{} exceeds the 8 MiB limit", self.path.display());
-        }
-        let mut bytes = Vec::new();
-        file.take(MAX_LIBRARY_BYTES + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_LIBRARY_BYTES {
-            bail!("{} exceeds the 8 MiB limit", self.path.display());
-        }
         let mut library: Library = serde_json::from_slice(&bytes)
             .with_context(|| format!("Invalid JSON in {}", self.path.display()))?;
         if library.schema_version > CURRENT_LIBRARY_SCHEMA_VERSION {
@@ -81,9 +74,6 @@ impl LibraryRepository {
         let data = serde_json::to_vec_pretty(&library)?;
         if data.len() as u64 > MAX_LIBRARY_BYTES {
             bail!("notes and automations exceed the 8 MiB limit");
-        }
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
         }
         self.revision.save(&self.path, &data)?;
         Ok(())
@@ -121,6 +111,7 @@ fn local_minute_at(seconds: u64) -> LocalMinute {
 mod tests {
     use super::*;
     use crate::domain::library::AutomationSchedule;
+    use std::fs;
 
     #[test]
     fn library_round_trips_and_drops_blank_notes() {

@@ -18,6 +18,26 @@ pub fn gpui_preview_support_directory() -> Option<PathBuf> {
         .map(|directories| directories.data_dir().to_path_buf())
 }
 
+/// Check the opened file and bound the read even if it grows after inspection.
+pub fn read_file_limited(path: &Path, limit: u64, limit_label: &str) -> Result<Vec<u8>> {
+    let file =
+        fs::File::open(path).with_context(|| format!("could not open {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("could not inspect {}", path.display()))?;
+    if metadata.len() > limit {
+        bail!("{} exceeds the {limit_label} limit", path.display());
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("could not read {}", path.display()))?;
+    if bytes.len() as u64 > limit {
+        bail!("{} exceeds the {limit_label} limit", path.display());
+    }
+    Ok(bytes)
+}
+
 /// Options for the shared tmp+rename write used by workspace, settings, files, and hooks.
 #[derive(Debug, Clone, Default)]
 pub struct AtomicWriteOptions {
@@ -333,6 +353,30 @@ impl RevisionGuard {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    #[test]
+    fn limited_reads_accept_the_boundary_and_reject_oversized_files() {
+        let root = std::env::temp_dir().join(format!("vibra-read-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("data.json");
+        fs::write(&path, b"1234").unwrap();
+        assert_eq!(read_file_limited(&path, 4, "4 bytes").unwrap(), b"1234");
+        assert!(
+            read_file_limited(&path, 3, "3 bytes")
+                .unwrap_err()
+                .to_string()
+                .contains("3 bytes limit")
+        );
+        fs::write(&path, b"").unwrap();
+        assert!(read_file_limited(&path, 0, "0 bytes").unwrap().is_empty());
+        fs::remove_file(&path).unwrap();
+        let error = read_file_limited(&path, 4, "4 bytes").unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn atomic_write_replaces_the_target_file() {

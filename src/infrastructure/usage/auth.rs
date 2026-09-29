@@ -3,8 +3,8 @@
 use std::ffi::CString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use base64::Engine;
 use serde_json::Value;
@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 
 use super::{Provider, UsageFailure};
 use crate::domain::usage::{now_timestamp, timestamp};
+use crate::infrastructure::process::{CommandLimits, command_output};
 
 // Deliberately no Debug or Serialize: these values must never enter diagnostics.
 pub(super) struct Credential {
@@ -124,33 +125,19 @@ fn security_cli_json(service: &str, account: Option<&str>) -> Result<Option<Valu
     if let Some(account) = account {
         command.args(["-a", account]);
     }
-    let mut child = command
-        .arg("-w")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| failure())?;
-    let mut stdout = child.stdout.take().ok_or_else(failure)?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = (&mut stdout).take(1_048_577).read_to_end(&mut bytes);
-        bytes
-    });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                // Never leave a blocked prompt behind a background poll.
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(failure());
-            }
-        }
-    };
-    let bytes = reader.join().map_err(|_| failure())?;
+    command.arg("-w");
+    let output = command_output(
+        &mut command,
+        None,
+        CommandLimits {
+            timeout: Duration::from_secs(5),
+            stdout: 1_048_576,
+            stderr: 0,
+        },
+    )
+    .map_err(|_| failure())?;
+    let status = output.status;
+    let bytes = output.stdout;
     match status.code() {
         Some(0) => {}
         Some(44) => return Ok(None), // errSecItemNotFound
@@ -169,7 +156,9 @@ fn security_cli_json(service: &str, account: Option<&str>) -> Result<Option<Valu
 }
 
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    if text.is_empty() || text.len() % 2 != 0 || !text.bytes().all(|byte| byte.is_ascii_hexdigit())
+    if text.is_empty()
+        || !text.len().is_multiple_of(2)
+        || !text.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
         return None;
     }

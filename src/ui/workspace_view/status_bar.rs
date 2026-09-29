@@ -40,7 +40,7 @@ impl WorkspaceView {
                     roots.dedup();
                     this.project_diff_stats
                         .retain(|root, _| roots.contains(root));
-                    if !this.left_sidebar_visible {
+                    if !this.settings.left_sidebar_visible {
                         roots.clear();
                     }
                     (target, roots, this.git_port.clone())

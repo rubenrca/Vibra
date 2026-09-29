@@ -127,20 +127,11 @@ impl super::WorkspaceSnapshot {
         else {
             return false;
         };
-        if !tab.layout.contains_terminal(session_id) {
-            return false;
-        }
-        if tab.selected_session_id == Some(session_id) {
-            return false;
-        }
-        tab.selected_session_id = Some(session_id);
-        // Keyboard navigation must reveal the pane it will send input to.
-        if tab
-            .zoomed_session_id
-            .is_some_and(|zoomed| zoomed != session_id)
+        if !tab.layout.contains_terminal(session_id) || tab.selected_session_id == Some(session_id)
         {
-            tab.zoomed_session_id = None;
+            return false;
         }
+        tab.select_terminal(session_id);
         project.normalize();
         true
     }
@@ -155,13 +146,7 @@ impl super::WorkspaceSnapshot {
                 else {
                     continue;
                 };
-                tab.selected_session_id = Some(session_id);
-                if tab
-                    .zoomed_session_id
-                    .is_some_and(|zoomed| zoomed != session_id)
-                {
-                    tab.zoomed_session_id = None;
-                }
+                tab.select_terminal(session_id);
                 workspace.selected_tab_id = Some(tab.id);
                 project.selected_workspace_id = Some(workspace.id);
                 project.collapsed = false;
@@ -205,65 +190,61 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn resize_selected_pane(&mut self, direction: PaneResizeDirection) -> bool {
-        let Some((project_index, workspace_index, tab_index, _)) = self.selected_session_indices()
-        else {
-            return false;
-        };
-        let project = &mut self.projects[project_index];
-        let tab =
-            &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
-        let selected_id = tab
-            .selected_session_id
-            .expect("selected session index exists");
         let (axis, delta) = match direction {
             PaneResizeDirection::Left => (WorkspaceSplitAxis::Horizontal, -500),
             PaneResizeDirection::Right => (WorkspaceSplitAxis::Horizontal, 500),
             PaneResizeDirection::Up => (WorkspaceSplitAxis::Vertical, -500),
             PaneResizeDirection::Down => (WorkspaceSplitAxis::Vertical, 500),
         };
-        let changed = tab.layout.move_nearest_divider(selected_id, axis, delta);
-        if changed {
-            project.normalize();
-        }
-        changed
+        self.edit_selected_tab(|tab| {
+            tab.layout.move_nearest_divider(
+                tab.selected_session_id.expect("selected session exists"),
+                axis,
+                delta,
+            )
+        })
     }
 
     pub fn swap_tab_terminals(&mut self, first: Uuid, second: Uuid) -> bool {
         if first == second {
             return false;
         }
-        let Some((project_index, workspace_index, tab_index, _)) = self.selected_session_indices()
-        else {
-            return false;
-        };
-        let project = &mut self.projects[project_index];
-        let tab =
-            &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
-        if !tab.layout.swap_terminals(first, second) {
-            return false;
-        }
-        tab.selected_session_id = Some(first);
-        tab.zoomed_session_id = None;
-        project.normalize();
-        true
+        self.edit_selected_tab(|tab| {
+            if !tab.layout.swap_terminals(first, second) {
+                return false;
+            }
+            tab.selected_session_id = Some(first);
+            tab.zoomed_session_id = None;
+            true
+        })
     }
 
     pub fn set_selected_split_ratio(&mut self, path: &[PaneBranch], ratio: u16) -> bool {
-        let Some((project_index, workspace_index, tab_index, _)) = self.selected_session_indices()
-        else {
-            return false;
-        };
-        let project = &mut self.projects[project_index];
-        let tab =
-            &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
-        let changed = tab.layout.set_split_ratio(path, ratio);
-        if changed {
-            project.normalize();
-        }
-        changed
+        self.edit_selected_tab(|tab| tab.layout.set_split_ratio(path, ratio))
     }
 
     pub fn equalize_selected_panes(&mut self) -> bool {
+        self.edit_selected_tab(|tab| tab.layout.equalize())
+    }
+
+    pub fn toggle_selected_pane_zoom(&mut self) -> bool {
+        self.edit_selected_tab(|tab| {
+            let selected_id = tab.selected_session_id.expect("selected session exists");
+            tab.zoomed_session_id =
+                (tab.zoomed_session_id != Some(selected_id)).then_some(selected_id);
+            true
+        })
+    }
+
+    pub fn close_selected_terminal(&mut self) -> bool {
+        let Some(session_id) = self.selected_session().map(|session| session.id) else {
+            return false;
+        };
+        self.close_terminal(session_id)
+    }
+
+    /// Resolve selection once and restore the project's invariants after a change.
+    fn edit_selected_tab(&mut self, edit: impl FnOnce(&mut TabSnapshot) -> bool) -> bool {
         let Some((project_index, workspace_index, tab_index, _)) = self.selected_session_indices()
         else {
             return false;
@@ -271,40 +252,11 @@ impl super::WorkspaceSnapshot {
         let project = &mut self.projects[project_index];
         let tab =
             &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
-        let changed = tab.layout.equalize();
+        let changed = edit(tab);
         if changed {
             project.normalize();
         }
         changed
-    }
-
-    pub fn toggle_selected_pane_zoom(&mut self) -> bool {
-        let Some((project_index, workspace_index, tab_index, _)) = self.selected_session_indices()
-        else {
-            return false;
-        };
-        let project = &mut self.projects[project_index];
-        let tab =
-            &mut project.workspaces.as_mut().expect("normalized")[workspace_index].tabs[tab_index];
-        let selected_id = tab
-            .selected_session_id
-            .expect("selected session index exists");
-        tab.zoomed_session_id = (tab.zoomed_session_id != Some(selected_id)).then_some(selected_id);
-        project.normalize();
-        true
-    }
-
-    pub fn close_selected_terminal(&mut self) -> bool {
-        let Some((_, _, _, session_index)) = self.selected_session_indices() else {
-            return false;
-        };
-        let Some(session_id) = self
-            .selected_tab()
-            .and_then(|tab| tab.sessions.get(session_index).map(|session| session.id))
-        else {
-            return false;
-        };
-        self.close_terminal(session_id)
     }
 
     pub fn close_terminal(&mut self, session_id: Uuid) -> bool {
@@ -605,6 +557,17 @@ impl SessionSnapshot {
 }
 
 impl TabSnapshot {
+    fn select_terminal(&mut self, session_id: Uuid) {
+        self.selected_session_id = Some(session_id);
+        // Keyboard navigation must reveal the pane it will send input to.
+        if self
+            .zoomed_session_id
+            .is_some_and(|zoomed| zoomed != session_id)
+        {
+            self.zoomed_session_id = None;
+        }
+    }
+
     pub fn with_session(session: SessionSnapshot) -> Self {
         let session_id = session.id;
         Self {

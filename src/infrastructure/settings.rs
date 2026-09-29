@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -9,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::appearance::AppearanceMode;
 use crate::infrastructure::paths::{
     RevisionGuard, application_support_directory, atomic_write, gpui_preview_support_directory,
+    read_file_limited,
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
@@ -382,17 +382,7 @@ fn merge_changed_settings(
 }
 
 fn read_settings_file(path: &std::path::Path) -> Result<Vec<u8>> {
-    let file = fs::File::open(path)?;
-    let metadata = file.metadata()?;
-    if metadata.len() > MAX_SETTINGS_BYTES {
-        bail!("{} exceeds the 1 MiB limit", path.display());
-    }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_SETTINGS_BYTES {
-        bail!("{} exceeds the 1 MiB limit", path.display());
-    }
-    Ok(bytes)
+    read_file_limited(path, MAX_SETTINGS_BYTES, "1 MiB")
 }
 
 #[cfg(test)]

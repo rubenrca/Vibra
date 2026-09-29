@@ -5,7 +5,7 @@ use gpui::{
     linear_gradient, prelude::*, px, relative, svg,
 };
 
-use super::{FontSizeRow, WorkspaceView};
+use super::{FontSizeRow, WorkspaceView, settings_card};
 use crate::ui::theme::{self, AppearanceMode, Theme, ThemeFamily, ThemeTone, colors, surface_tint};
 
 fn preview_line(width: f32, color: gpui::Rgba) -> Div {
@@ -468,11 +468,7 @@ impl WorkspaceView {
                         "Adjust readability in terminals and code reviews.",
                     ))
                     .child(
-                        div()
-                            .rounded(px(12.0))
-                            .border_1()
-                            .border_color(colors().border_subtle)
-                            .bg(surface_tint(colors().elevated, colors().background))
+                        settings_card()
                             .child(div().p_5().child(self.settings_font_row(
                                 FontSizeRow {
                                     label: "Terminal text",

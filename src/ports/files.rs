@@ -18,6 +18,10 @@ pub struct FileEntry {
 
 /// Boundary for project-scoped file inspection and creation.
 pub trait FileSystemPort: Send + Sync {
+    /// Append searchable project files, respecting Git ignores and initialized submodules.
+    /// The adapter bounds the total and retains partial results if a directory fails.
+    fn search_files(&self, root: &Path, output: &mut Vec<PathBuf>) -> Result<()>;
+
     /// Read a project document for the viewer, with bounded size and no writes.
     fn read_text_file(&self, project_root: &Path, path: &Path) -> Result<String>;
 

@@ -1,3 +1,9 @@
+mod parsing;
+use parsing::{
+    PorcelainFile, PorcelainStatus, append_patch, apply_numstat, change_priority,
+    empty_diff_notice, file_status, parse_history, parse_name_status, parse_porcelain_status,
+};
+
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -14,10 +20,9 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
-    GitBranchChanges, GitBranchRef, GitBranchSummary, GitCommit, GitCommitChanges,
-    GitCommitOptions, GitDiff, GitDiffRow, GitDiffRowKind, GitDiffSources, GitFileChange,
-    GitFileStatus, GitHistory, GitPort, GitRepositorySnapshot, GitSyncOperation,
-    GitWorktreeCapture,
+    GitBranchChanges, GitBranchRef, GitBranchSummary, GitCommitChanges, GitCommitOptions, GitDiff,
+    GitDiffRow, GitDiffRowKind, GitDiffSources, GitFileChange, GitFileStatus, GitHistory, GitPort,
+    GitRepositorySnapshot, GitSyncOperation, GitWorktreeCapture,
 };
 
 const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
@@ -1357,7 +1362,59 @@ fn is_not_a_repository(stderr: &[u8]) -> bool {
         .contains("not a git repository")
 }
 
+/// Raw NUL-delimited paths for Quick Open; the filesystem adapter validates entries.
+pub(super) fn search_paths(root: &Path) -> Result<Vec<u8>> {
+    let output = run_git_bounded(
+        root,
+        [
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        16 * 1024 * 1024,
+    )?;
+    ensure_success(&output, "git ls-files")?;
+    Ok(output.stdout)
+}
+
 fn run_git<I, S>(root: &Path, arguments: I) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let output = run_git_bounded(root, arguments, MAX_GIT_OUTPUT_BYTES)?;
+    if output.stdout.len() > MAX_GIT_OUTPUT_BYTES {
+        bail!("Git output exceeded 32 MiB in {}", root.display());
+    }
+    Ok(output)
+}
+
+fn run_git_diff<I, S>(
+    root: &Path,
+    arguments: I,
+    operation: &str,
+    allow_difference: bool,
+) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let output = run_git_bounded(root, arguments, MAX_DIFF_BYTES)?;
+    let reached_limit = output.stdout.len() > MAX_DIFF_BYTES;
+    if !(reached_limit
+        || output.status.success()
+        || allow_difference && output.status.code() == Some(1))
+    {
+        ensure_success(&output, operation)?;
+    }
+    Ok(output.stdout)
+}
+
+/// Git diffs stop immediately at their byte budget and retain the extra byte
+/// for the parser's truncation notice. Ordinary reads reject that same sentinel.
+fn run_git_bounded<I, S>(root: &Path, arguments: I, limit: usize) -> Result<Output>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
@@ -1374,12 +1431,9 @@ where
     let stdout = child.stdout.take().context("Git did not open stdout")?;
     let stderr = child.stderr.take().context("Git did not open stderr")?;
     let stderr_reader = thread::spawn(move || read_git_error(stderr));
-    let mut output = Vec::new();
-    let read_result = stdout
-        .take((MAX_GIT_OUTPUT_BYTES + 1) as u64)
-        .read_to_end(&mut output);
-    let reached_limit = output.len() > MAX_GIT_OUTPUT_BYTES;
-    if reached_limit || read_result.is_err() {
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    let read_result = stdout.take((limit + 1) as u64).read_to_end(&mut bytes);
+    if bytes.len() > limit || read_result.is_err() {
         let _ = child.kill();
     }
     let status = child.wait()?;
@@ -1387,63 +1441,11 @@ where
         .join()
         .map_err(|_| anyhow::anyhow!("Git stderr reader failed"))??;
     read_result?;
-    if reached_limit {
-        bail!("Git output exceeded 32 MiB in {}", root.display());
-    }
     Ok(Output {
         status,
-        stdout: output,
+        stdout: bytes,
         stderr,
     })
-}
-
-fn run_git_diff<I, S>(
-    root: &Path,
-    arguments: I,
-    operation: &str,
-    allow_difference: bool,
-) -> Result<Vec<u8>>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<std::ffi::OsStr>,
-{
-    let mut child = git_command()
-        .arg("-C")
-        .arg(root)
-        .args(arguments)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to run Git in {}", root.display()))?;
-    let stdout = child.stdout.take().context("Git did not open stdout")?;
-    let stderr = child.stderr.take().context("Git did not open stderr")?;
-    let stderr_reader = thread::spawn(move || read_git_error(stderr));
-
-    let mut patch = Vec::with_capacity(MAX_DIFF_BYTES.min(64 * 1024));
-    let read_result = stdout
-        .take((MAX_DIFF_BYTES + 1) as u64)
-        .read_to_end(&mut patch);
-    let reached_limit = patch.len() > MAX_DIFF_BYTES;
-    if reached_limit || read_result.is_err() {
-        let _ = child.kill();
-    }
-    let status = child.wait()?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("Git stderr reader failed"))??;
-    read_result?;
-
-    if !(reached_limit || status.success() || allow_difference && status.code() == Some(1)) {
-        ensure_success(
-            &Output {
-                status,
-                stdout: Vec::new(),
-                stderr,
-            },
-            operation,
-        )?;
-    }
-    Ok(patch)
 }
 
 /// Keep draining stderr so Git cannot block on a full pipe, but bound the
@@ -1467,158 +1469,6 @@ fn ensure_success(output: &Output, operation: &str) -> Result<()> {
     }
     let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     bail!("{operation} failed: {message}")
-}
-
-fn parse_porcelain_status(stdout: &[u8]) -> PorcelainStatus {
-    let mut records = stdout.split(|byte| *byte == 0).peekable();
-    let mut status = PorcelainStatus::default();
-    while let Some(record) = records.next() {
-        if record.is_empty() {
-            continue;
-        }
-        let record = String::from_utf8_lossy(record);
-        if let Some(header) = record.strip_prefix("## ") {
-            (status.branch, status.ahead, status.behind) = parse_branch_header(header);
-            continue;
-        }
-        if record.len() < 3 {
-            continue;
-        }
-        let bytes = record.as_bytes();
-        let index = bytes[0] as char;
-        let worktree = bytes[1] as char;
-        if index == '!' && worktree == '!' {
-            continue;
-        }
-        let old_path = if matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C') {
-            records
-                .next()
-                .map(|path| String::from_utf8_lossy(path).into_owned())
-        } else {
-            None
-        };
-        let path = record[3..].trim_end_matches('/').to_owned();
-        if path.is_empty() {
-            continue;
-        }
-        status.files.push(PorcelainFile {
-            index,
-            worktree,
-            path,
-            old_path,
-        });
-    }
-    status
-}
-
-#[derive(Debug)]
-struct PorcelainStatus {
-    branch: String,
-    ahead: usize,
-    behind: usize,
-    files: Vec<PorcelainFile>,
-}
-
-impl Default for PorcelainStatus {
-    fn default() -> Self {
-        Self {
-            branch: "HEAD".to_owned(),
-            ahead: 0,
-            behind: 0,
-            files: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct PorcelainFile {
-    index: char,
-    worktree: char,
-    path: String,
-    old_path: Option<String>,
-}
-
-impl PorcelainFile {
-    fn untracked(&self) -> bool {
-        self.index == '?' && self.worktree == '?'
-    }
-}
-
-fn empty_diff_notice(binary: bool) -> GitDiffRow {
-    GitDiffRow {
-        old_line: None,
-        new_line: None,
-        kind: GitDiffRowKind::Notice,
-        text: if binary {
-            "Binary file — no text diff.".into()
-        } else {
-            "Git returned no textual changes for this file.".into()
-        },
-    }
-}
-
-fn parse_branch_header(header: &str) -> (String, usize, usize) {
-    let (relation, tracking) = header
-        .rsplit_once(" [")
-        .map(|(relation, tracking)| (relation, tracking.trim_end_matches(']')))
-        .unwrap_or((header, ""));
-    let relation = relation
-        .strip_prefix("No commits yet on ")
-        .or_else(|| relation.strip_prefix("Initial commit on "))
-        .unwrap_or(relation);
-    let branch = relation
-        .split_once("...")
-        .map(|(branch, _)| branch)
-        .unwrap_or(relation);
-    let branch = if branch == "HEAD (no branch)" {
-        "detached".to_owned()
-    } else {
-        branch.to_owned()
-    };
-    let mut ahead = 0;
-    let mut behind = 0;
-    for item in tracking.split(',').map(str::trim) {
-        if let Some(value) = item.strip_prefix("ahead ") {
-            ahead = value.parse().unwrap_or_default();
-        } else if let Some(value) = item.strip_prefix("behind ") {
-            behind = value.parse().unwrap_or_default();
-        }
-    }
-    (branch, ahead, behind)
-}
-
-fn file_status(index: char, worktree: char) -> GitFileStatus {
-    if index == '?' && worktree == '?' {
-        GitFileStatus::Untracked
-    } else if matches!(
-        (index, worktree),
-        ('D', 'D') | ('A', 'U') | ('U', 'D') | ('U', 'A') | ('D', 'U') | ('A', 'A') | ('U', 'U')
-    ) {
-        GitFileStatus::Conflicted
-    } else if matches!(index, 'R') || matches!(worktree, 'R') {
-        GitFileStatus::Renamed
-    } else if matches!(index, 'C') || matches!(worktree, 'C') {
-        GitFileStatus::Copied
-    } else if matches!(index, 'D') || matches!(worktree, 'D') {
-        GitFileStatus::Deleted
-    } else if matches!(index, 'A') || matches!(worktree, 'A') {
-        GitFileStatus::Added
-    } else if matches!(index, 'T') || matches!(worktree, 'T') {
-        GitFileStatus::TypeChanged
-    } else {
-        GitFileStatus::Modified
-    }
-}
-
-fn change_priority(change: &GitFileChange) -> u8 {
-    match change.status {
-        GitFileStatus::Conflicted => 0,
-        _ if change.staged => 1,
-        GitFileStatus::Modified | GitFileStatus::TypeChanged => 2,
-        GitFileStatus::Added | GitFileStatus::Untracked => 3,
-        GitFileStatus::Renamed | GitFileStatus::Copied => 4,
-        GitFileStatus::Deleted => 5,
-    }
 }
 
 fn untracked_paths(root: &Path) -> Result<Vec<String>> {
@@ -1804,49 +1654,6 @@ fn diff_name_status(root: &Path, revision: &str, head: Option<&str>) -> Result<V
     Ok(parse_name_status(&output.stdout))
 }
 
-fn parse_name_status(output: &[u8]) -> Vec<GitFileChange> {
-    let mut changes = Vec::new();
-    let mut fields = output.split(|byte| *byte == 0);
-    while let Some(code) = fields.next() {
-        if code.is_empty() {
-            continue;
-        }
-        let status = match code[0] as char {
-            'A' => GitFileStatus::Added,
-            'D' => GitFileStatus::Deleted,
-            'R' => GitFileStatus::Renamed,
-            'C' => GitFileStatus::Copied,
-            'T' => GitFileStatus::TypeChanged,
-            'U' => GitFileStatus::Conflicted,
-            _ => GitFileStatus::Modified,
-        };
-        let (old_path, path) = if matches!(status, GitFileStatus::Renamed | GitFileStatus::Copied) {
-            (
-                fields
-                    .next()
-                    .map(|path| String::from_utf8_lossy(path).into_owned()),
-                fields.next().unwrap_or_default(),
-            )
-        } else {
-            (None, fields.next().unwrap_or_default())
-        };
-        if path.is_empty() {
-            continue;
-        }
-        changes.push(GitFileChange {
-            status,
-            staged: false,
-            unstaged: true,
-            untracked: false,
-            path: String::from_utf8_lossy(path).into_owned(),
-            old_path,
-            additions: None,
-            deletions: None,
-        });
-    }
-    changes
-}
-
 fn collect_numstat_against(
     root: &Path,
     revision: &str,
@@ -1934,87 +1741,6 @@ fn text_additions(bytes: &[u8]) -> Option<usize> {
     }
 }
 
-fn apply_numstat(stdout: &[u8], stats: &mut HashMap<String, (usize, usize)>) {
-    let mut records = stdout.split(|byte| *byte == 0);
-    while let Some(record) = records.next() {
-        let mut fields = record.splitn(3, |byte| *byte == b'\t');
-        let (Some(additions), Some(deletions), Some(path)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        let (Ok(additions), Ok(deletions)) = (
-            std::str::from_utf8(additions)
-                .unwrap_or_default()
-                .parse::<usize>(),
-            std::str::from_utf8(deletions)
-                .unwrap_or_default()
-                .parse::<usize>(),
-        ) else {
-            continue;
-        };
-        // With -z a rename has an empty path in the first record followed by
-        // separate old and new path records. Attribute its stats to the new path.
-        let path = if path.is_empty() {
-            let _old = records.next();
-            records.next().unwrap_or_default()
-        } else {
-            path
-        };
-        if path.is_empty() {
-            continue;
-        }
-        let entry = stats
-            .entry(String::from_utf8_lossy(path).into_owned())
-            .or_default();
-        entry.0 += additions;
-        entry.1 += deletions;
-    }
-}
-
-fn parse_history(output: &[u8]) -> Vec<GitCommit> {
-    // Git subjects and author names may contain newlines or control characters.
-    // A NUL-separated tformat record has seven fields and a final separator.
-    let mut commits = Vec::new();
-    for fields in output
-        .split(|byte| *byte == 0)
-        .collect::<Vec<_>>()
-        .chunks_exact(7)
-    {
-        let [sha, short_sha, subject, author, date, parents, refs] = fields else {
-            continue;
-        };
-        let text = |field: &&[u8]| String::from_utf8_lossy(field).into_owned();
-        commits.push(GitCommit {
-            sha: text(sha),
-            short_sha: text(short_sha),
-            subject: text(subject),
-            author: text(author),
-            date: text(date),
-            parents: String::from_utf8_lossy(parents)
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect(),
-            refs: parse_decorations(&String::from_utf8_lossy(refs)),
-        });
-    }
-    commits
-}
-
-/// `HEAD -> main, origin/main, tag: v1` → `["main", "origin/main", "v1"]`.
-fn parse_decorations(decorations: &str) -> Vec<String> {
-    decorations
-        .split(", ")
-        .map(|name| {
-            name.trim()
-                .trim_start_matches("HEAD -> ")
-                .trim_start_matches("tag: ")
-        })
-        .filter(|name| !name.is_empty() && *name != "HEAD" && !name.ends_with("/HEAD"))
-        .map(str::to_owned)
-        .collect()
-}
-
 /// Git environment for writes started from the UI: never wait on a terminal.
 fn git_write_command(root: &Path) -> Command {
     let mut command = git_command();
@@ -2094,102 +1820,6 @@ pub(crate) fn parse_diff_patch(path: &str, patch: &[u8]) -> GitDiff {
         &mut diff.truncated,
     );
     diff
-}
-
-fn append_patch(
-    bytes: &[u8],
-    section: Option<&str>,
-    rows: &mut Vec<GitDiffRow>,
-    additions: &mut usize,
-    deletions: &mut usize,
-    binary: &mut bool,
-    truncated: &mut bool,
-) {
-    if bytes.is_empty() {
-        return;
-    }
-    if let Some(section) = section {
-        rows.push(GitDiffRow {
-            old_line: None,
-            new_line: None,
-            kind: GitDiffRowKind::Section,
-            text: section.to_owned(),
-        });
-    }
-    let visible = &bytes[..bytes.len().min(MAX_DIFF_BYTES)];
-    *truncated |= bytes.len() > MAX_DIFF_BYTES;
-    let patch = String::from_utf8_lossy(visible);
-    let mut old_line = 0;
-    let mut new_line = 0;
-    let mut inside_hunk = false;
-    for line in patch.lines() {
-        if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
-            *binary = true;
-            continue;
-        }
-        if line.starts_with("@@ ") {
-            if let Some((old, new)) = parse_hunk_lines(line) {
-                old_line = old;
-                new_line = new;
-            }
-            inside_hunk = true;
-            rows.push(GitDiffRow {
-                old_line: None,
-                new_line: None,
-                kind: GitDiffRowKind::Hunk,
-                text: line.to_owned(),
-            });
-            continue;
-        }
-        if !inside_hunk {
-            continue;
-        }
-        let (kind, old, new, text) = if let Some(text) = line.strip_prefix('+') {
-            let current = new_line;
-            new_line += 1;
-            *additions += 1;
-            (GitDiffRowKind::Addition, None, Some(current), text)
-        } else if let Some(text) = line.strip_prefix('-') {
-            let current = old_line;
-            old_line += 1;
-            *deletions += 1;
-            (GitDiffRowKind::Deletion, Some(current), None, text)
-        } else if let Some(text) = line.strip_prefix(' ') {
-            let old = old_line;
-            let new = new_line;
-            old_line += 1;
-            new_line += 1;
-            (GitDiffRowKind::Context, Some(old), Some(new), text)
-        } else if line.starts_with('\\') {
-            (GitDiffRowKind::Notice, None, None, line)
-        } else {
-            continue;
-        };
-        rows.push(GitDiffRow {
-            old_line: old,
-            new_line: new,
-            kind,
-            text: text.to_owned(),
-        });
-    }
-    if *truncated {
-        rows.push(GitDiffRow {
-            old_line: None,
-            new_line: None,
-            kind: GitDiffRowKind::Notice,
-            text: "Diff truncated to 4 MiB to keep the UI responsive.".into(),
-        });
-    }
-}
-
-fn parse_hunk_lines(header: &str) -> Option<(usize, usize)> {
-    let mut ranges = header.split_whitespace();
-    ranges.next()?;
-    let old = ranges.next()?.strip_prefix('-')?;
-    let new = ranges.next()?.strip_prefix('+')?;
-    let old = old.split(',').next()?.parse().ok()?;
-    let new = new.split(',').next()?.parse().ok()?;
-    Some((old, new))
 }
 
 #[cfg(test)]

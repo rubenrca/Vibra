@@ -88,33 +88,12 @@ impl PaneLayoutSnapshot {
         axis: WorkspaceSplitAxis,
         insert_first: bool,
     ) -> bool {
-        if let Self::Terminal { id } = self {
-            if *id != terminal_id {
-                return false;
-            }
-            let existing = Self::terminal(*id);
-            let inserted = Self::terminal(new_terminal_id);
-            let (first, second) = if insert_first {
-                (inserted, existing)
-            } else {
-                (existing, inserted)
-            };
-            *self = Self::Split {
-                axis,
-                ratio: DEFAULT_PANE_SPLIT_RATIO,
-                first: Box::new(first),
-                second: Box::new(second),
-            };
-            return true;
-        }
-
-        match self {
-            Self::Split { first, second, .. } => {
-                first.split_terminal(terminal_id, new_terminal_id, axis, insert_first)
-                    || second.split_terminal(terminal_id, new_terminal_id, axis, insert_first)
-            }
-            Self::Terminal { .. } => false,
-        }
+        self.insert_layout(
+            terminal_id,
+            &Self::terminal(new_terminal_id),
+            axis,
+            insert_first,
+        )
     }
 
     pub(super) fn split_with_layout(
@@ -123,14 +102,24 @@ impl PaneLayoutSnapshot {
         inserted: &Self,
         direction: PaneSplitDirection,
     ) -> bool {
+        let (axis, insert_first) = match direction {
+            PaneSplitDirection::Left => (WorkspaceSplitAxis::Horizontal, true),
+            PaneSplitDirection::Right => (WorkspaceSplitAxis::Horizontal, false),
+            PaneSplitDirection::Up => (WorkspaceSplitAxis::Vertical, true),
+            PaneSplitDirection::Down => (WorkspaceSplitAxis::Vertical, false),
+        };
+        self.insert_layout(terminal_id, inserted, axis, insert_first)
+    }
+
+    fn insert_layout(
+        &mut self,
+        terminal_id: Uuid,
+        inserted: &Self,
+        axis: WorkspaceSplitAxis,
+        insert_first: bool,
+    ) -> bool {
         match self {
             Self::Terminal { id } if *id == terminal_id => {
-                let (axis, insert_first) = match direction {
-                    PaneSplitDirection::Left => (WorkspaceSplitAxis::Horizontal, true),
-                    PaneSplitDirection::Right => (WorkspaceSplitAxis::Horizontal, false),
-                    PaneSplitDirection::Up => (WorkspaceSplitAxis::Vertical, true),
-                    PaneSplitDirection::Down => (WorkspaceSplitAxis::Vertical, false),
-                };
                 let existing = self.clone();
                 let (first, second) = if insert_first {
                     (inserted.clone(), existing)
@@ -146,8 +135,8 @@ impl PaneLayoutSnapshot {
                 true
             }
             Self::Split { first, second, .. } => {
-                first.split_with_layout(terminal_id, inserted, direction)
-                    || second.split_with_layout(terminal_id, inserted, direction)
+                first.insert_layout(terminal_id, inserted, axis, insert_first)
+                    || second.insert_layout(terminal_id, inserted, axis, insert_first)
             }
             _ => false,
         }

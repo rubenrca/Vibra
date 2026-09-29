@@ -154,7 +154,11 @@ impl super::WorkspaceView {
                     // Anchored beside the traffic lights so they stay put while the sidebar animates.
                     .child(
                         self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
-                            this.set_left_sidebar_visible(!this.left_sidebar_visible, true, cx);
+                            this.set_left_sidebar_visible(
+                                !this.settings.left_sidebar_visible,
+                                true,
+                                cx,
+                            );
                         }),
                     )
                     .child(self.navigation_buttons(cx))
@@ -359,9 +363,10 @@ impl super::WorkspaceView {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         let open = if left {
-            self.left_sidebar_visible
+            self.settings.left_sidebar_visible
         } else {
-            self.workspace_section == WorkspaceSection::Workspace && self.right_sidebar_visible
+            self.workspace_section == WorkspaceSection::Workspace
+                && self.settings.right_sidebar_visible
         };
         let icon = if left {
             "chrome-icons/panel-left.svg"

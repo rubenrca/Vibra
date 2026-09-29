@@ -12,11 +12,9 @@ pub use detail::{
 };
 pub use review::load_review_file;
 
-use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -24,6 +22,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::domain::work_items::{WorkItem, WorkKind, WorkSource, WorkStatus};
+use crate::infrastructure::process::{CommandLimits, command_output};
 
 pub use linear::{connect_linear, disconnect_linear, linear_connected};
 
@@ -84,64 +83,23 @@ const MAX_OUTPUT: u64 = 4 * 1024 * 1024;
 
 /// Drain pipes concurrently and kill the whole process group on timeout.
 fn bounded_output(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>> {
-    use std::os::unix::process::CommandExt;
-    let mut child = command
-        .process_group(0)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("Could not start the Inbox query.")?;
-    let stdout = child.stdout.take().unwrap();
-    let reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout
-            .take(MAX_OUTPUT + 1)
-            .read_to_end(&mut bytes)
-            .map(|_| bytes)
-    });
-    let writer = input.map(|bytes| {
-        let mut stdin = child.stdin.take().unwrap();
-        thread::spawn(move || stdin.write_all(&bytes))
-    });
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if started.elapsed() < Duration::from_secs(25) => {
-                thread::sleep(Duration::from_millis(25));
-            }
-            _ => {
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
-                }
-                let _ = child.wait();
-                break Err(anyhow::anyhow!("The query timed out. Try refreshing."));
-            }
-        }
-    };
-    // A login script can leave a descendant holding stdout after its parent
-    // exits. Stop that private process group before joining the pipe readers.
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
-    if let Some(writer) = writer {
-        let _ = writer.join();
-    }
-    let bytes = reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("Could not read the response."))??;
-    if !status?.success() {
+    let output = command_output(
+        command,
+        input,
+        CommandLimits {
+            timeout: Duration::from_secs(25),
+            stdout: MAX_OUTPUT as usize,
+            stderr: 0,
+        },
+    )
+    .context("Could not complete the Inbox query.")?;
+    if !output.status.success() {
         bail!("Could not query the service. Check your connection and provider session.");
     }
-    if bytes.len() as u64 > MAX_OUTPUT {
+    if output.stdout.len() as u64 > MAX_OUTPUT {
         bail!("The response exceeds the size limit.");
     }
-    Ok(bytes)
+    Ok(output.stdout)
 }
 
 fn string(value: &Value, key: &str) -> String {

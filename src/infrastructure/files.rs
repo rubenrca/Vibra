@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use std::fs;
 use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -12,8 +13,16 @@ use crate::ports::files::{FileEntry, FileEntryKind, FileSystemPort};
 pub struct LocalFileSystemPort;
 
 const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_INDEXED_FILES: usize = 20_000;
 
 impl FileSystemPort for LocalFileSystemPort {
+    fn search_files(&self, root: &Path, output: &mut Vec<PathBuf>) -> Result<()> {
+        if collect_git_search_files_inner(self, root, output, &mut HashSet::new())? {
+            return Ok(());
+        }
+        collect_search_files_from_disk(self, root, root, output)
+    }
+
     fn read_text_file(&self, project_root: &Path, path: &Path) -> Result<String> {
         let root = canonical_root(project_root)?;
         let path = path
@@ -116,6 +125,96 @@ impl FileSystemPort for LocalFileSystemPort {
             .map(|entry| entry.0)
             .collect())
     }
+}
+
+fn collect_search_files_from_disk(
+    port: &dyn FileSystemPort,
+    root: &Path,
+    directory: &Path,
+    output: &mut Vec<PathBuf>,
+) -> anyhow::Result<()> {
+    if output.len() >= MAX_INDEXED_FILES {
+        return Ok(());
+    }
+    for entry in port.list_directory_limited(root, directory, false, MAX_INDEXED_FILES)? {
+        if output.len() >= MAX_INDEXED_FILES {
+            break;
+        }
+        match entry.kind {
+            FileEntryKind::Directory
+                if !matches!(
+                    entry.name.as_str(),
+                    "target"
+                        | "node_modules"
+                        | "dist"
+                        | "build"
+                        | ".next"
+                        | "DerivedData"
+                        | "Pods"
+                        | ".venv"
+                ) =>
+            {
+                // One unreadable subdirectory must not discard the paths
+                // already indexed from the rest of the project.
+                let _ = collect_search_files_from_disk(port, root, &entry.path, output);
+            }
+            FileEntryKind::File => output.push(entry.path),
+            FileEntryKind::Directory | FileEntryKind::Symlink => {}
+        }
+    }
+    Ok(())
+}
+
+fn collect_git_search_files_inner(
+    port: &dyn FileSystemPort,
+    root: &Path,
+    output: &mut Vec<PathBuf>,
+    visited: &mut HashSet<PathBuf>,
+) -> anyhow::Result<bool> {
+    if output.len() >= MAX_INDEXED_FILES {
+        return Ok(true);
+    }
+    let canonical = root.canonicalize()?;
+    if !visited.insert(canonical) {
+        return Ok(true);
+    }
+    let bytes = match super::git::search_paths(root) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(false),
+    };
+    for path in bytes
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        if output.len() >= MAX_INDEXED_FILES {
+            break;
+        }
+        let relative = std::ffi::OsStr::from_bytes(path);
+        let relative = Path::new(relative);
+        if !relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let absolute = root.join(relative);
+        let Ok(metadata) = std::fs::symlink_metadata(&absolute) else {
+            continue;
+        };
+        if metadata.is_file() {
+            output.push(absolute);
+        } else if metadata.is_dir() {
+            // Gitlink entries are directories, not files. Search initialized
+            // submodules with their own ignore rules and a shared file budget.
+            if absolute.join(".git").exists()
+                && collect_git_search_files_inner(port, &absolute, output, visited)?
+            {
+                continue;
+            }
+            let _ = collect_search_files_from_disk(port, &absolute, &absolute, output);
+        }
+    }
+    Ok(true)
 }
 
 /// Creates `name` inside `directory`, never outside `root` and never over an
@@ -227,7 +326,74 @@ fn canonical_directory(root: &Path, directory: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use uuid::Uuid;
+
+    #[test]
+    fn quick_open_respects_nested_gitignore_rules() {
+        let root = std::env::temp_dir().join(format!("vibra-quick-open-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        assert!(
+            Command::new("git")
+                .current_dir(&root)
+                .args(["init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(root.join("src/.gitignore"), "generated.rs\n").unwrap();
+        fs::write(root.join("src/generated.rs"), "ignored\n").unwrap();
+        fs::write(root.join("src/main.rs"), "visible\n").unwrap();
+        let mut files = Vec::new();
+        LocalFileSystemPort.search_files(&root, &mut files).unwrap();
+        assert!(files.contains(&root.join("src/main.rs")));
+        assert!(!files.contains(&root.join("src/generated.rs")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quick_open_indexes_initialized_submodules() {
+        let base = std::env::temp_dir().join(format!("vibra-submodule-{}", Uuid::new_v4()));
+        let root = base.join("project");
+        let library = base.join("library");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&library).unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&library, &["init", "-q"]);
+        git(&library, &["config", "user.name", "Vibra Test"]);
+        git(&library, &["config", "user.email", "vibra@example.invalid"]);
+        fs::write(library.join("nested.rs"), "pub fn nested() {}\n").unwrap();
+        git(&library, &["add", "nested.rs"]);
+        git(&library, &["commit", "-qm", "library"]);
+        git(&root, &["init", "-q"]);
+        git(
+            &root,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                library.to_str().unwrap(),
+                "vendor-lib",
+            ],
+        );
+        let mut files = Vec::new();
+        LocalFileSystemPort.search_files(&root, &mut files).unwrap();
+        assert!(files.contains(&root.join("vendor-lib/nested.rs")));
+        fs::remove_dir_all(base).unwrap();
+    }
 
     fn temporary_root() -> PathBuf {
         let root = std::env::temp_dir().join(format!("vibra-files-{}", Uuid::new_v4()));

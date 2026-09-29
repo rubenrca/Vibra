@@ -1,4 +1,6 @@
 use super::*;
+use crate::ui::diff_rows::CommentSide;
+use gpui::{ListOffset, ScrollWheelEvent, point};
 
 #[gpui::test]
 fn file_preview_loads_without_git_and_late_files_cannot_replace_the_latest_choice(

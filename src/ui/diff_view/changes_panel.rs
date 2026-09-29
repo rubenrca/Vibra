@@ -2,6 +2,7 @@
 //! and actions on top, a commit box, the changed files, and the commit graph.
 //! The review itself opens beside the terminal, in the center.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -10,7 +11,7 @@ use gpui::{
 };
 
 use super::{DiffView, DiffViewEvent, GitPanelMode};
-use crate::ports::git::{GitCommit, GitCommitOptions, GitSyncOperation};
+use crate::ports::git::{GitCommit, GitCommitOptions, GitPort, GitSyncOperation};
 use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
 use crate::ui::text_edit::{TextKeyOutcome, apply_text_key};
 use crate::ui::theme::{colors, surface_tint};
@@ -686,24 +687,90 @@ impl DiffView {
             return;
         }
         let push = action == CommitAction::CommitAndPush;
+        self.write_repository(
+            if push {
+                "Committing and pushing…"
+            } else {
+                "Commit…"
+            },
+            move |port, root| {
+                let sha = port.commit(root, &message, GitCommitOptions { amend })?;
+                if push {
+                    port.sync(root, GitSyncOperation::Push)
+                        .map_err(|error| anyhow::anyhow!("commit {sha} created, but {error:#}"))?;
+                }
+                Ok(sha)
+            },
+            move |this, sha| {
+                this.changes.message.clear();
+                this.changes.feedback = Some((
+                    if push {
+                        format!("Commit {sha} created and pushed.")
+                    } else {
+                        format!("Commit {sha} created.")
+                    }
+                    .into(),
+                    false,
+                ));
+            },
+            cx,
+        );
+    }
+
+    fn run_sync(&mut self, operation: GitSyncOperation, cx: &mut Context<Self>) {
+        self.changes.menu = None;
+        self.write_repository(
+            match operation {
+                GitSyncOperation::Push => "Push…",
+                GitSyncOperation::Pull => "Pull…",
+                GitSyncOperation::Fetch => "Fetch…",
+            },
+            move |port, root| port.sync(root, operation),
+            move |this, ()| {
+                this.changes.feedback =
+                    Some((format!("{} completed.", operation.label()).into(), false));
+            },
+            cx,
+        );
+    }
+
+    /// Moves files into (`stage`) or out of the index.
+    pub(super) fn stage_paths(&mut self, paths: Vec<String>, stage: bool, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.write_repository(
+            if stage { "Stage…" } else { "Unstage…" },
+            move |port, root| {
+                if stage {
+                    port.stage(root, &paths)
+                } else {
+                    port.unstage(root, &paths)
+                }
+            },
+            |_, ()| {},
+            cx,
+        );
+    }
+
+    /// Repository writes share one busy state and discard results after a project switch.
+    fn write_repository<T: Send + 'static>(
+        &mut self,
+        label: &'static str,
+        write: impl FnOnce(&dyn GitPort, &Path) -> anyhow::Result<T> + Send + 'static,
+        on_success: impl FnOnce(&mut Self, T) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.changes.busy.is_some() {
+            return;
+        }
+        self.changes.busy = Some(label);
+        self.changes.feedback = None;
+        cx.notify();
         let generation = self.changes.generation;
         let root = self.context_root.clone();
         let port = self.git_port.clone();
-        self.changes.busy = Some(if push {
-            "Committing and pushing…"
-        } else {
-            "Commit…"
-        });
-        self.changes.feedback = None;
-        cx.notify();
-        let task = cx.background_spawn(async move {
-            let sha = port.commit(&root, &message, GitCommitOptions { amend })?;
-            if push {
-                port.sync(&root, GitSyncOperation::Push)
-                    .map_err(|error| anyhow::anyhow!("commit {sha} created, but {error:#}"))?;
-            }
-            anyhow::Ok(sha)
-        });
+        let task = cx.background_spawn(async move { write(port.as_ref(), &root) });
         self.changes._task = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -712,86 +779,8 @@ impl DiffView {
                 }
                 this.changes.busy = None;
                 match result {
-                    Ok(sha) => {
-                        this.changes.message.clear();
-                        this.changes.feedback = Some((
-                            if push {
-                                format!("Commit {sha} created and pushed.")
-                            } else {
-                                format!("Commit {sha} created.")
-                            }
-                            .into(),
-                            false,
-                        ));
-                    }
-                    Err(error) => {
-                        this.changes.feedback = Some((format!("{error:#}").into(), true));
-                    }
-                }
-                this.after_repository_write(cx);
-            });
-        }));
-    }
-
-    fn run_sync(&mut self, operation: GitSyncOperation, cx: &mut Context<Self>) {
-        self.changes.menu = None;
-        if self.changes.busy.is_some() {
-            return;
-        }
-        let generation = self.changes.generation;
-        let root = self.context_root.clone();
-        let port = self.git_port.clone();
-        self.changes.busy = Some(match operation {
-            GitSyncOperation::Push => "Push…",
-            GitSyncOperation::Pull => "Pull…",
-            GitSyncOperation::Fetch => "Fetch…",
-        });
-        self.changes.feedback = None;
-        cx.notify();
-        let task = cx.background_spawn(async move { port.sync(&root, operation) });
-        self.changes._task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.changes.generation != generation {
-                    return;
-                }
-                this.changes.busy = None;
-                this.changes.feedback = Some(match result {
-                    Ok(()) => (format!("{} completed.", operation.label()).into(), false),
-                    Err(error) => (format!("{error:#}").into(), true),
-                });
-                this.after_repository_write(cx);
-            });
-        }));
-    }
-
-    /// Moves files into (`stage`) or out of the index.
-    pub(super) fn stage_paths(&mut self, paths: Vec<String>, stage: bool, cx: &mut Context<Self>) {
-        if paths.is_empty() || self.changes.busy.is_some() {
-            return;
-        }
-        self.changes.busy = Some(if stage { "Stage…" } else { "Unstage…" });
-        self.changes.feedback = None;
-        cx.notify();
-        let generation = self.changes.generation;
-        let root = self.context_root.clone();
-        let port = self.git_port.clone();
-        let task = cx.background_spawn(async move {
-            if stage {
-                port.stage(&root, &paths)
-            } else {
-                port.unstage(&root, &paths)
-            }
-        });
-        self.changes._task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.changes.generation != generation {
-                    return;
-                }
-                this.changes.busy = None;
-                if let Err(error) = result {
-                    this.changes.feedback = Some((format!("{error:#}").into(), true));
+                    Ok(value) => on_success(this, value),
+                    Err(error) => this.changes.feedback = Some((format!("{error:#}").into(), true)),
                 }
                 this.after_repository_write(cx);
             });

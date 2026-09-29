@@ -1,6 +1,7 @@
 //! Ordered persistence off the GPUI thread. The final message carries the
 //! latest state, so a delayed write cannot replace it during window teardown.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -19,23 +20,47 @@ use crate::infrastructure::settings::{AppSettings, SettingsRepository};
 #[cfg(test)]
 const TEST_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub(super) enum SaveResult {
-    Workspace {
-        generation: u64,
-        error: Option<String>,
-    },
-    Settings {
-        generation: u64,
-        error: Option<String>,
-    },
-    Library {
-        generation: u64,
-        error: Option<String>,
-    },
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DocumentKind {
+    Workspace,
+    Settings,
+    Library,
+}
+
+impl DocumentKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Workspace => "projects",
+            Self::Settings => "settings",
+            Self::Library => "notes and automations",
+        }
+    }
+}
+
+enum Document {
+    Workspace(WorkspaceSnapshot),
+    Settings(Box<AppSettings>),
+    Library(Library),
+}
+
+impl Document {
+    fn kind(&self) -> DocumentKind {
+        match self {
+            Self::Workspace(_) => DocumentKind::Workspace,
+            Self::Settings(_) => DocumentKind::Settings,
+            Self::Library(_) => DocumentKind::Library,
+        }
+    }
+}
+
+pub(crate) struct SaveResult {
+    pub kind: DocumentKind,
+    pub generation: u64,
+    pub error: Option<String>,
 }
 
 #[derive(Debug)]
-pub(super) enum FinishError {
+pub(crate) enum FinishError {
     Unavailable,
     Save(String),
 }
@@ -43,9 +68,7 @@ pub(super) enum FinishError {
 enum Command {
     Wake,
     Finish {
-        workspace: Box<Option<(u64, WorkspaceSnapshot)>>,
-        settings: Box<Option<(u64, AppSettings)>>,
-        library: Option<(u64, Library)>,
+        state: PendingWrites,
         completed: mpsc::Sender<Vec<String>>,
     },
     #[cfg(test)]
@@ -53,14 +76,16 @@ enum Command {
     Stop,
 }
 
-#[derive(Default)]
-struct PendingWrites {
-    workspace: Option<(u64, WorkspaceSnapshot)>,
-    settings: Option<(u64, AppSettings)>,
-    library: Option<(u64, Library)>,
+// One latest snapshot per document, written in workspace/settings/library order.
+type PendingWrites = BTreeMap<DocumentKind, (u64, Document)>;
+
+struct Repositories {
+    workspace: WorkspaceRepository,
+    settings: SettingsRepository,
+    library: Option<LibraryRepository>,
 }
 
-pub(super) struct PersistenceQueue {
+pub(crate) struct PersistenceQueue {
     commands: mpsc::Sender<Command>,
     pending: Arc<Mutex<PendingWrites>>,
     wake_queued: Arc<AtomicBool>,
@@ -69,9 +94,9 @@ pub(super) struct PersistenceQueue {
 
 impl PersistenceQueue {
     pub fn start(
-        workspace_repository: WorkspaceRepository,
-        settings_repository: SettingsRepository,
-        library_repository: Option<LibraryRepository>,
+        workspace: WorkspaceRepository,
+        settings: SettingsRepository,
+        library: Option<LibraryRepository>,
     ) -> io::Result<(Self, Receiver<SaveResult>)> {
         let (commands, receiver) = mpsc::channel();
         let (results, result_receiver) = async_channel::unbounded();
@@ -79,6 +104,11 @@ impl PersistenceQueue {
         let worker_pending = pending.clone();
         let wake_queued = Arc::new(AtomicBool::new(false));
         let worker_wake_queued = wake_queued.clone();
+        let repositories = Repositories {
+            workspace,
+            settings,
+            library,
+        };
         let worker = thread::Builder::new()
             .name("vibra-persistence".into())
             .spawn(move || {
@@ -87,9 +117,7 @@ impl PersistenceQueue {
                     worker_pending,
                     worker_wake_queued,
                     results,
-                    workspace_repository,
-                    settings_repository,
-                    library_repository,
+                    repositories,
                 )
             })?;
         Ok((
@@ -108,41 +136,30 @@ impl PersistenceQueue {
         generation: u64,
         snapshot: WorkspaceSnapshot,
     ) -> Result<(), String> {
-        self.pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .workspace = Some((generation, snapshot));
-        self.wake()
-            .map_err(|_| "project saving is no longer available".into())
+        self.enqueue(generation, Document::Workspace(snapshot))
     }
 
     pub fn save_settings(&self, generation: u64, settings: AppSettings) -> Result<(), String> {
-        self.pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .settings = Some((generation, settings));
-        self.wake()
-            .map_err(|_| "settings saving is no longer available".into())
-    }
-
-    fn wake(&self) -> Result<(), ()> {
-        if self.wake_queued.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
-        if self.commands.send(Command::Wake).is_err() {
-            self.wake_queued.store(false, Ordering::Release);
-            return Err(());
-        }
-        Ok(())
+        self.enqueue(generation, Document::Settings(Box::new(settings)))
     }
 
     pub fn save_library(&self, generation: u64, library: Library) -> Result<(), String> {
+        self.enqueue(generation, Document::Library(library))
+    }
+
+    fn enqueue(&self, generation: u64, document: Document) -> Result<(), String> {
+        let kind = document.kind();
         self.pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .library = Some((generation, library));
-        self.wake()
-            .map_err(|_| "notes and automations saving is no longer available".into())
+            .insert(kind, (generation, document));
+        if !self.wake_queued.swap(true, Ordering::AcqRel)
+            && self.commands.send(Command::Wake).is_err()
+        {
+            self.wake_queued.store(false, Ordering::Release);
+            return Err(format!("{} saving is no longer available", kind.label()));
+        }
+        Ok(())
     }
 
     /// Wait for the last state to reach disk before the process can exit. A
@@ -156,18 +173,11 @@ impl PersistenceQueue {
         let (completed, reply) = mpsc::channel();
         self.commands
             .send(Command::Finish {
-                workspace: Box::new(workspace),
-                settings: Box::new(settings),
-                library,
+                state: final_writes(workspace, settings, library),
                 completed,
             })
             .map_err(|_| FinishError::Unavailable)?;
-        let errors = reply.recv().map_err(|_| FinishError::Unavailable)?;
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(FinishError::Save(errors.join("; ")))
-        }
+        finish_result(reply.recv().map_err(|_| FinishError::Unavailable)?)
     }
 
     #[cfg(test)]
@@ -186,9 +196,9 @@ impl Drop for PersistenceQueue {
     }
 }
 
-/// Emergency path when the queue could not start or has stopped. The final
-/// save completes before the process exits, even if storage is slow.
-pub(super) fn save_final_blocking(
+/// Emergency path when the queue could not start or has stopped. Uses the same
+/// save and error handling as the worker, completing before the process exits.
+pub(crate) fn save_final_blocking(
     workspace_repository: WorkspaceRepository,
     settings_repository: SettingsRepository,
     library_repository: Option<LibraryRepository>,
@@ -196,23 +206,36 @@ pub(super) fn save_final_blocking(
     settings: Option<AppSettings>,
     library: Option<Library>,
 ) -> Result<(), FinishError> {
-    let mut errors = Vec::new();
-    if let Some(workspace) = workspace
-        && let Err(error) = workspace_repository.save(&workspace)
-    {
-        errors.push(format!("Could not save projects: {error}"));
-    }
-    if let Some(settings) = settings
-        && let Err(error) = settings_repository.save(&settings)
-    {
-        errors.push(format!("Could not save settings: {error}"));
-    }
-    if let Some(library) = library
-        && let Some(repository) = library_repository
-        && let Err(error) = repository.save(&library)
-    {
-        errors.push(format!("Could not save notes and automations: {error}"));
-    }
+    let repositories = Repositories {
+        workspace: workspace_repository,
+        settings: settings_repository,
+        library: library_repository,
+    };
+    let writes = final_writes(
+        workspace.map(|snapshot| (0, snapshot)),
+        settings.map(|settings| (0, settings)),
+        library.map(|library| (0, library)),
+    );
+    finish_result(persist_batch(writes, &repositories, None))
+}
+
+fn final_writes(
+    workspace: Option<(u64, WorkspaceSnapshot)>,
+    settings: Option<(u64, AppSettings)>,
+    library: Option<(u64, Library)>,
+) -> PendingWrites {
+    [
+        workspace.map(|(generation, snapshot)| (generation, Document::Workspace(snapshot))),
+        settings.map(|(generation, settings)| (generation, Document::Settings(Box::new(settings)))),
+        library.map(|(generation, library)| (generation, Document::Library(library))),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|(generation, document)| (document.kind(), (generation, document)))
+    .collect()
+}
+
+fn finish_result(errors: Vec<String>) -> Result<(), FinishError> {
     if errors.is_empty() {
         Ok(())
     } else {
@@ -225,115 +248,66 @@ fn run(
     pending: Arc<Mutex<PendingWrites>>,
     wake_queued: Arc<AtomicBool>,
     results: async_channel::Sender<SaveResult>,
-    workspace_repository: WorkspaceRepository,
-    settings_repository: SettingsRepository,
-    library_repository: Option<LibraryRepository>,
+    repositories: Repositories,
 ) {
-    while let Ok(command) = commands.recv() {
+    while let Ok(mut command) = commands.recv() {
         if matches!(command, Command::Wake) {
-            // Clear before taking pending state: a concurrent update must be
-            // able to queue another wake while this batch is being written.
+            // Clear before taking pending state so a concurrent edit can wake us again.
             wake_queued.store(false, Ordering::Release);
         }
-        let (mut workspace, mut settings, mut library) = {
-            let mut pending = pending
+        let mut writes = std::mem::take(
+            &mut *pending
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            (
-                pending.workspace.take(),
-                pending.settings.take(),
-                pending.library.take(),
-            )
-        };
-        let (completed, stop) = match command {
-            Command::Wake => (None, false),
-            Command::Finish {
-                workspace: final_workspace,
-                settings: final_settings,
-                library: final_library,
-                completed,
-            } => {
-                workspace = (*final_workspace).or(workspace);
-                settings = (*final_settings).or(settings);
-                library = final_library.or(library);
-                (Some(completed), true)
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        if let Command::Finish { state, .. } = &mut command {
+            writes.extend(std::mem::take(state));
+        }
+        let errors = persist_batch(writes, &repositories, Some(&results));
+        match command {
+            Command::Wake => {}
+            Command::Finish { completed, .. } => {
+                let _ = completed.send(errors);
+                break;
             }
             #[cfg(test)]
-            Command::Barrier(barrier) => {
-                persist_batch(
-                    workspace,
-                    settings,
-                    library,
-                    &workspace_repository,
-                    &settings_repository,
-                    library_repository.as_ref(),
-                    &results,
-                );
-                let _ = barrier.send(());
-                continue;
+            Command::Barrier(completed) => {
+                let _ = completed.send(());
             }
-            Command::Stop => (None, true),
-        };
-        let errors = persist_batch(
-            workspace,
-            settings,
-            library,
-            &workspace_repository,
-            &settings_repository,
-            library_repository.as_ref(),
-            &results,
-        );
-        if let Some(completed) = completed {
-            let _ = completed.send(errors);
-        }
-        if stop {
-            break;
+            Command::Stop => break,
         }
     }
 }
 
 fn persist_batch(
-    workspace: Option<(u64, WorkspaceSnapshot)>,
-    settings: Option<(u64, AppSettings)>,
-    library: Option<(u64, Library)>,
-    workspace_repository: &WorkspaceRepository,
-    settings_repository: &SettingsRepository,
-    library_repository: Option<&LibraryRepository>,
-    results: &async_channel::Sender<SaveResult>,
+    writes: PendingWrites,
+    repositories: &Repositories,
+    results: Option<&async_channel::Sender<SaveResult>>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    if let Some((generation, snapshot)) = workspace {
-        let error = workspace_repository
-            .save(&snapshot)
-            .err()
-            .map(|error| format!("Could not save projects: {error}"));
-        if let Some(error) = &error {
-            errors.push(error.clone());
-        }
-        let _ = results.try_send(SaveResult::Workspace { generation, error });
-    }
-    if let Some((generation, settings)) = settings {
-        let error = settings_repository
-            .save(&settings)
-            .err()
-            .map(|error| format!("Could not save settings: {error}"));
-        if let Some(error) = &error {
-            errors.push(error.clone());
-        }
-        let _ = results.try_send(SaveResult::Settings { generation, error });
-    }
-    if let Some((generation, library)) = library {
-        let error = match library_repository {
-            Some(repository) => repository
-                .save(&library)
-                .err()
-                .map(|error| format!("Could not save notes and automations: {error}")),
-            None => Some("Notes and automations saving is unavailable".into()),
+    for (kind, (generation, document)) in writes {
+        let saved = match document {
+            Document::Workspace(snapshot) => repositories.workspace.save(&snapshot).map(|_| ()),
+            Document::Settings(settings) => repositories.settings.save(&settings),
+            Document::Library(library) => repositories
+                .library
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("saving is unavailable"))
+                .and_then(|repository| repository.save(&library)),
         };
+        let error = saved
+            .err()
+            .map(|error| format!("Could not save {}: {error}", kind.label()));
         if let Some(error) = &error {
             errors.push(error.clone());
         }
-        let _ = results.try_send(SaveResult::Library { generation, error });
+        if let Some(results) = results {
+            let _ = results.try_send(SaveResult {
+                kind,
+                generation,
+                error,
+            });
+        }
     }
     errors
 }
@@ -408,7 +382,8 @@ mod tests {
         assert!(matches!(error, FinishError::Save(message) if message.contains("projects")));
         assert!(matches!(
             results.try_recv(),
-            Ok(SaveResult::Workspace {
+            Ok(SaveResult {
+                kind: DocumentKind::Workspace,
                 generation: 1,
                 error: Some(_)
             })

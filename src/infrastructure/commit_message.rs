@@ -2,15 +2,16 @@
 //! It runs through the login shell, so it sees the same PATH and credentials
 //! as the terminal, and nothing is sent anywhere the user's CLI would not.
 
-use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
+
+use crate::infrastructure::process::{CommandLimits, command_output};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_MESSAGE_CHARS: usize = 2_000;
 
 const INSTRUCTIONS: &str = "Write a git commit message for the changes below. \
@@ -38,48 +39,28 @@ pub fn generate_commit_message(root: &Path, context: &str) -> Result<String> {
         .ok()
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| "/bin/zsh".to_owned());
-    let mut child = Command::new(shell)
+    let mut command = Command::new(shell);
+    command
         .args(["-l", "-c", SCRIPT])
         .current_dir(root)
-        .env("VIBRA_COMMIT_PROMPT", INSTRUCTIONS)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("could not start the shell")?;
-    let mut stdin = child.stdin.take().context("stdin unavailable")?;
+        .env("VIBRA_COMMIT_PROMPT", INSTRUCTIONS);
     let input = format!("{INSTRUCTIONS}\n\n{context}");
-    let writer = thread::spawn(move || {
-        let _ = stdin.write_all(input.as_bytes());
-    });
-    let mut stdout = child.stdout.take().context("stdout unavailable")?;
-    let mut stderr = child.stderr.take().context("stderr unavailable")?;
-    let reader = thread::spawn(move || {
-        let mut output = String::new();
-        let _ = stdout.read_to_string(&mut output);
-        output
-    });
-    let error_reader = thread::spawn(move || {
-        let mut output = String::new();
-        let _ = stderr.read_to_string(&mut output);
-        output
-    });
-
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if started.elapsed() > TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("the agent did not respond within {} s", TIMEOUT.as_secs());
-        }
-        thread::sleep(Duration::from_millis(100));
-    };
-    let _ = writer.join();
-    let output = reader.join().unwrap_or_default();
-    let errors = error_reader.join().unwrap_or_default();
+    let captured = command_output(
+        &mut command,
+        Some(input.into_bytes()),
+        CommandLimits {
+            timeout: TIMEOUT,
+            stdout: MAX_OUTPUT_BYTES,
+            stderr: MAX_OUTPUT_BYTES,
+        },
+    )?;
+    if captured.stdout.len() > MAX_OUTPUT_BYTES {
+        bail!("the agent response exceeds the 64 KiB limit");
+    }
+    let status = captured.status;
+    let output = String::from_utf8(captured.stdout)
+        .map_err(|_| anyhow::anyhow!("the agent returned a message that is not UTF-8"))?;
+    let errors = String::from_utf8_lossy(&captured.stderr);
     if status.code() == Some(127) && errors.contains("vibra: no agent CLI") {
         bail!("install Claude Code, Gemini CLI, or Codex to generate messages");
     }

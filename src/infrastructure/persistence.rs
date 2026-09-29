@@ -1,11 +1,17 @@
+mod queue;
+
+pub(crate) use queue::{
+    DocumentKind, FinishError, PersistenceQueue, SaveResult, save_final_blocking,
+};
+
 use std::fs;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::domain::workspace::{CURRENT_WORKSPACE_SCHEMA_VERSION, WorkspaceSnapshot};
 use crate::infrastructure::paths::{
     RevisionGuard, application_support_directory, atomic_write, gpui_preview_support_directory,
+    read_file_limited,
 };
 use anyhow::{Context, Result, bail};
 
@@ -14,23 +20,12 @@ const SWIFT_BACKUP_FILE_NAME: &str = "workspace.swift-v0.2.7.backup.json";
 const PROJECTS_BACKUP_FILE_NAME: &str = "workspace.pre-projects.backup.json";
 const MAX_WORKSPACE_BYTES: u64 = 16 * 1024 * 1024;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorkspaceRepository {
     path: PathBuf,
     preview_path: Option<PathBuf>,
     swift_backup_path: PathBuf,
     revision: Arc<RevisionGuard>,
-}
-
-impl Clone for WorkspaceRepository {
-    fn clone(&self) -> Self {
-        Self {
-            path: self.path.clone(),
-            preview_path: self.preview_path.clone(),
-            swift_backup_path: self.swift_backup_path.clone(),
-            revision: self.revision.clone(),
-        }
-    }
 }
 
 fn encode_workspace(snapshot: &WorkspaceSnapshot) -> Result<Vec<u8>> {
@@ -180,22 +175,7 @@ impl WorkspaceRepository {
 }
 
 fn read_workspace_file(path: &std::path::Path) -> Result<Vec<u8>> {
-    let file =
-        fs::File::open(path).with_context(|| format!("could not open {}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("could not inspect {}", path.display()))?;
-    if metadata.len() > MAX_WORKSPACE_BYTES {
-        bail!("{} exceeds the 16 MiB limit", path.display());
-    }
-    let mut data = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_WORKSPACE_BYTES + 1)
-        .read_to_end(&mut data)
-        .with_context(|| format!("could not read {}", path.display()))?;
-    if data.len() as u64 > MAX_WORKSPACE_BYTES {
-        bail!("{} exceeds the 16 MiB limit", path.display());
-    }
-    Ok(data)
+    read_file_limited(path, MAX_WORKSPACE_BYTES, "16 MiB")
 }
 
 fn valid_json_backup(path: &std::path::Path) -> bool {

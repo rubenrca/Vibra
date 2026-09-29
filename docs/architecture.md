@@ -21,6 +21,15 @@ independiente del workspace.
   Véase [la adaptación de MonoCode](inbox-monocode.md).
 - `src/ports`: contratos de terminal, Git y filesystem; `src/infrastructure` implementa
   esos contratos y los repositorios de JSON.
+- `src/infrastructure/paths.rs`: lecturas de archivos con límite, escrituras atómicas
+  y control de revisiones. Workspace, settings, library, caché del Inbox y temas
+  comparten el mismo lector; comprueba también el tamaño después de leer.
+- `src/infrastructure/process.rs`: captura acotada de comandos breves, entrada y
+  salida concurrentes y cierre del grupo de procesos antes de reunir los lectores.
+  Inbox, consulta de cuotas, lectura del llavero por CLI y generación de mensajes
+  de commit usan este adaptador. Cada consumidor conserva su plazo y sus límites.
+- `src/infrastructure/git/parsing.rs`: parsers puros de status, numstat, historial
+  y patches. El adaptador Git mantiene la ejecución de comandos y las cachés.
 - `src/ui/workspace_view/mod.rs`: construcción y coordinación de la ventana.
 - `navigation.rs`, `projects.rs` y `tabs.rs`: secciones globales, proyectos y navegación
   entre terminales y revisión. `prepare_terminal_tab` aplica la transición compartida;
@@ -29,11 +38,23 @@ independiente del workspace.
 - `terminals.rs`: ciclo de vida de los PTY, visibilidad, foco, nombres de panes y
   entrega de eventos. El foco diferido comprueba que su pane siga seleccionado y visible.
 - `explorer.rs`: carga y selección de archivos, filas del árbol y creación de entradas.
-  `files.rs` reúne el recorrido del filesystem, el watcher y los iconos/estados de Git.
+  `files.rs` reúne las filas visibles, el watcher y los iconos/estados de Git.
+  Quick Open pide `FileSystemPort::search_files`; el adaptador local aplica ignores,
+  recorre submódulos y conserva el presupuesto compartido de archivos. La captura
+  de `git ls-files` pertenece al adaptador Git y comparte su lector acotado.
 - `context_menu.rs`: menús de proyectos/panes y los prompts de nombres.
-- `storage.rs`: debounce y errores de guardado de la vista. `persistence.rs`: una cola
-  que ordena las escrituras de workspace, settings y library fuera del hilo GPUI.
+- `storage.rs`: debounce y errores de guardado de la vista.
+  `src/infrastructure/persistence/queue.rs`: cola de escrituras fuera del hilo GPUI.
+  Conserva un último estado por documento y comparte guardado y errores con la
+  ruta de emergencia. El orden sigue siendo workspace, settings y library.
 - `src/ui/diff_view/changes_panel.rs`: operaciones y controles de Changes.
+  Commit, sync y staging pasan por `write_repository`, que centraliza ocupación,
+  generaciones, errores y actualización posterior de la vista.
+- `src/ui/diff_view/repository.rs`: generaciones, cargas asíncronas y caché de
+  documentos. `rows.rs`: lista virtualizada, scroll, pliegues y tarjetas de
+  comentarios. `rendering.rs`: controles y estados vacíos. `history.rs`: tabla y
+  grafo de commits. Todos operan sobre el mismo `DiffView`; las revisiones remotas
+  continúan compartiendo los documentos y las filas de las revisiones locales.
 
 ## Contratos que conviene conservar
 
@@ -52,6 +73,14 @@ a una terminal oculta. Los nombres manuales y de automatizaciones pertenecen al 
 no al proceso del agente. Solo se descartan al cerrar ese pane. Cambiar su `cwd` no
 renombra los contenedores antiguos. Los recorridos de sesiones devuelven referencias,
 sin clonar el workspace en cada render de la barra de estado o el Inbox.
+Las ediciones del tab seleccionado resuelven su selección y normalizan el proyecto
+en un solo lugar. Insertar un terminal o un layout completo usa la misma operación
+del árbol, para conservar geometría y orden.
+
+`AppSettings` es la fuente de visibilidad de ambos sidebars. La vista conserva solo
+el progreso de la animación. Settings comparte componentes para tarjetas y etiquetas;
+los temas propios usan los mismos valores por defecto de roles que el resto del
+catálogo, con sus colores particulares explícitos.
 
 La raíz del proyecto define Explorer, Changes y las terminales nuevas. El `cwd`
 de una terminal puede cambiar sin alterar esa raíz. Las notas y automatizaciones

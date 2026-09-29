@@ -367,7 +367,7 @@ fn main() {
         }
     }
     if let Err(error) = run() {
-        eprintln!("Vibra no pudo iniciar: {error:#}");
+        eprintln!("Vibra could not start: {error:#}");
         std::process::exit(1);
     }
 }
