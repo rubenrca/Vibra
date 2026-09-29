@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::fs;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -46,10 +46,6 @@ impl AutomationServer {
                     }
                     let stream = match listener.accept() {
                         Ok((stream, _)) => stream,
-                        Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(25));
-                            continue;
-                        }
                         Err(_) => {
                             thread::sleep(Duration::from_millis(25));
                             continue;

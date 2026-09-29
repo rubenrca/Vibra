@@ -59,10 +59,6 @@ impl AgentKind {
         Self::Cursor,
     ];
 
-    /// Screen/title scan order. Distinctive phrases live in `text_markers`;
-    /// the walk order matches process scanning so wrappers stay consistent.
-    const TEXT_SCAN_ORDER: [Self; 10] = Self::PROCESS_SCAN_ORDER;
-
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Aider => "Aider",
@@ -93,21 +89,6 @@ impl AgentKind {
         }
     }
 
-    fn process_aliases(self) -> &'static [&'static str] {
-        match self {
-            Self::Aider => &["aider"],
-            Self::Amp => &["amp"],
-            Self::Claude => &["claude"],
-            Self::Codex => &["codex"],
-            Self::Cursor => &["cursor-agent", "cursor"],
-            Self::Gemini => &["gemini"],
-            Self::Goose => &["goose"],
-            Self::Grok => &["grok"],
-            Self::OpenCode => &["opencode"],
-            Self::Pi => &["pi"],
-        }
-    }
-
     fn text_markers(self) -> &'static [&'static str] {
         match self {
             Self::OpenCode => &["opencode"],
@@ -124,19 +105,10 @@ impl AgentKind {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "aider" => Some(Self::Aider),
-            "amp" => Some(Self::Amp),
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            "cursor" | "cursor-agent" => Some(Self::Cursor),
-            "gemini" => Some(Self::Gemini),
-            "goose" => Some(Self::Goose),
-            "grok" => Some(Self::Grok),
-            "opencode" => Some(Self::OpenCode),
-            "pi" => Some(Self::Pi),
-            _ => None,
-        }
+        let value = value.to_ascii_lowercase();
+        Self::ALL.into_iter().find(|kind| {
+            kind.cli_name() == value || (*kind == Self::Cursor && value == "cursor-agent")
+        })
     }
 
     pub fn from_process_name(process_name: &str) -> Option<Self> {
@@ -144,16 +116,14 @@ impl AgentKind {
             .file_name()
             .map(|name| name.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_else(|| process_name.to_ascii_lowercase());
-        Self::PROCESS_SCAN_ORDER.into_iter().find(|kind| {
-            kind.process_aliases()
-                .iter()
-                .any(|alias| process_name_matches(&base, alias))
-        })
+        Self::PROCESS_SCAN_ORDER
+            .into_iter()
+            .find(|kind| process_name_matches(&base, kind.cli_name()))
     }
 
     pub fn from_text(text: &str) -> Option<Self> {
         let text = text.to_lowercase();
-        Self::TEXT_SCAN_ORDER.into_iter().find(|kind| {
+        Self::PROCESS_SCAN_ORDER.into_iter().find(|kind| {
             kind.text_markers()
                 .iter()
                 .any(|marker| text.contains(marker))
@@ -205,6 +175,19 @@ mod tests {
 
     #[test]
     fn process_names_match_known_clis_and_reject_lookalikes() {
+        for kind in AgentKind::ALL {
+            assert_eq!(AgentKind::parse(kind.cli_name()), Some(kind));
+            assert_eq!(
+                AgentKind::parse(&kind.cli_name().to_uppercase()),
+                Some(kind)
+            );
+            assert_eq!(
+                AgentKind::from_process_name(&format!("{}.exe", kind.cli_name())),
+                Some(kind)
+            );
+        }
+        assert_eq!(AgentKind::parse("CURSOR-AGENT"), Some(AgentKind::Cursor));
+        assert!(AgentKind::parse("cursor_agent").is_none());
         assert_eq!(
             AgentKind::from_process_name("/usr/local/bin/codex"),
             Some(AgentKind::Codex)

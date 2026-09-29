@@ -85,98 +85,77 @@ impl super::WorkspaceView {
         let Some(mode) = self.palette_mode else {
             return Vec::new();
         };
-        let mut items = match mode {
-            PaletteMode::Commands => vec![
-                PaletteItem {
-                    label: "Terminal: New tab".into(),
-                    detail: "⌘T".into(),
-                    action: PaletteAction::NewTerminalTab,
-                },
-                PaletteItem {
-                    label: "Pane: Split right".into(),
-                    detail: "⌘D".into(),
-                    action: PaletteAction::Split(PaneSplitDirection::Right),
-                },
-                PaletteItem {
-                    label: "Pane: Split down".into(),
-                    detail: "⇧⌘D".into(),
-                    action: PaletteAction::Split(PaneSplitDirection::Down),
-                },
-                PaletteItem {
-                    label: "Pane: Split left".into(),
-                    detail: String::new(),
-                    action: PaletteAction::Split(PaneSplitDirection::Left),
-                },
-                PaletteItem {
-                    label: "Pane: Split up".into(),
-                    detail: String::new(),
-                    action: PaletteAction::Split(PaneSplitDirection::Up),
-                },
-                PaletteItem {
-                    label: "Pane: Equalize sizes".into(),
-                    detail: "⌃⌥E".into(),
-                    action: PaletteAction::EqualizePanes,
-                },
-                PaletteItem {
-                    label: "Pane: Zoom or restore".into(),
-                    detail: "⇧⌘↵".into(),
-                    action: PaletteAction::TogglePaneZoom,
-                },
-                PaletteItem {
-                    label: "Project: Add folder…".into(),
-                    detail: "⇧⌘O".into(),
-                    action: PaletteAction::AddProject,
-                },
-                PaletteItem {
-                    label: "Project: Open in IDE".into(),
-                    detail: "⇧⌘E".into(),
-                    action: PaletteAction::OpenIde,
-                },
-                PaletteItem {
-                    label: "Workspace: Toggle panel".into(),
-                    detail: "⌥⌘B".into(),
-                    action: PaletteAction::ToggleWorkspacePanel,
-                },
-                PaletteItem {
-                    label: "Workspace: Explorer".into(),
-                    detail: String::new(),
-                    action: PaletteAction::ShowFiles,
-                },
-                PaletteItem {
-                    label: "Inbox: Open".into(),
-                    detail: "Agent activity".into(),
-                    action: PaletteAction::ShowSection(WorkspaceSection::Inbox),
-                },
-                PaletteItem {
-                    label: "Notes: Open".into(),
-                    detail: "Project notes".into(),
-                    action: PaletteAction::ShowSection(WorkspaceSection::Notes),
-                },
-                PaletteItem {
-                    label: "Notes: New note".into(),
-                    detail: String::new(),
-                    action: PaletteAction::NewNote,
-                },
-                PaletteItem {
-                    label: "Automations: Open".into(),
-                    detail: "Saved and scheduled commands".into(),
-                    action: PaletteAction::ShowSection(WorkspaceSection::Automations),
-                },
-                PaletteItem {
-                    label: "Automations: New automation".into(),
-                    detail: String::new(),
-                    action: PaletteAction::NewAutomation,
-                },
-                PaletteItem {
-                    label: "Settings: Open".into(),
-                    detail: "⌘,".into(),
-                    action: PaletteAction::ShowSettings,
-                },
-            ],
+        let mut items: Vec<_> = match mode {
+            PaletteMode::Commands => [
+                ("Terminal: New tab", "⌘T", PaletteAction::NewTerminalTab),
+                (
+                    "Pane: Split right",
+                    "⌘D",
+                    PaletteAction::Split(PaneSplitDirection::Right),
+                ),
+                (
+                    "Pane: Split down",
+                    "⇧⌘D",
+                    PaletteAction::Split(PaneSplitDirection::Down),
+                ),
+                (
+                    "Pane: Split left",
+                    "",
+                    PaletteAction::Split(PaneSplitDirection::Left),
+                ),
+                (
+                    "Pane: Split up",
+                    "",
+                    PaletteAction::Split(PaneSplitDirection::Up),
+                ),
+                ("Pane: Equalize sizes", "⌃⌥E", PaletteAction::EqualizePanes),
+                (
+                    "Pane: Zoom or restore",
+                    "⇧⌘↵",
+                    PaletteAction::TogglePaneZoom,
+                ),
+                ("Project: Add folder…", "⇧⌘O", PaletteAction::AddProject),
+                ("Project: Open in IDE", "⇧⌘E", PaletteAction::OpenIde),
+                (
+                    "Workspace: Toggle panel",
+                    "⌥⌘B",
+                    PaletteAction::ToggleWorkspacePanel,
+                ),
+                ("Workspace: Explorer", "", PaletteAction::ShowFiles),
+                (
+                    "Inbox: Open",
+                    "Agent activity",
+                    PaletteAction::ShowSection(WorkspaceSection::Inbox),
+                ),
+                (
+                    "Notes: Open",
+                    "Project notes",
+                    PaletteAction::ShowSection(WorkspaceSection::Notes),
+                ),
+                ("Notes: New note", "", PaletteAction::NewNote),
+                (
+                    "Automations: Open",
+                    "Saved and scheduled commands",
+                    PaletteAction::ShowSection(WorkspaceSection::Automations),
+                ),
+                (
+                    "Automations: New automation",
+                    "",
+                    PaletteAction::NewAutomation,
+                ),
+                ("Settings: Open", "⌘,", PaletteAction::ShowSettings),
+            ]
+            .into_iter()
+            .map(|(label, detail, action)| PaletteItem {
+                label: label.into(),
+                detail: detail.into(),
+                action,
+            })
+            .collect(),
             PaletteMode::Files => {
                 let root = self.project_root();
                 let query = self.palette_query.to_lowercase();
-                let tokens: Vec<_> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
+                let tokens: Vec<_> = query.split_whitespace().collect();
                 self.palette_files
                     .iter()
                     .filter_map(|path| {

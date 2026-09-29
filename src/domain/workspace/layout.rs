@@ -81,21 +81,6 @@ impl PaneLayoutSnapshot {
         self.map_terminal_ids(&mut |id| if id == old_id { new_id } else { id });
     }
 
-    pub fn split_terminal(
-        &mut self,
-        terminal_id: Uuid,
-        new_terminal_id: Uuid,
-        axis: WorkspaceSplitAxis,
-        insert_first: bool,
-    ) -> bool {
-        self.insert_layout(
-            terminal_id,
-            &Self::terminal(new_terminal_id),
-            axis,
-            insert_first,
-        )
-    }
-
     pub(super) fn split_with_layout(
         &mut self,
         terminal_id: Uuid,

@@ -20,12 +20,7 @@ impl WorkspaceView {
         let epoch = self.work_inbox.epoch;
         macro_rules! load {
             ($field:ident,$loader:path) => {{
-                let state = &mut self
-                    .work_inbox
-                    .details
-                    .entry(item.url.clone())
-                    .or_default()
-                    .$field;
+                let state = &mut state.$field;
                 if !state.loading && (force || state.data.is_none()) {
                     state.loading = true;
                     state.revision += 1;

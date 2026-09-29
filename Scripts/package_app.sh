@@ -28,16 +28,26 @@ usage() {
 
 while (( $# )); do
   case "$1" in
-    debug|release) configuration=$1 ;;
-    --universal) universal=1 ;;
-    --dmg) make_dmg=1 ;;
-    --notarize) notarize=1 ;;
+    debug|release)
+      configuration=$1
+      ;;
+    --universal)
+      universal=1
+      ;;
+    --dmg)
+      make_dmg=1
+      ;;
+    --notarize)
+      notarize=1
+      ;;
     --sign)
       shift
       (( $# )) || usage
       signing_identity=$1
       ;;
-    -h|--help) usage ;;
+    -h|--help)
+      usage
+      ;;
     *)
       print -u2 -- "unknown argument: $1"
       usage
@@ -168,8 +178,12 @@ if (( universal )); then
   targets=(aarch64-apple-darwin x86_64-apple-darwin)
 else
   case "$(uname -m)" in
-    arm64) targets=(aarch64-apple-darwin) ;;
-    x86_64) targets=(x86_64-apple-darwin) ;;
+    arm64)
+      targets=(aarch64-apple-darwin)
+      ;;
+    x86_64)
+      targets=(x86_64-apple-darwin)
+      ;;
     *)
       print -u2 -- "unsupported build architecture: $(uname -m)"
       exit 69

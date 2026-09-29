@@ -22,14 +22,25 @@ pub struct GitGraphRail {
     pub color: usize,
 }
 
+struct Lane {
+    commit: String,
+    color: usize,
+}
+
+fn occupy_lane(lanes: &mut Vec<Option<Lane>>, commit: &str, color: usize) -> usize {
+    let index = lanes.iter().position(Option::is_none).unwrap_or_else(|| {
+        lanes.push(None);
+        lanes.len() - 1
+    });
+    lanes[index] = Some(Lane {
+        commit: commit.into(),
+        color,
+    });
+    index
+}
+
 /// Assigns left-to-right lanes so a commit list can draw a compact ancestry graph.
 pub fn assign_commit_lanes(commits: &[GitCommit]) -> Vec<GitGraphRow> {
-    #[derive(Clone)]
-    struct Lane {
-        commit: String,
-        color: usize,
-    }
-
     let mut lanes: Vec<Option<Lane>> = Vec::new();
     let mut rows = Vec::with_capacity(commits.len());
     let mut next_color = 1;
@@ -50,19 +61,7 @@ pub fn assign_commit_lanes(commits: &[GitCommit]) -> Vec<GitGraphRow> {
                     next_color += 1;
                     color
                 };
-                if let Some(index) = lanes.iter().position(Option::is_none) {
-                    lanes[index] = Some(Lane {
-                        commit: commit.sha.clone(),
-                        color,
-                    });
-                    index
-                } else {
-                    lanes.push(Some(Lane {
-                        commit: commit.sha.clone(),
-                        color,
-                    }));
-                    lanes.len() - 1
-                }
+                occupy_lane(&mut lanes, &commit.sha, color)
             }
         };
         let color = lanes[lane].as_ref().map_or(0, |lane| lane.color);
@@ -124,25 +123,10 @@ pub fn assign_commit_lanes(commits: &[GitCommit]) -> Vec<GitGraphRow> {
                 }
                 let parent_color = next_color;
                 next_color += 1;
-                if let Some(index) = lanes.iter().position(Option::is_none) {
-                    lanes[index] = Some(Lane {
-                        commit: parent.clone(),
-                        color: parent_color,
-                    });
-                    edges.push(GitGraphRail {
-                        lane: index,
-                        color: parent_color,
-                    });
-                } else {
-                    lanes.push(Some(Lane {
-                        commit: parent.clone(),
-                        color: parent_color,
-                    }));
-                    edges.push(GitGraphRail {
-                        lane: lanes.len() - 1,
-                        color: parent_color,
-                    });
-                }
+                edges.push(GitGraphRail {
+                    lane: occupy_lane(&mut lanes, parent, parent_color),
+                    color: parent_color,
+                });
             }
         }
 

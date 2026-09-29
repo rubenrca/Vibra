@@ -684,6 +684,12 @@ impl DiffView {
         cx.notify();
     }
 
+    fn clear_review_comments(&mut self) {
+        self.comments.clear();
+        self.review_delivery = None;
+        self.draft = None;
+    }
+
     fn open_draft(
         &mut self,
         anchor: CommentAnchor,

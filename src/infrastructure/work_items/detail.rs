@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use serde_json::{Value, json};
 
-use super::{github, graphql_data, linear, string, timestamp};
+use super::{array, github, linear, string, timestamp};
 use crate::domain::work_items::{
     PrAction, WorkCheck, WorkComment, WorkDetail, WorkDiff, WorkDiffFile, WorkItem, WorkKind,
     WorkSource,
@@ -36,7 +36,7 @@ pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
     }
     match item.source {
         WorkSource::GitHub => {
-            let data = github_graphql(DETAIL_QUERY, json!({"id":item.remote_id}))?;
+            let data = github::graphql(DETAIL_QUERY, json!({ "id": item.remote_id }))?;
             let node = data
                 .get("node")
                 .filter(|node| node.is_object())
@@ -44,8 +44,10 @@ pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
             Ok(parse_github_detail(node))
         }
         WorkSource::Linear => {
-            let data =
-                linear::authenticated_graphql(LINEAR_DETAIL_QUERY, json!({"id":item.remote_id}))?;
+            let data = linear::authenticated_graphql(
+                LINEAR_DETAIL_QUERY,
+                json!({ "id": item.remote_id }),
+            )?;
             let issue = data
                 .get("issue")
                 .filter(|issue| issue.is_object())
@@ -82,10 +84,6 @@ pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
     }
 }
 
-fn array(value: &Value) -> &[Value] {
-    value.as_array().map(Vec::as_slice).unwrap_or_default()
-}
-
 fn github_comment(node: &Value) -> WorkComment {
     WorkComment {
         id: string(node, "id"),
@@ -120,9 +118,7 @@ fn parse_github_detail(node: &Value) -> WorkDetail {
         ..Default::default()
     };
     for connection in ["comments", "reviews"] {
-        let nodes = array(&node[connection]["nodes"]);
-        detail.truncated |=
-            node[connection]["totalCount"].as_u64().unwrap_or_default() > nodes.len() as u64;
+        let nodes = github_nodes(&node[connection], &mut detail.truncated);
         detail.comments.extend(
             nodes
                 .iter()
@@ -135,17 +131,9 @@ fn parse_github_detail(node: &Value) -> WorkDetail {
                 .map(github_comment),
         );
     }
-    let threads = array(&node["reviewThreads"]["nodes"]);
-    detail.truncated |= node["reviewThreads"]["totalCount"]
-        .as_u64()
-        .unwrap_or_default()
-        > threads.len() as u64;
+    let threads = github_nodes(&node["reviewThreads"], &mut detail.truncated);
     for thread in threads {
-        let nodes = array(&thread["comments"]["nodes"]);
-        detail.truncated |= thread["comments"]["totalCount"]
-            .as_u64()
-            .unwrap_or_default()
-            > nodes.len() as u64;
+        let nodes = github_nodes(&thread["comments"], &mut detail.truncated);
         let mut comments = nodes
             .iter()
             .filter(|node| node["isMinimized"].as_bool() != Some(true))
@@ -174,13 +162,10 @@ fn parse_github_detail(node: &Value) -> WorkDetail {
     detail
 }
 
-fn github_graphql(query: &str, variables: Value) -> Result<Value> {
-    graphql_data(github::gh(
-        &["api", "--hostname", "github.com", "graphql", "--input", "-"],
-        Some(serde_json::to_vec(
-            &json!({"query":query,"variables":variables}),
-        )?),
-    )?)
+fn github_nodes<'a>(connection: &'a Value, truncated: &mut bool) -> &'a [Value] {
+    let nodes = array(&connection["nodes"]);
+    *truncated |= connection["totalCount"].as_u64().unwrap_or_default() > nodes.len() as u64;
+    nodes
 }
 
 fn github_target(item: &WorkItem) -> Result<(String, u64)> {
@@ -376,24 +361,24 @@ pub fn post_comment(item: &WorkItem, body: &str, reply: Option<&str>) -> Result<
             let (query, variables) = if let Some(reply) = reply {
                 (
                     "mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}",
-                    json!({"id":reply,"body":body}),
+                    json!({ "id": reply, "body": body }),
                 )
             } else {
                 (
                     "mutation($id:ID!,$body:String!){addComment(input:{subjectId:$id,body:$body}){commentEdge{node{id}}}}",
-                    json!({"id":item.remote_id,"body":body}),
+                    json!({ "id": item.remote_id, "body": body }),
                 )
             };
-            github_graphql(query, variables)?;
+            github::graphql(query, variables)?;
         }
         WorkSource::Linear => {
-            let mut input = json!({"issueId":item.remote_id,"body":body});
+            let mut input = json!({ "issueId": item.remote_id, "body": body });
             if let Some(reply) = reply {
                 input["parentId"] = json!(reply);
             }
             let data = linear::authenticated_graphql(
                 "mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}",
-                json!({"input":input}),
+                json!({ "input": input }),
             )?;
             if data["commentCreate"]["success"].as_bool() != Some(true) {
                 bail!("Linear could not post the comment.");
@@ -407,7 +392,7 @@ pub fn run_pr_action(item: &WorkItem, action: PrAction, head_oid: &str) -> Resul
     if item.source != WorkSource::GitHub || item.kind != WorkKind::PullRequest {
         bail!("This action requires a GitHub pull request.");
     }
-    let mut variables = json!({"id":item.remote_id});
+    let mut variables = json!({ "id": item.remote_id });
     let query = match action {
         PrAction::Merge | PrAction::Squash | PrAction::Rebase => {
             if head_oid.is_empty() {
@@ -434,7 +419,7 @@ pub fn run_pr_action(item: &WorkItem, action: PrAction, head_oid: &str) -> Resul
             "mutation($id:ID!){reopenPullRequest(input:{pullRequestId:$id}){pullRequest{id}}}"
         }
     };
-    github_graphql(query, variables)?;
+    github::graphql(query, variables)?;
     Ok(())
 }
 
@@ -443,12 +428,36 @@ mod tests {
     use super::*;
     #[test]
     fn checks_keep_workflows_and_only_completed_durations() {
-        let checks = parse_checks(&json!({"headRefOid":"abc", "statusCheckRollup":[
-            {"name":"Lint", "conclusion":"SUCCESS", "workflowName":"CI", "startedAt":"2026-09-20T01:00:00Z", "completedAt":"2026-09-20T01:03:35Z"},
-            {"name":"Tests", "conclusion":"", "status":"IN_PROGRESS", "startedAt":"2026-09-20T01:00:00Z"},
-            {"context":"Deploy", "state":"SUCCESS", "targetUrl":"https://ci.example.com/job"},
-            {"name":"Clock skew", "conclusion":"SUCCESS", "startedAt":"2026-09-20T01:00:10Z", "completedAt":"2026-09-20T01:00:00Z"}
-        ]})).unwrap();
+        let checks = parse_checks(&json!({
+            "headRefOid": "abc",
+            "statusCheckRollup": [
+                {
+                    "name": "Lint",
+                    "conclusion": "SUCCESS",
+                    "workflowName": "CI",
+                    "startedAt": "2026-09-20T01:00:00Z",
+                    "completedAt": "2026-09-20T01:03:35Z"
+                },
+                {
+                    "name": "Tests",
+                    "conclusion": "",
+                    "status": "IN_PROGRESS",
+                    "startedAt": "2026-09-20T01:00:00Z"
+                },
+                {
+                    "context": "Deploy",
+                    "state": "SUCCESS",
+                    "targetUrl": "https://ci.example.com/job"
+                },
+                {
+                    "name": "Clock skew",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-09-20T01:00:10Z",
+                    "completedAt": "2026-09-20T01:00:00Z"
+                }
+            ]
+        }))
+        .unwrap();
         assert_eq!(checks[0].workflow, "CI");
         assert_eq!(checks[0].duration_seconds, Some(215));
         assert!(checks[0].passed());
@@ -465,18 +474,20 @@ mod tests {
         let text = "fn main() {}\n";
         let encoded = base64::engine::general_purpose::STANDARD.encode(text);
         assert_eq!(
-            decode_file_blob(
-                &json!({"encoding":"base64", "content":format!("{encoded}\n"), "size":text.len()})
-            )
+            decode_file_blob(&json!({
+                "encoding": "base64",
+                "content": format!("{encoded}\n"),
+                "size": text.len()
+            }))
             .unwrap(),
             text
         );
         for value in [
-            json!({"encoding":"base64", "content":"AA==", "size":1}),
-            json!({"encoding":"base64", "content":"/w==", "size":1}),
-            json!({"encoding":"base64", "content":"invalid!"}),
-            json!({"encoding":"base64", "content":"", "size":2097153}),
-            json!({"encoding":"base64"}),
+            json!({ "encoding": "base64", "content": "AA==", "size": 1 }),
+            json!({ "encoding": "base64", "content": "/w==", "size": 1 }),
+            json!({ "encoding": "base64", "content": "invalid!" }),
+            json!({ "encoding": "base64", "content": "", "size": 2097153 }),
+            json!({ "encoding": "base64" }),
         ] {
             assert!(decode_file_blob(&value).is_err());
         }
@@ -484,9 +495,33 @@ mod tests {
 
     #[test]
     fn review_threads_keep_replies_paths_and_truncation() {
-        let detail = parse_github_detail(
-            &json!({"body":"Summary","headRefOid":"abc","comments":{"totalCount":2,"nodes":[{"id":"1","body":"Comment","author":{"login":"ana"},"createdAt":"2026-09-20T01:00:00Z"}]},"reviewThreads":{"nodes":[{"id":"thread","path":"src/main.rs","isResolved":true,"comments":{"totalCount":2,"nodes":[{"id":"2","body":"Fix","line":42},{"id":"3","body":"Done"}]}}]}}),
-        );
+        let detail = parse_github_detail(&json!({
+            "body": "Summary",
+            "headRefOid": "abc",
+            "comments": {
+                "totalCount": 2,
+                "nodes": [{
+                    "id": "1",
+                    "body": "Comment",
+                    "author": { "login": "ana" },
+                    "createdAt": "2026-09-20T01:00:00Z"
+                }]
+            },
+            "reviewThreads": {
+                "nodes": [{
+                    "id": "thread",
+                    "path": "src/main.rs",
+                    "isResolved": true,
+                    "comments": {
+                        "totalCount": 2,
+                        "nodes": [
+                            { "id": "2", "body": "Fix", "line": 42 },
+                            { "id": "3", "body": "Done" }
+                        ]
+                    }
+                }]
+            }
+        }));
         assert!(detail.truncated);
         let thread = detail
             .comments
@@ -497,6 +532,7 @@ mod tests {
         assert_eq!(thread.context, "src/main.rs:42 · Resolved");
         assert_eq!(thread.reply_id.as_deref(), Some("thread"));
     }
+
     #[test]
     fn check_logs_are_scoped_to_the_pr_repository() {
         let item = crate::domain::work_items::fixture();

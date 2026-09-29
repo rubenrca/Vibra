@@ -454,7 +454,10 @@ impl WorkspaceView {
                 content = content.child(self.inbox_comment_card(&item.url, comment, cx));
             }
             if detail.truncated {
-                content = content.child(message("Showing recent comments. The full conversation is available on the source service.", false));
+                content = content.child(message(
+                    "Showing recent comments. The full conversation is available on the source service.",
+                    false,
+                ));
             }
         }
         let draft = state.map(|state| state.draft.clone()).unwrap_or_default();

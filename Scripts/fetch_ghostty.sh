@@ -41,7 +41,9 @@ if [[ -z $zig_bin ]]; then
 fi
 arch=${1:-$(uname -m)}
 case "$arch" in
-  arm64|aarch64) arch=aarch64 ;;
+  arm64|aarch64)
+    arch=aarch64
+    ;;
   x86_64) ;;
   *)
     print -u2 -- "usage: $script_name [aarch64|x86_64]"

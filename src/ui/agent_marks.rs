@@ -7,12 +7,18 @@ use gpui::{
 
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
 use crate::ui::theme::colors;
+
 macro_rules! bundled_assets {
     ($(($key:literal, $rel:literal)),+ $(,)?) => {
         impl AssetSource for VibraAssets {
             fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
                 Ok(match path {
-                    $($key => Some(Cow::Borrowed(include_bytes!(concat!("../../Resources/", $rel)))),)+
+                    $(
+                        $key => Some(Cow::Borrowed(include_bytes!(concat!(
+                            "../../Resources/",
+                            $rel
+                        )))),
+                    )+
                     _ => None,
                 })
             }
@@ -113,7 +119,6 @@ bundled_assets! {
     ("chrome-icons/folder-open.svg", "ChromeIcons/folder-open.svg"),
     ("chrome-icons/trash.svg", "ChromeIcons/trash.svg"),
     ("chrome-icons/rows.svg", "ChromeIcons/rows.svg"),
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

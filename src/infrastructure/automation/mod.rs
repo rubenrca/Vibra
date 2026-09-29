@@ -302,7 +302,12 @@ mod tests {
                 "UserPromptSubmit": [{
                     "matcher": "old-matcher",
                     "hooks": [
-                        { "type": "command", "command": command, "timeout": 1, "async": true },
+                        {
+                            "type": "command",
+                            "command": command,
+                            "timeout": 1,
+                            "async": true
+                        },
                         { "type": "command", "command": "echo user-hook" }
                     ]
                 }]

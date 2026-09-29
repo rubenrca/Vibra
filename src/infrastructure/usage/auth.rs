@@ -265,9 +265,7 @@ fn parse_grok(value: &Value) -> Result<Credential, UsageFailure> {
     let entry = value
         .as_object()
         .ok_or_else(invalid_auth)?
-        .iter()
-        .find(|(key, _)| key.as_str() == "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828")
-        .map(|(_, entry)| entry)
+        .get("https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828")
         .ok_or_else(|| {
             UsageFailure::new("Could not find the Grok Build session. Run grok login.")
         })?;
@@ -314,25 +312,39 @@ mod tests {
 
     #[test]
     fn credentials_are_typed_and_fingerprints_change_on_account_switch() {
-        let mut first =
-            parse_codex(&json!({"tokens":{"access_token":"secret", "account_id":"a"}})).unwrap();
+        let mut first = parse_codex(&json!({
+            "tokens": {
+                "access_token": "secret",
+                "account_id": "a"
+            }
+        }))
+        .unwrap();
         let old = first.fingerprint();
         first.account_id = Some("b".into());
         assert_ne!(old, first.fingerprint());
         assert!(!first.fingerprint().contains("secret"));
         assert!(
-            parse_codex(&json!({"OPENAI_API_KEY":"sk-test","tokens":{"access_token":"old"}}))
-                .is_err()
-        );
-        assert!(
-            parse_claude(
-                &json!({"claudeAiOauth":{"accessToken":"secret","scopes":["user:inference"]}})
-            )
+            parse_codex(&json!({
+                "OPENAI_API_KEY": "sk-test",
+                "tokens": { "access_token": "old" }
+            }))
             .is_err()
         );
-        let claude = parse_claude(
-            &json!({"claudeAiOauth":{"accessToken":"secret","expiresAt":1900000000000i64}}),
-        )
+        assert!(
+            parse_claude(&json!({
+                "claudeAiOauth": {
+                    "accessToken": "secret",
+                    "scopes": ["user:inference"]
+                }
+            }))
+            .is_err()
+        );
+        let claude = parse_claude(&json!({
+            "claudeAiOauth": {
+                "accessToken": "secret",
+                "expiresAt": 1900000000000i64
+            }
+        }))
         .unwrap();
         assert_eq!(claude.expires_at, Some(1900000000));
     }
@@ -340,8 +352,11 @@ mod tests {
     #[test]
     fn grok_uses_the_cli_account_and_auth_errors_never_include_secrets() {
         let data = json!({
-            "https://other.test::client":{"key":"wrong"},
-            "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828":{"key":"correct","expires_at":"2030-01-01T00:00:00Z"}
+            "https://other.test::client": { "key": "wrong" },
+            "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
+                "key": "correct",
+                "expires_at": "2030-01-01T00:00:00Z"
+            }
         });
         assert_eq!(parse_grok(&data).unwrap().token, "correct");
         let error = token(&json!("secret\nheader")).err().unwrap();

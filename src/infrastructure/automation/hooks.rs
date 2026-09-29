@@ -300,7 +300,7 @@ fn manage_one_agent_hooks(
         }
         AgentHookOperation::Uninstall => {
             let mut config = read_hook_config(&config_path)?;
-            let config_changed = remove_hook_entries(&mut config, &script_path)?;
+            let config_changed = remove_hook_entries(&mut config, &script_path);
             if !dry_run && config_changed {
                 backup_if_exists(&config_path)?;
                 write_json_atomically(&config_path, &config)?;
@@ -313,20 +313,21 @@ fn manage_one_agent_hooks(
                         .with_context(|| format!("could not inspect {}", script_path.display()));
                 }
             };
-            let script_removed = if !dry_run && script_exists {
+            if !dry_run && script_exists {
                 fs::remove_file(&script_path)?;
-                true
-            } else {
-                script_exists
-            };
-            config_changed || script_removed
+            }
+            config_changed || script_exists
         }
         AgentHookOperation::Status => false,
     };
     Ok(serde_json::json!({
         "agent": kind.display_name(),
         "operation": match operation {
-            AgentHookOperation::Install => if dry_run { "dry-run" } else { "setup" },
+            AgentHookOperation::Install => if dry_run {
+                "dry-run"
+            } else {
+                "setup"
+            },
             AgentHookOperation::Uninstall => "uninstall",
             AgentHookOperation::Status => "status",
         },
@@ -473,9 +474,9 @@ pub(super) fn ensure_hook_entry(
     Ok(true)
 }
 
-fn remove_hook_entries(config: &mut Value, script_path: &Path) -> Result<bool> {
+fn remove_hook_entries(config: &mut Value, script_path: &Path) -> bool {
     let Some(hooks) = config.get_mut("hooks").and_then(Value::as_object_mut) else {
-        return Ok(false);
+        return false;
     };
     let raw_script_path = script_path.to_string_lossy();
     let quoted_script_path = shell_quote(&raw_script_path);
@@ -506,7 +507,7 @@ fn remove_hook_entries(config: &mut Value, script_path: &Path) -> Result<bool> {
         });
         !groups.is_empty()
     });
-    Ok(changed)
+    changed
 }
 
 fn managed_hook_command_matches(command: &str, raw_path: &str, quoted_path: &str) -> bool {

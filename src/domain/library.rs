@@ -102,13 +102,8 @@ impl AutomationSchedule {
         let slot = match self {
             Self::Manual => return None,
             Self::Hourly { minute } => now.index - now.index.rem_euclid(60) + i64::from(minute),
-            Self::Daily { hour, minute } => {
-                now.day_start() + i64::from(hour) * 60 + i64::from(minute)
-            }
-            Self::Weekdays { hour, minute } => {
-                if !(1..=5).contains(&now.weekday) {
-                    return None;
-                }
+            Self::Weekdays { .. } if !(1..=5).contains(&now.weekday) => return None,
+            Self::Daily { hour, minute } | Self::Weekdays { hour, minute } => {
                 now.day_start() + i64::from(hour) * 60 + i64::from(minute)
             }
         };

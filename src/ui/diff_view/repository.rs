@@ -68,9 +68,7 @@ impl DiffView {
         self.changes.reset_project(cx);
         self.context_root = root;
         self.selected_review_path = None;
-        self.comments.clear();
-        self.review_delivery = None;
-        self.draft = None;
+        self.clear_review_comments();
         // A hidden panel can stay hidden indefinitely. Drop the previous
         // repository immediately so file selection and status colors never
         // use another project's snapshot while the new one is loading.
@@ -95,7 +93,6 @@ impl DiffView {
         self.history_graph = Arc::new(Vec::new());
         self.error = None;
         self.mode_menu_open = false;
-        self.draft = None;
         self.h_offset = 0.0;
         cx.emit(DiffViewEvent::Changed);
         cx.notify();
@@ -154,9 +151,7 @@ impl DiffView {
         self.clear_turn();
         self.forget_scroll();
         self.mode = mode;
-        self.comments.clear();
-        self.review_delivery = None;
-        self.draft = None;
+        self.clear_review_comments();
         self.h_offset = 0.0;
         match mode {
             GitPanelMode::Worktree => {}
@@ -231,9 +226,7 @@ impl DiffView {
         reference: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        self.comments.clear();
-        self.review_delivery = None;
-        self.draft = None;
+        self.clear_review_comments();
         if is_base {
             self.selected_base = reference;
         } else {
@@ -568,9 +561,7 @@ impl DiffView {
     }
 
     pub(super) fn back_to_history(&mut self, cx: &mut Context<Self>) {
-        self.comments.clear();
-        self.review_delivery = None;
-        self.draft = None;
+        self.clear_review_comments();
         self.clear_commit();
         self.refresh_history(false, cx);
         cx.emit(DiffViewEvent::Changed);
@@ -579,9 +570,7 @@ impl DiffView {
 
     pub(super) fn select_commit(&mut self, commit: GitCommit, cx: &mut Context<Self>) {
         self.file_preview = None;
-        self.comments.clear();
-        self.review_delivery = None;
-        self.draft = None;
+        self.clear_review_comments();
         self.clear_commit();
         self.forget_scroll();
         self.selected_commit = Some(commit);

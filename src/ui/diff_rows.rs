@@ -180,6 +180,7 @@ pub fn flatten(
     draft: Option<&CommentAnchor>,
 ) -> Vec<ReviewRow> {
     let mut out = Vec::new();
+    let no_reveals = HashMap::new();
     for (file, entry) in files.iter().enumerate() {
         if entry.starts_staged_section {
             out.push(ReviewRow::StagedSection);
@@ -202,24 +203,20 @@ pub fn flatten(
             .filter(|(_, comment)| comment.anchor.path == entry.path)
             .collect();
         let file_draft = draft.filter(|anchor| anchor.path == entry.path);
-        let no_reveals = HashMap::new();
         let reveals = entry.reveals.unwrap_or(&no_reveals);
         for row in body_rows(rows, layout, entry.folds, reveals) {
             out.push(ReviewRow::Body { file, row });
             // Comments on lines a fold hides still show, right below it.
-            let hidden: Vec<_> = match row {
-                BodyRow::Fold { start, hidden, .. } => rows
-                    .get(start..start + hidden)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(line_anchor)
-                    .collect(),
-                _ => Vec::new(),
+            let hidden = match row {
+                BodyRow::Fold { start, hidden, .. } => {
+                    rows.get(start..start + hidden).unwrap_or_default()
+                }
+                _ => &[],
             };
             for (side, line) in body_row_anchors(rows, row)
                 .into_iter()
                 .flatten()
-                .chain(hidden)
+                .chain(hidden.iter().filter_map(line_anchor))
             {
                 for (index, comment) in &file_comments {
                     if comment.anchor.side == side && comment.anchor.line == line {

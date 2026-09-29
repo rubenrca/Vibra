@@ -4,7 +4,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use super::{WorkItemsPage, WorkQuery, bounded_output, graphql_data, string, timestamp};
+use super::{WorkItemsPage, WorkQuery, bounded_output, graphql_data, names, string, timestamp};
 use crate::domain::work_items::{WorkItem, WorkKind, WorkSource, WorkStatus};
 
 const QUERY: &str = r#"query($search: String!) {
@@ -36,7 +36,7 @@ pub(super) fn gh_output(arguments: &[&str], input: Option<Vec<u8>>) -> Result<Ve
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "/bin/zsh".into());
-    let bytes = bounded_output(
+    bounded_output(
         Command::new(shell)
             .args(["-l", "-c", "exec gh \"$@\"", "vibra-inbox"])
             .args(arguments)
@@ -45,8 +45,16 @@ pub(super) fn gh_output(arguments: &[&str], input: Option<Vec<u8>>) -> Result<Ve
             .env("GH_HOST", "github.com"),
         input,
     )
-    .context("GitHub: install gh and sign in with gh auth login.")?;
-    Ok(bytes)
+    .context("GitHub: install gh and sign in with gh auth login.")
+}
+
+pub(super) fn graphql(query: &str, variables: Value) -> Result<Value> {
+    graphql_data(gh(
+        &["api", "--hostname", "github.com", "graphql", "--input", "-"],
+        Some(serde_json::to_vec(
+            &json!({ "query": query, "variables": variables }),
+        )?),
+    )?)
 }
 
 pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
@@ -190,12 +198,7 @@ fn search_query(repo: &str, kind: WorkKind, query: &WorkQuery, login: &str) -> S
 }
 
 fn fetch_search(search: &str) -> Result<Value> {
-    graphql_data(gh(
-        &["api", "--hostname", "github.com", "graphql", "--input", "-"],
-        Some(serde_json::to_vec(
-            &json!({"query": QUERY, "variables": {"search": search}}),
-        )?),
-    )?)
+    graphql(QUERY, json!({ "search": search }))
 }
 
 pub(super) fn repository_from_remote(remote: &str) -> Option<String> {
@@ -276,15 +279,6 @@ fn parse_page(data: &Value, repositories: &BTreeMap<String, uuid::Uuid>) -> Resu
     })
 }
 
-fn names(value: &Value, key: &str) -> Vec<String> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|v| v[key].as_str().map(str::to_owned))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,7 +287,19 @@ mod tests {
     fn github_inbox_maps_repositories_and_distinguishes_pr_states() {
         let project = uuid::Uuid::new_v4();
         let repositories = BTreeMap::from([("demo/app".into(), project)]);
-        let mut issue = json!({"__typename":"Issue", "number":42,"title":"Fix", "url":"https://github.com/demo/app/issues/42","body":"Description", "state":"OPEN", "repository":{"nameWithOwner":"Demo/App"},"updatedAt":"2026-09-01T00:00:00Z", "author":null, "assignees":{"nodes":[{"login":"ana"}]},"labels":{"nodes":[{"name":"bug"}]}});
+        let mut issue = json!({
+            "__typename": "Issue",
+            "number": 42,
+            "title": "Fix",
+            "url": "https://github.com/demo/app/issues/42",
+            "body": "Description",
+            "state": "OPEN",
+            "repository": { "nameWithOwner": "Demo/App" },
+            "updatedAt": "2026-09-01T00:00:00Z",
+            "author": null,
+            "assignees": { "nodes": [{ "login": "ana" }] },
+            "labels": { "nodes": [{ "name": "bug" }] }
+        });
         let mut draft = issue.clone();
         draft["__typename"] = json!("PullRequest");
         draft["isDraft"] = json!(true);
@@ -302,7 +308,12 @@ mod tests {
         merged["state"] = json!("MERGED");
         issue["state"] = json!("CLOSED");
         let page = parse_page(
-            &json!({"search":{"nodes":[issue,draft,merged],"pageInfo":{"hasNextPage":true}}}),
+            &json!({
+                "search": {
+                    "nodes": [issue, draft, merged],
+                    "pageInfo": { "hasNextPage": true }
+                }
+            }),
             &repositories,
         )
         .unwrap();

@@ -94,10 +94,9 @@ pub fn key_event_bytes(
         if event_type == TerminalKeyEventType::Release {
             return None;
         }
-        if application_sequence && mode.application_cursor {
-            return Some(format!("\x1bO{terminator}").into_bytes());
-        }
-        if matches!(key.as_str(), "f1" | "f2" | "f3" | "f4") {
+        if (application_sequence && mode.application_cursor)
+            || matches!(key.as_str(), "f1" | "f2" | "f3" | "f4")
+        {
             return Some(format!("\x1bO{terminator}").into_bytes());
         }
         return Some(format!("\x1b[{base}{terminator}").into_bytes());
@@ -160,12 +159,7 @@ pub fn key_event_bytes(
             '8' | '?' => 127,
             _ => return None,
         };
-        let mut bytes = Vec::with_capacity(2);
-        if modifiers.alt {
-            bytes.push(0x1b);
-        }
-        bytes.push(control);
-        return Some(bytes);
+        return Some(prefixed_control_byte(control, modifiers.alt));
     }
 
     if modifiers.alt {

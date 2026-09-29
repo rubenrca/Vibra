@@ -47,12 +47,7 @@ impl super::WorkspaceSnapshot {
                             continue;
                         }
                         let old_id = session.id;
-                        loop {
-                            session.id = Uuid::new_v4();
-                            if seen_sessions.insert(session.id) {
-                                break;
-                            }
-                        }
+                        session.id = fresh_id(&mut seen_sessions);
                         tab.layout.replace_terminal_id(old_id, session.id);
                         if tab.selected_session_id == Some(old_id) {
                             tab.selected_session_id = Some(session.id);
@@ -253,7 +248,7 @@ impl ProjectSnapshot {
             .as_ref()
             .is_none_or(|workspaces| workspaces.is_empty())
         {
-            let mut migrated_tabs = self.tabs.clone().unwrap_or_default();
+            let mut migrated_tabs = self.tabs.take().unwrap_or_default();
             if migrated_tabs.is_empty() {
                 migrated_tabs = self.migrate_legacy_tabs();
             }
@@ -287,17 +282,6 @@ impl ProjectSnapshot {
         }
         workspaces.retain(|workspace| !workspace.tabs.is_empty());
 
-        if workspaces.is_empty() {
-            self.selected_workspace_id = None;
-            self.tabs = None;
-            self.selected_tab_id = None;
-            self.sessions.clear();
-            self.selected_session_id = None;
-            self.visible_session_ids = None;
-            self.split_axis = None;
-            return;
-        }
-
         if !workspaces
             .iter()
             .any(|workspace| Some(workspace.id) == self.selected_workspace_id)
@@ -315,51 +299,41 @@ impl ProjectSnapshot {
         self.selected_tab_id = None;
     }
 
-    fn migrate_legacy_tabs(&self) -> Vec<TabSnapshot> {
-        if self.sessions.is_empty() {
-            return Vec::new();
-        }
+    fn migrate_legacy_tabs(&mut self) -> Vec<TabSnapshot> {
         let visible_ids: HashSet<_> = self
             .visible_session_ids
-            .clone()
+            .take()
             .unwrap_or_else(|| self.selected_session_id.into_iter().collect())
             .into_iter()
             .collect();
-        let visible_sessions: Vec<_> = self
-            .sessions
-            .iter()
-            .filter(|session| visible_ids.contains(&session.id))
-            .cloned()
-            .collect();
-        let mut inserted_group = false;
-        let mut tabs = Vec::new();
+        let mut group_index: Option<usize> = None;
+        let mut tabs: Vec<TabSnapshot> = Vec::new();
 
-        for session in &self.sessions {
+        for session in std::mem::take(&mut self.sessions) {
             if visible_ids.contains(&session.id) {
-                if inserted_group {
-                    continue;
+                if let Some(index) = group_index {
+                    tabs[index].sessions.push(session);
+                } else {
+                    group_index = Some(tabs.len());
+                    tabs.push(TabSnapshot::with_session(session));
                 }
-                inserted_group = true;
-                let layouts = visible_sessions
+            } else {
+                tabs.push(TabSnapshot::with_session(session));
+            }
+        }
+        if let Some(index) = group_index {
+            let tab = &mut tabs[index];
+            tab.selected_session_id = self
+                .selected_session_id
+                .filter(|id| visible_ids.contains(id))
+                .or(tab.selected_session_id);
+            tab.layout = PaneLayoutSnapshot::joining(
+                tab.sessions
                     .iter()
                     .map(|session| PaneLayoutSnapshot::terminal(session.id))
-                    .collect();
-                tabs.push(TabSnapshot {
-                    id: Uuid::new_v4(),
-                    sessions: visible_sessions.clone(),
-                    selected_session_id: self
-                        .selected_session_id
-                        .filter(|id| visible_ids.contains(id))
-                        .or_else(|| visible_sessions.first().map(|session| session.id)),
-                    zoomed_session_id: None,
-                    layout: PaneLayoutSnapshot::joining(
-                        layouts,
-                        self.split_axis.unwrap_or(WorkspaceSplitAxis::Horizontal),
-                    ),
-                });
-            } else {
-                tabs.push(TabSnapshot::with_session(session.clone()));
-            }
+                    .collect(),
+                self.split_axis.unwrap_or(WorkspaceSplitAxis::Horizontal),
+            );
         }
         tabs
     }
@@ -371,9 +345,7 @@ impl TerminalWorkspaceSnapshot {
             tab.normalize();
         }
         self.tabs.retain(|tab| !tab.sessions.is_empty());
-        if self.tabs.is_empty() {
-            self.selected_tab_id = None;
-        } else if !self
+        if !self
             .tabs
             .iter()
             .any(|tab| Some(tab.id) == self.selected_tab_id)

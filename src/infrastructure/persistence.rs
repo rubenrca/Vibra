@@ -325,7 +325,7 @@ mod tests {
         let backup = root.join(PROJECTS_BACKUP_FILE_NAME);
         assert_eq!(fs::read(&backup).unwrap(), original);
         assert_eq!(migrated.schema_version, CURRENT_WORKSPACE_SCHEMA_VERSION);
-        assert!(migrated.close_selected_terminal());
+        assert!(migrated.close_terminal(migrated.selected_session().unwrap().id));
         repository.save(&migrated).unwrap();
         assert_eq!(repository.load().unwrap().unwrap(), migrated);
         assert_eq!(migrated.projects.len(), 1);

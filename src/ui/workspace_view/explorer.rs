@@ -70,9 +70,9 @@ impl WorkspaceView {
                 if request_id != this.files_request_id {
                     return;
                 }
+                this.project_files = Arc::new(rows);
                 match result {
                     Ok(()) => {
-                        this.project_files = Arc::new(rows);
                         this.file_error = None;
                         if this
                             .selected_file_path
@@ -83,7 +83,6 @@ impl WorkspaceView {
                         }
                     }
                     Err(error) => {
-                        this.project_files = Arc::new(rows);
                         this.file_error = Some(error.to_string().into());
                     }
                 }
@@ -172,11 +171,11 @@ impl WorkspaceView {
                                     range
                                         .map(|index| {
                                             let row = &rows[index];
-                                            let path = row.entry.path.clone();
-                                            let selected = selected_path.as_ref() == Some(&path);
+                                            let path = &row.entry.path;
+                                            let selected = selected_path.as_ref() == Some(path);
                                             let is_directory =
                                                 row.entry.kind == FileEntryKind::Directory;
-                                            let rel = relative_repo_path(&path, &status_root);
+                                            let rel = relative_repo_path(path, &status_root);
                                             let status = if is_directory {
                                                 rel.as_deref()
                                                     .and_then(|rel| dir_statuses.get(rel).copied())

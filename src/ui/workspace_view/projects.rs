@@ -10,6 +10,7 @@ use gpui::{
 use uuid::Uuid;
 
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
+use crate::domain::workspace::ProjectSnapshot;
 use crate::ui::agent_marks::{agent_compact_badge, agent_status_color};
 use crate::ui::theme::{colors, surface_tint};
 use crate::{AddProject, GoToProject};
@@ -29,6 +30,18 @@ const PROJECT_AGENT_ROW_PITCH: f32 = 30.0;
 pub(super) struct ProjectDiffStats {
     pub additions: usize,
     pub deletions: usize,
+}
+
+/// Notes and automations cycle through projects, then the unassigned option.
+pub(super) fn next_library_project(
+    projects: &[ProjectSnapshot],
+    current: Option<Uuid>,
+) -> Option<Uuid> {
+    let next = projects
+        .iter()
+        .position(|project| Some(project.id) == current)
+        .map_or(0, |index| index + 1);
+    projects.get(next).map(|project| project.id)
 }
 
 impl WorkspaceView {
@@ -214,17 +227,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.palette_mode.is_some() || self.rename_prompt.is_some() || action.index == 0 {
+        if self.palette_mode.is_some() || self.rename_prompt.is_some() {
             return;
         }
         let order = self.visible_project_order();
-        if order.is_empty() {
+        let Some(index) = super::tabs::numbered_navigation_index(action.index, order.len()) else {
             return;
-        }
-        let index = if action.index >= 9 {
-            order.len() - 1
-        } else {
-            (action.index - 1).min(order.len() - 1)
         };
         self.select_project(order[index], window, cx);
     }

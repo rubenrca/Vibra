@@ -457,11 +457,19 @@ impl WorkspaceView {
             SettingsPage::Agents => self.agent_settings(panel, cx),
             SettingsPage::Security => self.security_settings(panel),
             SettingsPage::Inbox => panel
-                .child(self.settings_section_heading("Connections", "GitHub uses your gh session. Connect Linear with a personal API key stored only on this Mac."))
-                .child(div().py_3().rounded(px(12.0)).border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().elevated, colors().background))
-                    .child(self.inbox_connection_controls(cx))),
+                .child(self.settings_section_heading(
+                    "Connections",
+                    "GitHub uses your gh session. Connect Linear with a personal API key stored only on this Mac.",
+                ))
+                .child(
+                    div()
+                        .py_3()
+                        .rounded(px(12.0))
+                        .border_1()
+                        .border_color(colors().border_subtle)
+                        .bg(surface_tint(colors().elevated, colors().background))
+                        .child(self.inbox_connection_controls(cx)),
+                ),
         };
         div()
             .id(SharedString::from(format!(
@@ -529,7 +537,8 @@ impl WorkspaceView {
                 "Choose how Vibra gets your attention while you work elsewhere.",
             ))
             .child(
-                settings_card().overflow_hidden()
+                settings_card()
+                    .overflow_hidden()
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
                             label: "Activity notifications",

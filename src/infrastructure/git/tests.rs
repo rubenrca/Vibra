@@ -492,24 +492,11 @@ fn snapshot_seeds_the_branch_summary_cache() {
 
 #[test]
 fn hunk_parser_tracks_old_and_new_line_numbers() {
-    let mut rows = Vec::new();
-    let mut additions = 0;
-    let mut deletions = 0;
-    let mut binary = false;
-    let mut truncated = false;
-    append_patch(
-        b"@@ -4,2 +4,2 @@\n-old\n+new\n context\n",
-        None,
-        &mut rows,
-        &mut additions,
-        &mut deletions,
-        &mut binary,
-        &mut truncated,
-    );
+    let diff = parse_diff_patch("tracked.txt", b"@@ -4,2 +4,2 @@\n-old\n+new\n context\n");
 
-    assert_eq!(rows[1].old_line, Some(4));
-    assert_eq!(rows[2].new_line, Some(4));
-    assert_eq!((additions, deletions), (1, 1));
+    assert_eq!(diff.rows[1].old_line, Some(4));
+    assert_eq!(diff.rows[2].new_line, Some(4));
+    assert_eq!((diff.additions, diff.deletions), (1, 1));
 }
 
 #[test]
@@ -1360,6 +1347,31 @@ fn oversized_diffs_are_truncated_while_reading_git_output() {
     assert!(diff.rows.iter().any(|row| {
         row.kind == GitDiffRowKind::Notice && row.text.contains("truncated to 4 MiB")
     }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn commit_message_context_uses_staged_changes_when_present_and_worktree_otherwise() {
+    let root = repository();
+    let port = GitCliPort::default();
+    fs::write(root.join("tracked.txt"), "working-only\n").unwrap();
+    assert!(
+        port.commit_message_context(&root)
+            .unwrap()
+            .contains("+working-only")
+    );
+
+    fs::write(root.join("staged.txt"), "staged-only\n").unwrap();
+    git(&root, &["add", "staged.txt"]);
+    let context = port.commit_message_context(&root).unwrap();
+    assert!(context.contains("+staged-only"));
+    assert!(!context.contains("working-only"));
+
+    // An unborn repository has no HEAD to compare, but its index is still usable.
+    git(&root, &["update-ref", "-d", "HEAD"]);
+    let context = port.commit_message_context(&root).unwrap();
+    assert!(context.contains("+staged-only"));
+    assert!(!context.contains("Recent commit subjects:"));
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -150,15 +150,6 @@ fn run() -> Result<()> {
                 KeyBinding::new("alt-cmd-b", ToggleRightSidebar, None),
                 KeyBinding::new("ctrl-cmd-[", PreviousProject, None),
                 KeyBinding::new("ctrl-cmd-]", NextProject, None),
-                KeyBinding::new("alt-1", GoToProject { index: 1 }, None),
-                KeyBinding::new("alt-2", GoToProject { index: 2 }, None),
-                KeyBinding::new("alt-3", GoToProject { index: 3 }, None),
-                KeyBinding::new("alt-4", GoToProject { index: 4 }, None),
-                KeyBinding::new("alt-5", GoToProject { index: 5 }, None),
-                KeyBinding::new("alt-6", GoToProject { index: 6 }, None),
-                KeyBinding::new("alt-7", GoToProject { index: 7 }, None),
-                KeyBinding::new("alt-8", GoToProject { index: 8 }, None),
-                KeyBinding::new("alt-9", GoToProject { index: 9 }, None),
                 KeyBinding::new("ctrl-cmd-left", NavigateBack, None),
                 KeyBinding::new("ctrl-cmd-right", NavigateForward, None),
                 KeyBinding::new("cmd-c", CopyTerminal, Some("Terminal")),
@@ -170,15 +161,6 @@ fn run() -> Result<()> {
                 KeyBinding::new("cmd--", DecreaseTerminalFontSize, Some("Terminal")),
                 KeyBinding::new("cmd-0", ResetTerminalFontSize, Some("Terminal")),
                 KeyBinding::new("cmd-k", ClearTerminalScrollback, Some("Terminal")),
-                KeyBinding::new("cmd-1", GoToTab { index: 1 }, None),
-                KeyBinding::new("cmd-2", GoToTab { index: 2 }, None),
-                KeyBinding::new("cmd-3", GoToTab { index: 3 }, None),
-                KeyBinding::new("cmd-4", GoToTab { index: 4 }, None),
-                KeyBinding::new("cmd-5", GoToTab { index: 5 }, None),
-                KeyBinding::new("cmd-6", GoToTab { index: 6 }, None),
-                KeyBinding::new("cmd-7", GoToTab { index: 7 }, None),
-                KeyBinding::new("cmd-8", GoToTab { index: 8 }, None),
-                KeyBinding::new("cmd-9", GoToTab { index: 9 }, None),
                 KeyBinding::new("cmd-d", SplitPaneRight, None),
                 KeyBinding::new("shift-cmd-d", SplitPaneDown, None),
                 KeyBinding::new("ctrl-alt-cmd-left", SplitPaneLeft, None),
@@ -204,6 +186,12 @@ fn run() -> Result<()> {
                 KeyBinding::new("cmd-u", CheckForUpdates, None),
                 KeyBinding::new("cmd-q", Quit, None),
             ]);
+            cx.bind_keys((1..=9).flat_map(|index| {
+                [
+                    KeyBinding::new(&format!("alt-{index}"), GoToProject { index }, None),
+                    KeyBinding::new(&format!("cmd-{index}"), GoToTab { index }, None),
+                ]
+            }));
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_action(|_: &CheckForUpdates, _cx| {
                 infrastructure::sparkle::check_for_updates();

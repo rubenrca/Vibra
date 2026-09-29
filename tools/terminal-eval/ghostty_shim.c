@@ -10,11 +10,15 @@ typedef struct {
 } EvalTerminal;
 
 // Do not use assert for calls with side effects: Rust release builds may set NDEBUG.
-static void check(GhosttyResult result) { if (result != GHOSTTY_SUCCESS) abort(); }
+static void check(GhosttyResult result) {
+    if (result != GHOSTTY_SUCCESS)
+        abort();
+}
 
 void *eval_new(unsigned short cols, unsigned short rows) {
     EvalTerminal *e = calloc(1, sizeof(*e));
-    if (!e) abort();
+    if (!e)
+        abort();
     check(ghostty_terminal_new(NULL, &e->terminal, cols, rows));
     size_t history = 1000;
     check(ghostty_terminal_set(e->terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, NULL));
@@ -56,16 +60,24 @@ unsigned long long eval_capture(void *ptr) {
             check(ghostty_render_state_row_cells_get(
                 cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &count));
             uint32_t *cp = count ? malloc(count * sizeof(*cp)) : NULL;
-            if (count && !cp) abort();
+            if (count && !cp)
+                abort();
             if (count) {
                 check(ghostty_render_state_row_cells_get(
                     cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, cp));
             }
-            if (!count) { hash ^= 32; hash *= 1099511628211ULL; }
-            for (uint32_t i = 0; i < count; ++i) { hash ^= cp[i]; hash *= 1099511628211ULL; }
+            if (!count) {
+                hash ^= 32;
+                hash *= 1099511628211ULL;
+            }
+            for (uint32_t i = 0; i < count; ++i) {
+                hash ^= cp[i];
+                hash *= 1099511628211ULL;
+            }
             free(cp);
             GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
-            check(ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style));
+            check(ghostty_render_state_row_cells_get(
+                cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style));
             hash ^= style.bold;
             hash *= 1099511628211ULL;
         }
@@ -80,8 +92,10 @@ unsigned char *eval_format(void *ptr, size_t *len, int styled) {
     GhosttyFormatterTerminalOptions options = GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
     options.emit = styled ? GHOSTTY_FORMATTER_FORMAT_VT : GHOSTTY_FORMATTER_FORMAT_PLAIN;
     options.trim = true;
-    options.extra = (GhosttyFormatterTerminalExtra)GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalExtra);
-    options.extra.screen = (GhosttyFormatterScreenExtra)GHOSTTY_INIT_SIZED(GhosttyFormatterScreenExtra);
+    options.extra =
+        (GhosttyFormatterTerminalExtra)GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalExtra);
+    options.extra.screen =
+        (GhosttyFormatterScreenExtra)GHOSTTY_INIT_SIZED(GhosttyFormatterScreenExtra);
     options.extra.screen.cursor = styled;
     options.extra.screen.style = styled;
     options.extra.screen.kitty_keyboard = styled;
@@ -95,4 +109,6 @@ unsigned char *eval_format(void *ptr, size_t *len, int styled) {
     return out;
 }
 
-void eval_buffer_free(unsigned char *ptr, size_t len) { ghostty_free(NULL, ptr, len); }
+void eval_buffer_free(unsigned char *ptr, size_t len) {
+    ghostty_free(NULL, ptr, len);
+}

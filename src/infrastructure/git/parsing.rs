@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::MAX_DIFF_BYTES;
+use super::{DiffAccumulator, MAX_DIFF_BYTES};
 use crate::ports::git::{GitCommit, GitDiffRow, GitDiffRowKind, GitFileChange, GitFileStatus};
 
 pub(super) fn parse_porcelain_status(stdout: &[u8]) -> PorcelainStatus {
@@ -281,18 +281,17 @@ fn parse_decorations(decorations: &str) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn append_patch(
-    bytes: &[u8],
-    section: Option<&str>,
-    rows: &mut Vec<GitDiffRow>,
-    additions: &mut usize,
-    deletions: &mut usize,
-    binary: &mut bool,
-    truncated: &mut bool,
-) {
+pub(super) fn append_patch(bytes: &[u8], section: Option<&str>, diff: &mut DiffAccumulator) {
     if bytes.is_empty() {
         return;
     }
+    let DiffAccumulator {
+        rows,
+        additions,
+        deletions,
+        binary,
+        truncated,
+    } = diff;
     if let Some(section) = section {
         rows.push(GitDiffRow {
             old_line: None,

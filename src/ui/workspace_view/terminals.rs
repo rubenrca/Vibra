@@ -89,8 +89,11 @@ impl WorkspaceView {
 
     pub(super) fn reconcile_terminal_views(&mut self, cx: &mut Context<Self>) {
         self.sync_review_docking(cx);
-        let sessions: Vec<_> = self.snapshot.terminal_sessions().cloned().collect();
-        let live_ids: HashSet<_> = sessions.iter().map(|session| session.id).collect();
+        let live_ids: HashSet<_> = self
+            .snapshot
+            .terminal_sessions()
+            .map(|session| session.id)
+            .collect();
 
         let stale_ids: Vec<_> = self
             .terminals
@@ -112,14 +115,14 @@ impl WorkspaceView {
         }
         self.inbox.forget_closed_panes(&live_ids);
 
-        for session in sessions {
+        for session in self.snapshot.terminal_sessions() {
             if self.terminals.contains_key(&session.id) {
                 continue;
             }
             let session_id = session.id;
             let terminal_port = self.terminal_port.clone();
-            let working_directory = PathBuf::from(session.working_directory);
-            let title = session.title;
+            let working_directory = PathBuf::from(&session.working_directory);
+            let title = session.title.clone();
             let token = *self
                 .automation_tokens
                 .entry(session_id)
@@ -182,6 +185,14 @@ impl WorkspaceView {
             let shown = visible.contains(session_id);
             terminal.update(cx, |terminal, _| terminal.set_surface_visible(shown));
         }
+    }
+
+    /// Refreshes pane-dependent surfaces and saves a changed terminal selection.
+    pub(super) fn terminal_selection_changed(&mut self, cx: &mut Context<Self>) {
+        self.sync_terminal_surface_visibility(cx);
+        self.sync_diff_root(cx);
+        self.refresh_project_files(cx);
+        self.persist(cx);
     }
 
     pub(super) fn handle_terminal_view_event(
@@ -255,20 +266,14 @@ impl WorkspaceView {
                     .selected_session()
                     .is_some_and(|session| session.id == session_id);
                 if self.snapshot.select_terminal_global(session_id) && !was_selected {
-                    self.sync_terminal_surface_visibility(cx);
-                    self.sync_diff_root(cx);
-                    self.refresh_project_files(cx);
-                    self.persist(cx);
+                    self.terminal_selection_changed(cx);
                 }
                 self.open_context_menu(ContextMenuKind::Pane { session_id }, *x, *y, cx);
             }
             TerminalViewEvent::Activated { session_id } => {
                 self.inbox.mark_pane_read(*session_id);
                 if self.snapshot.select_terminal(*session_id) {
-                    self.sync_terminal_surface_visibility(cx);
-                    self.sync_diff_root(cx);
-                    self.refresh_project_files(cx);
-                    self.persist(cx);
+                    self.terminal_selection_changed(cx);
                 }
                 cx.notify();
             }
@@ -450,10 +455,7 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.snapshot.select_terminal(session_id) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
+            self.terminal_selection_changed(cx);
         }
         self.focus_terminal(session_id, window, cx);
     }

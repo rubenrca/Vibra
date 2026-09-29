@@ -56,13 +56,23 @@ pub struct SyntaxSpan {
 enum Mode {
     Code,
     BlockComment,
-    String {
-        quote: u8,
-    },
+    String(StringDelimiter),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StringDelimiter {
+    Quoted(u8),
     /// Rust raw string `r##"..."##` — number of `#` delimiters.
-    RawString {
-        hashes: u8,
-    },
+    Raw(u8),
+}
+
+impl StringDelimiter {
+    fn scan_end(self, bytes: &[u8], start: usize) -> (usize, bool) {
+        match self {
+            Self::Quoted(quote) => scan_string_end(bytes, start, quote),
+            Self::Raw(hashes) => scan_raw_string_end(bytes, start, hashes),
+        }
+    }
 }
 
 /// Multi-line state so block comments / strings survive across hunk lines.
@@ -117,22 +127,9 @@ impl Highlighter {
                     });
                     code_start = i;
                 }
-                Mode::String { quote } => {
+                Mode::String(delimiter) => {
                     let start = i;
-                    let (end, closed) = scan_string_end(bytes, i, quote);
-                    i = end;
-                    spans.push(SyntaxSpan {
-                        range: start..i,
-                        kind: SyntaxKind::String,
-                    });
-                    if closed {
-                        self.mode = Mode::Code;
-                        code_start = i;
-                    }
-                }
-                Mode::RawString { hashes } => {
-                    let start = i;
-                    let (end, closed) = scan_raw_string_end(bytes, i, hashes);
+                    let (end, closed) = delimiter.scan_end(bytes, i);
                     i = end;
                     spans.push(SyntaxSpan {
                         range: start..i,
@@ -144,21 +141,9 @@ impl Highlighter {
                     }
                 }
                 Mode::Code => {
-                    // Line comment //
-                    if self.line_comment_slash()
-                        && i + 1 < bytes.len()
-                        && bytes[i] == b'/'
-                        && bytes[i + 1] == b'/'
+                    if (self.c_comments() && bytes[i..].starts_with(b"//"))
+                        || (self.line_comment_hash() && bytes[i] == b'#')
                     {
-                        flush_code(line, code_start, i, self.language, &mut spans);
-                        spans.push(SyntaxSpan {
-                            range: i..bytes.len(),
-                            kind: SyntaxKind::Comment,
-                        });
-                        return spans;
-                    }
-                    // Hash line comment (#) for Python / Shell / Toml / Yaml
-                    if self.line_comment_hash() && bytes[i] == b'#' {
                         flush_code(line, code_start, i, self.language, &mut spans);
                         spans.push(SyntaxSpan {
                             range: i..bytes.len(),
@@ -167,23 +152,15 @@ impl Highlighter {
                         return spans;
                     }
                     // Block comment /*
-                    if self.block_comment()
-                        && i + 1 < bytes.len()
-                        && bytes[i] == b'/'
-                        && bytes[i + 1] == b'*'
-                    {
+                    if self.c_comments() && bytes[i..].starts_with(b"/*") {
                         flush_code(line, code_start, i, self.language, &mut spans);
                         self.mode = Mode::BlockComment;
                         continue;
                     }
-                    // Rust raw string r" / r#"
-                    if self.language == Language::Rust
-                        && bytes[i] == b'r'
-                        && let Some((hashes, open_end)) = rust_raw_opener(bytes, i)
-                    {
+                    if let Some((delimiter, content_start)) = self.string_opener(bytes, i) {
                         flush_code(line, code_start, i, self.language, &mut spans);
                         let start = i;
-                        let (end, closed) = scan_raw_string_end(bytes, open_end, hashes);
+                        let (end, closed) = delimiter.scan_end(bytes, content_start);
                         spans.push(SyntaxSpan {
                             range: start..end,
                             kind: SyntaxKind::String,
@@ -193,26 +170,7 @@ impl Highlighter {
                             self.mode = Mode::Code;
                             code_start = i;
                         } else {
-                            self.mode = Mode::RawString { hashes };
-                        }
-                        continue;
-                    }
-                    // Normal string
-                    if is_string_quote(bytes[i], self.language, bytes, i) {
-                        flush_code(line, code_start, i, self.language, &mut spans);
-                        let quote = bytes[i];
-                        let start = i;
-                        let (end, closed) = scan_string_end(bytes, i + 1, quote);
-                        spans.push(SyntaxSpan {
-                            range: start..end,
-                            kind: SyntaxKind::String,
-                        });
-                        i = end;
-                        if closed {
-                            self.mode = Mode::Code;
-                            code_start = i;
-                        } else {
-                            self.mode = Mode::String { quote };
+                            self.mode = Mode::String(delimiter);
                         }
                         continue;
                     }
@@ -227,7 +185,18 @@ impl Highlighter {
         spans
     }
 
-    fn line_comment_slash(&self) -> bool {
+    fn string_opener(&self, bytes: &[u8], i: usize) -> Option<(StringDelimiter, usize)> {
+        if self.language == Language::Rust
+            && bytes[i] == b'r'
+            && let Some((hashes, end)) = rust_raw_opener(bytes, i)
+        {
+            return Some((StringDelimiter::Raw(hashes), end));
+        }
+        is_string_quote(bytes[i], self.language, bytes, i)
+            .then_some((StringDelimiter::Quoted(bytes[i]), i + 1))
+    }
+
+    fn c_comments(&self) -> bool {
         matches!(
             self.language,
             Language::Rust
@@ -243,18 +212,6 @@ impl Highlighter {
         matches!(
             self.language,
             Language::Python | Language::Shell | Language::Toml | Language::Yaml
-        )
-    }
-
-    fn block_comment(&self) -> bool {
-        matches!(
-            self.language,
-            Language::Rust
-                | Language::JavaScript
-                | Language::TypeScript
-                | Language::Swift
-                | Language::Go
-                | Language::Css
         )
     }
 }
@@ -866,6 +823,33 @@ mod tests {
         let second = h.highlight_line(" still comment */ let y = 2;");
         assert!(second.iter().any(|s| s.kind == SyntaxKind::Comment));
         assert!(second.iter().any(|s| s.kind == SyntaxKind::Keyword));
+    }
+
+    #[test]
+    fn multiline_strings_keep_their_delimiter_and_resume_code_after_closing() {
+        for (opening, closing, string) in [
+            (
+                "let value = \"open\\\" still",
+                "close\"; let after = 2;",
+                "close\"",
+            ),
+            (
+                "let value = r##\"open \"# // still raw",
+                "close\"##; let after = 2;",
+                "close\"##",
+            ),
+        ] {
+            let mut highlighter = Highlighter::new(Language::Rust);
+            let first = highlighter.highlight_line(opening);
+            assert!(first.iter().any(|span| span.kind == SyntaxKind::String));
+            assert!(first.iter().all(|span| span.kind != SyntaxKind::Comment));
+            let spans = highlighter.highlight_line(closing);
+            assert_eq!(spans[0].kind, SyntaxKind::String);
+            assert_eq!(line_slice(closing, &spans[0].range), string);
+            assert!(spans.iter().any(|span| {
+                span.kind == SyntaxKind::Keyword && line_slice(closing, &span.range) == "let"
+            }));
+        }
     }
 
     #[test]

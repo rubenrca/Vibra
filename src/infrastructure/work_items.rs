@@ -106,6 +106,17 @@ fn string(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
 }
 
+fn array(value: &Value) -> &[Value] {
+    value.as_array().map(Vec::as_slice).unwrap_or_default()
+}
+
+fn names(value: &Value, key: &str) -> Vec<String> {
+    array(value)
+        .iter()
+        .filter_map(|value| value[key].as_str().map(str::to_owned))
+        .collect()
+}
+
 fn timestamp(value: &Value) -> u64 {
     value
         .as_str()

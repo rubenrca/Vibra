@@ -12,7 +12,8 @@ typedef struct {
     uint8_t foreground[3], background[3], underline_color[3];
     uint8_t bold, italic, underline, strikeout, hidden, wide_spacer, selected;
 } VgCell;
-typedef void (*VgPaint)(void *, uint16_t, uint16_t, const VgCell *, const uint8_t *, size_t, const uint8_t *, size_t);
+typedef void (*VgPaint)(
+    void *, uint16_t, uint16_t, const VgCell *, const uint8_t *, size_t, const uint8_t *, size_t);
 void *vg_new(uint16_t, uint16_t, VgEvent, void *);
 void vg_free(void *);
 void vg_feed(void *, const uint8_t *, size_t);

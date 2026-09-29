@@ -175,7 +175,7 @@ impl WorkspaceView {
             .border_color(colors().border_subtle)
             .text_size(px(11.0))
             .text_color(colors().muted)
-            .when_some(self.current_branch_summary().cloned(), |bar, summary| {
+            .when_some(self.current_branch_summary(), |bar, summary| {
                 bar.child(
                     item("status-branch")
                         .tooltip(|_, cx| sidebar_tooltip("Open Changes", cx))

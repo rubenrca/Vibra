@@ -32,10 +32,9 @@ void vibra_sparkle_start(void) {
             });
             return;
         }
-        g_controller = [[SPUStandardUpdaterController alloc]
-            initWithStartingUpdater:YES
-                    updaterDelegate:nil
-                 userDriverDelegate:nil];
+        g_controller = [[SPUStandardUpdaterController alloc] initWithStartingUpdater:YES
+                                                                     updaterDelegate:nil
+                                                                  userDriverDelegate:nil];
     }
 }
 

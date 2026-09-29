@@ -13,6 +13,7 @@ use crate::infrastructure::library::{local_minute_now, unix_now};
 use crate::ui::theme::{MONO_FONT, colors, surface_tint};
 
 use super::navigation::{project_color, section_button, section_empty_state, section_frame};
+use super::projects::next_library_project;
 use super::{WorkspaceSection, WorkspaceView};
 use crate::ui::text_edit::{TextKeyOutcome, apply_text_key};
 
@@ -38,12 +39,16 @@ pub(super) struct AutomationForm {
 }
 
 impl AutomationForm {
-    fn fields(&self) -> Vec<AutomationField> {
-        let mut fields = vec![AutomationField::Name, AutomationField::Command];
-        if self.schedule != AutomationSchedule::Manual {
-            fields.push(AutomationField::Time);
+    fn fields(&self) -> &[AutomationField] {
+        if self.schedule == AutomationSchedule::Manual {
+            &[AutomationField::Name, AutomationField::Command]
+        } else {
+            &[
+                AutomationField::Name,
+                AutomationField::Command,
+                AutomationField::Time,
+            ]
         }
-        fields
     }
 
     fn move_field(&mut self, offset: isize) {
@@ -139,22 +144,11 @@ impl WorkspaceView {
     }
 
     fn cycle_form_project(&mut self, cx: &mut Context<Self>) {
-        let projects: Vec<Option<Uuid>> = std::iter::once(None)
-            .chain(
-                self.snapshot
-                    .projects
-                    .iter()
-                    .map(|project| Some(project.id)),
-            )
-            .collect();
-        if let Some(form) = self.automation_form.as_mut() {
-            let index = projects
-                .iter()
-                .position(|project| *project == form.project_id)
-                .unwrap_or(0);
-            form.project_id = projects[(index + 1) % projects.len()];
-            cx.notify();
-        }
+        let Some(form) = self.automation_form.as_mut() else {
+            return;
+        };
+        form.project_id = next_library_project(&self.snapshot.projects, form.project_id);
+        cx.notify();
     }
 
     pub(super) fn handle_automation_form_key(
@@ -362,8 +356,8 @@ impl WorkspaceView {
                 .into_any_element(),
         ];
         let mut body = div().w_full().max_w(px(760.0)).flex().flex_col().gap_2();
-        if let Some(form) = self.automation_form.clone() {
-            body = body.child(self.automation_form_card(&form, cx));
+        if let Some(form) = &self.automation_form {
+            body = body.child(self.automation_form_card(form, cx));
         }
         if self.library.automations.is_empty() && self.automation_form.is_none() {
             body = body.child(section_empty_state(
@@ -372,8 +366,8 @@ impl WorkspaceView {
                 "Save a command (such as claude -p \"summarize yesterday's changes\" or cargo test) and run it whenever you want or on a schedule. Each run opens a new tab in the project so you can see the output and keep working in that terminal.",
             ));
         }
-        for automation in self.library.automations.clone() {
-            body = body.child(self.automation_row(&automation, now, cx));
+        for automation in &self.library.automations {
+            body = body.child(self.automation_row(automation, now, cx));
         }
         section_frame("Automations", actions, body.into_any_element())
     }

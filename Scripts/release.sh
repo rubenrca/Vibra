@@ -51,16 +51,29 @@ usage() {
 
 while (( $# )); do
   case "$1" in
-    --notarize) notarize=1 ;;
-    --no-notarize) notarize=0 ;;
-    --resume-dmg) resume_dmg=1 ;;
-    --dry-run) dry_run=1 ;;
-    --prerelease) prerelease=1; channel_explicit=1 ;;
+    --notarize)
+      notarize=1
+      ;;
+    --no-notarize)
+      notarize=0
+      ;;
+    --resume-dmg)
+      resume_dmg=1
+      ;;
+    --dry-run)
+      dry_run=1
+      ;;
+    --prerelease)
+      prerelease=1
+      channel_explicit=1
+      ;;
     --stable)
       prerelease=0
       channel_explicit=1
       ;;
-    -h|--help) usage ;;
+    -h|--help)
+      usage
+      ;;
     -*)
       print -u2 -- "unknown argument: $1"
       usage

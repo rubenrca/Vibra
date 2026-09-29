@@ -244,9 +244,7 @@ impl DiffView {
                                 .text_color(colors().muted),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.comments.clear();
-                            this.review_delivery = None;
-                            this.draft = None;
+                            this.clear_review_comments();
                             cx.notify();
                         })),
                 )

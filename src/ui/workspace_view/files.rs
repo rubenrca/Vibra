@@ -34,15 +34,14 @@ pub(crate) fn collect_project_files(
         if output.len() >= MAX_VISIBLE_FILE_ROWS {
             break;
         }
-        let is_expanded = entry.kind == FileEntryKind::Directory && expanded.contains(&entry.path);
-        let child_path = entry.path.clone();
-        let is_directory = entry.kind == FileEntryKind::Directory;
+        let child_path = (entry.kind == FileEntryKind::Directory && expanded.contains(&entry.path))
+            .then(|| entry.path.clone());
         output.push(ProjectFileRow {
             entry,
             depth,
-            expanded: is_expanded,
+            expanded: child_path.is_some(),
         });
-        if is_directory && is_expanded {
+        if let Some(child_path) = child_path {
             collect_project_files(
                 port,
                 root,

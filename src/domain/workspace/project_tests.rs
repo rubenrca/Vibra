@@ -151,7 +151,7 @@ fn closing_the_last_session_or_pane_keeps_the_project() {
         let project_id = snapshot.selected_project_id.unwrap();
         let workspace_id = snapshot.selected_workspace().unwrap().id;
         if close_pane {
-            assert!(snapshot.close_selected_terminal());
+            assert!(snapshot.close_terminal(snapshot.selected_session().unwrap().id));
         } else {
             assert!(snapshot.close_workspace(project_id, workspace_id));
         }

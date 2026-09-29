@@ -42,7 +42,11 @@ fn agent_task_titles_persist_and_survive_terminal_updates_without_renaming_manua
         .unwrap();
     assert_eq!(entry.title_source, Some(WorkspaceTitleSource::Manual));
     assert_eq!(entry.name, "Mi nombre");
-    let old = serde_json::json!({"id": first, "title": "Terminal", "workingDirectory": "/tmp"});
+    let old = serde_json::json!({
+        "id": first,
+        "title": "Terminal",
+        "workingDirectory": "/tmp"
+    });
     assert!(
         serde_json::from_value::<SessionSnapshot>(old)
             .unwrap()
@@ -360,7 +364,11 @@ fn split_ratios_are_addressed_by_tree_path_and_clamped() {
         ],
         WorkspaceSplitAxis::Horizontal,
     );
-    assert!(layout.split_terminal(second_id, third_id, WorkspaceSplitAxis::Vertical, false,));
+    assert!(layout.split_with_layout(
+        second_id,
+        &PaneLayoutSnapshot::terminal(third_id),
+        PaneSplitDirection::Down,
+    ));
 
     assert!(layout.set_split_ratio(&[PaneBranch::Second], u16::MAX));
 
@@ -531,6 +539,52 @@ fn legacy_sessions_migrate_without_data_loss() {
     );
     assert!(snapshot.projects[0].tabs.is_none());
     assert_eq!(snapshot.selected_session().unwrap().id, session_id);
+}
+
+#[test]
+fn legacy_visible_panes_group_at_the_first_visible_session_and_keep_order() {
+    let sessions: Vec<_> = (0..5)
+        .map(|index| SessionSnapshot::new(format!("/tmp/legacy/{index}")))
+        .collect();
+    let ids: Vec<_> = sessions.iter().map(|session| session.id).collect();
+    let mut project = ProjectSnapshot::new(Uuid::new_v4(), "Legacy".into(), "/tmp/legacy".into());
+    project.sessions = sessions.clone();
+    project.selected_session_id = Some(ids[3]);
+    project.visible_session_ids = Some(vec![ids[3], ids[1]]);
+    project.split_axis = Some(WorkspaceSplitAxis::Vertical);
+
+    project.normalize();
+
+    let workspace = &project.workspaces.as_ref().unwrap()[0];
+    assert_eq!(
+        workspace
+            .tabs
+            .iter()
+            .map(|tab| tab.layout.terminal_ids())
+            .collect::<Vec<_>>(),
+        [
+            vec![ids[0]],
+            vec![ids[1], ids[3]],
+            vec![ids[2]],
+            vec![ids[4]]
+        ]
+    );
+    assert_eq!(workspace.primary_session(), Some(&sessions[3]));
+    assert_eq!(
+        workspace.tabs[1].sessions,
+        vec![sessions[1].clone(), sessions[3].clone()]
+    );
+    assert!(matches!(
+        workspace.tabs[1].layout,
+        PaneLayoutSnapshot::Split {
+            axis: WorkspaceSplitAxis::Vertical,
+            ..
+        }
+    ));
+    assert!(project.sessions.is_empty() && project.visible_session_ids.is_none());
+    let normalized = project.clone();
+    project.normalize();
+    assert_eq!(project, normalized);
 }
 
 #[test]

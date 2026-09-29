@@ -271,24 +271,21 @@ impl WorkspaceView {
     }
 
     pub(super) fn sync_inbox_selection(&mut self, cx: &mut Context<Self>) {
-        let visible: Vec<_> = self
+        let selected = self.work_inbox.selected.as_deref();
+        let mut visible = self
             .work_inbox
             .feed(self.settings.inbox.source)
             .items
             .iter()
-            .filter(|item| self.work_inbox.filter.matches(item, &self.settings.inbox))
-            .map(|item| item.url.clone())
-            .collect();
-        if self
-            .work_inbox
-            .selected
-            .as_ref()
-            .is_some_and(|selected| visible.contains(selected))
+            .filter(|item| self.work_inbox.filter.matches(item, &self.settings.inbox));
+        if visible
+            .clone()
+            .any(|item| Some(item.url.as_str()) == selected)
         {
             return;
         }
-        if let Some(first) = visible.first() {
-            self.select_work_item(first, cx);
+        if let Some(first) = visible.next().map(|item| item.url.clone()) {
+            self.select_work_item(&first, cx);
         } else {
             self.work_inbox.selected = None;
             self.sync_terminal_surface_visibility(cx);
@@ -455,24 +452,25 @@ impl WorkspaceView {
             return;
         };
         self.settings.inbox.mark_seen(item);
-        if self.work_inbox.selected.as_deref() == Some(url) {
-            self.load_inbox_detail(false, cx);
-            self.persist_settings(cx);
-            return;
+        let changed = self.work_inbox.selected.as_deref() != Some(url);
+        if changed {
+            self.work_inbox.target_project = item.project_id.or(self.snapshot.selected_project_id);
+            let inbox = &mut self.work_inbox;
+            inbox.selected = Some(url.into());
+            inbox.search_editing = false;
+            inbox.action_error = None;
+            inbox.detail_tab = DetailTab::Summary;
+            inbox.composer_open = false;
+            inbox.composer_editing = false;
+            inbox.composer_note.clear();
+            inbox.menu = None;
+            inbox.comment_editing = false;
+            inbox.confirmation = None;
         }
-        self.work_inbox.target_project = item.project_id.or(self.snapshot.selected_project_id);
-        self.work_inbox.selected = Some(url.into());
-        self.work_inbox.search_editing = false;
-        self.work_inbox.action_error = None;
-        self.work_inbox.detail_tab = DetailTab::Summary;
-        self.work_inbox.composer_open = false;
-        self.work_inbox.composer_editing = false;
-        self.work_inbox.composer_note.clear();
-        self.work_inbox.menu = None;
-        self.work_inbox.comment_editing = false;
-        self.work_inbox.confirmation = None;
         self.load_inbox_detail(false, cx);
-        self.sync_terminal_surface_visibility(cx);
+        if changed {
+            self.sync_terminal_surface_visibility(cx);
+        }
         self.persist_settings(cx);
     }
 
@@ -567,7 +565,10 @@ impl WorkspaceView {
             }
             Ok((_, false)) => {
                 let _ = std::fs::remove_file(&prompt_path);
-                self.work_inbox.action_error = Some("The tab opened, but the terminal could not start the agent. Check the terminal and try again.".into());
+                self.work_inbox.action_error = Some(
+                    "The tab opened, but the terminal could not start the agent. Check the terminal and try again."
+                        .into(),
+                );
             }
             Err(message) => {
                 let _ = std::fs::remove_file(&prompt_path);

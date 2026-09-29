@@ -295,27 +295,62 @@ mod tests {
 
     #[test]
     fn claude_maps_windows_scoped_models_and_cents_without_inventing_limits() {
-        let usage = claude(&json!({
-            "five_hour":{"utilization":20,"resets_at":"2026-09-27T00:00:00Z"},
-            "seven_day":null,
-            "limits":[{"kind":"weekly_scoped","percent":75,"scope":{"model":{"display_name":"Fable"}}}],
-            "extra_usage":{"is_enabled":true,"used_credits":1250,"monthly_limit":5000}
-        }), 1_800_000_000).unwrap();
+        let usage = claude(
+            &json!({
+                "five_hour": {
+                    "utilization": 20,
+                    "resets_at": "2026-09-27T00:00:00Z"
+                },
+                "seven_day": null,
+                "limits": [{
+                    "kind": "weekly_scoped",
+                    "percent": 75,
+                    "scope": { "model": { "display_name": "Fable" } }
+                }],
+                "extra_usage": {
+                    "is_enabled": true,
+                    "used_credits": 1250,
+                    "monthly_limit": 5000
+                }
+            }),
+            1_800_000_000,
+        )
+        .unwrap();
         assert_eq!(usage.resources["session"].percent_used(), Some(20.0));
         assert!(!usage.resources.contains_key("weekly"));
         assert_eq!(usage.resources["fable"].percent_used(), Some(75.0));
         assert_eq!(usage.resources["extraUsage"].used, Some(12.5));
         assert_eq!(usage.resources["extraUsage"].limit, Some(50.0));
-        assert!(claude(&json!({"error":"invalid"}), 0).is_err());
+        assert!(claude(&json!({ "error": "invalid" }), 0).is_err());
     }
 
     #[test]
     fn codex_classifies_a_weekly_primary_and_preserves_zero_credits() {
-        let usage = codex(&json!({
-            "plan_type":"pro", "rate_limit":{"primary_window":{"used_percent":71,"limit_window_seconds":604800,"reset_at":1800000010}},
-            "credits":{"balance":"0"}, "rate_limit_reset_credits":{"available_count":2},
-            "additional_rate_limits":[{"limit_name":"Spark","rate_limit":{"primary_window":{"used_percent":5,"limit_window_seconds":18000}}}]
-        }), 1800000000).unwrap();
+        let usage = codex(
+            &json!({
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 71,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1800000010
+                    }
+                },
+                "credits": { "balance": "0" },
+                "rate_limit_reset_credits": { "available_count": 2 },
+                "additional_rate_limits": [{
+                    "limit_name": "Spark",
+                    "rate_limit": {
+                        "primary_window": {
+                            "used_percent": 5,
+                            "limit_window_seconds": 18000
+                        }
+                    }
+                }]
+            }),
+            1800000000,
+        )
+        .unwrap();
         assert!(!usage.resources.contains_key("session"));
         assert_eq!(usage.resources["weekly"].percent_used(), Some(71.0));
         assert_eq!(usage.resources["credits"].available, Some(0.0));
@@ -325,7 +360,15 @@ mod tests {
 
     #[test]
     fn grok_distinguishes_proto_zero_from_invalid_data_and_monthly_from_weekly() {
-        let mut body = json!({"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-09-20T00:00:00Z","end":"2026-09-27T00:00:00Z"}}});
+        let mut body = json!({
+            "config": {
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                    "start": "2026-09-20T00:00:00Z",
+                    "end": "2026-09-27T00:00:00Z"
+                }
+            }
+        });
         assert_eq!(
             grok(&body, 0).unwrap().resources["weekly"].percent_used(),
             Some(0.0)

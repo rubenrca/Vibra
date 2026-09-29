@@ -818,10 +818,7 @@ impl super::WorkspaceView {
         self.select_section(WorkspaceSection::Workspace, window, cx);
         self.reveal_terminal(cx);
         if self.snapshot.focus_terminal(direction) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
+            self.terminal_selection_changed(cx);
         }
         self.focus_selected_terminal(window, cx);
     }
@@ -835,10 +832,7 @@ impl super::WorkspaceView {
         self.select_section(WorkspaceSection::Workspace, window, cx);
         self.reveal_terminal(cx);
         if self.snapshot.cycle_terminal(offset) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
+            self.terminal_selection_changed(cx);
         }
         self.focus_selected_terminal(window, cx);
     }
@@ -884,10 +878,7 @@ impl super::WorkspaceView {
     ) {
         self.reorder_drag = None;
         if self.snapshot.swap_tab_terminals(from, onto) {
-            self.sync_terminal_surface_visibility(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
+            self.terminal_selection_changed(cx);
             self.focus_terminal(from, window, cx);
         }
         cx.notify();

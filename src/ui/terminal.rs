@@ -1583,6 +1583,48 @@ struct TerminalBackgroundRun {
 }
 
 impl TerminalPaintState {
+    fn from_snapshot(
+        snapshot: Arc<TerminalSnapshot>,
+        bounds: Bounds<Pixels>,
+        cache: &mut TerminalRenderCache,
+        context: &TerminalShapeContext<'_>,
+    ) -> Self {
+        let cell_width = context.cell_width;
+        let line_height = bounds.size.height / snapshot.rows.max(1) as f32;
+        Self {
+            lines: shape_snapshot_cached(cache, snapshot.clone(), context),
+            backgrounds: collect_background_runs(&snapshot),
+            grid_bounds: bounds,
+            surface: snapshot_surface_color(&snapshot),
+            cursor: snapshot.cursor.and_then(|cursor| {
+                (!cursor.blinking || context.cursor_visible)
+                    .then(|| cursor_quad(bounds, cursor, cell_width, line_height, context.focused))
+                    .flatten()
+            }),
+            cursor_bounds: snapshot
+                .cursor
+                .map(|cursor| cursor_bounds(bounds, cursor, cell_width, line_height)),
+            composition: None,
+            cursor_blinking: snapshot.cursor.is_some_and(|cursor| cursor.blinking),
+            cell_width,
+            line_height,
+            grid_size: (snapshot.columns, snapshot.rows),
+        }
+    }
+
+    fn paint_cells(&mut self, window: &mut Window, cx: &mut App) {
+        if let Some(cursor) = self.cursor.take() {
+            window.paint_quad(cursor);
+        }
+        for (row, line) in self.lines.iter().enumerate() {
+            let origin = point(
+                self.grid_bounds.left(),
+                self.grid_bounds.top() + self.line_height * row,
+            );
+            let _ = line.paint(origin, self.line_height, window, cx);
+        }
+    }
+
     fn paint_backgrounds(&self, bounds: Bounds<Pixels>, floating: bool, window: &mut Window) {
         let grid = self.grid_bounds;
         let background = if floating {
@@ -1866,11 +1908,7 @@ impl Render for TerminalView {
                             // fewer columns/rows left a gray strip where full-screen TUIs
                             // looked cut off (cols_snap * width/cols_target < width).
                             let paint_columns = snapshot.columns.max(1) as f32;
-                            let paint_rows = snapshot.rows.max(1) as f32;
-                            let cell_width_f32 = width / paint_columns;
-                            let line_height_f32 = height / paint_rows;
-                            let cell_width = px(cell_width_f32);
-                            let line_height = px(line_height_f32);
+                            let cell_width = px(width / paint_columns);
                             let focused = entity.read(cx).focus_handle.is_focused(window);
                             let shape_context = TerminalShapeContext {
                                 base_font: &base_font,
@@ -1880,22 +1918,13 @@ impl Render for TerminalView {
                                 cursor_visible,
                                 window,
                             };
-                            let lines = shape_snapshot_cached(
+                            let mut state = TerminalPaintState::from_snapshot(
+                                snapshot,
+                                bounds,
                                 &mut render_cache.lock().expect("terminal render cache poisoned"),
-                                snapshot.clone(),
                                 &shape_context,
                             );
-                            let backgrounds = collect_background_runs(&snapshot);
-                            let surface = snapshot_surface_color(&snapshot);
-                            let cursor_bounds = snapshot.cursor.map(|cursor| {
-                                cursor_bounds(bounds, cursor, cell_width, line_height)
-                            });
-                            let cursor = snapshot.cursor.and_then(|cursor| {
-                                (!cursor.blinking || cursor_visible).then(|| {
-                                    cursor_quad(bounds, cursor, cell_width, line_height, focused)
-                                })?
-                            });
-                            let composition = (!search_active && !canvas_marked_text.is_empty())
+                            state.composition = (!search_active && !canvas_marked_text.is_empty())
                                 .then(|| {
                                     window.text_system().shape_line(
                                         canvas_marked_text.clone(),
@@ -1915,24 +1944,10 @@ impl Render for TerminalView {
                                         Some(cell_width),
                                     )
                                 });
-                            TerminalPaintState {
-                                lines,
-                                backgrounds,
-                                grid_bounds: bounds,
-                                surface,
-                                cursor,
-                                cursor_bounds,
-                                composition,
-                                cursor_blinking: snapshot
-                                    .cursor
-                                    .is_some_and(|cursor| cursor.blinking),
-                                cell_width,
-                                line_height,
-                                grid_size: (snapshot.columns, snapshot.rows),
-                            }
+                            state
                         }
                     },
-                    move |bounds, state, window, cx| {
+                    move |bounds, mut state, window, cx| {
                         state.paint_backgrounds(bounds, false, window);
                         let bounds = state.grid_bounds;
                         window.handle_input(
@@ -1940,14 +1955,7 @@ impl Render for TerminalView {
                             ElementInputHandler::new(bounds, entity.clone()),
                             cx,
                         );
-                        if let Some(cursor) = state.cursor {
-                            window.paint_quad(cursor);
-                        }
-                        for (row, line) in state.lines.iter().enumerate() {
-                            let origin =
-                                point(bounds.left(), bounds.top() + state.line_height * row);
-                            let _ = line.paint(origin, state.line_height, window, cx);
-                        }
+                        state.paint_cells(window, cx);
                         if let (Some(composition), Some(cursor_bounds)) =
                             (state.composition, state.cursor_bounds)
                         {
@@ -2063,11 +2071,8 @@ impl Render for TerminalDragPreview {
                         let base_font = style.font();
                         let snapshot = snapshot.clone();
                         let paint_columns = snapshot.columns.max(1) as f32;
-                        let paint_rows = snapshot.rows.max(1) as f32;
                         let width: f32 = bounds.size.width.into();
-                        let height: f32 = bounds.size.height.into();
                         let cell_width = px(width / paint_columns);
-                        let line_height = px(height / paint_rows);
                         let shape_context = TerminalShapeContext {
                             base_font: &base_font,
                             font_size,
@@ -2076,51 +2081,20 @@ impl Render for TerminalDragPreview {
                             cursor_visible,
                             window,
                         };
-                        let lines = shape_snapshot_cached(
+                        TerminalPaintState::from_snapshot(
+                            snapshot,
+                            bounds,
                             &mut render_cache
                                 .lock()
                                 .expect("terminal drag render cache poisoned"),
-                            snapshot.clone(),
                             &shape_context,
-                        );
-                        let backgrounds = collect_background_runs(&snapshot);
-                        let surface = snapshot_surface_color(&snapshot);
-                        let cursor_bounds = snapshot
-                            .cursor
-                            .map(|cursor| cursor_bounds(bounds, cursor, cell_width, line_height));
-                        let cursor = snapshot.cursor.and_then(|cursor| {
-                            (!cursor.blinking || cursor_visible)
-                                .then(|| {
-                                    cursor_quad(bounds, cursor, cell_width, line_height, focused)
-                                })
-                                .flatten()
-                        });
-                        TerminalPaintState {
-                            lines,
-                            backgrounds,
-                            grid_bounds: bounds,
-                            surface,
-                            cursor,
-                            cursor_bounds,
-                            composition: None,
-                            cursor_blinking: snapshot.cursor.is_some_and(|cursor| cursor.blinking),
-                            cell_width,
-                            line_height,
-                            grid_size: (snapshot.columns, snapshot.rows),
-                        }
+                        )
                     },
-                    move |bounds, state, window, cx| {
+                    move |bounds, mut state, window, cx| {
                         // Match the terminal canvas paint order, but keep this copy
                         // read-only so dragging never affects the live pane.
                         state.paint_backgrounds(bounds, true, window);
-                        if let Some(cursor) = state.cursor {
-                            window.paint_quad(cursor);
-                        }
-                        for (row, line) in state.lines.iter().enumerate() {
-                            let origin =
-                                point(bounds.left(), bounds.top() + state.line_height * row);
-                            let _ = line.paint(origin, state.line_height, window, cx);
-                        }
+                        state.paint_cells(window, cx);
                     },
                 )
                 .size_full(),

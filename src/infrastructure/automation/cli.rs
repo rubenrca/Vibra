@@ -403,13 +403,18 @@ mod task_title_tests {
     #[test]
     fn prompt_hooks_carry_titles_but_lifecycle_events_do_not() {
         for kind in [AgentKind::Claude, AgentKind::Codex] {
-            let payload =
-                serde_json::json!({"prompt": "¿Puedes corregir el login?", "session_id": "one"});
-            assert!(
-                matches!(agent_hook_command(kind, "prompt", &payload).unwrap(),
-                AutomationCommand::SetAgentPresence { task_title: Some(title), state: AgentRuntimeState::Working, .. }
-                if title == "Corregir el login")
-            );
+            let payload = serde_json::json!({
+                "prompt": "¿Puedes corregir el login?",
+                "session_id": "one"
+            });
+            assert!(matches!(
+                agent_hook_command(kind, "prompt", &payload).unwrap(),
+                AutomationCommand::SetAgentPresence {
+                    task_title: Some(title),
+                    state: AgentRuntimeState::Working,
+                    ..
+                } if title == "Corregir el login"
+            ));
             for event in ["stop", "session-start", "permission"] {
                 assert!(matches!(
                     agent_hook_command(kind, event, &payload).unwrap(),

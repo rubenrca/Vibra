@@ -99,7 +99,7 @@ pub(super) fn command_output(
     })
 }
 
-fn drain_capped(mut reader: impl Read, limit: usize) -> io::Result<Vec<u8>> {
+pub(super) fn drain_capped(mut reader: impl Read, limit: usize) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader.by_ref().take(limit as u64).read_to_end(&mut bytes)?;
     io::copy(&mut reader, &mut io::sink())?;

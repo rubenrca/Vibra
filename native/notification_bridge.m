@@ -29,7 +29,8 @@ void vibra_notification_request_authorization(void) {
         if (center == nil) {
             return;
         }
-        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+        [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
+                                                    UNAuthorizationOptionSound)
                               completionHandler:^(BOOL granted, NSError *error) {
                                   (void)granted;
                                   (void)error;
@@ -74,9 +75,7 @@ void vibra_notification_deliver(const char *title, const char *body, const char 
                 content.body = nsBody;
                 content.sound = [UNNotificationSound defaultSound];
                 UNNotificationRequest *request =
-                    [UNNotificationRequest requestWithIdentifier:nsId
-                                                         content:content
-                                                         trigger:nil];
+                    [UNNotificationRequest requestWithIdentifier:nsId content:content trigger:nil];
                 [center addNotificationRequest:request
                          withCompletionHandler:^(NSError *addError) {
                              (void)addError;
@@ -88,7 +87,7 @@ void vibra_notification_deliver(const char *title, const char *body, const char 
                 post();
             } else if (status == UNAuthorizationStatusNotDetermined) {
                 [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
-                                                         UNAuthorizationOptionSound)
+                                                            UNAuthorizationOptionSound)
                                       completionHandler:^(BOOL granted, NSError *error) {
                                           (void)error;
                                           if (granted) {

@@ -238,6 +238,7 @@ fn render_markdown(id: &str, text: &str, prose: bool) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn markdown_keeps_loose_list_prefixes_and_inline_code() {
         let parsed = blocks("- uno\n\n- **dos** `code`\n");
@@ -250,6 +251,7 @@ mod tests {
                 .any(|(_, style)| style.background_color.is_some())
         );
     }
+
     #[test]
     fn markdown_retains_headings_code_and_safe_links_without_executing_html() {
         let parsed = blocks(

@@ -984,12 +984,8 @@ impl WorkspaceView {
             self.close_review(window, cx);
             return;
         }
-        if self.snapshot.close_selected_terminal() {
-            self.reconcile_terminal_views(cx);
-            self.sync_diff_root(cx);
-            self.refresh_project_files(cx);
-            self.persist(cx);
-            self.focus_selected_terminal(window, cx);
+        if let Some(session_id) = self.snapshot.selected_session().map(|session| session.id) {
+            self.close_pane(session_id, window, cx);
         }
     }
 

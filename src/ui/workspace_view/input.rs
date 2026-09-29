@@ -10,6 +10,9 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.to_ascii_lowercase();
+        let allows_text_input = !event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt;
         if matches!(key.as_str(), "escape" | "esc")
             && self.reorder_drag.is_some()
             && cx.stop_active_drag(window)
@@ -57,10 +60,7 @@ impl super::WorkspaceView {
                         cx.notify();
                     }
                 }
-                _ if !event.keystroke.modifiers.platform
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt =>
-                {
+                _ if allows_text_input => {
                     if let Some(text) = event.keystroke.key_char.as_ref()
                         && let Some(prompt) = self.rename_prompt.as_mut()
                     {
@@ -99,10 +99,7 @@ impl super::WorkspaceView {
                     self.palette_selected = 0;
                     cx.notify();
                 }
-                _ if !event.keystroke.modifiers.platform
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.alt =>
-                {
+                _ if allows_text_input => {
                     if let Some(text) = event.keystroke.key_char.as_ref() {
                         self.palette_query.push_str(text);
                         self.palette_selected = 0;
@@ -122,11 +119,7 @@ impl super::WorkspaceView {
                     self.theme_query.clear();
                     cx.notify();
                 }
-            } else if self.settings_page == super::SettingsPage::Appearance
-                && !event.keystroke.modifiers.platform
-                && !event.keystroke.modifiers.control
-                && !event.keystroke.modifiers.alt
-            {
+            } else if self.settings_page == super::SettingsPage::Appearance && allows_text_input {
                 match key.as_str() {
                     "backspace" => {
                         self.theme_query.pop();
@@ -141,10 +134,7 @@ impl super::WorkspaceView {
                 }
             }
             // Keep app shortcuts available while editing settings.
-            if !event.keystroke.modifiers.platform
-                && !event.keystroke.modifiers.control
-                && !event.keystroke.modifiers.alt
-            {
+            if allows_text_input {
                 cx.stop_propagation();
             }
             return;

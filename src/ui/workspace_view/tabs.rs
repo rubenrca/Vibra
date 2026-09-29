@@ -19,9 +19,9 @@ use super::{DragGhost, ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView, si
 
 const MAX_NAVIGATION_HISTORY: usize = 50;
 
-/// The review participates in the same numbering as terminal tabs. `9`
-/// always means last; an out-of-range number also lands on the last tab.
-fn numbered_tab_index(number: usize, count: usize) -> Option<usize> {
+/// Numbered tab and project shortcuts use `9` for last and clamp larger
+/// destinations to the last item.
+pub(super) fn numbered_navigation_index(number: usize, count: usize) -> Option<usize> {
     if number == 0 || count == 0 {
         return None;
     }
@@ -348,7 +348,7 @@ impl WorkspaceView {
             return;
         }
         let order = self.visible_tab_order(cx);
-        let Some(index) = numbered_tab_index(action.index, order.len()) else {
+        let Some(index) = numbered_navigation_index(action.index, order.len()) else {
             return;
         };
         match order[index] {
@@ -713,15 +713,15 @@ mod tests {
 
     #[test]
     fn tab_shortcuts_match_their_numbered_destination() {
-        assert_eq!(numbered_tab_index(0, 3), None);
-        assert_eq!(numbered_tab_index(1, 0), None);
-        assert_eq!(numbered_tab_index(8, 3), Some(2));
+        assert_eq!(numbered_navigation_index(0, 3), None);
+        assert_eq!(numbered_navigation_index(1, 0), None);
+        assert_eq!(numbered_navigation_index(8, 3), Some(2));
         for count in 1..=12 {
-            assert_eq!(numbered_tab_index(9, count), Some(count - 1));
+            assert_eq!(numbered_navigation_index(9, count), Some(count - 1));
             for index in 0..count {
                 if let Some(label) = tab_shortcut_label(index, count) {
                     let number: usize = label.trim_start_matches('⌘').parse().unwrap();
-                    assert_eq!(numbered_tab_index(number, count), Some(index));
+                    assert_eq!(numbered_navigation_index(number, count), Some(index));
                 }
             }
         }

@@ -93,16 +93,11 @@ impl super::WorkspaceSnapshot {
         };
         let session = SessionSnapshot::new(working_directory);
         let session_id = session.id;
-        let (axis, insert_first) = match direction {
-            PaneSplitDirection::Left => (WorkspaceSplitAxis::Horizontal, true),
-            PaneSplitDirection::Right => (WorkspaceSplitAxis::Horizontal, false),
-            PaneSplitDirection::Up => (WorkspaceSplitAxis::Vertical, true),
-            PaneSplitDirection::Down => (WorkspaceSplitAxis::Vertical, false),
-        };
-        if !tab
-            .layout
-            .split_terminal(selected_id, session_id, axis, insert_first)
-        {
+        if !tab.layout.split_with_layout(
+            selected_id,
+            &PaneLayoutSnapshot::terminal(session_id),
+            direction,
+        ) {
             return None;
         }
         tab.sessions.push(session);
@@ -236,13 +231,6 @@ impl super::WorkspaceSnapshot {
         })
     }
 
-    pub fn close_selected_terminal(&mut self) -> bool {
-        let Some(session_id) = self.selected_session().map(|session| session.id) else {
-            return false;
-        };
-        self.close_terminal(session_id)
-    }
-
     /// Resolve selection once and restore the project's invariants after a change.
     fn edit_selected_tab(&mut self, edit: impl FnOnce(&mut TabSnapshot) -> bool) -> bool {
         let Some((project_index, workspace_index, tab_index, _)) = self.selected_session_indices()
@@ -371,10 +359,7 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn selected_workspace(&self) -> Option<&TerminalWorkspaceSnapshot> {
-        let project = self
-            .projects
-            .iter()
-            .find(|project| Some(project.id) == self.selected_project_id)?;
+        let project = self.selected_project()?;
         let workspace_id = project.selected_workspace_id?;
         project
             .workspaces
@@ -429,20 +414,22 @@ impl super::WorkspaceSnapshot {
         })
     }
 
+    fn session_mut(&mut self, session_id: Uuid) -> Option<&mut SessionSnapshot> {
+        self.projects
+            .iter_mut()
+            .flat_map(|project| project.workspaces.iter_mut().flatten())
+            .flat_map(|workspace| &mut workspace.tabs)
+            .flat_map(|tab| &mut tab.sessions)
+            .find(|session| session.id == session_id)
+    }
+
     pub fn update_agent_task_title(&mut self, session_id: Uuid, title: &str) -> bool {
         let title = title.trim();
         if title.is_empty() {
             return false;
         }
         let title: String = title.chars().take(80).collect();
-        let Some(session) = self
-            .projects
-            .iter_mut()
-            .flat_map(|project| project.workspaces.iter_mut().flatten())
-            .flat_map(|workspace| &mut workspace.tabs)
-            .flat_map(|tab| &mut tab.sessions)
-            .find(|session| session.id == session_id)
-        else {
+        let Some(session) = self.session_mut(session_id) else {
             return false;
         };
         if session.agent_task_title.as_deref() == Some(title.as_str()) {
@@ -458,36 +445,19 @@ impl super::WorkspaceSnapshot {
             return false;
         }
         let title: String = title.chars().take(super::MAX_SESSION_TITLE_CHARS).collect();
-        for project in &mut self.projects {
-            let Some(session) = project
-                .workspaces
-                .iter_mut()
-                .flatten()
-                .flat_map(|workspace| &mut workspace.tabs)
-                .flat_map(|tab| &mut tab.sessions)
-                .find(|session| session.id == session_id)
-            else {
-                continue;
-            };
-            if session.title == title {
-                return false;
-            }
-            session.title = title;
-            return true;
+        let Some(session) = self.session_mut(session_id) else {
+            return false;
+        };
+        if session.title == title {
+            return false;
         }
-        false
+        session.title = title;
+        true
     }
 
     pub fn update_session_working_directory(&mut self, session_id: Uuid, path: &Path) -> bool {
         let path = path.to_string_lossy().into_owned();
-        let Some(session) = self
-            .projects
-            .iter_mut()
-            .flat_map(|project| project.workspaces.iter_mut().flatten())
-            .flat_map(|workspace| &mut workspace.tabs)
-            .flat_map(|tab| &mut tab.sessions)
-            .find(|session| session.id == session_id)
-        else {
+        let Some(session) = self.session_mut(session_id) else {
             return false;
         };
         if session.working_directory == path {

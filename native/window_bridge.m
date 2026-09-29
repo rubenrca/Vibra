@@ -21,8 +21,10 @@ void vibra_restore_window_frame(void *view) {
             NSRect frame = window.frame;
             frame.size.width = MIN(frame.size.width, visible.size.width);
             frame.size.height = MIN(frame.size.height, visible.size.height);
-            frame.origin.x = MAX(NSMinX(visible), MIN(frame.origin.x, NSMaxX(visible) - frame.size.width));
-            frame.origin.y = MAX(NSMinY(visible), MIN(frame.origin.y, NSMaxY(visible) - frame.size.height));
+            frame.origin.x =
+                MAX(NSMinX(visible), MIN(frame.origin.x, NSMaxX(visible) - frame.size.width));
+            frame.origin.y =
+                MAX(NSMinY(visible), MIN(frame.origin.y, NSMaxY(visible) - frame.size.height));
             [window setFrame:frame display:NO];
         }
 

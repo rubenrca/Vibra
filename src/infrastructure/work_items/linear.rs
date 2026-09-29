@@ -6,7 +6,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use super::{WorkItemsPage, WorkQuery, bounded_output, graphql_data, string, timestamp};
+use super::{WorkItemsPage, WorkQuery, bounded_output, graphql_data, names, string, timestamp};
 use crate::domain::work_items::{WorkItem, WorkKind, WorkSource, WorkStatus};
 use crate::infrastructure::paths::{application_support_directory, atomic_write};
 
@@ -74,7 +74,7 @@ pub(super) fn graphql(token: &str, query: &str, variables: Value) -> Result<Valu
     validate_token(token)?;
     // curl config receives both the credential and body over stdin. Never
     // follow redirects or include a server's error body in user-facing errors.
-    let body = serde_json::to_string(&json!({"query": query, "variables": variables}))?;
+    let body = serde_json::to_string(&json!({ "query": query, "variables": variables }))?;
     let config = format!(
         "header = {}\nheader = \"Content-Type: application/json\"\ndata = {}\n",
         serde_json::to_string(&format!("Authorization: {token}"))?,
@@ -115,18 +115,18 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
         .context("Could not read the Linear key.")?;
     let mut filter = json!({});
     if query.assigned_to_me {
-        filter["assignee"] = json!({"isMe": {"eq": true}});
+        filter["assignee"] = json!({ "isMe": { "eq": true } });
     }
     match query.status {
         Some(WorkStatus::Open | WorkStatus::Draft) => {
-            filter["state"] = json!({"type": {"nin": ["completed", "canceled"]}})
+            filter["state"] = json!({ "type": { "nin": ["completed", "canceled"] } })
         }
         Some(WorkStatus::Closed | WorkStatus::Merged) => {
-            filter["state"] = json!({"type": {"in": ["completed", "canceled"]}})
+            filter["state"] = json!({ "type": { "in": ["completed", "canceled"] } })
         }
         None => {}
     }
-    parse_page(&graphql(&token, QUERY, json!({"filter": filter}))?)
+    parse_page(&graphql(&token, QUERY, json!({ "filter": filter }))?)
 }
 
 fn parse_page(data: &Value) -> Result<WorkItemsPage> {
@@ -141,6 +141,11 @@ fn parse_page(data: &Value) -> Result<WorkItemsPage> {
         }
         let team = string(&node["team"], "name");
         let project = string(&node["project"], "name");
+        let group = if project.is_empty() {
+            team
+        } else {
+            format!("{team} · {project}")
+        };
         let closed = matches!(
             node["state"]["type"].as_str(),
             Some("completed" | "canceled")
@@ -149,22 +154,14 @@ fn parse_page(data: &Value) -> Result<WorkItemsPage> {
             remote_id: string(node, "id"),
             created_at: timestamp(&node["createdAt"]),
             completed: node["state"]["type"].as_str() == Some("completed"),
-            group: if project.is_empty() {
-                team.clone()
-            } else {
-                format!("{team} · {project}")
-            },
+            group: group.clone(),
             source: WorkSource::Linear,
             kind: WorkKind::Issue,
             reference: string(node, "identifier"),
             title: string(node, "title"),
             url,
             body: string(node, "description"),
-            repository: if project.is_empty() {
-                team
-            } else {
-                format!("{team} · {project}")
-            },
+            repository: group,
             project_id: None,
             status: if closed {
                 WorkStatus::Closed
@@ -178,12 +175,7 @@ fn parse_page(data: &Value) -> Result<WorkItemsPage> {
                 .map(str::to_owned)
                 .into_iter()
                 .collect(),
-            labels: node["labels"]["nodes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|label| label["name"].as_str().map(str::to_owned))
-                .collect(),
+            labels: names(&node["labels"]["nodes"], "name"),
             updated_at: timestamp(&node["updatedAt"]),
         });
     }
@@ -204,14 +196,34 @@ mod tests {
 
     #[test]
     fn linear_inbox_parses_unassigned_tasks_and_completed_states() {
-        let node = json!({"identifier":"ENG-12", "title":"Title", "url":"https://linear.app/demo/issue/ENG-12", "description":"Full description", "state":{"name":"Done","type":"completed"}, "team":{"name":"Engineering"},"project":{"name":"App"},"assignee":null,"creator":{"name":"Ana"},"updatedAt":"2026-09-01T00:00:00Z", "labels":{"nodes":[]}});
-        let page = parse_page(&json!({"issues":{"nodes":[node],"pageInfo":{"hasNextPage":false}}}))
-            .unwrap();
+        let node = json!({
+            "identifier": "ENG-12",
+            "title": "Title",
+            "url": "https://linear.app/demo/issue/ENG-12",
+            "description": "Full description",
+            "state": {
+                "name": "Done",
+                "type": "completed"
+            },
+            "team": { "name": "Engineering" },
+            "project": { "name": "App" },
+            "assignee": null,
+            "creator": { "name": "Ana" },
+            "updatedAt": "2026-09-01T00:00:00Z",
+            "labels": { "nodes": [] }
+        });
+        let page = parse_page(&json!({
+            "issues": {
+                "nodes": [node],
+                "pageInfo": { "hasNextPage": false }
+            }
+        }))
+        .unwrap();
         assert_eq!(page.items[0].status, WorkStatus::Closed);
         assert_eq!(page.items[0].repository, "Engineering · App");
         assert_eq!(page.items[0].body, "Full description");
         assert!(page.items[0].assignees.is_empty());
-        assert!(parse_page(&json!({"issues":null})).is_err());
+        assert!(parse_page(&json!({ "issues": null })).is_err());
     }
 
     #[test]
@@ -221,8 +233,11 @@ mod tests {
             assert!(!error.contains("secret"));
         }
         assert!(validate_token("lin_api_test-only").is_ok());
-        let error =
-            graphql_data(json!({"errors":[{"message":"secret-token"}],"data":null})).unwrap_err();
+        let error = graphql_data(json!({
+            "errors": [{ "message": "secret-token" }],
+            "data": null
+        }))
+        .unwrap_err();
         assert!(!error.to_string().contains("secret-token"));
     }
 }

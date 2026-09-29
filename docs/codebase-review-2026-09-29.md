@@ -114,3 +114,53 @@ archivos y una de lectura de temas. Las dos ignoradas conservan sus motivos:
 medición manual de rendimiento y consulta opt-in de cuotas con sesiones reales.
 Las pruebas de sockets requieren ejecución fuera del sandbox; al repetirlas así
 pasaron tanto antes como después de los cambios.
+
+## Seguimiento: pasada exhaustiva con subagentes
+
+Tres subagentes revisaron dominio, infraestructura y workspace UI, con revisión
+cruzada de los cambios. La revisión principal cubrió además resaltado de sintaxis,
+grafo de commits, filas de diff, estado de comentarios y asociaciones de teclado.
+
+- Dominio: se reutiliza la identificación canónica de agentes, se mueven datos de
+  migración en lugar de clonarlos y se simplifican selección, horarios y cuotas.
+- Infraestructura: Git comparte consultas del índice y lectura acotada de errores;
+  Inbox comparte transporte GraphQL y lectores JSON. Se reducen ramas repetidas
+  en hooks, sockets, autenticación y secuencias de teclado.
+- Workspace: selección de terminales comparte sincronización y guardado; Notes y
+  Automations comparten navegación entre proyectos. Se eliminan copias de datos
+  al renderizar y código repetido de atajos y comandos.
+- Otras vistas: strings comparten el flujo de resaltado manteniendo sus scanners;
+  el grafo comparte asignación de lanes y los comentarios comparten su limpieza.
+
+Esta pasada elimina **267 líneas de producción** y agrega **111 líneas de
+cobertura**, con una reducción neta de **156 líneas Rust**. Sumada a la limpieza
+local anterior de 125 líneas, la reducción desde el commit `320b761` es de
+**281 líneas netas**. Al finalizar esa pasada, el inventario quedó en
+**115 archivos y 56.086 líneas Rust**, incluyendo tests. Se conservaron las
+pruebas existentes.
+
+Se agregaron regresiones para orden de panes migrados, selección del diff usado
+como contexto de commit y strings multilínea; también se amplió la cobertura de
+nombres de agentes. `Scripts/verify.sh` pasó completo: **393 pruebas Rust pasan,
+0 fallan y 2 están ignoradas**, además de formato, Clippy, siete pruebas de release,
+plist y sintaxis de scripts. Una comparación temporal entre las implementaciones
+anterior y nueva coincidió en **116.298 casos de resaltado por línea e idioma** y
+**1.000 historiales de Git generados**. Los archivos de esa comparación no se
+agregaron al repositorio. La comprobación visual queda a cargo del usuario.
+
+## Seguimiento: indentación y legibilidad
+
+Se separaron instrucciones comprimidas en los bridges nativos, brazos de `case`
+en scripts y colecciones y llamadas Swift. `.clang-format` fija cuatro espacios,
+un límite de 100 columnas y bloques de control en varias líneas, manteniendo el
+orden de includes. En Rust se expandieron macros, fixtures JSON y árboles de UI
+con indentación difícil de seguir, conservando el formato estándar de `rustfmt`.
+Esta pasada añade saltos de línea para facilitar la lectura.
+
+La comparación léxica confirmó los mismos tokens en C/Objective-C y Swift; en
+Rust solo se admitieron comas finales opcionales además de whitespace. La revisión
+cruzada no encontró cambios de comportamiento. Pasaron formato Rust y nativo,
+Clippy, parsing Swift, sintaxis zsh, siete pruebas de release y **390 pruebas
+Rust**. Dos siguen ignoradas; tres pruebas de sockets quedaron bloqueadas por
+`Operation not permitted` en el sandbox actual. Esas tres habían pasado en la
+verificación anterior sin esa restricción.

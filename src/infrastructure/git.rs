@@ -134,15 +134,7 @@ struct DiffAccumulator {
 
 impl DiffAccumulator {
     fn append(&mut self, patch: &[u8], section: Option<&str>) {
-        append_patch(
-            patch,
-            section,
-            &mut self.rows,
-            &mut self.additions,
-            &mut self.deletions,
-            &mut self.binary,
-            &mut self.truncated,
-        );
+        append_patch(patch, section, self);
     }
 
     fn append_untracked(&mut self, root: &Path, path: &str, section: Option<&str>) -> Result<()> {
@@ -163,23 +155,7 @@ impl DiffAccumulator {
             });
             return Ok(());
         }
-        let patch = run_git_diff(
-            root,
-            [
-                "--literal-pathspecs",
-                "diff",
-                "--no-index",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-color",
-                "--unified=3",
-                "--",
-                "/dev/null",
-                path,
-            ],
-            "git diff --no-index",
-            true,
-        )?;
+        let patch = patch_from_empty(root, path, "git diff --no-index")?;
         self.append(&patch, section);
         Ok(())
     }
@@ -188,6 +164,10 @@ impl DiffAccumulator {
         if self.rows.is_empty() {
             self.rows.push(empty_diff_notice(self.binary));
         }
+        self.into_diff(path)
+    }
+
+    fn into_diff(self, path: String) -> GitDiff {
         GitDiff {
             path,
             rows: self.rows,
@@ -265,24 +245,14 @@ impl GitCliPort {
 
 impl GitPort for GitCliPort {
     fn commit(&self, root: &Path, message: &str, options: GitCommitOptions) -> Result<String> {
-        let Some(root) = repository_root(root)? else {
-            bail!("this project is not a Git repository");
-        };
+        let root = repository_root(root)?.context("this project is not a Git repository")?;
         let message = message.trim();
         if message.is_empty() && !options.amend {
             bail!("enter a commit message");
         }
-        let nothing_staged = git_write_command(&root)
-            .args(["diff", "--cached", "--quiet"])
-            .status()
-            .is_ok_and(|status| status.success());
-        if nothing_staged && !options.amend {
+        if index_is_clean(&root) && !options.amend {
             run_git_write(&root, &["add", "--all"], "git add")?;
-            let still_empty = git_write_command(&root)
-                .args(["diff", "--cached", "--quiet"])
-                .status()
-                .is_ok_and(|status| status.success());
-            if still_empty {
+            if index_is_clean(&root) {
                 bail!("there are no changes to commit");
             }
         }
@@ -303,9 +273,7 @@ impl GitPort for GitCliPort {
     }
 
     fn sync(&self, root: &Path, operation: GitSyncOperation) -> Result<()> {
-        let Some(root) = repository_root(root)? else {
-            bail!("this project is not a Git repository");
-        };
+        let root = repository_root(root)?.context("this project is not a Git repository")?;
         match operation {
             GitSyncOperation::Fetch => {
                 run_git_write(&root, &["fetch", "--prune"], "git fetch")?;
@@ -335,9 +303,7 @@ impl GitPort for GitCliPort {
     }
 
     fn stage(&self, root: &Path, paths: &[String]) -> Result<()> {
-        let Some(root) = repository_root(root)? else {
-            bail!("this project is not a Git repository");
-        };
+        let root = repository_root(root)?.context("this project is not a Git repository")?;
         if paths.is_empty() {
             return Ok(());
         }
@@ -351,9 +317,7 @@ impl GitPort for GitCliPort {
     }
 
     fn unstage(&self, root: &Path, paths: &[String]) -> Result<()> {
-        let Some(root) = repository_root(root)? else {
-            bail!("this project is not a Git repository");
-        };
+        let root = repository_root(root)?.context("this project is not a Git repository")?;
         if paths.is_empty() {
             return Ok(());
         }
@@ -373,20 +337,13 @@ impl GitPort for GitCliPort {
 
     fn commit_message_context(&self, root: &Path) -> Result<String> {
         const LIMIT: usize = 48 * 1024;
-        let Some(root) = repository_root(root)? else {
-            bail!("this project is not a Git repository");
-        };
+        let root = repository_root(root)?.context("this project is not a Git repository")?;
         let has_head = rev_parse(&root, "HEAD")?.is_some();
-        let staged = !git_write_command(&root)
-            .args(["diff", "--cached", "--quiet"])
-            .status()
-            .is_ok_and(|status| status.success());
-        let range: Vec<&str> = if staged {
-            vec!["--cached"]
-        } else if has_head {
-            vec!["HEAD"]
+        let staged = !index_is_clean(&root);
+        let range = if !staged && has_head {
+            "HEAD"
         } else {
-            vec!["--cached"]
+            "--cached"
         };
         let mut context = String::new();
         if has_head {
@@ -395,10 +352,10 @@ impl GitPort for GitCliPort {
             context.push_str(&String::from_utf8_lossy(&log.stdout));
             context.push('\n');
         }
-        let mut stat = vec!["diff", "--stat"];
-        stat.extend(&range);
         context.push_str("Changes:\n");
-        context.push_str(&String::from_utf8_lossy(&run_git(&root, &stat)?.stdout));
+        context.push_str(&String::from_utf8_lossy(
+            &run_git(&root, ["diff", "--stat", range])?.stdout,
+        ));
         if !staged {
             let untracked = untracked_paths(&root)?;
             if !untracked.is_empty() {
@@ -409,9 +366,7 @@ impl GitPort for GitCliPort {
                 }
             }
         }
-        let mut patch = vec!["diff", "--no-color", "--no-ext-diff"];
-        patch.extend(&range);
-        let patch = run_git(&root, &patch)?;
+        let patch = run_git(&root, ["diff", "--no-color", "--no-ext-diff", range])?;
         context.push_str("\nPatch:\n");
         context.push_str(&String::from_utf8_lossy(&patch.stdout));
         if context.len() > LIMIT {
@@ -552,23 +507,7 @@ impl GitPort for GitCliPort {
             // Git's combined `@@@` hunks have two old sides, which the ordinary
             // two-sided parser cannot represent. Show the actual conflict file
             // with its markers and line numbers instead of an empty diff.
-            let patch = run_git_diff(
-                &root,
-                [
-                    "--literal-pathspecs",
-                    "diff",
-                    "--no-index",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--no-color",
-                    "--unified=3",
-                    "--",
-                    "/dev/null",
-                    &change.path,
-                ],
-                "git diff conflicted file",
-                true,
-            )?;
+            let patch = patch_from_empty(&root, &change.path, "git diff conflicted file")?;
             diff.append(&patch, Some("UNMERGED WORKING TREE"));
             return Ok(diff.finish(change.path.clone()));
         }
@@ -582,37 +521,28 @@ impl GitPort for GitCliPort {
             });
         }
 
-        if change.staged {
-            let mut args = vec![
-                "--literal-pathspecs",
-                "diff",
-                "--cached",
+        for (enabled, cached, operation, section) in [
+            (change.staged, true, "git diff --cached", "STAGED CHANGES"),
+            (change.unstaged, false, "git diff", "WORKING TREE"),
+        ] {
+            if !enabled {
+                continue;
+            }
+            let mut args = vec!["--literal-pathspecs", "diff"];
+            if cached {
+                args.push("--cached");
+            }
+            args.extend([
                 "--no-ext-diff",
                 "--no-textconv",
                 "--no-color",
                 "--unified=3",
                 "--",
-            ];
+            ]);
             args.extend(change.old_path.as_deref());
             args.push(&change.path);
-            let patch = run_git_diff(&root, args, "git diff --cached", false)?;
-            diff.append(&patch, multiple_sections.then_some("STAGED CHANGES"));
-        }
-
-        if change.unstaged {
-            let mut args = vec![
-                "--literal-pathspecs",
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-color",
-                "--unified=3",
-                "--",
-            ];
-            args.extend(change.old_path.as_deref());
-            args.push(&change.path);
-            let patch = run_git_diff(&root, args, "git diff", false)?;
-            diff.append(&patch, multiple_sections.then_some("WORKING TREE"));
+            let patch = run_git_diff(&root, args, operation, false)?;
+            diff.append(&patch, multiple_sections.then_some(section));
         }
 
         if change.untracked {
@@ -1412,6 +1342,26 @@ where
     Ok(output.stdout)
 }
 
+fn patch_from_empty(root: &Path, path: &str, operation: &str) -> Result<Vec<u8>> {
+    run_git_diff(
+        root,
+        [
+            "--literal-pathspecs",
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--unified=3",
+            "--",
+            "/dev/null",
+            path,
+        ],
+        operation,
+        true,
+    )
+}
+
 /// Git diffs stop immediately at their byte budget and retain the extra byte
 /// for the parser's truncation notice. Ordinary reads reject that same sentinel.
 fn run_git_bounded<I, S>(root: &Path, arguments: I, limit: usize) -> Result<Output>
@@ -1450,17 +1400,8 @@ where
 
 /// Keep draining stderr so Git cannot block on a full pipe, but bound the
 /// diagnostic retained in memory for a failed diff.
-fn read_git_error(mut stderr: impl Read) -> std::io::Result<Vec<u8>> {
-    let mut error = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        let read = stderr.read(&mut chunk)?;
-        if read == 0 {
-            return Ok(error);
-        }
-        let keep = read.min(MAX_GIT_ERROR_BYTES.saturating_sub(error.len()));
-        error.extend_from_slice(&chunk[..keep]);
-    }
+fn read_git_error(stderr: impl Read) -> std::io::Result<Vec<u8>> {
+    super::process::drain_capped(stderr, MAX_GIT_ERROR_BYTES)
 }
 
 fn ensure_success(output: &Output, operation: &str) -> Result<()> {
@@ -1588,15 +1529,11 @@ fn compare_base(root: &Path, branch: &str) -> Result<Option<String>> {
     let on_default = default_base
         .as_deref()
         .is_some_and(|base| short_ref_name(base) == branch);
-    if let Some(default_base) = default_base.as_ref()
-        && !on_default
-    {
-        return Ok(Some(default_base.clone()));
-    }
-    if let Some(upstream) = upstream {
-        return Ok(Some(upstream));
-    }
-    Ok(default_base)
+    Ok(if default_base.is_some() && !on_default {
+        default_base
+    } else {
+        upstream.or(default_base)
+    })
 }
 
 fn default_base_branch(root: &Path) -> Result<Option<String>> {
@@ -1755,6 +1692,13 @@ fn git_write_command(root: &Path) -> Command {
     command
 }
 
+fn index_is_clean(root: &Path) -> bool {
+    git_write_command(root)
+        .args(["diff", "--cached", "--quiet"])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 fn run_git_write(root: &Path, arguments: &[&str], operation: &str) -> Result<Output> {
     let output = git_write_command(root)
         .args(arguments)
@@ -1802,24 +1746,9 @@ fn validate_relative_path(path: &str) -> Result<()> {
 
 /// Parse a remote or local unified patch with the same bounds and line model.
 pub(crate) fn parse_diff_patch(path: &str, patch: &[u8]) -> GitDiff {
-    let mut diff = GitDiff {
-        path: path.into(),
-        rows: Vec::new(),
-        additions: 0,
-        deletions: 0,
-        binary: false,
-        truncated: false,
-    };
-    append_patch(
-        patch,
-        None,
-        &mut diff.rows,
-        &mut diff.additions,
-        &mut diff.deletions,
-        &mut diff.binary,
-        &mut diff.truncated,
-    );
-    diff
+    let mut diff = DiffAccumulator::default();
+    diff.append(patch, None);
+    diff.into_diff(path.into())
 }
 
 #[cfg(test)]

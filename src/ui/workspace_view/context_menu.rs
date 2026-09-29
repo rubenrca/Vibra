@@ -124,10 +124,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(menu) = self.context_menu.clone() else {
+        let Some(menu) = self.context_menu.take() else {
             return;
         };
-        self.context_menu = None;
         match (menu.kind, action) {
             (ContextMenuKind::SidebarBackground, ContextMenuAction::AddProject) => {
                 self.choose_project_folder(None, false, window, cx);

@@ -36,13 +36,13 @@ impl ProviderUsage {
     pub fn tightest_quota(&self) -> Option<(&str, &UsageResource)> {
         self.resources
             .iter()
-            .filter(|(_, resource)| resource.percent_used().is_some())
-            .max_by(|(_, left), (_, right)| {
-                left.percent_used()
-                    .unwrap_or_default()
-                    .total_cmp(&right.percent_used().unwrap_or_default())
+            .filter_map(|(key, resource)| {
+                resource
+                    .percent_used()
+                    .map(|percent| (key, resource, percent))
             })
-            .map(|(key, resource)| (key.as_str(), resource))
+            .max_by(|(_, _, left), (_, _, right)| left.total_cmp(right))
+            .map(|(key, resource, _)| (key.as_str(), resource))
     }
 
     pub fn is_stale(&self, now: i64) -> bool {
@@ -179,19 +179,25 @@ mod tests {
     #[test]
     fn quotas_preserve_overage_and_do_not_turn_balances_into_usage() {
         let resource: UsageResource = serde_json::from_value(json!({
-            "kind": "consumption", "unit": "usd", "used": 120, "limit": 100
+            "kind": "consumption",
+            "unit": "usd",
+            "used": 120,
+            "limit": 100
         }))
         .unwrap();
         assert_eq!(resource.percent_used(), Some(120.0));
         assert_eq!(resource.value_label(), "US$120.00 / US$100.00");
         let resource: UsageResource = serde_json::from_value(json!({
-            "kind": "balance", "unit": "credits", "available": 0
+            "kind": "balance",
+            "unit": "credits",
+            "available": 0
         }))
         .unwrap();
         assert_eq!(resource.percent_used(), None);
         assert_eq!(resource.value_label(), "0 credits available");
         let resource: UsageResource = serde_json::from_value(json!({
-            "kind": "consumption", "unit": "percent"
+            "kind": "consumption",
+            "unit": "percent"
         }))
         .unwrap();
         assert_eq!(resource.percent_used(), None);
@@ -201,11 +207,25 @@ mod tests {
     #[test]
     fn tightest_window_and_expiry_follow_the_provider_data() {
         let provider: ProviderUsage = serde_json::from_value(json!({
-            "displayName": "Codex", "expiresAt": "2026-09-26T12:05:00Z",
+            "displayName": "Codex",
+            "expiresAt": "2026-09-26T12:05:00Z",
             "resources": {
-                "session": {"kind": "consumption", "unit": "percent", "used": 30, "limit": 100},
-                "weekly": {"kind": "consumption", "unit": "percent", "utilization": 0.9},
-                "credits": {"kind": "balance", "unit": "credits", "available": 1000}
+                "session": {
+                    "kind": "consumption",
+                    "unit": "percent",
+                    "used": 30,
+                    "limit": 100
+                },
+                "weekly": {
+                    "kind": "consumption",
+                    "unit": "percent",
+                    "utilization": 0.9
+                },
+                "credits": {
+                    "kind": "balance",
+                    "unit": "credits",
+                    "available": 1000
+                }
             }
         }))
         .unwrap();

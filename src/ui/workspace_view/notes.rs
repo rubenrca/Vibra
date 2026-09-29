@@ -10,6 +10,7 @@ use crate::ui::terminal::TerminalInsertStatus;
 use crate::ui::theme::{MONO_FONT, colors, surface_tint};
 
 use super::navigation::{project_color, section_button, section_empty_state, section_frame};
+use super::projects::next_library_project;
 use super::{WorkspaceSection, WorkspaceView};
 use crate::ui::text_edit::{TextKeyOutcome, apply_text_key};
 
@@ -50,22 +51,10 @@ impl WorkspaceView {
     }
 
     fn cycle_note_project(&mut self, id: Uuid, cx: &mut Context<Self>) {
-        let projects: Vec<Option<Uuid>> = std::iter::once(None)
-            .chain(
-                self.snapshot
-                    .projects
-                    .iter()
-                    .map(|project| Some(project.id)),
-            )
-            .collect();
         let Some(note) = self.library.note_mut(id) else {
             return;
         };
-        let index = projects
-            .iter()
-            .position(|project| *project == note.project_id)
-            .unwrap_or(0);
-        note.project_id = projects[(index + 1) % projects.len()];
+        note.project_id = next_library_project(&self.snapshot.projects, note.project_id);
         self.persist_library(cx);
     }
 
