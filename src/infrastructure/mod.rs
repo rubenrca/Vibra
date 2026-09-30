@@ -13,6 +13,7 @@ pub mod settings;
 pub mod sparkle;
 pub mod terminal_keyboard;
 mod terminal_support;
+pub(crate) use terminal_support::publish_terminal_palette;
 pub mod usage;
 pub mod window;
 pub mod work_items;

@@ -41,6 +41,15 @@ impl TerminalRgb {
     }
 }
 
+/// Default PTY colors derived from a theme so the grid matches chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalPalette {
+    pub background: TerminalRgb,
+    pub foreground: TerminalRgb,
+    pub cursor: TerminalRgb,
+    pub ansi: [TerminalRgb; 16],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalCell {
     pub row: usize,
@@ -186,7 +195,7 @@ pub struct TerminalCursor {
     pub blinking: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TerminalSnapshot {
     pub columns: usize,
     pub rows: usize,

@@ -1,4 +1,5 @@
-use crate::{ports::terminal::TerminalRgb, ui::theme::TerminalPalette};
+use crate::ports::terminal::{TerminalPalette, TerminalRgb};
+use std::sync::{OnceLock, RwLock};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -176,6 +177,33 @@ fn process_executable_name(_: u32) -> Option<String> {
     None
 }
 
+fn palette_slot() -> &'static RwLock<(u64, TerminalPalette)> {
+    static SLOT: OnceLock<RwLock<(u64, TerminalPalette)>> = OnceLock::new();
+    SLOT.get_or_init(|| {
+        RwLock::new((
+            0,
+            TerminalPalette {
+                background: TerminalRgb::new(0, 0, 0),
+                foreground: TerminalRgb::new(255, 255, 255),
+                cursor: TerminalRgb::new(255, 255, 255),
+                ansi: [TerminalRgb::new(0, 0, 0); 16],
+            },
+        ))
+    })
+}
+
+pub(crate) fn publish_terminal_palette(generation: u64, palette: TerminalPalette) {
+    *palette_slot()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = (generation, palette);
+}
+
+pub(super) fn current_terminal_palette() -> (u64, TerminalPalette) {
+    *palette_slot()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub(super) fn indexed_color_with(index: usize, palette: &TerminalPalette) -> TerminalRgb {
     match index {
         0..=15 => palette.ansi[index],
@@ -230,9 +258,8 @@ pub(super) fn terminal_child_environment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::theme;
     fn indexed_color(i: usize) -> TerminalRgb {
-        indexed_color_with(i, &theme::terminal_palette())
+        indexed_color_with(i, &current_terminal_palette().1)
     }
 
     #[test]
