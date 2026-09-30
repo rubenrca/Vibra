@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::appearance::AppearanceMode;
 use crate::infrastructure::paths::{
     RevisionGuard, application_support_directory, atomic_write_if_missing,
-    gpui_preview_support_directory, read_file_limited,
+    gpui_preview_support_directory, read_file_limited, read_optional_file_limited,
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
@@ -281,11 +281,11 @@ impl SettingsRepository {
 
     fn load_inner(&self) -> Result<AppSettings> {
         self.import_preview_settings()?;
-        if !self.path.exists() {
+        let Some(bytes) = read_optional_file_limited(&self.path, MAX_SETTINGS_BYTES, "1 MiB")?
+        else {
             self.revision.loaded(None);
             return Ok(AppSettings::default());
-        }
-        let bytes = read_settings_file(&self.path)?;
+        };
         let settings = self.decode(&bytes)?;
         self.revision.loaded(Some(bytes));
         Ok(settings)

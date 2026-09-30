@@ -38,6 +38,28 @@ pub fn read_file_limited(path: &Path, limit: u64, limit_label: &str) -> Result<V
     Ok(bytes)
 }
 
+/// A missing document is a first launch; a dangling link is a failed load.
+pub fn read_optional_file_limited(
+    path: &Path,
+    limit: u64,
+    limit_label: &str,
+) -> Result<Option<Vec<u8>>> {
+    match read_file_limited(path, limit, limit_label) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                && path
+                    .symlink_metadata()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Options for the shared tmp+rename write used by workspace, settings, files, and hooks.
 #[derive(Debug, Clone, Default)]
 pub struct AtomicWriteOptions {
@@ -169,35 +191,36 @@ enum FileRevision {
     Blocked(String),
 }
 
+#[derive(Debug, Default)]
+struct RevisionState {
+    revision: FileRevision,
+    recovery_path: Option<PathBuf>,
+    /// Last submitted settings, which may differ from the merged file on disk.
+    merge_input: Option<Vec<u8>>,
+}
+
 /// Remembers exactly which bytes the app loaded. A second process cannot
 /// silently replace a user's newer workspace or settings snapshot.
 #[derive(Debug, Default)]
 pub struct RevisionGuard {
-    revision: Mutex<FileRevision>,
-    recovery_path: Mutex<Option<PathBuf>>,
-    /// Last submitted settings, which may differ from the merged file on disk.
-    merge_input: Mutex<Option<Vec<u8>>>,
+    state: Mutex<RevisionState>,
 }
 
 impl RevisionGuard {
     pub fn loaded(&self, bytes: Option<Vec<u8>>) {
-        let mut revision = self
-            .revision
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *self
-            .merge_input
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        *revision = FileRevision::Loaded(bytes);
+        state.merge_input = None;
+        state.revision = FileRevision::Loaded(bytes);
     }
 
     pub fn blocked(&self, error: &anyhow::Error) {
-        *self
-            .revision
+        self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            FileRevision::Blocked(error.to_string());
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .revision = FileRevision::Blocked(error.to_string());
     }
 
     /// Merge only locally changed preferences into the latest file while holding
@@ -209,24 +232,21 @@ impl RevisionGuard {
         limit: u64,
         merge: impl FnOnce(Option<&[u8]>, Option<&[u8]>) -> Result<Vec<u8>>,
     ) -> Result<bool> {
-        let mut revision = self
-            .revision
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let FileRevision::Blocked(error) = &*revision {
+        if let FileRevision::Blocked(error) = &state.revision {
             bail!("cannot save because the initial load failed: {error}");
         }
-        let mut merge_input = self
-            .merge_input
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         with_exclusive_file_lock(path, || {
             let current = match fs::File::open(path) {
                 Ok(file) => {
                     let mut contents = Vec::new();
-                    file.take(limit + 1).read_to_end(&mut contents)?;
+                    file.take(limit.saturating_add(1))
+                        .read_to_end(&mut contents)?;
                     if contents.len() as u64 > limit {
-                        let recovery = self.preserve_local_copy(path, bytes)?;
+                        let recovery = state.preserve_local_copy(path, bytes)?;
                         bail!(
                             "{} exceeds the settings size limit; your local copy was saved at {}",
                             path.display(),
@@ -238,7 +258,7 @@ impl RevisionGuard {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => return Err(error).context("could not read the latest settings"),
             };
-            let loaded = match &*revision {
+            let loaded = match &state.revision {
                 FileRevision::Unloaded if current.is_some() => {
                     bail!(
                         "{} must be loaded before it can be overwritten",
@@ -248,10 +268,10 @@ impl RevisionGuard {
                 FileRevision::Loaded(loaded) => loaded.as_deref(),
                 _ => None,
             };
-            let merged = match merge(merge_input.as_deref().or(loaded), current.as_deref()) {
+            let merged = match merge(state.merge_input.as_deref().or(loaded), current.as_deref()) {
                 Ok(merged) => merged,
                 Err(error) => {
-                    let recovery = self.preserve_local_copy(path, bytes)?;
+                    let recovery = state.preserve_local_copy(path, bytes)?;
                     bail!(
                         concat!(
                             "{error}; the settings file was preserved ",
@@ -269,52 +289,24 @@ impl RevisionGuard {
             if changed {
                 atomic_write(path, &merged)?;
             }
-            *revision = FileRevision::Loaded(Some(merged));
+            state.revision = FileRevision::Loaded(Some(merged));
             // Remember what the caller submitted, not the merged values it has
             // not seen. A later resize must not undo another instance's theme.
-            *merge_input = Some(bytes.to_vec());
+            state.merge_input = Some(bytes.to_vec());
             Ok(changed)
         })
     }
 
-    fn preserve_local_copy(&self, path: &Path, bytes: &[u8]) -> Result<PathBuf> {
-        let recovery_path = {
-            let mut slot = self
-                .recovery_path
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            slot.get_or_insert_with(|| {
-                let name = path
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("snapshot");
-                path.with_file_name(format!(
-                    "{name}-recovery-{}-{}.json",
-                    std::process::id(),
-                    Uuid::new_v4().simple()
-                ))
-            })
-            .clone()
-        };
-        atomic_write(&recovery_path, bytes).with_context(|| {
-            format!(
-                "could not preserve the local copy at {}",
-                recovery_path.display()
-            )
-        })?;
-        Ok(recovery_path)
-    }
-
     pub fn save(&self, path: &Path, bytes: &[u8]) -> Result<bool> {
-        let mut revision = self
-            .revision
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let FileRevision::Blocked(error) = &*revision {
+        if let FileRevision::Blocked(error) = &state.revision {
             bail!("cannot save because the initial load failed: {error}");
         }
         with_exclusive_file_lock(path, || {
-            let comparison_limit = match &*revision {
+            let comparison_limit = match &state.revision {
                 FileRevision::Loaded(Some(expected)) => expected.len().max(bytes.len()),
                 _ => bytes.len(),
             } as u64;
@@ -325,7 +317,8 @@ impl RevisionGuard {
                         (Some(Vec::new()), true)
                     } else {
                         let mut contents = Vec::with_capacity(size as usize);
-                        file.take(comparison_limit + 1).read_to_end(&mut contents)?;
+                        file.take(comparison_limit.saturating_add(1))
+                            .read_to_end(&mut contents)?;
                         if contents.len() as u64 > comparison_limit {
                             (Some(Vec::new()), true)
                         } else {
@@ -339,9 +332,9 @@ impl RevisionGuard {
                         .with_context(|| format!("could not read {}", path.display()));
                 }
             };
-            match &*revision {
+            match &state.revision {
                 FileRevision::Loaded(expected) if oversized || *expected != current => {
-                    let recovery_path = self.preserve_local_copy(path, bytes)?;
+                    let recovery_path = state.preserve_local_copy(path, bytes)?;
                     bail!(
                         concat!(
                             "{} changed in another process; the newer file was preserved ",
@@ -361,13 +354,36 @@ impl RevisionGuard {
                 _ => {}
             }
             if !oversized && current.as_deref() == Some(bytes) {
-                *revision = FileRevision::Loaded(current);
+                state.revision = FileRevision::Loaded(current);
                 return Ok(false);
             }
             atomic_write(path, bytes)?;
-            *revision = FileRevision::Loaded(Some(bytes.to_vec()));
+            state.revision = FileRevision::Loaded(Some(bytes.to_vec()));
             Ok(true)
         })
+    }
+}
+
+impl RevisionState {
+    fn preserve_local_copy(&mut self, path: &Path, bytes: &[u8]) -> Result<PathBuf> {
+        let recovery_path = self.recovery_path.get_or_insert_with(|| {
+            let name = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("snapshot");
+            path.with_file_name(format!(
+                "{name}-recovery-{}-{}.json",
+                std::process::id(),
+                Uuid::new_v4().simple()
+            ))
+        });
+        atomic_write(recovery_path, bytes).with_context(|| {
+            format!(
+                "could not preserve the local copy at {}",
+                recovery_path.display()
+            )
+        })?;
+        Ok(recovery_path.clone())
     }
 }
 
@@ -397,6 +413,47 @@ mod tests {
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::NotFound
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn dangling_snapshot_links_block_loading_and_saving() {
+        use crate::infrastructure::library::LibraryRepository;
+        use crate::infrastructure::persistence::WorkspaceRepository;
+        use crate::infrastructure::settings::{AppSettings, SettingsRepository};
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("vibra-dangling-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let absent = root.join("absent.json");
+        assert!(
+            read_optional_file_limited(&absent, 10, "10 bytes")
+                .unwrap()
+                .is_none()
+        );
+        let workspace = WorkspaceRepository::at(root.join("workspace.json"));
+        let settings = SettingsRepository::at(root.join("settings.json"));
+        let library = LibraryRepository::in_directory(&root);
+        for name in ["workspace.json", "settings.json", "library.json"] {
+            symlink(&absent, root.join(name)).unwrap();
+        }
+        assert!(workspace.load().is_err());
+        assert!(settings.load().is_err());
+        assert!(library.load().is_err());
+        assert!(
+            workspace
+                .save(&crate::domain::workspace::WorkspaceSnapshot::default())
+                .is_err()
+        );
+        assert!(settings.save(&AppSettings::default()).is_err());
+        assert!(
+            library
+                .save(&crate::domain::library::Library::default())
+                .is_err()
+        );
+        for name in ["workspace.json", "settings.json", "library.json"] {
+            assert_eq!(fs::read_link(root.join(name)).unwrap(), absent);
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

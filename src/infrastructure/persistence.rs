@@ -4,20 +4,56 @@ pub(crate) use queue::{
     DocumentKind, FinishError, PersistenceQueue, SaveResult, save_final_blocking,
 };
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::domain::workspace::{CURRENT_WORKSPACE_SCHEMA_VERSION, WorkspaceSnapshot};
+use crate::domain::workspace::{
+    CURRENT_WORKSPACE_SCHEMA_VERSION, ProjectSnapshot, SidebarItemSnapshot, WorkspaceSnapshot,
+};
 use crate::infrastructure::paths::{
-    RevisionGuard, application_support_directory, atomic_write, atomic_write_if_missing,
-    gpui_preview_support_directory, read_file_limited,
+    RevisionGuard, application_support_directory, atomic_write, gpui_preview_support_directory,
+    read_file_limited, read_optional_file_limited, with_exclusive_file_lock,
 };
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Deserializer};
+use uuid::Uuid;
 
 const WORKSPACE_FILE_NAME: &str = "workspace.json";
 const SWIFT_BACKUP_FILE_NAME: &str = "workspace.swift-v0.2.7.backup.json";
 const PROJECTS_BACKUP_FILE_NAME: &str = "workspace.pre-projects.backup.json";
 const MAX_WORKSPACE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Keep schema presence while decoding the hierarchy once. An explicit zero is
+/// a versioned legacy file; an absent version identifies the original Swift format.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredWorkspace {
+    #[serde(default, deserialize_with = "present_schema_version")]
+    schema_version: Option<u32>,
+    #[serde(default)]
+    projects: Vec<ProjectSnapshot>,
+    selected_project_id: Option<Uuid>,
+    #[serde(default)]
+    workspace_order: Vec<Uuid>,
+    #[serde(default)]
+    sidebar_items: Vec<SidebarItemSnapshot>,
+}
+
+fn present_schema_version<'de, D: Deserializer<'de>>(decoder: D) -> Result<Option<u32>, D::Error> {
+    u32::deserialize(decoder).map(Some)
+}
+
+impl StoredWorkspace {
+    fn into_snapshot(self) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            schema_version: self.schema_version.unwrap_or_default(),
+            projects: self.projects,
+            selected_project_id: self.selected_project_id,
+            workspace_order: self.workspace_order,
+            sidebar_items: self.sidebar_items,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct WorkspaceRepository {
@@ -76,29 +112,11 @@ impl WorkspaceRepository {
     }
 
     fn load_inner(&self) -> Result<Option<WorkspaceSnapshot>> {
-        self.prepare_migration()?;
-        if !self.path.exists() {
+        let loaded = with_exclusive_file_lock(&self.path, || self.read_and_back_up())?;
+        let Some((data, mut snapshot)) = loaded else {
             self.revision.loaded(None);
             return Ok(None);
-        }
-        let data = read_workspace_file(&self.path)?;
-        let mut snapshot: WorkspaceSnapshot = serde_json::from_slice(&data)
-            .with_context(|| format!("Invalid JSON in {}", self.path.display()))?;
-        if snapshot.schema_version > CURRENT_WORKSPACE_SCHEMA_VERSION {
-            bail!(
-                "{} uses schema {} but this version of Vibra only supports up to {}",
-                self.path.display(),
-                snapshot.schema_version,
-                CURRENT_WORKSPACE_SCHEMA_VERSION
-            );
-        }
-        if snapshot.schema_version < 7 {
-            let backup = self.path.with_file_name(PROJECTS_BACKUP_FILE_NAME);
-            if !valid_json_backup(&backup) {
-                atomic_write(&backup, &data)
-                    .with_context(|| format!("could not back up {}", self.path.display()))?;
-            }
-        }
+        };
         let original = snapshot.clone();
         snapshot.normalize();
         self.revision.loaded(Some(data));
@@ -120,49 +138,76 @@ impl WorkspaceRepository {
         self.revision.save(&self.path, &data)
     }
 
-    fn prepare_migration(&self) -> Result<()> {
-        if !self.path.exists()
-            && let Some(preview_path) = self
-                .preview_path
-                .as_ref()
-                .filter(|preview_path| preview_path.exists())
+    /// Called under the workspace lock so import, inspection, and backups refer
+    /// to one revision. Normalization saves later with the same bytes as its guard.
+    fn read_and_back_up(&self) -> Result<Option<(Vec<u8>, WorkspaceSnapshot)>> {
+        let current = read_optional_file_limited(&self.path, MAX_WORKSPACE_BYTES, "16 MiB")?;
+        let (source, data) = if let Some(data) = current {
+            (&self.path, data)
+        } else {
+            let Some(preview) = &self.preview_path else {
+                return Ok(None);
+            };
+            let Some(data) = read_optional_file_limited(preview, MAX_WORKSPACE_BYTES, "16 MiB")?
+            else {
+                return Ok(None);
+            };
+            (preview, data)
+        };
+        let parsed = serde_json::from_slice::<StoredWorkspace>(&data);
+        // Preserve the legacy recovery behavior even for a structurally invalid
+        // Swift document. Valid snapshots only need the typed decode above.
+        if source == &self.path
+            && parsed.is_err()
+            && serde_json::from_slice::<serde_json::Value>(&data)
+                .ok()
+                .is_some_and(|value| {
+                    value
+                        .as_object()
+                        .is_some_and(|object| !object.contains_key("schemaVersion"))
+                })
         {
-            let data = read_workspace_file(preview_path)?;
-            let preview: WorkspaceSnapshot = serde_json::from_slice(&data)
-                .with_context(|| format!("Invalid JSON in {}", preview_path.display()))?;
-            if preview.schema_version > CURRENT_WORKSPACE_SCHEMA_VERSION {
-                bail!("{} uses a newer schema", preview_path.display());
-            }
-            atomic_write_if_missing(&self.path, &data).with_context(|| {
+            self.back_up(&self.swift_backup_path, &data)?;
+        }
+        let stored = parsed.with_context(|| format!("Invalid JSON in {}", source.display()))?;
+        let unversioned = stored.schema_version.is_none();
+        let snapshot = stored.into_snapshot();
+        if snapshot.schema_version > CURRENT_WORKSPACE_SCHEMA_VERSION {
+            bail!(
+                "{} uses schema {} but this version of Vibra only supports up to {}",
+                source.display(),
+                snapshot.schema_version,
+                CURRENT_WORKSPACE_SCHEMA_VERSION
+            );
+        }
+        if source != &self.path {
+            atomic_write(&self.path, &data).with_context(|| {
                 format!(
                     "could not import {} to {}",
-                    preview_path.display(),
+                    source.display(),
                     self.path.display()
                 )
             })?;
         }
-
-        if self.path.exists() && !valid_json_backup(&self.swift_backup_path) {
-            let data = read_workspace_file(&self.path)?;
-            let is_swift_snapshot = serde_json::from_slice::<serde_json::Value>(&data)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .as_object()
-                        .map(|object| !object.contains_key("schemaVersion"))
-                })
-                .unwrap_or(false);
-            if is_swift_snapshot {
-                atomic_write(&self.swift_backup_path, &data).with_context(|| {
-                    format!(
-                        "could not back up {} to {}",
-                        self.path.display(),
-                        self.swift_backup_path.display()
-                    )
-                })?;
-            }
+        if unversioned {
+            self.back_up(&self.swift_backup_path, &data)?;
         }
+        if snapshot.schema_version < 7 {
+            self.back_up(&self.path.with_file_name(PROJECTS_BACKUP_FILE_NAME), &data)?;
+        }
+        Ok(Some((data, snapshot)))
+    }
 
+    fn back_up(&self, path: &Path, data: &[u8]) -> Result<()> {
+        if !valid_json_backup(path) {
+            atomic_write(path, data).with_context(|| {
+                format!(
+                    "could not back up {} to {}",
+                    self.path.display(),
+                    path.display()
+                )
+            })?;
+        }
         Ok(())
     }
 }
@@ -174,7 +219,7 @@ fn read_workspace_file(path: &std::path::Path) -> Result<Vec<u8>> {
 fn valid_json_backup(path: &std::path::Path) -> bool {
     read_workspace_file(path)
         .ok()
-        .is_some_and(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).is_ok())
+        .is_some_and(|bytes| serde_json::from_slice::<serde::de::IgnoredAny>(&bytes).is_ok())
 }
 
 #[cfg(test)]
@@ -346,6 +391,50 @@ mod tests {
             br#"{"projects":[],"selectedProjectId":null}"#
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_zero_schema_uses_only_the_pre_projects_backup() {
+        let root = std::env::temp_dir().join(format!("vibra-version-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("workspace.json");
+        let original = br#"{"schemaVersion":0,"projects":[]}"#;
+        fs::write(&path, original).unwrap();
+        WorkspaceRepository::at(&path).load().unwrap();
+        assert!(!root.join(SWIFT_BACKUP_FILE_NAME).exists());
+        assert_eq!(
+            fs::read(root.join(PROJECTS_BACKUP_FILE_NAME)).unwrap(),
+            original
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_schemas_and_invalid_swift_documents_remain_recoverable() {
+        for original in [
+            br#"{"schemaVersion":null,"projects":[]}"#.as_slice(),
+            br#"{"schemaVersion":999,"schemaVersion":7,"projects":[]}"#,
+            br#"{"projects":"invalid"}"#,
+        ] {
+            let root = std::env::temp_dir().join(format!("vibra-invalid-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            let path = root.join("workspace.json");
+            fs::write(&path, original).unwrap();
+            let repository = WorkspaceRepository::at(&path);
+            assert!(repository.load().is_err());
+            assert!(repository.save(&WorkspaceSnapshot::default()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+            if !original
+                .windows(b"schemaVersion".len())
+                .any(|part| part == b"schemaVersion")
+            {
+                assert_eq!(
+                    fs::read(root.join(SWIFT_BACKUP_FILE_NAME)).unwrap(),
+                    original
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

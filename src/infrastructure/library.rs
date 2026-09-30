@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 
 use crate::domain::library::{CURRENT_LIBRARY_SCHEMA_VERSION, Library, LocalMinute};
-use crate::infrastructure::paths::{RevisionGuard, read_file_limited};
+use crate::infrastructure::paths::{RevisionGuard, read_optional_file_limited};
 
 const LIBRARY_FILE_NAME: &str = "library.json";
 const MAX_LIBRARY_BYTES: u64 = 8 * 1024 * 1024;
@@ -39,19 +39,10 @@ impl LibraryRepository {
     }
 
     fn load_inner(&self) -> Result<Library> {
-        let bytes = match read_file_limited(&self.path, MAX_LIBRARY_BYTES, "8 MiB") {
-            Ok(bytes) => bytes,
-            Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                self.revision.loaded(None);
-                return Ok(Library::default());
-            }
-            Err(error) => {
-                return Err(error);
-            }
+        let Some(bytes) = read_optional_file_limited(&self.path, MAX_LIBRARY_BYTES, "8 MiB")?
+        else {
+            self.revision.loaded(None);
+            return Ok(Library::default());
         };
         let mut library: Library = serde_json::from_slice(&bytes)
             .with_context(|| format!("Invalid JSON in {}", self.path.display()))?;
@@ -69,9 +60,7 @@ impl LibraryRepository {
     }
 
     pub fn save(&self, library: &Library) -> Result<()> {
-        let mut library = library.clone();
-        library.normalize();
-        let data = serde_json::to_vec_pretty(&library)?;
+        let data = serde_json::to_vec_pretty(&library.normalized_for_storage())?;
         if data.len() as u64 > MAX_LIBRARY_BYTES {
             bail!("notes and automations exceed the 8 MiB limit");
         }
@@ -142,6 +131,46 @@ mod tests {
                 hour: 9,
                 minute: 15
             }
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn saving_repairs_duplicate_ids_without_changing_the_live_library() {
+        let root = std::env::temp_dir().join(format!("vibra-library-{}", uuid::Uuid::new_v4()));
+        let repository = LibraryRepository::in_directory(&root);
+        let mut library = Library::default();
+        let first = library.create_note(Some(uuid::Uuid::new_v4()), 12);
+        library.set_note_body(first, "First note\nwith more text".into(), 34);
+        library.notes.push(crate::domain::library::Note {
+            body: "Second note".into(),
+            ..library.notes[0].clone()
+        });
+        library.create_note(None, 56);
+        library
+            .save_automation(
+                None,
+                "Check",
+                "cargo check",
+                None,
+                AutomationSchedule::Manual,
+                "",
+            )
+            .unwrap();
+        library.automations.push(library.automations[0].clone());
+        let original = library.clone();
+        repository.save(&library).unwrap();
+        assert_eq!(library, original);
+        let loaded = LibraryRepository::in_directory(&root).load().unwrap();
+        assert_eq!(loaded.notes.len(), 2);
+        assert_eq!(loaded.notes[0], original.notes[0]);
+        assert_eq!(loaded.notes[1].body, original.notes[1].body);
+        assert_ne!(loaded.notes[1].id, first);
+        assert_eq!(loaded.automations[0], original.automations[0]);
+        assert_ne!(loaded.automations[1].id, loaded.automations[0].id);
+        assert_eq!(
+            loaded.automations[1].command,
+            original.automations[1].command
         );
         fs::remove_dir_all(root).unwrap();
     }

@@ -108,11 +108,14 @@ impl FileSystemPort for LocalFileSystemPort {
             } else {
                 FileEntryKind::File
             };
-            let candidate = SortedEntry(FileEntry {
-                path: entry.path(),
-                name,
-                kind,
-            });
+            let candidate = SortedEntry {
+                lowercase_name: name.to_lowercase(),
+                entry: FileEntry {
+                    path: entry.path(),
+                    name,
+                    kind,
+                },
+            };
             if entries.len() < limit {
                 entries.push(candidate);
             } else if entries.peek().is_some_and(|largest| candidate < *largest) {
@@ -123,7 +126,7 @@ impl FileSystemPort for LocalFileSystemPort {
         Ok(entries
             .into_sorted_vec()
             .into_iter()
-            .map(|entry| entry.0)
+            .map(|entry| entry.entry)
             .collect())
     }
 }
@@ -263,7 +266,10 @@ fn create_project_entry(
     Ok(path)
 }
 
-struct SortedEntry(FileEntry);
+struct SortedEntry {
+    entry: FileEntry,
+    lowercase_name: String,
+}
 
 impl PartialEq for SortedEntry {
     fn eq(&self, other: &Self) -> bool {
@@ -281,10 +287,10 @@ impl PartialOrd for SortedEntry {
 
 impl Ord for SortedEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        entry_rank(self.0.kind)
-            .cmp(&entry_rank(other.0.kind))
-            .then_with(|| self.0.name.to_lowercase().cmp(&other.0.name.to_lowercase()))
-            .then_with(|| self.0.name.cmp(&other.0.name))
+        entry_rank(self.entry.kind)
+            .cmp(&entry_rank(other.entry.kind))
+            .then_with(|| self.lowercase_name.cmp(&other.lowercase_name))
+            .then_with(|| self.entry.name.cmp(&other.entry.name))
     }
 }
 
@@ -473,6 +479,49 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["alpha", ".secret"]
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn limited_listing_matches_full_case_insensitive_order() {
+        use std::os::unix::fs::symlink;
+        let root = temporary_root();
+        for name in [
+            "Zulu",
+            "alpha",
+            "A-first.txt",
+            "a-second.txt",
+            "É-first.txt",
+            "é-second.txt",
+        ] {
+            fs::write(root.join(name), "").unwrap();
+        }
+        fs::create_dir(root.join("folder")).unwrap();
+        symlink(root.join("A-first.txt"), root.join("link")).unwrap();
+        let full = LocalFileSystemPort
+            .list_directory(&root, &root, true)
+            .unwrap();
+        assert_eq!(
+            full.iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "folder",
+                "A-first.txt",
+                "a-second.txt",
+                "alpha",
+                "Zulu",
+                "É-first.txt",
+                "é-second.txt",
+                "link"
+            ]
+        );
+        for limit in 0..=full.len() + 1 {
+            let limited = LocalFileSystemPort
+                .list_directory_limited(&root, &root, true, limit)
+                .unwrap();
+            assert_eq!(limited, full[..limit.min(full.len())]);
+        }
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

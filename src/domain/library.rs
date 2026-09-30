@@ -2,6 +2,7 @@
 //! workspace layout. Automations only describe a command; running it is a
 //! visible terminal session like any other.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
@@ -262,9 +263,56 @@ impl Library {
                 .iter_mut()
                 .map(|automation| &mut automation.id),
         ) {
-            while !ids.insert(*id) {
-                *id = Uuid::new_v4();
-            }
+            *id = unique_id(*id, &mut ids);
+        }
+    }
+
+    /// Serialize a normalized view without copying note bodies or commands.
+    /// Only records whose IDs need repair are copied; the live library stays intact.
+    pub(crate) fn normalized_for_storage(&self) -> impl Serialize + '_ {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Snapshot<'a> {
+            schema_version: u32,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            notes: Vec<Cow<'a, Note>>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            automations: Vec<Cow<'a, Automation>>,
+        }
+
+        let mut ids = HashSet::new();
+        let notes = self
+            .notes
+            .iter()
+            .filter(|note| !note.is_blank())
+            .map(|note| {
+                let id = unique_id(note.id, &mut ids);
+                if id == note.id {
+                    Cow::Borrowed(note)
+                } else {
+                    Cow::Owned(Note { id, ..note.clone() })
+                }
+            })
+            .collect();
+        let automations = self
+            .automations
+            .iter()
+            .map(|automation| {
+                let id = unique_id(automation.id, &mut ids);
+                if id == automation.id {
+                    Cow::Borrowed(automation)
+                } else {
+                    Cow::Owned(Automation {
+                        id,
+                        ..automation.clone()
+                    })
+                }
+            })
+            .collect();
+        Snapshot {
+            schema_version: CURRENT_LIBRARY_SCHEMA_VERSION,
+            notes,
+            automations,
         }
     }
 
@@ -439,6 +487,13 @@ impl Library {
         }
         changed
     }
+}
+
+fn unique_id(mut id: Uuid, seen: &mut HashSet<Uuid>) -> Uuid {
+    while !seen.insert(id) {
+        id = Uuid::new_v4();
+    }
+    id
 }
 
 #[cfg(test)]
