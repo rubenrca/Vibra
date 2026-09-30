@@ -1,5 +1,12 @@
+use super::parsing::parse_history;
 use super::*;
+use crate::ports::git::{
+    GitCommitOptions, GitDiffSources, GitFileStatus, GitPort, GitSyncOperation,
+};
 use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::process::Command;
+use std::sync::Arc;
 use uuid::Uuid;
 
 fn git(root: &Path, arguments: &[&str]) {
@@ -17,16 +24,45 @@ fn git(root: &Path, arguments: &[&str]) {
     );
 }
 
-fn repository() -> PathBuf {
-    let root = std::env::temp_dir().join(format!("vibra-git-{}", Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    git(&root, &["init", "-q"]);
-    git(&root, &["config", "user.name", "Vibra Test"]);
-    git(&root, &["config", "user.email", "vibra@example.invalid"]);
-    fs::write(root.join("tracked.txt"), "one\ntwo\n").unwrap();
-    git(&root, &["add", "tracked.txt"]);
-    git(&root, &["commit", "-qm", "initial"]);
-    root
+struct TempRepo {
+    path: PathBuf,
+}
+
+impl std::ops::Deref for TempRepo {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempRepo {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TempRepo {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.path.as_os_str()
+    }
+}
+
+impl Drop for TempRepo {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn repository() -> TempRepo {
+    let path = std::env::temp_dir().join(format!("vibra-git-{}", Uuid::new_v4()));
+    fs::create_dir_all(&path).unwrap();
+    git(&path, &["init", "-q"]);
+    git(&path, &["config", "user.name", "Vibra Test"]);
+    git(&path, &["config", "user.email", "vibra@example.invalid"]);
+    fs::write(path.join("tracked.txt"), "one\ntwo\n").unwrap();
+    git(&path, &["add", "tracked.txt"]);
+    git(&path, &["commit", "-qm", "initial"]);
+    TempRepo { path }
 }
 
 fn capture_index_path(port: &GitCliPort, root: &Path) -> PathBuf {
@@ -885,7 +921,7 @@ fn worktree_captures_in_other_repositories_do_not_wait_for_an_index() {
     let guard = first_slot.lock().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let other_port = Arc::clone(&port);
-    let other_root = second.clone();
+    let other_root = second.to_path_buf();
     let worker = std::thread::spawn(move || {
         let _ = tx.send(other_port.capture_worktree(&other_root));
     });
