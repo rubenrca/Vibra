@@ -9,7 +9,7 @@ use gpui::{
 };
 
 use crate::ports::files::FileSystemPort;
-use crate::ui::syntax::{Highlighter, SyntaxSpan};
+use crate::ui::syntax::{Highlighter, SyntaxSpan, expand_tabs};
 use crate::ui::theme::{MONO_FONT, colors};
 
 struct SourceLine {
@@ -27,15 +27,15 @@ impl Document {
     fn new(path: &str, text: String) -> Self {
         let mut highlighter = Highlighter::for_path(path);
         let mut columns = 0;
+        let text = expand_tabs(text.trim_start_matches('\u{feff}'));
         let lines = text
-            .trim_start_matches('\u{feff}')
-            .split('\n')
+            .lines()
             .map(|line| {
-                let line = line.trim_end_matches('\r').replace('\t', "    ");
+                let line = line.trim_end_matches('\r');
                 columns = columns.max(line.chars().count());
-                let spans = highlighter.highlight_line(&line);
+                let spans = highlighter.highlight_line(line);
                 SourceLine {
-                    text: line.into(),
+                    text: line.to_owned().into(),
                     spans,
                 }
             })
