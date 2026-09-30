@@ -16,6 +16,18 @@ pub struct FileEntry {
     pub kind: FileEntryKind,
 }
 
+/// Directory names skipped by search indexing and the Explorer watcher.
+pub const SKIPPED_DIRECTORY_NAMES: &[&str] = &[
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    ".next",
+    "DerivedData",
+    "Pods",
+    ".venv",
+];
+
 /// Boundary for project-scoped file inspection and creation.
 pub trait FileSystemPort: Send + Sync {
     /// Append searchable project files, respecting Git ignores and initialized submodules.

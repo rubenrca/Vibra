@@ -8,7 +8,7 @@ use gpui::{AnyElement, Context, Div, Task, Timer, div, prelude::*, px, svg};
 use notify::{EventKind, RecursiveMode, Watcher};
 
 use super::{ProjectFileRow, RightSidebarMode};
-use crate::ports::files::{FileEntryKind, FileSystemPort};
+use crate::ports::files::{FileEntryKind, FileSystemPort, SKIPPED_DIRECTORY_NAMES};
 use crate::ports::git::GitFileStatus;
 use crate::ui::theme::{MONO_FONT, colors};
 
@@ -271,10 +271,10 @@ fn event_should_refresh(root: &Path, event: &notify::Event) -> bool {
             return false;
         }
         !relative.components().next().is_some_and(|component| {
-            matches!(
-                component.as_os_str().to_str(),
-                Some("target" | "node_modules" | ".next" | "DerivedData" | "Pods" | ".venv")
-            )
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|name| SKIPPED_DIRECTORY_NAMES.contains(&name))
         })
     })
 }

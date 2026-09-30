@@ -142,17 +142,7 @@ fn collect_search_files_from_disk(
         }
         match entry.kind {
             FileEntryKind::Directory
-                if !matches!(
-                    entry.name.as_str(),
-                    "target"
-                        | "node_modules"
-                        | "dist"
-                        | "build"
-                        | ".next"
-                        | "DerivedData"
-                        | "Pods"
-                        | ".venv"
-                ) =>
+                if !crate::ports::files::SKIPPED_DIRECTORY_NAMES.contains(&entry.name.as_str()) =>
             {
                 // One unreadable subdirectory must not discard the paths
                 // already indexed from the rest of the project.
