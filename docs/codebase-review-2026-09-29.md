@@ -1,166 +1,192 @@
-# Revisión de codebase — 29 de septiembre de 2026
+# Auditoría de codebase — 29 de septiembre de 2026
 
-Se aplicó una limpieza de estructura y de lógica repetida, y se corrigieron los
-problemas concretos descritos abajo. La aplicación conserva sus flujos, migraciones
-y presentación. La revisión visual sigue a cargo del usuario, según `AGENTS.md`.
+Revisión posterior a `79a8a43`, con tres subagentes especializados en dominio y
+persistencia, infraestructura y UI, y revisión integrada de los cambios. Este
+informe actualiza las cifras y pendientes acumulados de pasadas anteriores.
+Los cambios se aplican y publican en `main` mediante commits semánticos. No se
+publica una nueva versión de la aplicación como parte de esta auditoría.
 
-## Alcance y evidencia
+## Alcance y tamaño
 
-El inventario inicial contiene 109 archivos y 56.541 líneas de Rust propios de la
-app. El análisis comprende estructura y referencias sobre `src`, dependencias
-directas, textos de la aplicación, código repetido, uso de procesos, lecturas y
-escrituras, y revisión de los caminos críticos de persistencia, terminales, Git,
-Inbox, cuotas y coordinación asíncrona. Se revisaron también los bridges nativos,
-el build, los scripts de distribución y las comprobaciones de CI.
+Se revisaron los archivos de `src` —ahora 135 Rust y dos consultas GraphQL—,
+contratos entre capas, bridges nativos, build, scripts, CI, dependencias,
+recursos y harness de terminales. La revisión combinó inventario, referencias,
+lectura de caminos críticos, regresiones y comprobaciones integradas. En GPUI
+se conservaron las fuentes de biblioteca, build, tests, licencia y procedencia.
 
-La primera pasada quedó en 56.755 líneas al separar responsabilidades y agregar
-pruebas. La simplificación posterior elimina **388 líneas netas** de ese estado:
-el inventario final contiene **115 archivos y 56.367 líneas**, incluyendo tests.
-Frente al inicio de la revisión, el balance es de **174 líneas menos**, contando
-los lectores compartidos y las siete pruebas nuevas. No se eliminaron pruebas
-existentes ni funcionalidades para obtener esa reducción.
-
-| Área | Resultado |
-| --- | --- |
-| Dominio y migraciones | Las pruebas cubren IDs repetidos, selección, geometría, consolidación de sesiones y conservación de proyectos. Se conservaron los formatos y fixtures de migración. |
-| Persistencia | La cola pertenece a infraestructura. Los tres documentos comparten captura de estado, procesamiento y errores, incluyendo la ruta de emergencia. Se conservan orden, guardado final, escrituras atómicas, locks y copias de recuperación. |
-| Terminal y FFI | Se revisaron propiedad del motor, callbacks, colas acotadas, PTY y cierre del proceso. La suite mantiene cobertura de entrada, búsqueda, selección, clipboard y reaping. |
-| Git y revisiones | Se separaron parsing y ejecución. Se conservan el índice privado de capturas, los límites de patches, los cambios por repositorio y el descarte de respuestas atrasadas. |
-| Inbox y cuotas | Se comparte la captura de comandos sin incluir credenciales en diagnósticos nuevos. Se mantienen generaciones, sesiones por tarea, cachés por cuenta y cooldowns. |
-| Interfaz | Se eliminan copias de preferencias, wrappers de atajos y constructores repetidos de Settings. Las 12 paletas propias conservaron todos sus valores en una comparación programática antes/después. Se mantienen las pruebas de foco, tabs, pliegues, comentarios, scroll y revisiones remotas. |
-| Dependencias y recursos | Todas las dependencias directas tienen referencias en la aplicación o el build. No se identificó una dependencia eliminable con evidencia suficiente. Se conserva el vendor GPUI y su parche documentado. |
-| Distribución | Las siete pruebas de release, los plist y la sintaxis de scripts pasan. No se generó ni publicó una distribución nueva. |
-
-## Problemas corregidos
-
-1. **Generación de mensajes de commit: procesos y memoria.** Las salidas de stdout
-   y stderr se acumulaban sin límite. El timeout mataba solo el proceso principal
-   y retornaba sin reunir los lectores; un descendiente podía conservar las
-   tuberías. Ahora se usa un grupo privado, captura con límite de 64 KiB por
-   salida y cleanup antes de reunir los workers. El plazo sigue siendo 120 s.
-2. **Lectura de temas: límite incompleto.** Se comprobaba metadata y después se
-   hacía un `fs::read` sin límite. Si el archivo crecía entre ambos pasos, la
-   lectura podía superar 64 KiB. El lector compartido acota la lectura sobre el
-   archivo abierto y verifica el tamaño final.
-3. **Verificación bloqueada por Clippy.** `decode_hex` usaba `% 2 != 0`, rechazado
-   por la configuración de Rust 1.96 con `-D warnings`. Se usa `is_multiple_of`.
-4. **Texto de arranque.** El error propio de inicio estaba en español. Ahora está
-   en inglés, de acuerdo con `AGENTS.md`. Se conservan textos de usuario, fixtures
-   multilingües y reconocimiento de respuestas en distintos idiomas.
-
-## Limpieza aplicada
-
-- `diff_view.rs` pasa de 4.259 a 966 líneas. Las cargas y cachés están en
-  `repository.rs`; filas y comentarios en `rows.rs`; controles en `rendering.rs`;
-  historial y grafo en `history.rs`. Las dependencias de los nuevos módulos son
-  explícitas y sus métodos internos conservan visibilidad limitada.
-- Los parsers de Git pasan a `git/parsing.rs`. `run_git` y `run_git_diff` comparten
-  la captura con límites, conservando el byte adicional usado para detectar
-  truncamiento. Los diffs ya no heredan stdin.
-- Inbox, cuotas, llavero por CLI y generación de commits comparten el manejo de
-  procesos. Cada llamada especifica sus límites; los consumidores siguen
-  decidiendo cómo tratar fallos y respuestas demasiado grandes.
-- Workspace, settings, library, caché de Inbox y temas comparten la lectura
-  acotada. Se conserva la detección de archivos ausentes y el bloqueo ante una
-  carga fallida.
-- Se elimina la implementación manual de `Clone` de `WorkspaceRepository` y la
-  creación redundante de directorios en el guardado de library.
-- Las comparaciones entre revisiones guardadas evitan consultar metadata del
-  working tree que luego se descartaba.
-- Las operaciones de panes comparten resolución de selección y normalización;
-  insertar un pane y fusionar layouts comparten la implementación del árbol.
-- Se eliminan 14 métodos que solo reenviaban atajos. Las asociaciones del teclado
-  llaman a las operaciones correspondientes directamente.
-- La vista deja de duplicar la visibilidad de los sidebars: lee `AppSettings` y
-  conserva el estado necesario para la animación.
-- Los guardados se agrupan por documento; una sola ruta procesa resultados y
-  fallos. La cola pasa de la vista a infraestructura con las mismas pruebas.
-- Commit, sync y staging comparten `write_repository`, incluyendo el descarte de
-  respuestas de otro proyecto y la exclusión de escrituras simultáneas.
-- Quick Open usa `FileSystemPort::search_files`. La UI deja de ejecutar Git y
-  recorrer archivos para el índice. Se conservan ignores, submódulos, límites y
-  resultados parciales; sus pruebas pasan al adaptador de filesystem.
-- Settings comparte tarjetas y etiquetas de controles. Los temas propios heredan
-  roles comunes del constructor ya usado por el catálogo y solo declaran sus
-  diferencias; las paletas ANSI son arrays explícitos, sin wrapper de 16 argumentos.
-- Se actualiza `architecture.md` para reflejar los límites de responsabilidad.
-
-## Observaciones para futuras refactorizaciones
-
-Estas son oportunidades o riesgos de mantenimiento identificados; no son fallos
-reproducidos por la suite actual.
-
-| Prioridad | Evidencia | Siguiente cambio razonable |
+| Métrica | Inicio | Final |
 | --- | --- | --- |
-| Media | `infrastructure/git.rs`: comandos de escritura y del índice privado usan `Command::output`; las lecturas Git no tienen deadline. | Definir cancelación y límites por operación, teniendo en cuenta que cortar una escritura puede dejar locks de Git. No aplicar el timeout de consultas a mutaciones sin esa política. |
-| Media | `infrastructure/ghostty.rs` y `terminal_support.rs` reciben paleta/generación desde `ui::theme`. | Publicar esos datos a través del contrato de terminal para reducir la dependencia del backend sobre la UI. |
-| Media | `infrastructure/ghostty.rs`: locks del motor y construcción de snapshot contienen `unwrap`/`expect`. | Definir un estado de terminal fallida y su propagación por el puerto. Recuperar un mutex envenenado sin conocer el estado nativo sería una decisión insegura. |
-| Baja | `ui/terminal.rs` tiene 2.527 líneas; `infrastructure/git.rs` mantiene 1.820. | Simplificar responsabilidades y repetición de entrada/render de terminal y referencias/operaciones Git con sus pruebas existentes. El tamaño por sí solo no justifica reescribirlos. |
-| Dependencia | Cargo reporta incompatibilidad futura en `block 0.1.6`, transitiva de GPUI/Cocoa/Metal. | Mantener seguimiento del árbol nativo. Cambiarlo exige validar FFI y el parche Metal de GPUI; el toolchain actual compila. |
+| Contenido versionado del checkout | 14,45 MB | Aproximadamente 9,50 MB |
+| Archivos Rust propios | 132 | 135 |
+| Líneas Rust propias, incluidos tests | 56.663 | 58.629 |
+| Pruebas Rust correctas de la app | 393 | 431 |
+| Pruebas del parche nativo, incluidos doctests | 0 | 9 |
+| Pruebas de scripts correctas | 7 | 10 |
+
+La reducción neta es de aproximadamente **4,96 MB, un 34,3 % del contenido
+versionado inicial**, incluyendo las nuevas regresiones y el parche nativo. El ahorro principal está en ejemplos ajenos a la aplicación. No mide
+reducción del ejecutable ni del historial `.git`: esos ejemplos nunca se
+empaquetaban en Vibra. El Rust propio crece por correcciones, pruebas y expansión
+de líneas para facilitar la lectura. Hay 38 pruebas Rust netas nuevas en la app; una prueba
+se trasladó del lector Git al runner compartido y otras se ampliaron.
+
+## Problemas corregidos y evidencia
+
+### Dominio y persistencia
+
+- **Automatizaciones al cruzar hora o medianoche.** Un horario `:59` consultado
+  a `:04` desaparecía dentro de la gracia de diez minutos. Se considera el periodo
+  anterior y weekdays valida el día de la ocurrencia. Horarios JSON fuera de rango
+  se rechazan. La regresión cubre gracia, expiración y ausencia de repetición.
+- **UUIDs duplicados.** Notes y Automations resolvían el primer registro; una
+  segunda automatización duplicada podía quedar siempre pendiente y repetir
+  el primer comando. La normalización repara las identidades sin eliminar
+  contenido. Se prueban edición, eliminación, ejecución e idempotencia.
+- **Importación de preview concurrente.** Workspace y settings podían reemplazar
+  un documento recién guardado por otra instancia. `atomic_write_if_missing`
+  toma el mismo lock del guardado y comprueba el destino dentro del lock.
+  La regresión coordina escritor e importador y conserva el snapshot nuevo.
+- **Resize de panes anidados.** Alcanzar el límite del divisor cercano hacía
+  que otra pulsación modificara un ancestro. Se distinguen ausencia de divisor
+  y ausencia de cambio. Se prueban ambos ejes, límites y movimiento inverso.
+
+### Git, procesos e integraciones
+
+- **Stage/unstage con pathspecs.** Nombres como `literal*.txt` o `:(glob)*.txt`
+  podían afectar otros archivos. Se usa `--literal-pathspecs` y se comprueba
+  la conservación de las demás entradas del índice.
+- **Unstage antes del primer commit.** Fallaba si el archivo cambió después
+  de staging. `git rm --cached -f` retira solo el índice cuando no hay HEAD;
+  la prueba verifica que el contenido local se conserva.
+- **Git sin deadline y workers bloqueados.** Lecturas y probes de versión tienen
+  plazos de 30 y tres segundos. La captura compartida conserva el byte adicional
+  de truncamiento y termina los diffs al alcanzar su presupuesto. I/O no
+  bloqueante, cancelación y drenado final acotado permiten reunir los workers
+  aunque un descendiente separado mantenga una tubería abierta. Se prueban
+  stdin bloqueado, tubería sin EOF, consulta infinita, descarte de salida y
+  conservación de 256 KiB completos al salir. Las escrituras conservan su política
+  de 120 segundos; solo se termina el grupo propio, no procesos ajenos a él.
+- **Contexto de commit con patches grandes y textconv.** Un diff superior a
+  32 MiB impedía generar un contexto final de 48 KiB. Ahora el patch es truncable
+  y desactiva textconv. Se prueban el aviso y la ausencia de ejecución del conversor.
+- **Socket de tracking sin timeout.** La CLI podía esperar indefinidamente;
+  se aplican timeouts de lectura/escritura. La regresión usa un servidor que
+  no responde y conserva el límite de respuesta de 4 MiB.
+- **Lecturas ilimitadas de hooks.** Configs y backups tienen límite de 4 MiB;
+  scripts, de 64 KiB. Dos regresiones verifican que el rechazo ocurre antes de
+  reemplazar datos o generar backups/scripts.
+- **Git inconsistente en Inbox.** GitHub usaba `/usr/bin/git` aunque la app
+  hubiera descubierto otro binario utilizable. Usa ahora el mismo adaptador.
+
+### UI, texto y temas
+
+- **Panic UTF-8 al borrar palabras.** Alt+Backspace podía truncar dentro de un
+  espacio Unicode. Campos y comentarios de revisión comparten `delete_last_word`
+  con límites UTF-8. Se prueban tres espacios Unicode y la ruta GPUI del diff.
+- **Copy alteraba el archivo.** Conserva ahora el texto original y transforma
+  solo las líneas de presentación. La regresión comprueba tabs, BOM y CRLF.
+- **Resaltado Rust.** `'a'` y `'_'` se confundían con lifetimes y contaminaban
+  líneas posteriores. Dos pruebas distinguen ambas construcciones.
+- **Citas Markdown.** La profundidad preserva citas exteriores al cerrar una
+  cita anidada, y su estado en headings, código y listas. Dos regresiones lo cubren.
+- **Panic de colores Unicode.** `parse_hex` valida ASCII hex antes de cortar
+  por posiciones de bytes y rechaza alpha inválido. La regresión incluye `€`.
+- **Identidades y pares de temas.** Slugs repetidos ocultaban familias y nombres
+  Unicode distintos podían fusionarse como light/dark. Los IDs canónicos se basan
+  en el archivo o la identidad del par, independientes de las colisiones. Aliases
+  conservan preferencias legacy y migran solo temas disponibles. Se prueban
+  extensiones distintas, recargas, colisiones, parejas y nombres Unicode.
+- **Límite silencioso de Notes.** Superar 100.000 caracteres conserva ahora
+  el texto previo y muestra un error en inglés. La regresión comprueba recuperación.
+- **Poda del Inbox.** Se conserva el estado de comentarios y mutaciones pendientes.
+  Las conversaciones de terminales cerradas dejan de retener detalles para siempre.
+  Una regresión verifica ambos ciclos de vida.
+
+### Scripts
+
+- **Packaging mediante symlink.** `package_app.sh` podía reemplazar un bundle
+  externo si `dist` era un enlace. Lo rechaza antes del build; la prueba conserva
+  un archivo testigo externo. También limpia temporales al fallar y rechaza
+  notarización sin identidad explícita antes de construir.
+- **Verificación de sintaxis incompleta.** `zsh -n Scripts/*.sh` analizaba solo
+  el primer script. `verify.sh` recorre cada `.sh` y `.zsh`. La regresión introduce
+  errores en un script posterior y en el helper `lib.zsh`.
+
+## Limpieza y legibilidad
+
+- Se retiran 30 targets de ejemplos GPUI y sus recursos: 4.869.810 bytes,
+  incluido un GIF de 4.471.092 bytes. Se retira su lockfile independiente de
+  178.438 bytes; el lockfile raíz sigue fijando el grafo de la aplicación.
+  La poda está documentada en `third_party/gpui/VIBRA_PATCHES.md`.
+- Se eliminan siete SVG sin referencias y sus entradas de assets: 1.847 bytes.
+  Los 71 SVG restantes tienen entradas correspondientes y no faltan archivos.
+- `workspaceOrder` deja de reconstruirse y serializarse en schema 7; se conserva
+  su lectura para migrar documentos legacy. El fixture comprueba orden e idempotencia.
+- Se comparte borrado de palabras y captura Git, y se retiran helpers shell
+  sin uso o que solo duplicaban expansión nativa de zsh.
+- Prompts largos usan `concat!` conservando su contenido; comandos y condiciones
+  de scripts y llamadas Swift se expanden. La pasada final separa callbacks,
+  condiciones y valores JSON densos. Rust conserva su formato estándar; no quedan
+  líneas de más de 100 caracteres en código Rust propio, bridges nativos ni scripts.
+- No se identificó una dependencia directa eliminable con evidencia suficiente.
+
+## Cierre de pendientes de la segunda pasada
+
+| Pendiente anterior | Cambio aplicado |
+| --- | --- |
+| Scripts POSIX ejecutados con fish/nu | Un adaptador carga el entorno de login y ejecuta el script con `/bin/sh`; transporta el script fuera de la sintaxis del shell exterior. Validación con sh, bash, zsh, fish y Nushell reales, PATH de login, stdin y argumentos literales. |
+| Locks Ghostty con panic o error nativo | Estado de fallo permanente y evento `TerminalEvent::Failed`; conserva el último snapshot Rust, rechaza nuevas operaciones nativas y solicita shutdown/reaping. La UI conserva el error tras `Exit` y rechaza entrada y pegados pendientes. |
+| Incompatibilidad futura de `block 0.1.6` | Parche local del tipo opaco de `_NSConcreteStackBlock` y ABI C explícita. API y layout conservados; llamadas C, copia al heap y liberación de capturas probadas en arm64 e Intel. |
+| IDs de temas dependientes del conjunto | IDs canónicos deterministas y aliases de migración. Carga, agrupación y compatibilidad aisladas en `theme/user.rs`. |
+| Workspace leído/parseado dos veces | Una lectura y decode tipado bajo lock, con los mismos bytes para importación y backups. Distingue schema ausente de cero explícito sin un segundo árbol JSON en la ruta normal. |
+| Lowercase en cada comparación del heap | Clave calculada una vez por entrada; se conserva orden de directorios, desempate y presupuesto de entradas. |
+| Clones completos de library y tabs | Serialización de una vista prestada de library, copiando solo registros que requieran reparar IDs; tabs/titlebar renderizan referencias y canvas copia solo el layout. |
+| Builders de UI extensos | Notes separa lista, fila, controles y cuerpo del editor; temas separa catálogo y render de tarjetas. Se conserva el diseño existente. |
+| Estado de RevisionGuard en tres mutex | Revisión, recuperación y merge-input se protegen en un solo estado; se mantienen preservación de cambios externos y copias de recuperación. |
+
+La segunda pasada también corrige el uso de caché Sparkle antes de validar versión
+y checksum, y distingue un documento ausente de un symlink roto para bloquear
+un guardado tras una carga fallida.
+
+La revisión visual corresponde al usuario según `AGENTS.md`; no se utilizó
+navegador. Las dos pruebas opt-in requieren un benchmark manual y sesiones reales
+de proveedores. No se ejecuta notarización ni publicación de un release.
 
 ## Validación final
 
-- `cargo fmt --check`: correcto.
-- `cargo test --locked -- --quiet`: **390 pasan, 0 fallan y 2 ignoradas**.
-- `cargo clippy --locked --all-targets --all-features -- -D warnings`: correcto.
-- `python3 Scripts/test_release.py`: **7 pruebas correctas**.
-- `plutil -lint Resources/Info.plist Resources/Vibra.entitlements`: correcto.
-- `zsh -n Scripts/*.sh` y `git diff --check`: correctos.
-- Comparación programática de las 12 paletas propias antes/después: todos sus
-  campos coinciden. La comprobación temporal no forma parte de la codebase final.
+`./Scripts/verify.sh` pasó completo:
 
-Se agregaron siete pruebas: cinco de procesos y tuberías, una de límites de
-archivos y una de lectura de temas. Las dos ignoradas conservan sus motivos:
-medición manual de rendimiento y consulta opt-in de cuotas con sesiones reales.
-Las pruebas de sockets requieren ejecución fuera del sandbox; al repetirlas así
-pasaron tanto antes como después de los cambios.
+- `cargo fmt --check`.
+- `cargo test --locked`: **431 pasan, 0 fallan, 2 ignoradas**.
+- Harness nativo `block`: **7 unit tests y 2 doctests pasan**; también se ejecutó
+  en `x86_64-apple-darwin` mediante Rosetta, con el mismo resultado.
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`.
+- `python3 Scripts/test_release.py`: **10 pruebas correctas**.
+- `plutil -lint` de Info.plist y entitlements.
+- Sintaxis de cada script `.sh` y `.zsh`.
 
-## Seguimiento: pasada exhaustiva con subagentes
+También pasaron `git diff --check`, formato del harness Rust y parsing Swift
+del generador de iconos, Package.swift y TerminalReplay. Las dos pruebas ignoradas
+mantienen sus motivos: benchmark manual y consulta opt-in de cuotas con sesiones
+reales. La biblioteca nativa se compiló como parte de Cargo. `cargo check --locked`
+pasó también para `x86_64-apple-darwin`. La suite final incluyó fish 4.9.3 y
+Nushell 0.116.0 descargados localmente, sin instalar herramientas globales.
+No aparece la incompatibilidad futura de `block` en los builds finales.
 
-Tres subagentes revisaron dominio, infraestructura y workspace UI, con revisión
-cruzada de los cambios. La revisión principal cubrió además resaltado de sintaxis,
-grafo de commits, filas de diff, estado de comentarios y asociaciones de teclado.
+## Commits de implementación
 
-- Dominio: se reutiliza la identificación canónica de agentes, se mueven datos de
-  migración en lugar de clonarlos y se simplifican selección, horarios y cuotas.
-- Infraestructura: Git comparte consultas del índice y lectura acotada de errores;
-  Inbox comparte transporte GraphQL y lectores JSON. Se reducen ramas repetidas
-  en hooks, sockets, autenticación y secuencias de teclado.
-- Workspace: selección de terminales comparte sincronización y guardado; Notes y
-  Automations comparten navegación entre proyectos. Se eliminan copias de datos
-  al renderizar y código repetido de atajos y comandos.
-- Otras vistas: strings comparten el flujo de resaltado manteniendo sus scanners;
-  el grafo comparte asignación de lanes y los comentarios comparten su limpieza.
+Todos usan mensajes semánticos:
 
-Esta pasada elimina **267 líneas de producción** y agrega **111 líneas de
-cobertura**, con una reducción neta de **156 líneas Rust**. Sumada a la limpieza
-local anterior de 125 líneas, la reducción desde el commit `320b761` es de
-**281 líneas netas**. Al finalizar esa pasada, el inventario quedó en
-**115 archivos y 56.086 líneas Rust**, incluyendo tests. Se conservaron las
-pruebas existentes.
+- `5dfe8e8 chore(gpui): remove unused examples and standalone lockfile`
+- `2c7a346 fix(workspace): preserve snapshots and scheduled automation state`
+- `407965e fix(infra): bound Git queries and agent tracking I/O`
+- `ded3af0 fix(ui): preserve source text and asynchronous task state`
+- `7881fe4 fix(build): validate packaging paths and every shell script`
+- `60a7751 fix(deps): preserve the native Blocks ABI on current Rust`
+- `9773312 fix(build): validate Sparkle configuration before cache reuse`
+- `e853cac refactor(storage): share guarded reads and borrow library snapshots`
+- `c95340f fix(shell): preserve login environments for POSIX commands`
+- `c2cec49 fix(terminal): preserve failure state and reap failed sessions`
+- `297dc13 refactor(ui): stabilize themes and split rendering responsibilities`
 
-Se agregaron regresiones para orden de panes migrados, selección del diff usado
-como contexto de commit y strings multilínea; también se amplió la cobertura de
-nombres de agentes. `Scripts/verify.sh` pasó completo: **393 pruebas Rust pasan,
-0 fallan y 2 están ignoradas**, además de formato, Clippy, siete pruebas de release,
-plist y sintaxis de scripts. Una comparación temporal entre las implementaciones
-anterior y nueva coincidió en **116.298 casos de resaltado por línea e idioma** y
-**1.000 historiales de Git generados**. Los archivos de esa comparación no se
-agregaron al repositorio. La comprobación visual queda a cargo del usuario.
-
-## Seguimiento: indentación y legibilidad
-
-Se separaron instrucciones comprimidas en los bridges nativos, brazos de `case`
-en scripts y colecciones y llamadas Swift. `.clang-format` fija cuatro espacios,
-un límite de 100 columnas y bloques de control en varias líneas, manteniendo el
-orden de includes. En Rust se expandieron macros, fixtures JSON y árboles de UI
-con indentación difícil de seguir, conservando el formato estándar de `rustfmt`.
-Esta pasada añade saltos de línea para facilitar la lectura.
-
-La comparación léxica confirmó los mismos tokens en C/Objective-C y Swift; en
-Rust solo se admitieron comas finales opcionales además de whitespace. La revisión
-cruzada no encontró cambios de comportamiento. Pasaron formato Rust y nativo,
-Clippy, parsing Swift, sintaxis zsh, siete pruebas de release y **390 pruebas
-Rust**. Dos siguen ignoradas; tres pruebas de sockets quedaron bloqueadas por
-`Operation not permitted` en el sandbox actual. Esas tres habían pasado en la
-verificación anterior sin esa restricción.
+El commit de documentación que contiene este informe registra el cierre integrado.

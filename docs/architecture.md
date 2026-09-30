@@ -24,10 +24,23 @@ independiente del workspace.
 - `src/infrastructure/paths.rs`: lecturas de archivos con límite, escrituras atómicas
   y control de revisiones. Workspace, settings, library, caché del Inbox y temas
   comparten el mismo lector; comprueba también el tamaño después de leer.
+  La importación del preview toma el mismo lock que los guardados y comprueba
+  dentro del lock que el destino siga ausente.
+  Un documento ausente permite el primer arranque; un symlink roto bloquea carga
+  y guardado. RevisionGuard protege revisión, recuperación y merge-input juntos.
+  Workspace comparte una lectura/decode para migración y backups bajo lock;
+  library serializa registros prestados y copia solo identidades que necesita reparar.
 - `src/infrastructure/process.rs`: captura acotada de comandos breves, entrada y
   salida concurrentes y cierre del grupo de procesos antes de reunir los lectores.
   Inbox, consulta de cuotas, lectura del llavero por CLI y generación de mensajes
   de commit usan este adaptador. Cada consumidor conserva su plazo y sus límites.
+  Las consultas Git también usan este adaptador: 30 segundos para lecturas y
+  corte al byte adicional de truncamiento. Las escrituras conservan 120 segundos.
+  La cancelación incluye los workers de entrada/salida aunque un descendiente
+  mantenga una tubería abierta fuera del grupo.
+- `src/infrastructure/login_shell.rs`: carga el entorno de login y delega los
+  scripts propios a POSIX sh. GitHub y mensajes de commit comparten esa ruta;
+  los prompts lanzados dentro de una terminal conservan su PATH ya establecido.
 - `src/infrastructure/git/parsing.rs`: parsers puros de status, numstat, historial
   y patches. El adaptador Git mantiene la ejecución de comandos y las cachés.
 - `src/ui/workspace_view/mod.rs`: construcción y coordinación de la ventana.
@@ -37,6 +50,9 @@ independiente del workspace.
   cuentan la revisión dentro de la misma fila de tabs.
 - `terminals.rs`: ciclo de vida de los PTY, visibilidad, foco, nombres de panes y
   entrega de eventos. El foco diferido comprueba que su pane siga seleccionado y visible.
+  Un fallo nativo o mutex poisoned invalida el motor Ghostty; el snapshot Rust sigue
+  disponible y el proceso se recolecta. TerminalView conserva `Failed` tras `Exit`
+  y cancela entrada, búsquedas y pegados pendientes.
 - `explorer.rs`: carga y selección de archivos, filas del árbol y creación de entradas.
   `files.rs` reúne las filas visibles, el watcher y los iconos/estados de Git.
   Quick Open pide `FileSystemPort::search_files`; el adaptador local aplica ignores,
@@ -76,11 +92,17 @@ sin clonar el workspace en cada render de la barra de estado o el Inbox.
 Las ediciones del tab seleccionado resuelven su selección y normalizan el proyecto
 en un solo lugar. Insertar un terminal o un layout completo usa la misma operación
 del árbol, para conservar geometría y orden.
+Redimensionar por teclado afecta al divisor más cercano del eje pedido, incluso
+cuando ya alcanzó su límite; ese caso no debe modificar un divisor ancestro.
 
 `AppSettings` es la fuente de visibilidad de ambos sidebars. La vista conserva solo
 el progreso de la animación. Settings comparte componentes para tarjetas y etiquetas;
 los temas propios usan los mismos valores por defecto de roles que el resto del
 catálogo, con sus colores particulares explícitos.
+El catálogo propio está en `theme/user.rs`: sus IDs independientes de colisiones
+se resuelven junto a aliases legacy antes de persistir una preferencia disponible.
+Notes separa edición de `notes/rendering.rs`; lista, controles y cuerpo tienen
+responsabilidades propias y usan referencias de la biblioteca.
 
 La raíz del proyecto define Explorer, Changes y las terminales nuevas. El `cwd`
 de una terminal puede cambiar sin alterar esa raíz. Las notas y automatizaciones
@@ -111,5 +133,6 @@ rutas anidadas, y no reemplaza archivos existentes.
 ## Validación
 
 `./Scripts/verify.sh` ejecuta formato, pruebas Rust, Clippy, pruebas de release y
-validación de plist/scripts. Las pruebas GPUI comprueban estado, eventos y destinos
+validación de plist/scripts, además del harness nativo del parche `block`.
+Las pruebas GPUI comprueban estado, eventos y destinos
 de escritura. La revisión visual del diseño se realiza manualmente.
