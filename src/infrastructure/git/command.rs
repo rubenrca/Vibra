@@ -2,12 +2,10 @@
 
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::io::Read;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
@@ -17,6 +15,7 @@ pub(super) const MAX_GIT_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 pub(super) const MAX_GIT_ERROR_BYTES: usize = 64 * 1024;
 pub(super) const DIFF_PLAIN: [&str; 2] = ["--no-ext-diff", "--no-textconv"];
 const GIT_WRITE_TIMEOUT: Duration = Duration::from_secs(120);
+const GIT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn git_stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
@@ -157,14 +156,15 @@ pub(super) fn git_is_usable(path: &Path) -> bool {
     if path.components().count() > 1 && !path.is_file() {
         return false;
     }
-    Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    crate::infrastructure::process::command_output_until_limit(
+        Command::new(path).arg("--version"),
+        crate::infrastructure::process::CommandLimits {
+            timeout: Duration::from_secs(3),
+            stdout: 4096,
+            stderr: 0,
+        },
+    )
+    .is_ok_and(|output| output.status.success())
 }
 
 fn git_command() -> Command {
@@ -276,39 +276,17 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let mut child = git_command()
-        .arg("-C")
-        .arg(root)
-        .args(arguments)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to run Git in {}", root.display()))?;
-    let stdout = child.stdout.take().context("Git did not open stdout")?;
-    let stderr = child.stderr.take().context("Git did not open stderr")?;
-    let stderr_reader = thread::spawn(move || read_git_error(stderr));
-    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
-    let read_result = stdout.take((limit + 1) as u64).read_to_end(&mut bytes);
-    if bytes.len() > limit || read_result.is_err() {
-        let _ = child.kill();
-    }
-    let status = child.wait()?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("Git stderr reader failed"))??;
-    read_result?;
-    Ok(Output {
-        status,
-        stdout: bytes,
-        stderr,
-    })
-}
-
-/// Keep draining stderr so Git cannot block on a full pipe, but bound the
-/// diagnostic retained in memory for a failed diff.
-pub(super) fn read_git_error(stderr: impl Read) -> std::io::Result<Vec<u8>> {
-    crate::infrastructure::process::drain_capped(stderr, MAX_GIT_ERROR_BYTES)
+    let mut command = git_command();
+    command.arg("-C").arg(root).args(arguments);
+    crate::infrastructure::process::command_output_until_limit(
+        &mut command,
+        crate::infrastructure::process::CommandLimits {
+            timeout: GIT_READ_TIMEOUT,
+            stdout: limit,
+            stderr: MAX_GIT_ERROR_BYTES,
+        },
+    )
+    .with_context(|| format!("failed to run Git in {}", root.display()))
 }
 
 pub(super) fn ensure_success(output: &Output, operation: &str) -> Result<()> {
@@ -334,10 +312,17 @@ fn git_write_command(root: &Path) -> Command {
 }
 
 pub(super) fn index_is_clean(root: &Path) -> bool {
-    git_write_command(root)
-        .args(["diff", "--cached", "--quiet"])
-        .status()
-        .is_ok_and(|status| status.success())
+    run_git(
+        root,
+        [
+            "diff",
+            "--cached",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+        ],
+    )
+    .is_ok_and(|output| output.status.success())
 }
 
 pub(super) fn run_git_write(root: &Path, arguments: &[&str], operation: &str) -> Result<Output> {

@@ -73,7 +73,7 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
     let mut repositories = BTreeMap::new();
     for project in &query.projects {
         if let Ok(bytes) = bounded_output(
-            Command::new("/usr/bin/git")
+            Command::new(crate::infrastructure::git::git_program())
                 .args(["remote", "-v"])
                 .current_dir(&project.root),
             None,

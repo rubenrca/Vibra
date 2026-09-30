@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 
 use super::cli::shell_quote;
 use super::types::AgentKind;
+use crate::infrastructure::paths::read_file_limited;
+
+const MAX_HOOK_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_HOOK_SCRIPT_BYTES: u64 = 64 * 1024;
 
 const CLAUDE_HOOK_SCRIPT: &str = r#"#!/bin/sh
 # Managed by Vibra. This is deliberately a no-op outside a Vibra pane.
@@ -399,9 +403,8 @@ fn read_hook_config(path: &Path) -> Result<Value> {
             return Err(error).with_context(|| format!("could not inspect {}", path.display()));
         }
     }
-    let content =
-        fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
-    let value: Value = serde_json::from_str(&content)
+    let content = read_file_limited(path, MAX_HOOK_CONFIG_BYTES, "4 MiB")?;
+    let value: Value = serde_json::from_slice(&content)
         .with_context(|| format!("{} does not contain valid JSON", path.display()))?;
     value
         .is_object()
@@ -557,7 +560,10 @@ fn hooks_installed(
                 && metadata.uid() == unsafe { libc::geteuid() }
                 && metadata.permissions().mode() & 0o777 == 0o700
         })
-        && fs::read_to_string(script_path).ok().as_deref() == Some(script);
+        && read_file_limited(script_path, MAX_HOOK_SCRIPT_BYTES, "64 KiB")
+            .ok()
+            .as_deref()
+            == Some(script.as_bytes());
     if !script_ready {
         return Ok(false);
     }
@@ -577,9 +583,12 @@ fn script_changed(path: &Path, script: &str) -> Result<bool> {
         Ok(metadata) if !metadata.file_type().is_file() => {
             bail!("{} is not a regular file", path.display());
         }
-        Ok(metadata) => Ok(metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o777 != 0o700
-            || fs::read_to_string(path).ok().as_deref() != Some(script)),
+        Ok(metadata) => {
+            let content = read_file_limited(path, MAX_HOOK_SCRIPT_BYTES, "64 KiB")?;
+            Ok(metadata.uid() != unsafe { libc::geteuid() }
+                || metadata.permissions().mode() & 0o777 != 0o700
+                || content != script.as_bytes())
+        }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(true),
         Err(error) => Err(error).with_context(|| format!("could not inspect {}", path.display())),
     }
@@ -588,12 +597,16 @@ fn script_changed(path: &Path, script: &str) -> Result<bool> {
 fn backup_if_exists(path: &Path) -> Result<()> {
     use crate::infrastructure::paths::{AtomicWriteOptions, atomic_write_with};
 
-    let data = match fs::read(path) {
+    let data = match read_file_limited(path, MAX_HOOK_CONFIG_BYTES, "4 MiB") {
         Ok(data) => data,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error).with_context(|| format!("could not read {}", path.display()));
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == ErrorKind::NotFound) =>
+        {
+            return Ok(());
         }
+        Err(error) => return Err(error),
     };
     let mut backup_name = path.as_os_str().to_os_string();
     backup_name.push(".vibra-backup");

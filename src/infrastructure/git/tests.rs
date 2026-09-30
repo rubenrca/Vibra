@@ -65,6 +65,76 @@ fn repository() -> TempRepo {
     TempRepo { path }
 }
 
+#[test]
+fn staging_and_unstaging_treat_selected_paths_literally() {
+    let root = repository();
+    let port = GitCliPort::default();
+    for path in ["literal*.txt", ":(glob)*.txt", "other.txt"] {
+        fs::write(root.join(path), "new file\n").unwrap();
+    }
+    for selected in ["literal*.txt", ":(glob)*.txt"] {
+        port.stage(&root, &[selected.into()]).unwrap();
+        let snapshot = port.snapshot(&root).unwrap().unwrap();
+        let staged: Vec<_> = snapshot
+            .changes
+            .iter()
+            .filter(|change| change.staged)
+            .map(|change| change.path.as_str())
+            .collect();
+        assert_eq!(staged, [selected]);
+        port.unstage(&root, &[selected.into()]).unwrap();
+    }
+
+    port.stage(&root, &["literal*.txt".into(), "other.txt".into()])
+        .unwrap();
+    port.unstage(&root, &["literal*.txt".into()]).unwrap();
+    let snapshot = port.snapshot(&root).unwrap().unwrap();
+    assert!(
+        snapshot
+            .changes
+            .iter()
+            .any(|change| change.path == "other.txt" && change.staged)
+    );
+    assert!(
+        snapshot
+            .changes
+            .iter()
+            .any(|change| change.path == "literal*.txt" && change.untracked)
+    );
+}
+
+#[test]
+fn unstaging_an_unborn_repository_preserves_later_worktree_edits() {
+    let root = repository();
+    git(&root, &["checkout", "--orphan", "unborn"]);
+    git(&root, &["rm", "--cached", "-q", "tracked.txt"]);
+    let port = GitCliPort::default();
+    fs::write(root.join("literal*.txt"), "staged version\n").unwrap();
+    fs::write(root.join("literal-other.txt"), "other version\n").unwrap();
+    port.stage(&root, &["literal*.txt".into(), "literal-other.txt".into()])
+        .unwrap();
+    fs::write(root.join("literal*.txt"), "later edit\n").unwrap();
+    port.unstage(&root, &["literal*.txt".into()]).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(root.join("literal*.txt")).unwrap(),
+        "later edit\n"
+    );
+    let snapshot = port.snapshot(&root).unwrap().unwrap();
+    assert!(
+        snapshot
+            .changes
+            .iter()
+            .any(|change| change.path == "literal*.txt" && change.untracked)
+    );
+    assert!(
+        snapshot
+            .changes
+            .iter()
+            .any(|change| change.path == "literal-other.txt" && change.staged)
+    );
+}
+
 fn capture_index_path(port: &GitCliPort, root: &Path) -> PathBuf {
     let slot = Arc::clone(
         &port
@@ -88,14 +158,6 @@ fn numstat_parses_nul_delimited_paths_and_renames() {
     );
     assert_eq!(stats.get("odd\tname\n.rs"), Some(&(2, 1)));
     assert_eq!(stats.get("new\tname.txt"), Some(&(3, 4)));
-}
-
-#[test]
-fn git_error_reader_drains_input_without_retaining_it_all() {
-    let mut input = std::io::Cursor::new(vec![b'x'; MAX_GIT_ERROR_BYTES + 1024]);
-    let error = read_git_error(&mut input).unwrap();
-    assert_eq!(error.len(), MAX_GIT_ERROR_BYTES);
-    assert_eq!(input.position(), (MAX_GIT_ERROR_BYTES + 1024) as u64);
 }
 
 #[test]
@@ -455,6 +517,19 @@ fn discover_skips_unusable_binaries_and_finds_a_working_git() {
             "must not use the broken Xcode git stub"
         );
     }
+}
+
+#[test]
+fn git_discovery_rejects_a_version_probe_that_never_finishes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = repository();
+    let script = root.join("hanging-git");
+    fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let started = Instant::now();
+    assert!(!git_is_usable(&script));
+    assert!(started.elapsed() < Duration::from_secs(5));
 }
 
 #[test]
@@ -1348,6 +1423,7 @@ fn local_diff_does_not_execute_textconv() {
         .find(|change| change.path == "tracked.txt")
         .unwrap();
     let _ = port.diff(&root, change).unwrap();
+    let _ = port.commit_message_context(&root).unwrap();
     assert!(!marker.exists());
     fs::remove_dir_all(root).unwrap();
 }
@@ -1409,6 +1485,20 @@ fn commit_message_context_uses_staged_changes_when_present_and_worktree_otherwis
     assert!(context.contains("+staged-only"));
     assert!(!context.contains("Recent commit subjects:"));
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn commit_message_context_truncates_large_patches_instead_of_rejecting_them() {
+    let root = repository();
+    fs::write(
+        root.join("tracked.txt"),
+        vec![b'x'; MAX_GIT_OUTPUT_BYTES + 1024],
+    )
+    .unwrap();
+    let context = GitCliPort::default().commit_message_context(&root).unwrap();
+    assert!(context.contains("tracked.txt"));
+    assert!(context.ends_with("\n[patch truncated]\n"));
+    assert!(context.len() < 50 * 1024);
 }
 
 #[test]

@@ -198,6 +198,41 @@ mod tests {
     }
 
     #[test]
+    fn oversized_hook_settings_are_rejected_without_overwriting_user_configuration() {
+        let home = TestHome::new();
+        let settings = home.0.join(".claude/settings.json");
+        let content = format!("{{\"userSetting\":true}}{}", " ".repeat(4 * 1024 * 1024));
+        write_text_atomically(&settings, &content, 0o600).unwrap();
+        let selected = [AgentKind::Claude].into_iter().collect();
+
+        for operation in [AgentHookOperation::Install, AgentHookOperation::Uninstall] {
+            let error = manage_agent_hooks(&home.0, &selected, operation, false).unwrap_err();
+            assert!(format!("{error:#}").contains("4 MiB"));
+            assert_eq!(fs::read_to_string(&settings).unwrap(), content);
+            assert!(!home.0.join(".claude/settings.json.vibra-backup").exists());
+            assert!(!home.0.join(".vibra/agent-hooks/vibra-claude.sh").exists());
+        }
+    }
+
+    #[test]
+    fn oversized_managed_scripts_are_rejected_without_replacing_them() {
+        let home = TestHome::new();
+        let selected = [AgentKind::Claude].into_iter().collect();
+        manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap();
+        let settings = home.0.join(".claude/settings.json");
+        let original_settings = fs::read(&settings).unwrap();
+        let script = home.0.join(".vibra/agent-hooks/vibra-claude.sh");
+        let content = "#".repeat(64 * 1024 + 1);
+        fs::write(&script, &content).unwrap();
+
+        let error =
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap_err();
+        assert!(format!("{error:#}").contains("64 KiB"));
+        assert_eq!(fs::read(&settings).unwrap(), original_settings);
+        assert_eq!(fs::read_to_string(&script).unwrap(), content);
+    }
+
+    #[test]
     fn agent_setup_merges_hooks_and_uninstall_leaves_user_hooks() {
         let home = TestHome::new();
         let claude_settings = home.0.join(".claude/settings.json");

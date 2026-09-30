@@ -34,9 +34,10 @@ fn prepare_review_file(
         }
         Ok(text) => {
             // Omitted/truncated patches cannot be used to invent changed lines.
-            diff.rows = vec![notice(
-                "GitHub omitted part of the patch. Showing file content without complete diff highlights.",
-            )];
+            diff.rows = vec![notice(concat!(
+                "GitHub omitted part of the patch. ",
+                "Showing file content without complete diff highlights.",
+            ))];
             diff.rows
                 .extend(text.lines().enumerate().map(|(index, text)| GitDiffRow {
                     old_line: file.removed.then_some(index + 1),

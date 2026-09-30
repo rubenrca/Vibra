@@ -42,18 +42,9 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
         token,
         command,
     };
-    let mut stream = UnixStream::connect(&socket)
+    let stream = UnixStream::connect(&socket)
         .with_context(|| format!("could not connect to {}", socket.display()))?;
-    stream.write_all(&serde_json::to_vec(&envelope)?)?;
-    stream.shutdown(std::net::Shutdown::Write)?;
-    let mut response = Vec::new();
-    stream
-        .take(MAX_AUTOMATION_RESPONSE_BYTES + 1)
-        .read_to_end(&mut response)?;
-    if response.len() as u64 > MAX_AUTOMATION_RESPONSE_BYTES {
-        bail!("the tracking response exceeds 4 MiB");
-    }
-    let response: AutomationResponse = serde_json::from_slice(&response)?;
+    let response = exchange_request(stream, &envelope, AUTOMATION_IO_TIMEOUT)?;
     if !response.ok {
         bail!(
             response
@@ -69,6 +60,25 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+fn exchange_request(
+    mut stream: UnixStream,
+    envelope: &AutomationEnvelope,
+    timeout: std::time::Duration,
+) -> Result<AutomationResponse> {
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    stream.write_all(&serde_json::to_vec(&envelope)?)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut response = Vec::new();
+    stream
+        .take(MAX_AUTOMATION_RESPONSE_BYTES + 1)
+        .read_to_end(&mut response)?;
+    if response.len() as u64 > MAX_AUTOMATION_RESPONSE_BYTES {
+        bail!("the tracking response exceeds 4 MiB");
+    }
+    serde_json::from_slice(&response).context("invalid agent tracking response")
 }
 
 pub(super) fn shell_quote(value: &str) -> String {
@@ -401,6 +411,27 @@ mod task_title_tests {
     use super::*;
 
     #[test]
+    fn agent_bridge_times_out_when_the_server_does_not_respond() {
+        let (client, _unresponsive_server) = UnixStream::pair().unwrap();
+        let envelope = AutomationEnvelope {
+            pane_id: uuid::Uuid::nil(),
+            token: uuid::Uuid::nil(),
+            command: AutomationCommand::SetAgentState {
+                state: AgentRuntimeState::Idle,
+            },
+        };
+        let started = std::time::Instant::now();
+        let error =
+            exchange_request(client, &envelope, std::time::Duration::from_millis(50)).unwrap_err();
+        let error = error.downcast_ref::<std::io::Error>().unwrap();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
     fn prompt_hooks_carry_titles_but_lifecycle_events_do_not() {
         for kind in [AgentKind::Claude, AgentKind::Codex] {
             let payload = serde_json::json!({
@@ -448,9 +479,10 @@ mod task_title_tests {
         let title = agent_task_title(&"á".repeat(100)).unwrap();
         assert_eq!(title.chars().count(), 57);
         assert!(title.ends_with('…'));
-        let title = agent_task_title(
-            "Agregar soporte para notificaciones cuando el agente termine de ejecutar todas las pruebas",
-        )
+        let title = agent_task_title(concat!(
+            "Agregar soporte para notificaciones cuando el agente ",
+            "termine de ejecutar todas las pruebas",
+        ))
         .unwrap();
         assert!(title.chars().count() <= 57);
         assert!(title.ends_with('…'));

@@ -85,7 +85,7 @@ impl GitPort for GitCliPort {
         for path in paths {
             validate_relative_path(path)?;
         }
-        let mut arguments = vec!["add", "--all", "--"];
+        let mut arguments = vec!["--literal-pathspecs", "add", "--all", "--"];
         arguments.extend(paths.iter().map(String::as_str));
         run_git_write(&root, &arguments, "git add")?;
         Ok(())
@@ -101,9 +101,19 @@ impl GitPort for GitCliPort {
         }
         let has_head = rev_parse(&root, "HEAD")?.is_some();
         let mut arguments = if has_head {
-            vec!["restore", "--staged", "--"]
+            vec!["--literal-pathspecs", "restore", "--staged", "--"]
         } else {
-            vec!["rm", "--cached", "-r", "-q", "--"]
+            // With no HEAD, unstaging removes only the index entry. Force is
+            // needed when the file was edited again after staging it.
+            vec![
+                "--literal-pathspecs",
+                "rm",
+                "--cached",
+                "-f",
+                "-r",
+                "-q",
+                "--",
+            ]
         };
         arguments.extend(paths.iter().map(String::as_str));
         run_git_write(&root, &arguments, "git restore")?;
@@ -141,9 +151,20 @@ impl GitPort for GitCliPort {
                 }
             }
         }
-        let patch = run_git(&root, ["diff", "--no-color", "--no-ext-diff", range])?;
+        let patch = run_git_diff(
+            &root,
+            [
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                range,
+            ],
+            "git diff commit context",
+            false,
+        )?;
         context.push_str("\nPatch:\n");
-        context.push_str(&String::from_utf8_lossy(&patch.stdout));
+        context.push_str(&String::from_utf8_lossy(&patch));
         if context.len() > LIMIT {
             let mut end = LIMIT;
             while !context.is_char_boundary(end) {
