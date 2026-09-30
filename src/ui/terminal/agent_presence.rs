@@ -1,4 +1,4 @@
-use crate::domain::agents::{AgentKind, AgentRuntimeState};
+use crate::domain::agents::{AgentKind, AgentRuntimeState, contains_marker};
 use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence, TerminalSnapshot};
 
 pub(super) fn detect_agent_presence(
@@ -107,15 +107,6 @@ fn agent_state_from_text(title: &str, screen: &str) -> AgentRuntimeState {
     } else {
         AgentRuntimeState::Idle
     }
-}
-
-fn contains_marker(text: &str, marker: &str) -> bool {
-    text.match_indices(marker).any(|(index, _)| {
-        let before = text[..index].chars().next_back();
-        let after = text[index + marker.len()..].chars().next();
-        !before.is_some_and(|ch| ch.is_ascii_alphanumeric())
-            && !after.is_some_and(|ch| ch.is_ascii_alphanumeric())
-    })
 }
 
 fn strip_permission_mode_chrome(text: &str) -> String {

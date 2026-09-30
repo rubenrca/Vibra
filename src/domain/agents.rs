@@ -126,9 +126,19 @@ impl AgentKind {
         Self::PROCESS_SCAN_ORDER.into_iter().find(|kind| {
             kind.text_markers()
                 .iter()
-                .any(|marker| text.contains(marker))
+                .any(|marker| contains_marker(&text, marker))
         })
     }
+}
+
+/// True when `marker` appears in `text` with non-alphanumeric boundaries.
+pub fn contains_marker(text: &str, marker: &str) -> bool {
+    text.match_indices(marker).any(|(index, _)| {
+        let before = text[..index].chars().next_back();
+        let after = text[index + marker.len()..].chars().next();
+        !before.is_some_and(|ch| ch.is_ascii_alphanumeric())
+            && !after.is_some_and(|ch| ch.is_ascii_alphanumeric())
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,5 +231,8 @@ mod tests {
         );
         assert!(AgentKind::from_text("amp").is_none());
         assert_eq!(AgentKind::from_text("amp thread"), Some(AgentKind::Amp));
+        assert!(AgentKind::from_text("mongoose").is_none());
+        assert!(AgentKind::from_text("codexical").is_none());
+        assert_eq!(AgentKind::from_text("codex ready"), Some(AgentKind::Codex));
     }
 }
