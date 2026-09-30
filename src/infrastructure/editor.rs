@@ -1,7 +1,10 @@
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Result, bail};
+
+use super::process::{CommandLimits, command_output};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledEditor {
@@ -51,11 +54,17 @@ pub fn open_in_editor(path: &Path, editor: &InstalledEditor) -> Result<()> {
     if !path.exists() {
         bail!("Nothing to open at {}", path.display());
     }
-    let output = Command::new("/usr/bin/open")
-        .arg("-b")
-        .arg(editor.bundle_identifier)
-        .arg(path)
-        .output()?;
+    let mut command = Command::new("/usr/bin/open");
+    command.arg("-b").arg(editor.bundle_identifier).arg(path);
+    let output = command_output(
+        &mut command,
+        None,
+        CommandLimits {
+            timeout: Duration::from_secs(15),
+            stdout: 4096,
+            stderr: 4096,
+        },
+    )?;
     if !output.status.success() {
         bail!("{} could not open {}", editor.name, path.display());
     }
@@ -64,11 +73,19 @@ pub fn open_in_editor(path: &Path, editor: &InstalledEditor) -> Result<()> {
 
 fn bundle_is_registered(bundle_identifier: &str) -> bool {
     let query = format!("kMDItemCFBundleIdentifier == '{bundle_identifier}'");
-    Command::new("/usr/bin/mdfind")
-        .arg(query)
-        .output()
-        .map(|output| output.status.success() && !output.stdout.is_empty())
-        .unwrap_or(false)
+    let mut command = Command::new("/usr/bin/mdfind");
+    command.arg(query);
+    command_output(
+        &mut command,
+        None,
+        CommandLimits {
+            timeout: Duration::from_secs(3),
+            stdout: 64 * 1024,
+            stderr: 1024,
+        },
+    )
+    .map(|output| output.status.success() && !output.stdout.is_empty())
+    .unwrap_or(false)
 }
 
 /// Read the app's native icon on the UI thread. No files or network requests are needed.

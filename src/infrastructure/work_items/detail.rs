@@ -10,25 +10,42 @@ use crate::domain::work_items::{
     WorkSource,
 };
 
-const DETAIL_QUERY: &str = r#"query($id: ID!) {
- node(id:$id) {
-  ... on Issue { body comments(last:40) { totalCount nodes { id body createdAt url isMinimized author { login } } } }
-  ... on PullRequest {
-   body baseRefName headRefName headRefOid reviewDecision
-   comments(last:40) { totalCount nodes { id body createdAt url isMinimized author { login } } }
-   reviews(last:40) { totalCount nodes { id body submittedAt url state author { login } } }
-   reviewThreads(last:20) { totalCount nodes { id isResolved path comments(first:20) {
-     totalCount nodes { id body createdAt url path line originalLine isMinimized author { login } }
-   } } }
-  }
- }
-}"#;
-
-const LINEAR_DETAIL_QUERY: &str = r#"query($id: String!) {
- issue(id:$id) { description comments(last:50) { pageInfo { hasPreviousPage } nodes {
-   id body createdAt url user { name } parent { id }
- } } }
-}"#;
+const DETAIL_QUERY: &str = include_str!("github_detail.graphql");
+const LINEAR_DETAIL_QUERY: &str = include_str!("linear_detail.graphql");
+const GITHUB_THREAD_REPLY: &str = concat!(
+    "mutation($id:ID!,$body:String!){",
+    "addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body})",
+    "{comment{id}}}",
+);
+const GITHUB_ADD_COMMENT: &str = concat!(
+    "mutation($id:ID!,$body:String!){",
+    "addComment(input:{subjectId:$id,body:$body}){commentEdge{node{id}}}}",
+);
+const LINEAR_CREATE_COMMENT: &str = concat!(
+    "mutation($input:CommentCreateInput!){",
+    "commentCreate(input:$input){success}}",
+);
+const GITHUB_MERGE: &str = concat!(
+    "mutation($id:ID!,$head:GitObjectID!,$method:PullRequestMergeMethod!){",
+    "mergePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head,mergeMethod:$method})",
+    "{pullRequest{id}}}",
+);
+const GITHUB_CONVERT_DRAFT: &str = concat!(
+    "mutation($id:ID!){",
+    "convertPullRequestToDraft(input:{pullRequestId:$id}){pullRequest{id}}}",
+);
+const GITHUB_MARK_READY: &str = concat!(
+    "mutation($id:ID!){",
+    "markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}",
+);
+const GITHUB_CLOSE: &str = concat!(
+    "mutation($id:ID!){",
+    "closePullRequest(input:{pullRequestId:$id}){pullRequest{id}}}"
+);
+const GITHUB_REOPEN: &str = concat!(
+    "mutation($id:ID!){",
+    "reopenPullRequest(input:{pullRequestId:$id}){pullRequest{id}}}",
+);
 
 pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
     if item.remote_id.is_empty() {
@@ -359,13 +376,10 @@ pub fn post_comment(item: &WorkItem, body: &str, reply: Option<&str>) -> Result<
     match item.source {
         WorkSource::GitHub => {
             let (query, variables) = if let Some(reply) = reply {
-                (
-                    "mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}",
-                    json!({ "id": reply, "body": body }),
-                )
+                (GITHUB_THREAD_REPLY, json!({ "id": reply, "body": body }))
             } else {
                 (
-                    "mutation($id:ID!,$body:String!){addComment(input:{subjectId:$id,body:$body}){commentEdge{node{id}}}}",
+                    GITHUB_ADD_COMMENT,
                     json!({ "id": item.remote_id, "body": body }),
                 )
             };
@@ -376,10 +390,8 @@ pub fn post_comment(item: &WorkItem, body: &str, reply: Option<&str>) -> Result<
             if let Some(reply) = reply {
                 input["parentId"] = json!(reply);
             }
-            let data = linear::authenticated_graphql(
-                "mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}",
-                json!({ "input": input }),
-            )?;
+            let data =
+                linear::authenticated_graphql(LINEAR_CREATE_COMMENT, json!({ "input": input }))?;
             if data["commentCreate"]["success"].as_bool() != Some(true) {
                 bail!("Linear could not post the comment.");
             }
@@ -404,20 +416,12 @@ pub fn run_pr_action(item: &WorkItem, action: PrAction, head_oid: &str) -> Resul
                 PrAction::Rebase => "REBASE",
                 _ => "MERGE",
             });
-            "mutation($id:ID!,$head:GitObjectID!,$method:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head,mergeMethod:$method}){pullRequest{id}}}"
+            GITHUB_MERGE
         }
-        PrAction::Draft => {
-            "mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id}){pullRequest{id}}}"
-        }
-        PrAction::Ready => {
-            "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id}}}"
-        }
-        PrAction::Close => {
-            "mutation($id:ID!){closePullRequest(input:{pullRequestId:$id}){pullRequest{id}}}"
-        }
-        PrAction::Reopen => {
-            "mutation($id:ID!){reopenPullRequest(input:{pullRequestId:$id}){pullRequest{id}}}"
-        }
+        PrAction::Draft => GITHUB_CONVERT_DRAFT,
+        PrAction::Ready => GITHUB_MARK_READY,
+        PrAction::Close => GITHUB_CLOSE,
+        PrAction::Reopen => GITHUB_REOPEN,
     };
     github::graphql(query, variables)?;
     Ok(())

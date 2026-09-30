@@ -1,0 +1,16 @@
+query($id: String!) {
+  issue(id: $id) {
+    description
+    comments(last: 50) {
+      pageInfo { hasPreviousPage }
+      nodes {
+        id
+        body
+        createdAt
+        url
+        user { name }
+        parent { id }
+      }
+    }
+  }
+}

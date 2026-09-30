@@ -1,0 +1,69 @@
+query($id: ID!) {
+  node(id: $id) {
+    ... on Issue {
+      body
+      comments(last: 40) {
+        totalCount
+        nodes {
+          id
+          body
+          createdAt
+          url
+          isMinimized
+          author { login }
+        }
+      }
+    }
+    ... on PullRequest {
+      body
+      baseRefName
+      headRefName
+      headRefOid
+      reviewDecision
+      comments(last: 40) {
+        totalCount
+        nodes {
+          id
+          body
+          createdAt
+          url
+          isMinimized
+          author { login }
+        }
+      }
+      reviews(last: 40) {
+        totalCount
+        nodes {
+          id
+          body
+          submittedAt
+          url
+          state
+          author { login }
+        }
+      }
+      reviewThreads(last: 20) {
+        totalCount
+        nodes {
+          id
+          isResolved
+          path
+          comments(first: 20) {
+            totalCount
+            nodes {
+              id
+              body
+              createdAt
+              url
+              path
+              line
+              originalLine
+              isMinimized
+              author { login }
+            }
+          }
+        }
+      }
+    }
+  }
+}

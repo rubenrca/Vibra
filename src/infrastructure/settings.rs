@@ -72,7 +72,10 @@ const fn default_review_split() -> f32 {
     0.5
 }
 
-const fn default_terminal_font_size() -> f32 {
+pub const MIN_TERMINAL_FONT_SIZE: f32 = 8.0;
+pub const MAX_TERMINAL_FONT_SIZE: f32 = 32.0;
+
+pub const fn default_terminal_font_size() -> f32 {
     12.0
 }
 
@@ -145,46 +148,58 @@ impl Default for AppSettings {
     }
 }
 
+fn clamp_or(value: f32, default: f32, min: f32, max: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        default
+    }
+}
+
 impl AppSettings {
     fn normalize(&mut self) {
-        if !self.terminal_font_size.is_finite() {
-            self.terminal_font_size = default_terminal_font_size();
-        }
-        self.terminal_font_size = self.terminal_font_size.clamp(8.0, 32.0);
-        if !self.diff_font_size.is_finite() {
-            self.diff_font_size = DEFAULT_DIFF_FONT_SIZE;
-        }
-        self.diff_font_size = self
-            .diff_font_size
-            .clamp(MIN_DIFF_FONT_SIZE, MAX_DIFF_FONT_SIZE);
-        if !self.left_sidebar_width.is_finite() {
-            self.left_sidebar_width = DEFAULT_LEFT_SIDEBAR_WIDTH;
-        }
-        self.left_sidebar_width = self
-            .left_sidebar_width
-            .clamp(MIN_LEFT_SIDEBAR_WIDTH, MAX_LEFT_SIDEBAR_WIDTH);
-        if !self.right_sidebar_width.is_finite() {
-            self.right_sidebar_width = DEFAULT_RIGHT_SIDEBAR_WIDTH;
-        }
-        self.right_sidebar_width = self
-            .right_sidebar_width
-            .clamp(MIN_RIGHT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH);
-        if !self.window_width.is_finite() {
-            self.window_width = DEFAULT_WINDOW_WIDTH;
-        }
-        self.window_width = self
-            .window_width
-            .clamp(MIN_WINDOW_WIDTH, MAX_WINDOW_DIMENSION);
-        if !self.window_height.is_finite() {
-            self.window_height = DEFAULT_WINDOW_HEIGHT;
-        }
-        self.window_height = self
-            .window_height
-            .clamp(MIN_WINDOW_HEIGHT, MAX_WINDOW_DIMENSION);
-        if !self.review_split.is_finite() {
-            self.review_split = default_review_split();
-        }
-        self.review_split = self.review_split.clamp(MIN_REVIEW_SPLIT, MAX_REVIEW_SPLIT);
+        self.terminal_font_size = clamp_or(
+            self.terminal_font_size,
+            default_terminal_font_size(),
+            MIN_TERMINAL_FONT_SIZE,
+            MAX_TERMINAL_FONT_SIZE,
+        );
+        self.diff_font_size = clamp_or(
+            self.diff_font_size,
+            DEFAULT_DIFF_FONT_SIZE,
+            MIN_DIFF_FONT_SIZE,
+            MAX_DIFF_FONT_SIZE,
+        );
+        self.left_sidebar_width = clamp_or(
+            self.left_sidebar_width,
+            DEFAULT_LEFT_SIDEBAR_WIDTH,
+            MIN_LEFT_SIDEBAR_WIDTH,
+            MAX_LEFT_SIDEBAR_WIDTH,
+        );
+        self.right_sidebar_width = clamp_or(
+            self.right_sidebar_width,
+            DEFAULT_RIGHT_SIDEBAR_WIDTH,
+            MIN_RIGHT_SIDEBAR_WIDTH,
+            MAX_RIGHT_SIDEBAR_WIDTH,
+        );
+        self.window_width = clamp_or(
+            self.window_width,
+            DEFAULT_WINDOW_WIDTH,
+            MIN_WINDOW_WIDTH,
+            MAX_WINDOW_DIMENSION,
+        );
+        self.window_height = clamp_or(
+            self.window_height,
+            DEFAULT_WINDOW_HEIGHT,
+            MIN_WINDOW_HEIGHT,
+            MAX_WINDOW_DIMENSION,
+        );
+        self.review_split = clamp_or(
+            self.review_split,
+            default_review_split(),
+            MIN_REVIEW_SPLIT,
+            MAX_REVIEW_SPLIT,
+        );
         if self.theme_id.trim().is_empty() {
             self.theme_id = default_theme_id();
         }
@@ -195,8 +210,18 @@ impl AppSettings {
         if !width.is_finite() || !height.is_finite() {
             return false;
         }
-        let width = width.clamp(MIN_WINDOW_WIDTH, MAX_WINDOW_DIMENSION);
-        let height = height.clamp(MIN_WINDOW_HEIGHT, MAX_WINDOW_DIMENSION);
+        let width = clamp_or(
+            width,
+            DEFAULT_WINDOW_WIDTH,
+            MIN_WINDOW_WIDTH,
+            MAX_WINDOW_DIMENSION,
+        );
+        let height = clamp_or(
+            height,
+            DEFAULT_WINDOW_HEIGHT,
+            MIN_WINDOW_HEIGHT,
+            MAX_WINDOW_DIMENSION,
+        );
         if (self.window_width - width).abs() < 0.5 && (self.window_height - height).abs() < 0.5 {
             return false;
         }
