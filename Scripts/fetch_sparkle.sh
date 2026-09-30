@@ -9,9 +9,6 @@ script_name=${0:A}
 repo_root=${script_name:h:h}
 version=${VIBRA_SPARKLE_VERSION:-2.9.4}
 expected_sha256=${VIBRA_SPARKLE_SHA256:-}
-dest_root="$repo_root/third_party/sparkle-$version"
-framework="$dest_root/Sparkle.framework"
-tools_bin="$dest_root/bin"
 refresh=0
 
 if (( $# )); then
@@ -22,16 +19,12 @@ if (( $# )); then
   refresh=1
 fi
 
-if [[ -L $dest_root ]]; then
-  print -u2 -- "Sparkle cache path must not be a symlink: $dest_root"
-  exit 65
+if [[ ! $version =~ '^[0-9][A-Za-z0-9._-]*$' ]]; then
+  print -u2 -- "Sparkle version must be a release identifier without path separators."
+  exit 64
 fi
 
-if (( ! refresh )) && [[ -d $framework && -x $tools_bin/generate_appcast ]]; then
-  print -r -- "$framework"
-  exit 0
-fi
-
+expected_sha256=${expected_sha256:l}
 case "$version" in
   2.9.4)
     pinned_sha256=ce89daf967db1e1893ed3ebd67575ed82d3902563e3191ca92aaec9164fbdef9
@@ -48,6 +41,24 @@ case "$version" in
     fi
     ;;
 esac
+
+if [[ ! $expected_sha256 =~ '^[0-9a-f]{64}$' ]]; then
+  print -u2 -- "VIBRA_SPARKLE_SHA256 must contain exactly 64 hexadecimal characters."
+  exit 64
+fi
+
+dest_root="$repo_root/third_party/sparkle-$version"
+framework="$dest_root/Sparkle.framework"
+tools_bin="$dest_root/bin"
+if [[ -L $dest_root ]]; then
+  print -u2 -- "Sparkle cache path must not be a symlink: $dest_root"
+  exit 65
+fi
+
+if (( ! refresh )) && [[ -d $framework && -x $tools_bin/generate_appcast ]]; then
+  print -r -- "$framework"
+  exit 0
+fi
 
 mkdir -p "$repo_root/third_party"
 tmpdir=$(mktemp -d "$repo_root/third_party/.sparkle-$version.XXXXXX")

@@ -356,6 +356,36 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertEqual(pinned_override.returncode, 64, pinned_override.stderr)
         self.assertIn("pinned checksum", pinned_override.stderr)
 
+    def test_sparkle_validates_configuration_before_using_cached_framework(self):
+        shutil.copy2(
+            Path(__file__).with_name("fetch_sparkle.sh"), self.root / "Scripts/fetch_sparkle.sh"
+        )
+        command = [str(self.root / "Scripts/fetch_sparkle.sh")]
+        cached = subprocess.run(
+            command, env=self.environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(cached.returncode, 0, cached.stderr)
+
+        cases = (
+            ({"VIBRA_SPARKLE_SHA256": "0" * 64}, "pinned checksum"),
+            ({"VIBRA_SPARKLE_VERSION": "../../outside"}, "path separators"),
+            (
+                {"VIBRA_SPARKLE_VERSION": "9.9.9", "VIBRA_SPARKLE_SHA256": "invalid"},
+                "64 hexadecimal",
+            ),
+        )
+        for configuration, message in cases:
+            with self.subTest(configuration=configuration):
+                rejected = subprocess.run(
+                    command,
+                    env=self.environment | configuration,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(rejected.returncode, 64, rejected.stderr)
+                self.assertIn(message, rejected.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
