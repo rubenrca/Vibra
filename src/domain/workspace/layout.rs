@@ -81,19 +81,38 @@ impl PaneLayoutSnapshot {
         self.map_terminal_ids(&mut |id| if id == old_id { new_id } else { id });
     }
 
+    /// Rewrites the second and later layout nodes that still point at `old_id`.
+    pub(super) fn replace_duplicate_terminal_id(&mut self, old_id: Uuid, new_id: Uuid) -> bool {
+        let mut seen = false;
+        let mut replaced = false;
+        self.map_terminal_ids(&mut |id| {
+            if id == old_id {
+                if seen && !replaced {
+                    replaced = true;
+                    new_id
+                } else {
+                    seen = true;
+                    id
+                }
+            } else {
+                id
+            }
+        });
+        replaced
+    }
+
     pub(super) fn split_with_layout(
         &mut self,
         terminal_id: Uuid,
         inserted: &Self,
         direction: PaneSplitDirection,
     ) -> bool {
-        let (axis, insert_first) = match direction {
-            PaneSplitDirection::Left => (WorkspaceSplitAxis::Horizontal, true),
-            PaneSplitDirection::Right => (WorkspaceSplitAxis::Horizontal, false),
-            PaneSplitDirection::Up => (WorkspaceSplitAxis::Vertical, true),
-            PaneSplitDirection::Down => (WorkspaceSplitAxis::Vertical, false),
-        };
-        self.insert_layout(terminal_id, inserted, axis, insert_first)
+        self.insert_layout(
+            terminal_id,
+            inserted,
+            direction.axis(),
+            direction.insert_first(),
+        )
     }
 
     fn insert_layout(

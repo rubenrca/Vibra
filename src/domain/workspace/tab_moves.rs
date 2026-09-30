@@ -56,11 +56,11 @@ impl WorkspaceSnapshot {
             },
             None => order.len(),
         };
-        if from == to || from + 1 == to {
+        let Some(insert_at) = super::relocate_index(from, to) else {
             return false;
-        }
+        };
         order.remove(from);
-        order.insert(if from < to { to - 1 } else { to }, source);
+        order.insert(insert_at, source);
         if review_open {
             workspace.review_tab_index = order.iter().position(|id| *id == WorkspaceTabId::Review);
         }

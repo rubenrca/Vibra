@@ -97,6 +97,13 @@ fn normalization_repairs_duplicate_terminal_ids_without_losing_sessions() {
         tab.layout.terminal_ids(),
         tab.sessions.iter().map(|s| s.id).collect::<Vec<_>>()
     );
+    assert!(matches!(
+        tab.layout,
+        PaneLayoutSnapshot::Split {
+            ratio: DEFAULT_PANE_SPLIT_RATIO,
+            ..
+        }
+    ));
     assert!(snapshot.selected_session().is_some());
 }
 

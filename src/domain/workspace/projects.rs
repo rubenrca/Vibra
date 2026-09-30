@@ -47,7 +47,7 @@ impl WorkspaceSnapshot {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .filter(|name| !name.is_empty())
-                .unwrap_or("Terminal")
+                .unwrap_or(super::DEFAULT_CONTAINER_NAME)
                 .to_owned();
             self.projects
                 .push(ProjectSnapshot::new(id, name, root_path));
@@ -59,7 +59,7 @@ impl WorkspaceSnapshot {
     }
 
     pub fn select_project(&mut self, project_id: Uuid) -> bool {
-        let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
+        let Some(project) = self.project_mut(project_id) else {
             return false;
         };
         project.collapsed = false;
@@ -71,7 +71,7 @@ impl WorkspaceSnapshot {
     /// just their container; it is created once and reused until its last tab
     /// closes. Background opens preserve the user's selected project and tab.
     pub fn open_tab_in_project(&mut self, project_id: Uuid, focus: bool) -> Option<(Uuid, Uuid)> {
-        let project = self.projects.iter_mut().find(|p| p.id == project_id)?;
+        let project = self.project_mut(project_id)?;
         let root = project.directory()?.to_owned();
         let tab = TabSnapshot::with_session(SessionSnapshot::new(root));
         let ids = (tab.id, tab.selected_session_id?);
@@ -135,11 +135,10 @@ impl WorkspaceSnapshot {
     }
 
     pub fn rename_project(&mut self, project_id: Uuid, name: &str) -> bool {
-        let name = name.trim();
-        if name.is_empty() || name.chars().count() > super::MAX_NAME_CHARS {
+        let Some(name) = super::parse_user_name(name) else {
             return false;
-        }
-        let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
+        };
+        let Some(project) = self.project_mut(project_id) else {
             return false;
         };
         project.name = name.to_owned();
@@ -148,7 +147,7 @@ impl WorkspaceSnapshot {
 
     /// Associating a folder never rewrites the cwd of an existing terminal.
     pub fn set_project_directory(&mut self, project_id: Uuid, root: &Path) -> bool {
-        let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
+        let Some(project) = self.project_mut(project_id) else {
             return false;
         };
         project.root_path = root.to_string_lossy().into_owned();
@@ -176,12 +175,11 @@ impl WorkspaceSnapshot {
             },
             None => self.projects.len(),
         };
-        if from == to || from + 1 == to {
+        let Some(insert_at) = super::relocate_index(from, to) else {
             return false;
-        }
+        };
         let project = self.projects.remove(from);
-        self.projects
-            .insert(if from < to { to - 1 } else { to }, project);
+        self.projects.insert(insert_at, project);
         self.normalize();
         true
     }

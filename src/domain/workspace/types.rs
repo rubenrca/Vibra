@@ -155,27 +155,43 @@ pub enum WorkspaceSplitAxis {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaneSplitDirection {
+pub enum PaneDirection {
     Left,
     Right,
     Up,
     Down,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaneFocusDirection {
-    Left,
-    Right,
-    Up,
-    Down,
+pub type PaneSplitDirection = PaneDirection;
+pub type PaneFocusDirection = PaneDirection;
+pub type PaneResizeDirection = PaneDirection;
+
+impl PaneDirection {
+    pub fn axis(self) -> WorkspaceSplitAxis {
+        match self {
+            Self::Left | Self::Right => WorkspaceSplitAxis::Horizontal,
+            Self::Up | Self::Down => WorkspaceSplitAxis::Vertical,
+        }
+    }
+
+    pub fn insert_first(self) -> bool {
+        matches!(self, Self::Left | Self::Up)
+    }
+
+    pub fn resize_delta(self) -> i16 {
+        match self {
+            Self::Left | Self::Up => -500,
+            Self::Right | Self::Down => 500,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaneResizeDirection {
-    Left,
-    Right,
-    Up,
-    Down,
+pub(crate) fn relocate_index(from: usize, to: usize) -> Option<usize> {
+    if from == to || from + 1 == to {
+        None
+    } else {
+        Some(if from < to { to - 1 } else { to })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

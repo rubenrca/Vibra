@@ -18,7 +18,7 @@ impl super::WorkspaceSnapshot {
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
-            .unwrap_or("Terminal")
+            .unwrap_or(super::DEFAULT_CONTAINER_NAME)
             .to_owned();
         let from = from.to_string_lossy();
         let to = to.to_string_lossy().into_owned();
@@ -29,13 +29,13 @@ impl super::WorkspaceSnapshot {
                 continue;
             }
             project.root_path.clone_from(&to);
-            if matches!(project.name.as_str(), "Terminal" | "/") {
+            if matches!(project.name.as_str(), super::DEFAULT_CONTAINER_NAME | "/") {
                 project.name.clone_from(&directory_name);
             }
             if let Some(workspaces) = project.workspaces.as_mut() {
                 for workspace in workspaces {
                     if workspace.title_source != Some(WorkspaceTitleSource::Manual)
-                        && matches!(workspace.name.as_str(), "Terminal" | "/")
+                        && matches!(workspace.name.as_str(), super::DEFAULT_CONTAINER_NAME | "/")
                     {
                         workspace.name.clone_from(&directory_name);
                     }
@@ -44,20 +44,6 @@ impl super::WorkspaceSnapshot {
                             if session.working_directory == from {
                                 session.working_directory.clone_from(&to);
                             }
-                        }
-                    }
-                }
-            }
-            for session in &mut project.sessions {
-                if session.working_directory == from {
-                    session.working_directory.clone_from(&to);
-                }
-            }
-            if let Some(tabs) = project.tabs.as_mut() {
-                for tab in tabs {
-                    for session in &mut tab.sessions {
-                        if session.working_directory == from {
-                            session.working_directory.clone_from(&to);
                         }
                     }
                 }
@@ -185,12 +171,7 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn resize_selected_pane(&mut self, direction: PaneResizeDirection) -> bool {
-        let (axis, delta) = match direction {
-            PaneResizeDirection::Left => (WorkspaceSplitAxis::Horizontal, -500),
-            PaneResizeDirection::Right => (WorkspaceSplitAxis::Horizontal, 500),
-            PaneResizeDirection::Up => (WorkspaceSplitAxis::Vertical, -500),
-            PaneResizeDirection::Down => (WorkspaceSplitAxis::Vertical, 500),
-        };
+        let (axis, delta) = (direction.axis(), direction.resize_delta());
         self.edit_selected_tab(|tab| {
             tab.layout.move_nearest_divider(
                 tab.selected_session_id.expect("selected session exists"),
@@ -295,11 +276,7 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn select_workspace(&mut self, project_id: Uuid, workspace_id: Uuid) -> bool {
-        let Some(project) = self
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_id)
-        else {
+        let Some(project) = self.project_mut(project_id) else {
             return false;
         };
         let exists = project
@@ -368,10 +345,16 @@ impl super::WorkspaceSnapshot {
             .find(|workspace| workspace.id == workspace_id)
     }
 
+    pub fn project(&self, id: Uuid) -> Option<&ProjectSnapshot> {
+        self.projects.iter().find(|project| project.id == id)
+    }
+
+    pub fn project_mut(&mut self, id: Uuid) -> Option<&mut ProjectSnapshot> {
+        self.projects.iter_mut().find(|project| project.id == id)
+    }
+
     pub fn selected_project(&self) -> Option<&ProjectSnapshot> {
-        self.projects
-            .iter()
-            .find(|project| Some(project.id) == self.selected_project_id)
+        self.selected_project_id.and_then(|id| self.project(id))
     }
 
     pub fn selected_tab(&self) -> Option<&TabSnapshot> {
@@ -424,11 +407,9 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn update_agent_task_title(&mut self, session_id: Uuid, title: &str) -> bool {
-        let title = title.trim();
-        if title.is_empty() {
+        let Some(title) = super::clipped_title(title, super::MAX_AGENT_TASK_TITLE_CHARS) else {
             return false;
-        }
-        let title: String = title.chars().take(80).collect();
+        };
         let Some(session) = self.session_mut(session_id) else {
             return false;
         };
@@ -440,11 +421,9 @@ impl super::WorkspaceSnapshot {
     }
 
     pub fn update_session_title(&mut self, session_id: Uuid, title: &str) -> bool {
-        let title = title.trim();
-        if title.is_empty() {
+        let Some(title) = super::clipped_title(title, super::MAX_SESSION_TITLE_CHARS) else {
             return false;
-        }
-        let title: String = title.chars().take(super::MAX_SESSION_TITLE_CHARS).collect();
+        };
         let Some(session) = self.session_mut(session_id) else {
             return false;
         };
@@ -519,7 +498,7 @@ impl SessionSnapshot {
     pub fn new(working_directory: String) -> Self {
         Self {
             id: Uuid::new_v4(),
-            title: "Terminal".to_owned(),
+            title: super::DEFAULT_CONTAINER_NAME.to_owned(),
             agent_task_title: None,
             working_directory,
         }

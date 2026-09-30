@@ -363,18 +363,19 @@ impl TabSnapshot {
             return;
         }
         let mut session_ids = HashSet::with_capacity(self.sessions.len());
-        let mut reassigned_id = false;
         for session in &mut self.sessions {
-            while !session_ids.insert(session.id) {
-                session.id = Uuid::new_v4();
-                reassigned_id = true;
+            if session_ids.insert(session.id) {
+                continue;
             }
+            let old_id = session.id;
+            session.id = Uuid::new_v4();
+            session_ids.insert(session.id);
+            self.layout
+                .replace_duplicate_terminal_id(old_id, session.id);
         }
         let layout_ids = self.layout.terminal_ids();
-        if reassigned_id
-            || layout_ids.len() != session_ids.len()
-            || layout_ids.iter().copied().collect::<HashSet<_>>() != session_ids
-        {
+        let layout_set: HashSet<_> = layout_ids.iter().copied().collect();
+        if layout_ids.len() != session_ids.len() || layout_set != session_ids {
             self.layout = PaneLayoutSnapshot::joining(
                 self.sessions
                     .iter()
