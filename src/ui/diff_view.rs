@@ -49,6 +49,7 @@ use crate::ui::diff_rows::{
 };
 use crate::ui::file_view::FileView;
 use crate::ui::git_graph::GitGraphRow;
+use crate::ui::text_edit::delete_last_word;
 use crate::ui::theme::colors;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
@@ -850,15 +851,10 @@ impl DiffView {
                 cx.notify();
             }
             "backspace" => {
-                if modifiers.platform || modifiers.alt {
-                    // Delete back to the previous word boundary.
-                    let trimmed = draft.body.trim_end().len();
-                    let start = draft.body[..trimmed]
-                        .rfind(char::is_whitespace)
-                        .map_or(0, |index| index + 1);
-                    draft
-                        .body
-                        .truncate(if modifiers.platform { 0 } else { start });
+                if modifiers.platform {
+                    draft.body.clear();
+                } else if modifiers.alt {
+                    delete_last_word(&mut draft.body);
                 } else {
                     draft.body.pop();
                 }

@@ -28,7 +28,7 @@ fn blocks(text: &str) -> Vec<Block> {
     let mut item_prefix = false;
     let mut link: Option<String> = None;
     let mut lists: Vec<Option<u64>> = Vec::new();
-    let mut quote = false;
+    let mut quote_depth = 0usize;
     let flush = |output: &mut Vec<Block>, block: &mut Block| {
         if !block.text.is_empty() || block.rule {
             output.push(std::mem::take(block));
@@ -42,24 +42,26 @@ fn blocks(text: &str) -> Vec<Block> {
             Event::Start(Tag::Heading { level, .. }) => {
                 flush(&mut output, &mut block);
                 block.heading = level as u8;
+                block.quote = quote_depth > 0;
             }
             Event::Start(Tag::CodeBlock(_)) => {
                 flush(&mut output, &mut block);
                 block.code = true;
+                block.quote = quote_depth > 0;
             }
             Event::Start(Tag::Paragraph) => {
                 if !item_prefix {
                     flush(&mut output, &mut block);
                 }
-                block.quote = quote;
+                block.quote = quote_depth > 0;
             }
             Event::Start(Tag::BlockQuote(_)) => {
-                quote = true;
+                quote_depth += 1;
                 block.quote = true;
             }
             Event::End(TagEnd::BlockQuote(_)) => {
                 flush(&mut output, &mut block);
-                quote = false;
+                quote_depth -= 1;
             }
             Event::Start(Tag::List(start)) => lists.push(start),
             Event::End(TagEnd::List(_)) => {
@@ -68,6 +70,7 @@ fn blocks(text: &str) -> Vec<Block> {
             Event::Start(Tag::Item) => {
                 flush(&mut output, &mut block);
                 item_prefix = true;
+                block.quote = quote_depth > 0;
                 block
                     .text
                     .push_str(&"  ".repeat(lists.len().saturating_sub(1)));
@@ -137,6 +140,7 @@ fn blocks(text: &str) -> Vec<Block> {
             Event::Rule => {
                 flush(&mut output, &mut block);
                 block.rule = true;
+                block.quote = quote_depth > 0;
                 flush(&mut output, &mut block);
             }
             Event::Start(Tag::TableHead) => {
@@ -253,10 +257,29 @@ mod tests {
     }
 
     #[test]
+    fn nested_block_quotes_keep_the_outer_quote_after_the_inner_quote_ends() {
+        let parsed = blocks("> outer\n>\n>> inner\n>\n> outer again\n\nplain\n");
+        assert_eq!(parsed.len(), 4);
+        assert!(parsed[..3].iter().all(|block| block.quote));
+        assert!(!parsed[3].quote);
+    }
+
+    #[test]
+    fn quoted_headings_code_and_lists_keep_the_quote_style() {
+        let parsed = blocks("> # Heading\n>\n> ```\n> code\n> ```\n>\n> - item\n");
+        assert_eq!(parsed.len(), 3);
+        assert!(parsed.iter().all(|block| block.quote));
+        assert_eq!(parsed[0].heading, 1);
+        assert!(parsed[1].code);
+        assert_eq!(parsed[2].text, "• item");
+    }
+
+    #[test]
     fn markdown_retains_headings_code_and_safe_links_without_executing_html() {
-        let parsed = blocks(
-            "# Título\n\nTexto **fuerte** [web](https://example.com).\n\n```rs\nlet x = 1;\n```\n<script>bad()</script>",
-        );
+        let parsed = blocks(concat!(
+            "# Título\n\nTexto **fuerte** [web](https://example.com).\n\n",
+            "```rs\nlet x = 1;\n```\n<script>bad()</script>",
+        ));
         assert_eq!(parsed[0].heading, 1);
         assert!(
             parsed

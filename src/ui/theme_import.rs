@@ -218,6 +218,9 @@ fn finish_scheme(
 pub fn parse_hex(value: &str) -> Option<u32> {
     let value = unquote(value);
     let value = value.strip_prefix('#').unwrap_or(value.as_str());
+    if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
     match value.len() {
         3 => {
             let red = u32::from_str_radix(&value[0..1], 16).ok()?;
@@ -385,6 +388,14 @@ cursor-color = #c0caf5
         assert_eq!(parse_hex("#abc"), Some(0xaabbcc));
         assert_eq!(parse_hex("#2e3440ff"), Some(0x2e3440));
         assert_eq!(parse_hex("nope"), None);
+    }
+
+    #[test]
+    fn parse_hex_rejects_unicode_and_invalid_alpha_without_slicing_utf8() {
+        for color in ["€", "#€", "aaaaaéb", "abcdefzz", "ééé"] {
+            assert_eq!(parse_hex(color), None, "{color}");
+        }
+        assert!(parse_theme_text("background = €\nforeground = ffffff\n").is_err());
     }
 
     #[test]

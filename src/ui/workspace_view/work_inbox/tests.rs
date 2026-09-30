@@ -122,6 +122,59 @@ fn work_inbox_cached_list_stays_visible_during_refresh_and_network_failure() {
 }
 
 #[gpui::test]
+fn inbox_pruning_retains_active_writes_and_forgets_closed_discussions(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "inbox-pruning");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.work_inbox
+                .details
+                .entry("posting".into())
+                .or_default()
+                .posting = true;
+            view.work_inbox
+                .details
+                .entry("mutation".into())
+                .or_default()
+                .mutation_busy = true;
+            view.work_inbox
+                .details
+                .entry("discussion".into())
+                .or_default();
+            view.work_inbox
+                .details
+                .entry("obsolete".into())
+                .or_default();
+            view.work_inbox
+                .discussion_panes
+                .insert("discussion".into(), pane);
+
+            view.prune_inbox_details();
+            assert_eq!(view.work_inbox.details.len(), 3);
+            assert!(view.work_inbox.details.contains_key("posting"));
+            assert!(view.work_inbox.details.contains_key("mutation"));
+            assert!(view.work_inbox.details.contains_key("discussion"));
+
+            assert!(view.snapshot.close_terminal(pane));
+            view.reconcile_terminal_views(cx);
+            assert!(view.work_inbox.discussion_panes.is_empty());
+            view.work_inbox.details.get_mut("posting").unwrap().posting = false;
+            view.work_inbox
+                .details
+                .get_mut("mutation")
+                .unwrap()
+                .mutation_busy = false;
+            view.prune_inbox_details();
+            assert!(view.work_inbox.details.is_empty());
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn entering_inbox_scopes_the_active_project_and_reselects_visible_open_work(
     cx: &mut gpui::TestAppContext,
 ) {

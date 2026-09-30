@@ -114,6 +114,7 @@ impl WorkspaceView {
             self.agent_activity_seen.remove(&session_id);
         }
         self.inbox.forget_closed_panes(&live_ids);
+        self.work_inbox.forget_closed_discussion_panes(&live_ids);
 
         for session in self.snapshot.terminal_sessions() {
             if self.terminals.contains_key(&session.id) {

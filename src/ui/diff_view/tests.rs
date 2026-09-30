@@ -3,6 +3,40 @@ use crate::ui::diff_rows::CommentSide;
 use gpui::{ListOffset, ScrollWheelEvent, point};
 
 #[gpui::test]
+fn review_word_deletion_preserves_unicode_character_boundaries(cx: &mut gpui::TestAppContext) {
+    use crate::infrastructure::git::GitCliPort;
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        DiffView::new(
+            PathBuf::from("/tmp/vibra-unicode-review"),
+            Arc::new(GitCliPort::default()),
+            cx,
+        )
+    });
+    view.update_in(cx, |view, window, cx| {
+        view.open_draft(
+            CommentAnchor {
+                path: "main.rs".into(),
+                side: CommentSide::New,
+                line: 1,
+            },
+            "fn main() {}".into(),
+            window,
+            cx,
+        );
+        view.draft.as_mut().unwrap().body = "first\u{2003}último".into();
+        view.on_key_down(
+            &gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("alt-backspace").unwrap(),
+                is_held: false,
+            },
+            window,
+            cx,
+        );
+        assert_eq!(view.draft.as_ref().unwrap().body, "first\u{2003}");
+    });
+}
+
+#[gpui::test]
 fn file_preview_loads_without_git_and_late_files_cannot_replace_the_latest_choice(
     cx: &mut gpui::TestAppContext,
 ) {

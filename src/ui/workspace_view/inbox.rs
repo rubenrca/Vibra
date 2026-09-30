@@ -128,7 +128,10 @@ impl WorkspaceView {
                     .pb_3()
                     .text_size(px(12.0))
                     .text_color(colors().subtle)
-                    .child("No agents running. Open Claude, Codex, or any CLI in a terminal to see it here."),
+                    .child(concat!(
+                        "No agents running. Open Claude, Codex, or any CLI ",
+                        "in a terminal to see it here.",
+                    )),
             );
         }
         for (pane_id, presence) in agents {
@@ -192,7 +195,10 @@ impl WorkspaceView {
             body = body.child(section_empty_state(
                 "chrome-icons/inbox.svg",
                 "All caught up",
-                "When an agent finishes, asks for permission, or needs a response in a terminal you're not viewing, you'll see it here.",
+                concat!(
+                    "When an agent finishes, asks for permission, or needs a response ",
+                    "in a terminal you're not viewing, you'll see it here.",
+                ),
             ));
         }
         for item in self.inbox.items() {

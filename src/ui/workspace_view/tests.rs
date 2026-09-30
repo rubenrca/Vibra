@@ -1328,6 +1328,45 @@ fn project_notes_never_fall_through_to_another_projects_terminal(cx: &mut gpui::
 }
 
 #[gpui::test]
+fn oversized_note_edits_keep_the_previous_text_and_show_the_limit(cx: &mut gpui::TestAppContext) {
+    use crate::domain::library::MAX_NOTE_CHARS;
+    let (root, _, _, window) = open_recording_workspace(cx, "note-limit");
+    window
+        .update(cx, |view, window, cx| {
+            view.create_note(window, cx);
+            let id = view.selected_note_id.unwrap();
+            let body = "é".repeat(MAX_NOTE_CHARS);
+            assert!(view.library.set_note_body(id, body.clone(), 1));
+            let edit = |key: &str, text: Option<&str>| gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke {
+                    key_char: text.map(str::to_owned),
+                    ..gpui::Keystroke::parse(key).unwrap()
+                },
+                is_held: false,
+            };
+
+            assert!(view.handle_note_key(&edit("x", Some("x")), cx));
+            assert_eq!(view.library.note(id).unwrap().body, body);
+            assert_eq!(view.library.note(id).unwrap().updated_at, 1);
+            assert!(
+                view.library_error
+                    .as_ref()
+                    .is_some_and(|error| error.contains("100000"))
+            );
+
+            assert!(view.handle_note_key(&edit("backspace", None), cx));
+            assert_eq!(
+                view.library.note(id).unwrap().body.chars().count(),
+                MAX_NOTE_CHARS - 1
+            );
+            assert!(view.library_error.is_none());
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn missing_automation_projects_do_not_run_in_the_selected_project(cx: &mut gpui::TestAppContext) {
     use crate::domain::inbox::InboxKind;
     use crate::domain::library::AutomationSchedule;

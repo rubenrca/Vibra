@@ -27,15 +27,15 @@ impl Document {
     fn new(path: &str, text: String) -> Self {
         let mut highlighter = Highlighter::for_path(path);
         let mut columns = 0;
-        let text = expand_tabs(text.trim_start_matches('\u{feff}'));
         let lines = text
+            .trim_start_matches('\u{feff}')
             .lines()
             .map(|line| {
-                let line = line.trim_end_matches('\r');
+                let line = expand_tabs(line.trim_end_matches('\r'));
                 columns = columns.max(line.chars().count());
-                let spans = highlighter.highlight_line(line);
+                let spans = highlighter.highlight_line(&line);
                 SourceLine {
-                    text: line.to_owned().into(),
+                    text: line.into(),
                     spans,
                 }
             })
@@ -292,5 +292,21 @@ impl Render for FileView {
                         .child("Opening file…"),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_copy_keeps_tabs_bom_and_line_endings_while_display_expands_tabs() {
+        let source = "\u{feff}\tfirst\r\n\tsecond\r\n".to_owned();
+        let document = Document::new("file.txt", source.clone());
+
+        assert_eq!(document.text, source);
+        assert_eq!(document.lines[0].text.as_ref(), "    first");
+        assert_eq!(document.lines[1].text.as_ref(), "    second");
+        assert_eq!(document.columns, 10);
     }
 }

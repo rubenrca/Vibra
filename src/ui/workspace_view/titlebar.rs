@@ -151,7 +151,8 @@ impl super::WorkspaceView {
                             .border_color(colors().border_subtle)
                             .bg(surface_tint(colors().sidebar, colors().titlebar))
                     })
-                    // Anchored beside the traffic lights so they stay put while the sidebar animates.
+                    // Anchored beside the traffic lights so they stay put
+                    // while the sidebar animates.
                     .child(
                         self.sidebar_button("toggle-left-sidebar", true, cx, |this, _, cx| {
                             this.set_left_sidebar_visible(

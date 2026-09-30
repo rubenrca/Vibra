@@ -455,7 +455,10 @@ impl WorkspaceView {
             }
             if detail.truncated {
                 content = content.child(message(
-                    "Showing recent comments. The full conversation is available on the source service.",
+                    concat!(
+                        "Showing recent comments. ",
+                        "The full conversation is available on the source service.",
+                    ),
                     false,
                 ));
             }

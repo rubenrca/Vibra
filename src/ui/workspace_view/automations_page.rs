@@ -358,7 +358,12 @@ impl WorkspaceView {
             body = body.child(section_empty_state(
                 "chrome-icons/automations.svg",
                 "Your recurring tasks",
-                "Save a command (such as claude -p \"summarize yesterday's changes\" or cargo test) and run it whenever you want or on a schedule. Each run opens a new tab in the project so you can see the output and keep working in that terminal.",
+                concat!(
+                    "Save a command (such as claude -p \"summarize yesterday's changes\" ",
+                    "or cargo test) and run it whenever you want or on a schedule. ",
+                    "Each run opens a new tab in the project ",
+                    "so you can see the output and keep working in that terminal.",
+                ),
             ));
         }
         for automation in &self.library.automations {
@@ -620,7 +625,9 @@ impl WorkspaceView {
                                     project.unwrap_or_else(|| "Selected project".to_owned()),
                                     false,
                                 )
-                                .on_click(cx.listener(|this, _, _, cx| this.cycle_form_project(cx))),
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.cycle_form_project(cx)),
+                                ),
                             ),
                     )
                     .child(
@@ -645,7 +652,9 @@ impl WorkspaceView {
                                     },
                                     false,
                                 )
-                                .on_click(cx.listener(|this, _, _, cx| this.cycle_form_schedule(cx))),
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.cycle_form_schedule(cx)),
+                                ),
                             ),
                     )
                     .when(form.schedule != AutomationSchedule::Manual, |row| {
@@ -678,15 +687,18 @@ impl WorkspaceView {
                             .flex_1()
                             .text_size(px(11.5))
                             .text_color(colors().subtle)
-                            .child("Tab switches fields · ↩ saves · Esc cancels. Scheduled tasks run while Vibra is open."),
+                            .child(concat!(
+                                "Tab switches fields · ↩ saves · Esc cancels. ",
+                                "Scheduled tasks run while Vibra is open.",
+                            )),
                     )
                     .child(
-                        section_button("automation-cancel", "Cancel", false).on_click(
-                            cx.listener(|this, _, _, cx| {
+                        section_button("automation-cancel", "Cancel", false).on_click(cx.listener(
+                            |this, _, _, cx| {
                                 this.automation_form = None;
                                 cx.notify();
-                            }),
-                        ),
+                            },
+                        )),
                     )
                     .child(
                         section_button("automation-save", "Save", true)

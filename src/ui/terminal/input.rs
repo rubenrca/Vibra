@@ -586,8 +586,10 @@ impl TerminalView {
             .handle
             .as_ref()
             .and_then(|handle| handle.foreground_process_id());
-        if matches!((pressed_foreground, current_foreground), (Some(pressed), Some(current)) if pressed != current)
-        {
+        if matches!(
+            (pressed_foreground, current_foreground),
+            (Some(pressed), Some(current)) if pressed != current
+        ) {
             return;
         }
         let mode = self.current_input_mode();

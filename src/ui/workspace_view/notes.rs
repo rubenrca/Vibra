@@ -5,6 +5,7 @@ use gpui::{AnyElement, Context, KeyDownEvent, SharedString, Window, div, prelude
 use uuid::Uuid;
 
 use crate::domain::inbox::relative_time;
+use crate::domain::library::MAX_NOTE_CHARS;
 use crate::infrastructure::library::unix_now;
 use crate::ui::terminal::TerminalInsertStatus;
 use crate::ui::theme::{MONO_FONT, colors, surface_tint};
@@ -129,8 +130,18 @@ impl WorkspaceView {
         );
         match outcome {
             TextKeyOutcome::Edited => {
+                if body.chars().count() > MAX_NOTE_CHARS {
+                    self.library_error = Some(
+                        format!("Notes can contain up to {MAX_NOTE_CHARS} characters.").into(),
+                    );
+                    cx.notify();
+                    return true;
+                }
+                let cleared_error = self.library_error.take().is_some();
                 if self.library.set_note_body(id, body, unix_now()) {
                     self.persist_library(cx);
+                } else if cleared_error {
+                    cx.notify();
                 }
                 true
             }
@@ -175,7 +186,10 @@ impl WorkspaceView {
                 section_empty_state(
                     "chrome-icons/notes.svg",
                     "A space for your ideas",
-                    "Save context, to-dos, and prompts by project. When a note is ready, paste it into the agent's terminal to keep editing it there.",
+                    concat!(
+                        "Save context, to-dos, and prompts by project. When a note is ready, ",
+                        "paste it into the agent's terminal to keep editing it there.",
+                    ),
                 ),
             );
         }

@@ -211,10 +211,14 @@ impl WorkspaceView {
 
     fn agent_status_value(&self, pane_id: Uuid) -> serde_json::Value {
         let presence = self.resolved_agent_presence(pane_id);
+        let attention = presence
+            .as_ref()
+            .and_then(|presence| presence.attention)
+            .map(AgentAttention::label);
         serde_json::json!({
             "kind": presence.as_ref().map(|presence| presence.kind.as_str()),
             "state": presence.as_ref().map(|presence| agent_runtime_state_label(presence.state)),
-            "attention": presence.as_ref().and_then(|presence| presence.attention).map(AgentAttention::label),
+            "attention": attention,
             "model": presence.as_ref().and_then(|presence| presence.model.as_deref()),
             "kindSource": presence.as_ref().map(|presence| presence.kind_source),
             "stateSource": presence.as_ref().map(|presence| presence.state_source),

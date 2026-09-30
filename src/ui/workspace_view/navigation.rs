@@ -170,6 +170,7 @@ impl WorkspaceView {
             ),
         ];
         let has_projects = !self.snapshot.projects.is_empty();
+        let settings_selected = self.workspace_section == WorkspaceSection::Settings;
         div()
             .size_full()
             .flex()
@@ -319,7 +320,9 @@ impl WorkspaceView {
                                 .flex_col()
                                 .gap(px(8.0))
                                 .cursor_pointer()
-                                .hover(|card| card.bg(surface_tint(colors().hover, colors().sidebar)))
+                                .hover(|card| {
+                                    card.bg(surface_tint(colors().hover, colors().sidebar))
+                                })
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.choose_project_folder(None, false, window, cx)
                                 }))
@@ -335,37 +338,37 @@ impl WorkspaceView {
                                         .text_size(px(12.0))
                                         .line_height(px(17.0))
                                         .text_color(colors().subtle)
-                                        .child("Choose a folder to keep its terminals, files, and changes together."),
+                                        .child(concat!(
+                                            "Choose a folder to keep its terminals, ",
+                                            "files, and changes together.",
+                                        )),
                                 ),
                         )
                     }),
             )
             .child(
-                div()
-                    .px(px(SIDEBAR_ROW_INSET))
-                    .py(px(8.0))
-                    .child(
-                        rail_row("global-settings")
-                            .when(self.workspace_section == WorkspaceSection::Settings, |row| {
-                                row.bg(surface_tint(colors().selection, colors().sidebar))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(colors().foreground)
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
-                            .child(
-                                svg()
-                                    .path("chrome-icons/settings.svg")
-                                    .size(px(15.0))
-                                    .flex_none()
-                                    .text_color(if self.workspace_section == WorkspaceSection::Settings {
-                                        colors().foreground
-                                    } else {
-                                        colors().subtle
-                                    }),
-                            )
-                            .child(div().flex_1().child("Settings"))
-                            .child(keycap("⌘,")),
-                    ),
+                div().px(px(SIDEBAR_ROW_INSET)).py(px(8.0)).child(
+                    rail_row("global-settings")
+                        .when(settings_selected, |row| {
+                            row.bg(surface_tint(colors().selection, colors().sidebar))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(colors().foreground)
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
+                        .child(
+                            svg()
+                                .path("chrome-icons/settings.svg")
+                                .size(px(15.0))
+                                .flex_none()
+                                .text_color(if settings_selected {
+                                    colors().foreground
+                                } else {
+                                    colors().subtle
+                                }),
+                        )
+                        .child(div().flex_1().child("Settings"))
+                        .child(keycap("⌘,")),
+                ),
             )
             .into_any_element()
     }

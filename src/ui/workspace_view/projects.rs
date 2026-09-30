@@ -249,8 +249,12 @@ impl WorkspaceView {
         let confirmation = window.prompt(
             PromptLevel::Warning,
             &format!("Remove {} from Vibra?", project.name),
-            Some("Its tabs and processes will be closed. The folder and its files will remain on disk."),
-            &["Cancel", "Remove project"], cx,
+            Some(concat!(
+                "Its tabs and processes will be closed. ",
+                "The folder and its files will remain on disk.",
+            )),
+            &["Cancel", "Remove project"],
+            cx,
         );
         cx.spawn_in(window, async move |this, cx| {
             if confirmation.await.ok() != Some(1) {

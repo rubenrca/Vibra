@@ -53,7 +53,11 @@ impl WorkspaceView {
             Ok(settings) => (settings, None),
             Err(error) => {
                 let message: SharedString = format!(
-                    "Could not load settings: {error}. Changes will not be saved until the file is repaired."
+                    concat!(
+                        "Could not load settings: {error}. ",
+                        "Changes will not be saved until the file is repaired."
+                    ),
+                    error = error
                 )
                 .into();
                 (AppSettings::default(), Some(message))
@@ -62,19 +66,21 @@ impl WorkspaceView {
         let library_repository = settings_repository
             .directory()
             .map(LibraryRepository::in_directory);
-        let (library, library_load_error) = match library_repository
-            .as_ref()
-            .map(|repo| repo.load())
-        {
-            Some(Ok(library)) => (library, None),
-            Some(Err(error)) => (
-                Library::default(),
-                Some(SharedString::from(format!(
-                    "Could not load notes and automations: {error}. Changes will not be saved until the file is repaired."
-                ))),
-            ),
-            None => (Library::default(), None),
-        };
+        let (library, library_load_error) =
+            match library_repository.as_ref().map(|repo| repo.load()) {
+                Some(Ok(library)) => (library, None),
+                Some(Err(error)) => (
+                    Library::default(),
+                    Some(SharedString::from(format!(
+                        concat!(
+                            "Could not load notes and automations: {error}. ",
+                            "Changes will not be saved until the file is repaired."
+                        ),
+                        error = error
+                    ))),
+                ),
+                None => (Library::default(), None),
+            };
         // Earlier versions kept several sessions per project; the UI now has
         // one row of tabs per project, so their tabs are merged on load.
         let consolidated =

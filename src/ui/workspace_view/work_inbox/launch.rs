@@ -91,8 +91,11 @@ impl WorkspaceView {
             Ok((_, false)) => {
                 let _ = std::fs::remove_file(&prompt_path);
                 self.work_inbox.action_error = Some(
-                    "The tab opened, but the terminal could not start the agent. Check the terminal and try again."
-                        .into(),
+                    concat!(
+                        "The tab opened, but the terminal could not start the agent. ",
+                        "Check the terminal and try again."
+                    )
+                    .into(),
                 );
             }
             Err(message) => {

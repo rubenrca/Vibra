@@ -14,6 +14,16 @@ pub(crate) enum TextKeyOutcome {
     Unhandled,
 }
 
+pub(crate) fn delete_last_word(buffer: &mut String) {
+    let trimmed = buffer.trim_end().len();
+    let start = buffer[..trimmed]
+        .char_indices()
+        .rev()
+        .find(|(_, character)| character.is_whitespace())
+        .map_or(0, |(index, character)| index + character.len_utf8());
+    buffer.truncate(start);
+}
+
 pub(crate) fn apply_text_key(
     buffer: &mut String,
     key: &str,
@@ -40,11 +50,7 @@ pub(crate) fn apply_text_key(
                     .map_or(0, |index| index + 1);
                 buffer.truncate(start);
             } else if modifiers.alt {
-                let trimmed = buffer.trim_end().len();
-                let start = buffer[..trimmed]
-                    .rfind(char::is_whitespace)
-                    .map_or(0, |index| index + 1);
-                buffer.truncate(start);
+                delete_last_word(buffer);
             } else {
                 buffer.pop();
             }
@@ -128,6 +134,17 @@ mod tests {
         assert_eq!(buffer, "uno\n");
         key(&mut buffer, "backspace", None, Modifiers::command());
         assert_eq!(buffer, "");
+    }
+
+    #[test]
+    fn word_deletion_keeps_unicode_whitespace_on_a_character_boundary() {
+        for separator in ['\u{00a0}', '\u{2003}', '\u{3000}'] {
+            let mut buffer = format!("first{separator}último  ");
+            key(&mut buffer, "backspace", None, Modifiers::alt());
+            assert_eq!(buffer, format!("first{separator}"));
+            key(&mut buffer, "backspace", None, Modifiers::alt());
+            assert!(buffer.is_empty());
+        }
     }
 
     #[test]

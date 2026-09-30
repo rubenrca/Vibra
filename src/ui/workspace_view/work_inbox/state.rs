@@ -201,6 +201,14 @@ pub(crate) struct WorkInbox {
 }
 
 impl WorkInbox {
+    pub(in crate::ui::workspace_view) fn forget_closed_discussion_panes(
+        &mut self,
+        live_ids: &HashSet<Uuid>,
+    ) {
+        self.discussion_panes
+            .retain(|_, pane| live_ids.contains(pane));
+    }
+
     pub(super) fn feed(&self, source: WorkSource) -> &SourceFeed {
         match source {
             WorkSource::GitHub => &self.github,

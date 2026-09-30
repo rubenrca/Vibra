@@ -225,6 +225,7 @@ fn is_string_quote(b: u8, language: Language, bytes: &[u8], i: usize) -> bool {
     if language == Language::Rust
         && i + 1 < bytes.len()
         && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
+        && bytes.get(i + 2) != Some(&b'\'')
     {
         return false;
     }
@@ -793,6 +794,40 @@ mod tests {
         let spans = h.highlight_line("let x = 1; // trailing");
         assert!(spans.iter().any(|s| s.kind == SyntaxKind::Comment));
         assert!(spans.iter().any(|s| s.kind == SyntaxKind::Number));
+    }
+
+    #[test]
+    fn rust_character_literals_do_not_start_a_multiline_string() {
+        let mut highlighter = Highlighter::new(Language::Rust);
+        let line = "let chars = ['a', '_', 'é', '\\n']; let after = 1;";
+        let spans = highlighter.highlight_line(line);
+        let strings: Vec<_> = spans
+            .iter()
+            .filter(|span| span.kind == SyntaxKind::String)
+            .map(|span| line_slice(line, &span.range))
+            .collect();
+
+        assert_eq!(strings, ["'a'", "'_'", "'é'", "'\\n'"]);
+        assert_eq!(
+            spans
+                .iter()
+                .filter(|span| span.kind == SyntaxKind::Keyword)
+                .count(),
+            2
+        );
+        assert!(
+            highlighter
+                .highlight_line("let next = 2;")
+                .iter()
+                .any(|span| span.kind == SyntaxKind::Keyword)
+        );
+    }
+
+    #[test]
+    fn rust_lifetimes_are_not_character_literals() {
+        let mut highlighter = Highlighter::new(Language::Rust);
+        let spans = highlighter.highlight_line("fn borrow<'a>(value: &'a str) -> &'static str {");
+        assert!(spans.iter().all(|span| span.kind != SyntaxKind::String));
     }
 
     #[test]

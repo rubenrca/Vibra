@@ -113,9 +113,9 @@ impl WorkspaceView {
             keep.insert(selected);
         }
         keep.extend(self.work_inbox.discussion_panes.keys().map(String::as_str));
-        self.work_inbox
-            .details
-            .retain(|url, _| keep.contains(url.as_str()));
+        self.work_inbox.details.retain(|url, state| {
+            keep.contains(url.as_str()) || state.posting || state.mutation_busy
+        });
     }
 
     pub(crate) fn inbox_source_updated(
