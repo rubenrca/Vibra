@@ -531,6 +531,68 @@ fn external_paste_immediate_status_tracks_pty_acceptance(cx: &mut TestAppContext
     assert_eq!(handle.inputs.lock().unwrap().len(), 1);
 }
 
+#[gpui::test]
+fn terminal_failure_survives_exit_and_rejects_input_and_pending_pastes(cx: &mut TestAppContext) {
+    let (port, handle) = mock_port();
+    let session_id = Uuid::new_v4();
+    let (view, cx) = cx.add_window_view(|_, cx| spawn_terminal_with_id(session_id, port, cx));
+    let resolved = Rc::new(RefCell::new(Vec::new()));
+    let sink = resolved.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event: &TerminalViewEvent, _| {
+            if let TerminalViewEvent::ExternalPasteResolved {
+                token, accepted, ..
+            } = event
+            {
+                sink.borrow_mut().push((*token, *accepted));
+            }
+        })
+        .detach();
+    });
+    let token = Uuid::new_v4();
+    view.update(cx, |terminal, cx| {
+        assert_eq!(
+            terminal.insert_external_text("review\nbody", token, cx),
+            TerminalInsertStatus::Pending
+        );
+        terminal.handle_terminal_event(
+            TerminalEvent::Failed("Terminal engine lock poisoned".into()),
+            cx,
+        );
+        assert!(terminal.failed);
+        assert!(!terminal.exited);
+        assert!(terminal.pending_confirmations.is_empty());
+        let error = terminal.error.clone();
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|error| error.contains("Terminal engine lock poisoned"))
+        );
+
+        assert!(!terminal.send(b"input".to_vec(), cx));
+        assert!(!terminal.send_protocol(b"protocol".to_vec(), cx));
+        assert!(!terminal.send_key(
+            &key("a", Modifiers::none()),
+            TerminalKeyEventType::Press,
+            cx
+        ));
+        assert_eq!(
+            terminal.insert_external_text("more\ntext", Uuid::new_v4(), cx),
+            TerminalInsertStatus::Rejected
+        );
+        terminal.request_paste("manual\npaste".into(), cx);
+        assert!(terminal.pending_confirmations.is_empty());
+
+        terminal.handle_terminal_event(TerminalEvent::Exit(Some(1)), cx);
+        assert!(terminal.failed && terminal.exited);
+        assert_eq!(terminal.error, error);
+        assert!(terminal.input_error.is_none());
+    });
+    cx.run_until_parked();
+    assert_eq!(resolved.borrow().as_slice(), [(token, false)]);
+    assert!(handle.inputs.lock().unwrap().is_empty());
+}
+
 #[test]
 fn application_cursor_uses_ss3_sequences() {
     let bytes = key_bytes(

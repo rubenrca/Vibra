@@ -95,6 +95,93 @@ fn wait_for(t: &GhosttyTerminal, needle: &str) {
         thread::sleep(Duration::from_millis(10));
     }
 }
+
+#[test]
+fn poisoned_engine_keeps_its_last_snapshot_reports_failure_and_reaps_the_child() {
+    let terminal = GhosttyTerminal::spawn(
+        Uuid::new_v4(),
+        Path::new("/tmp"),
+        &HashMap::new(),
+        Some(("/bin/sh", &["-c", "printf READY; exec sleep 30"])),
+    )
+    .unwrap();
+    wait_for(&terminal, "READY");
+    let snapshot = terminal.snapshot();
+    let engine = terminal.engine.clone();
+    assert!(
+        thread::spawn(move || {
+            let _guard = engine.inner.lock().unwrap();
+            panic!("intentional engine poison");
+        })
+        .join()
+        .is_err()
+    );
+
+    assert!(Arc::ptr_eq(&snapshot, &terminal.snapshot()));
+    assert!(terminal.send_input(b"ignored".to_vec()).is_err());
+    assert!(terminal.resize(TerminalSize::default()).is_err());
+    assert!(
+        terminal
+            .search("READY", TerminalSearchDirection::Next)
+            .is_err()
+    );
+    assert_eq!(terminal.input_mode(), TerminalInputMode::default());
+    assert!(terminal.recent_text(10).is_none());
+    assert!(terminal.selection_text().is_none());
+    terminal.scroll(1);
+    terminal.clear_scrollback();
+    terminal.clear_selection();
+    terminal.start_selection(
+        TerminalSelectionType::Simple,
+        TerminalPoint::default(),
+        TerminalCellSide::Left,
+    );
+    terminal.update_selection(TerminalPoint::default(), TerminalCellSide::Right);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut failures = 0;
+    loop {
+        match terminal.events.try_recv() {
+            Ok(TerminalEvent::Failed(message)) => {
+                failures += 1;
+                assert!(message.contains("terminal engine failed"));
+            }
+            Ok(TerminalEvent::Exit(_)) => break,
+            _ => {
+                assert!(Instant::now() < deadline, "failed terminal was not reaped");
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+    assert_eq!(failures, 1);
+    assert!(!terminal.alive.load(Ordering::Acquire));
+}
+
+#[test]
+fn native_engine_errors_invalidate_the_terminal_once() {
+    let (events, receiver) = async_channel::bounded(2);
+    let engine = TerminalEngine {
+        inner: Mutex::new(Engine::new(TerminalSize::default(), events.clone()).unwrap()),
+        failed: AtomicBool::new(false),
+        failure: Mutex::new(None),
+        last_snapshot: Mutex::new(Arc::new(TerminalSnapshot::default())),
+        events,
+        shutdown_requested: Arc::new(AtomicBool::new(false)),
+    };
+    assert!(
+        engine
+            .update::<()>(|_| bail!("native operation failed"))
+            .is_err()
+    );
+    assert!(
+        engine
+            .update::<()>(|_| panic!("a failed engine must not be used again"))
+            .is_err()
+    );
+    assert!(matches!(receiver.try_recv(), Ok(TerminalEvent::Failed(_))));
+    assert!(receiver.try_recv().is_err());
+    assert!(engine.shutdown_requested.load(Ordering::Acquire));
+}
 #[test]
 fn real_pty_input_resize_exit_and_environment() {
     let t = GhosttyTerminal::spawn(

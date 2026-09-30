@@ -313,7 +313,10 @@ impl Engine {
                 })
                 .collect()
         } else {
-            self.cache.as_ref().unwrap().lines.clone()
+            self.cache
+                .as_ref()
+                .map(|snapshot| snapshot.lines.clone())
+                .unwrap_or_default()
         };
         checked(unsafe {
             vg_snapshot(
@@ -358,14 +361,16 @@ impl Engine {
         self.dirty = false;
         Ok(snapshot)
     }
+    #[cfg(test)]
     pub(super) fn mode(&self) -> TerminalInputMode {
+        self.try_mode().unwrap()
+    }
+    pub(super) fn try_mode(&self) -> Result<TerminalInputMode> {
         let mut i = Info::default();
-        if unsafe { vg_snapshot(self.p(), &mut i, None, std::ptr::null_mut(), 0) } != 0 {
-            return TerminalInputMode::default();
-        }
+        checked(unsafe { vg_snapshot(self.p(), &mut i, None, std::ptr::null_mut(), 0) })?;
         let m = |b: u32| i.modes & (1u32 << b) != 0u32;
         let k = |b: u32| i.kitty & (1u8 << b) != 0u8;
-        TerminalInputMode {
+        Ok(TerminalInputMode {
             application_cursor: m(0),
             bracketed_paste: m(1),
             alternate_screen: m(2),
@@ -381,7 +386,7 @@ impl Engine {
             report_alternate_keys: k(2),
             report_all_keys_as_escape_codes: k(3),
             report_associated_text: k(4),
-        }
+        })
     }
     pub(super) fn text(&self, selection: bool) -> Option<String> {
         let mut n = 0;
@@ -393,6 +398,7 @@ impl Engine {
         unsafe { vg_buffer_free(p, n) };
         Some(s)
     }
+    #[cfg(test)]
     pub(super) fn select(
         &mut self,
         action: i32,
@@ -400,6 +406,15 @@ impl Engine {
         point: TerminalPoint,
         side: TerminalCellSide,
     ) {
+        self.try_select(action, kind, point, side).unwrap();
+    }
+    pub(super) fn try_select(
+        &mut self,
+        action: i32,
+        kind: TerminalSelectionType,
+        point: TerminalPoint,
+        side: TerminalCellSide,
+    ) -> Result<()> {
         let kind = match kind {
             TerminalSelectionType::Simple => 0,
             TerminalSelectionType::Block => 1,
@@ -410,7 +425,7 @@ impl Engine {
             .column
             .min(self.size.columns.saturating_sub(1) as usize) as u16;
         let y = point.row.min(self.size.rows.saturating_sub(1) as usize) as u16;
-        let _ = unsafe {
+        checked(unsafe {
             vg_select(
                 self.p(),
                 action,
@@ -419,7 +434,8 @@ impl Engine {
                 y,
                 (side == TerminalCellSide::Right).into(),
             )
-        };
+        })?;
         self.dirty = true;
+        Ok(())
     }
 }

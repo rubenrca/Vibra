@@ -166,6 +166,7 @@ pub struct TerminalView {
     working_directory: PathBuf,
     error: Option<SharedString>,
     input_error: Option<SharedString>,
+    failed: bool,
     exited: bool,
     marked_text: String,
     font_size: f32,
@@ -302,6 +303,7 @@ impl TerminalView {
             working_directory: working_directory.to_path_buf(),
             error,
             input_error: None,
+            failed: false,
             exited: false,
             marked_text: String::new(),
             font_size: TERMINAL_FONT_SIZE,
@@ -399,6 +401,9 @@ impl TerminalView {
     }
 
     fn refresh_agent_presence(&mut self, cx: &mut Context<Self>) {
+        if self.failed || self.exited {
+            return;
+        }
         let Some(handle) = self.handle.as_ref() else {
             return;
         };
@@ -430,6 +435,9 @@ impl TerminalView {
     }
 
     fn refresh_working_directory(&mut self, cx: &mut Context<Self>) {
+        if self.failed || self.exited {
+            return;
+        }
         let Some(path) = self
             .handle
             .as_ref()
@@ -480,7 +488,29 @@ impl TerminalView {
     }
 
     fn handle_terminal_event(&mut self, event: TerminalEvent, cx: &mut Context<Self>) {
+        if self.failed && !matches!(event, TerminalEvent::Exit(_)) {
+            return;
+        }
         match event {
+            TerminalEvent::Failed(message) => {
+                self.failed = true;
+                self.error = Some(format!("Terminal failed: {message}").into());
+                self.input_error = None;
+                self._input_error_task = None;
+                self.marked_text.clear();
+                self.pressed_key_foregrounds.clear();
+                self.search_pending = false;
+                self.search_generation = self.search_generation.wrapping_add(1);
+                self._search_task = None;
+                self.reject_pending_external_pastes(cx);
+                if self.agent_presence.take().is_some() {
+                    cx.emit(TerminalViewEvent::AgentPresenceChanged {
+                        session_id: self.session_id,
+                        presence: None,
+                    });
+                }
+                cx.notify();
+            }
             TerminalEvent::Wakeup => {
                 self.refresh_process_state_if_due(cx);
                 if let Some(handle) = &self.handle {
@@ -532,17 +562,7 @@ impl TerminalView {
             TerminalEvent::Exit(code) => {
                 if !self.exited {
                     self.exited = true;
-                    let unresolved = self
-                        .pending_confirmations
-                        .drain(..)
-                        .filter_map(|confirmation| match confirmation {
-                            TerminalConfirmation::Paste { external_token, .. } => external_token,
-                            TerminalConfirmation::ClipboardRead { .. } => None,
-                        })
-                        .collect::<Vec<_>>();
-                    for token in unresolved {
-                        self.emit_external_paste_resolution(token, false, cx);
-                    }
+                    self.reject_pending_external_pastes(cx);
                     cx.emit(TerminalViewEvent::Exited {
                         session_id: self.session_id,
                         code,
@@ -550,6 +570,20 @@ impl TerminalView {
                     cx.notify();
                 }
             }
+        }
+    }
+
+    fn reject_pending_external_pastes(&mut self, cx: &mut Context<Self>) {
+        let unresolved = self
+            .pending_confirmations
+            .drain(..)
+            .filter_map(|confirmation| match confirmation {
+                TerminalConfirmation::Paste { external_token, .. } => external_token,
+                TerminalConfirmation::ClipboardRead { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        for token in unresolved {
+            self.emit_external_paste_resolution(token, false, cx);
         }
     }
 

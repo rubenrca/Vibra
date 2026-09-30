@@ -245,6 +245,7 @@ impl Render for TerminalView {
         let error = self.error.clone();
         let input_error = self.input_error.clone();
         let exited = self.exited;
+        let failed = self.failed;
         let search_active = self.search_active;
         let search_query = self.search_query.clone();
         let search_match_found = self.search_match_found;
@@ -335,7 +336,10 @@ impl Render for TerminalView {
                                 .floor()
                                 .clamp(1.0, u16::MAX as f32)
                                 as u16;
-                            if let Some(handle) = &handle {
+                            if let Some(handle) = &handle
+                                && !failed
+                                && !exited
+                            {
                                 let size = TerminalSize {
                                     columns: target_columns,
                                     rows: target_rows,

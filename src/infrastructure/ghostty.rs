@@ -20,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -68,6 +68,70 @@ struct PtyWorkerControl {
     pending_resize: Arc<Mutex<Option<TerminalSize>>>,
 }
 
+/// Poisoned native state is terminal: do not recover its mutex and call FFI
+/// again. The independent snapshot and failure state contain only Rust data.
+struct TerminalEngine {
+    inner: Mutex<Engine>,
+    failed: AtomicBool,
+    failure: Mutex<Option<String>>,
+    last_snapshot: Mutex<Arc<TerminalSnapshot>>,
+    events: Sender<TerminalEvent>,
+    shutdown_requested: Arc<AtomicBool>,
+}
+
+impl TerminalEngine {
+    fn fail(&self, message: impl Into<String>) {
+        let mut failure = self
+            .failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if failure.is_none() {
+            let message = message.into();
+            // Publish the failure before the worker can observe shutdown.
+            let _ = self
+                .events
+                .force_send(TerminalEvent::Failed(message.clone()));
+            *failure = Some(message);
+            self.failed.store(true, Ordering::Release);
+            self.shutdown_requested.store(true, Ordering::Release);
+        }
+    }
+
+    fn failure(&self) -> anyhow::Error {
+        let failure = self
+            .failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        anyhow::anyhow!(
+            "{}",
+            failure.as_deref().unwrap_or("The terminal engine failed.")
+        )
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, Engine>> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err(self.failure());
+        }
+        match self.inner.lock() {
+            Ok(engine) if !self.failed.load(Ordering::Acquire) => Ok(engine),
+            Ok(_) => Err(self.failure()),
+            Err(_) => {
+                self.fail("The terminal engine failed. Close this pane and open a new terminal.");
+                Err(self.failure())
+            }
+        }
+    }
+
+    fn update<T>(&self, operation: impl FnOnce(&mut Engine) -> Result<T>) -> Result<T> {
+        let mut engine = self.lock()?;
+        operation(&mut engine).inspect_err(|error| {
+            self.fail(format!(
+                "The terminal engine failed: {error}. Open a new terminal."
+            ));
+        })
+    }
+}
+
 fn enqueue_replies(
     writes: &mut VecDeque<(PtyInput, usize)>,
     queued_bytes: &mut usize,
@@ -81,7 +145,7 @@ fn enqueue_replies(
     }
 }
 struct GhosttyTerminal {
-    engine: Arc<Mutex<Engine>>,
+    engine: Arc<TerminalEngine>,
     inputs: mpsc::SyncSender<PtyInput>,
     events: Receiver<TerminalEvent>,
     wakeup: Arc<AtomicBool>,
@@ -109,7 +173,15 @@ impl GhosttyTerminal {
     ) -> Result<Arc<Self>> {
         let size = TerminalSize::default();
         let (tx, events) = async_channel::bounded(MAX_TERMINAL_EVENTS);
-        let engine = Arc::new(Mutex::new(Engine::new(size, tx.clone())?));
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        let engine = Arc::new(TerminalEngine {
+            inner: Mutex::new(Engine::new(size, tx.clone())?),
+            failed: AtomicBool::new(false),
+            failure: Mutex::new(None),
+            last_snapshot: Mutex::new(Arc::new(TerminalSnapshot::default())),
+            events: tx.clone(),
+            shutdown_requested: shutdown_requested.clone(),
+        });
         let mut master = -1;
         let mut slave = -1;
         let mut winsize = window_size(size);
@@ -191,7 +263,6 @@ impl GhosttyTerminal {
         let (inputs, input_rx) = mpsc::sync_channel(MAX_QUEUED_PTY_INPUTS);
         let wakeup = Arc::new(AtomicBool::new(false));
         let alive = Arc::new(AtomicBool::new(true));
-        let shutdown_requested = Arc::new(AtomicBool::new(false));
         let pending_resize = Arc::new(Mutex::new(None));
         let worker_engine = engine.clone();
         let worker_wakeup = wakeup.clone();
@@ -205,7 +276,13 @@ impl GhosttyTerminal {
         if let Err(error) = thread::Builder::new()
             .name(format!("ghostty-pty-{pid}"))
             .spawn(move || {
-                let child = worker_child.lock().unwrap().take().unwrap();
+                let Some(child) = worker_child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take()
+                else {
+                    return;
+                };
                 pty_worker(
                     master,
                     child,
@@ -222,7 +299,11 @@ impl GhosttyTerminal {
                 );
             })
         {
-            if let Some(mut child) = child_slot.lock().unwrap().take() {
+            if let Some(mut child) = child_slot
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -242,6 +323,9 @@ impl GhosttyTerminal {
         }))
     }
     fn enqueue_input(&self, input: PtyInput) -> Result<()> {
+        if self.engine.failed.load(Ordering::Acquire) {
+            return Err(self.engine.failure());
+        }
         self.inputs.try_send(input).map_err(|error| match error {
             mpsc::TrySendError::Full(_) => {
                 anyhow::anyhow!("the terminal input queue is full")
@@ -275,18 +359,18 @@ fn wake(events: &Sender<TerminalEvent>, pending: &AtomicBool) -> bool {
 
 fn flush_pending_writes(
     master: &mut File,
-    engine: &Arc<Mutex<Engine>>,
+    engine: &Arc<TerminalEngine>,
     writes: &mut VecDeque<(PtyInput, usize)>,
     queued_bytes: &mut usize,
     write_offset: &mut usize,
-) {
+) -> Result<()> {
     for _ in 0..16 {
         let Some((input, cost)) = writes.front_mut() else {
             break;
         };
         let encoded = if let PtyInput::Key(key) = input {
             // Encode after reading output, which may have changed keyboard mode.
-            Some(key.bytes(engine.lock().unwrap().mode()))
+            Some(key.bytes(engine.update(|engine| engine.try_mode())?))
         } else {
             None
         };
@@ -324,13 +408,14 @@ fn flush_pending_writes(
             }
         }
     }
+    Ok(())
 }
 
 fn pty_worker(
     mut master: File,
     mut child: Child,
     control: PtyWorkerControl,
-    engine: Arc<Mutex<Engine>>,
+    engine: Arc<TerminalEngine>,
     events: Sender<TerminalEvent>,
     pending: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
@@ -354,16 +439,25 @@ fn pty_worker(
             shutdown.get_or_insert_with(Instant::now);
         }
         if shutdown.is_none()
-            && let Some(size) = pending_resize.lock().unwrap().take()
+            && let Some(size) = pending_resize
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
         {
-            let mut engine = engine.lock().unwrap();
-            if engine.size != size {
-                let ws = window_size(size);
-                if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &ws) } == 0
-                    && engine.resize(size).is_ok()
-                {
-                    refresh_needed = true;
+            let resize_result = engine.update(|engine| {
+                if engine.size == size {
+                    Ok(())
+                } else {
+                    let ws = window_size(size);
+                    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &ws) } == 0 {
+                        engine.resize(size)?;
+                        refresh_needed = true;
+                    }
+                    Ok(())
                 }
+            });
+            if resize_result.is_err() {
+                shutdown.get_or_insert_with(Instant::now);
             }
         }
         for _ in 0..MAX_QUEUED_PTY_INPUTS {
@@ -405,7 +499,12 @@ fn pty_worker(
         }
         // Resize can emit in-band reports even when the child is waiting and
         // produces no further output. Flush every callback batch, not just feed.
-        enqueue_replies(&mut writes, &mut queued_bytes, &mut engine.lock().unwrap());
+        if !engine.failed.load(Ordering::Acquire) {
+            let _ = engine.update(|engine| {
+                enqueue_replies(&mut writes, &mut queued_bytes, engine);
+                Ok(())
+            });
+        }
         let mut changed = false;
         // Bound each batch so continuous output cannot starve shutdown/input.
         for _ in 0..16 {
@@ -418,10 +517,15 @@ fn pty_worker(
                     break;
                 }
                 Ok(n) => {
-                    let mut e = engine.lock().unwrap();
-                    e.feed(&output[..n]);
-                    enqueue_replies(&mut writes, &mut queued_bytes, &mut e);
-                    changed = true;
+                    if !engine.failed.load(Ordering::Acquire) {
+                        changed |= engine
+                            .update(|engine| {
+                                engine.feed(&output[..n]);
+                                enqueue_replies(&mut writes, &mut queued_bytes, engine);
+                                Ok(())
+                            })
+                            .is_ok();
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -437,13 +541,22 @@ fn pty_worker(
         if refresh_needed && wake(&events, &pending) {
             refresh_needed = false;
         }
-        flush_pending_writes(
+        if engine.failed.load(Ordering::Acquire) {
+            writes.clear();
+            queued_bytes = 0;
+            write_offset = 0;
+            shutdown.get_or_insert_with(Instant::now);
+        } else if flush_pending_writes(
             &mut master,
             &engine,
             &mut writes,
             &mut queued_bytes,
             &mut write_offset,
-        );
+        )
+        .is_err()
+        {
+            shutdown.get_or_insert_with(Instant::now);
+        }
         if exit.is_none() {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -528,29 +641,45 @@ impl TerminalHandle for GhosttyTerminal {
         self.enqueue_input(PtyInput::Key(input))
     }
     fn resize(&self, size: TerminalSize) -> Result<()> {
-        *self.pending_resize.lock().unwrap() = Some(size);
+        if self.engine.failed.load(Ordering::Acquire) {
+            return Err(self.engine.failure());
+        }
+        *self
+            .pending_resize
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(size);
         let _ = (&self.signal).write(&[1]);
         Ok(())
     }
     fn scroll(&self, lines: i32) {
-        let mut e = self.engine.lock().unwrap();
-        unsafe { vg_scroll(e.p(), -i64::from(lines)) };
-        e.dirty = true;
+        let _ = self.engine.update(|engine| {
+            unsafe { vg_scroll(engine.p(), -i64::from(lines)) };
+            engine.dirty = true;
+            Ok(())
+        });
     }
     fn clear_scrollback(&self) {
-        let mut e = self.engine.lock().unwrap();
-        let _ = unsafe { vg_clear_history(e.p()) };
-        e.dirty = true;
+        let _ = self.engine.update(|engine| {
+            checked(unsafe { vg_clear_history(engine.p()) })?;
+            engine.dirty = true;
+            Ok(())
+        });
     }
     fn snapshot(&self) -> Arc<TerminalSnapshot> {
-        self.engine
+        let mut snapshot = self
+            .engine
+            .last_snapshot
             .lock()
-            .ok()
-            .and_then(|mut engine| engine.snapshot().ok())
-            .unwrap_or_else(|| Arc::new(TerminalSnapshot::default()))
+            .unwrap_or_else(|error| error.into_inner());
+        if let Ok(current) = self.engine.update(|engine| engine.snapshot()) {
+            *snapshot = current;
+        }
+        snapshot.clone()
     }
     fn input_mode(&self) -> TerminalInputMode {
-        self.engine.lock().unwrap().mode()
+        self.engine
+            .update(|engine| engine.try_mode())
+            .unwrap_or_default()
     }
     fn current_working_directory(&self) -> Option<PathBuf> {
         if !self.alive.load(Ordering::Acquire) {
@@ -573,7 +702,7 @@ impl TerminalHandle for GhosttyTerminal {
         self.foreground()
     }
     fn recent_text(&self, lines: usize) -> Option<String> {
-        let e = self.engine.lock().unwrap();
+        let e = self.engine.lock().ok()?;
         let mut n = 0;
         let p = unsafe { vg_recent_text(e.p(), &mut n, lines.max(1)) };
         if p.is_null() {
@@ -584,12 +713,14 @@ impl TerminalHandle for GhosttyTerminal {
         Some(text)
     }
     fn clear_selection(&self) {
-        self.engine.lock().unwrap().select(
-            0,
-            TerminalSelectionType::Simple,
-            TerminalPoint::default(),
-            TerminalCellSide::Left,
-        );
+        let _ = self.engine.update(|engine| {
+            engine.try_select(
+                0,
+                TerminalSelectionType::Simple,
+                TerminalPoint::default(),
+                TerminalCellSide::Left,
+            )
+        });
     }
     fn start_selection(
         &self,
@@ -597,32 +728,34 @@ impl TerminalHandle for GhosttyTerminal {
         point: TerminalPoint,
         side: TerminalCellSide,
     ) {
-        self.engine.lock().unwrap().select(1, kind, point, side);
+        let _ = self
+            .engine
+            .update(|engine| engine.try_select(1, kind, point, side));
     }
     fn update_selection(&self, point: TerminalPoint, side: TerminalCellSide) {
-        self.engine
-            .lock()
-            .unwrap()
-            .select(2, TerminalSelectionType::Simple, point, side);
+        let _ = self
+            .engine
+            .update(|engine| engine.try_select(2, TerminalSelectionType::Simple, point, side));
     }
     fn selection_text(&self) -> Option<String> {
-        self.engine.lock().unwrap().text(true)
+        self.engine.lock().ok()?.text(true)
     }
     fn search(&self, query: &str, direction: TerminalSearchDirection) -> Result<bool> {
-        let mut e = self.engine.lock().unwrap();
-        let r = unsafe {
-            vg_search(
-                e.p(),
-                query.as_ptr(),
-                query.len(),
-                (direction == TerminalSearchDirection::Previous).into(),
-            )
-        };
-        e.dirty = true;
-        if r < 0 {
-            bail!("Ghostty search: {r}")
-        }
-        Ok(r == 1)
+        self.engine.update(|e| {
+            let r = unsafe {
+                vg_search(
+                    e.p(),
+                    query.as_ptr(),
+                    query.len(),
+                    (direction == TerminalSearchDirection::Previous).into(),
+                )
+            };
+            e.dirty = true;
+            if r < 0 {
+                bail!("Ghostty search: {r}")
+            }
+            Ok(r == 1)
+        })
     }
     fn search_step(
         &self,
@@ -630,23 +763,24 @@ impl TerminalHandle for GhosttyTerminal {
         direction: TerminalSearchDirection,
         continuation: bool,
     ) -> Result<Option<bool>> {
-        let mut e = self.engine.lock().unwrap();
-        let result = unsafe {
-            vg_search_step(
-                e.p(),
-                query.as_ptr(),
-                query.len(),
-                (direction == TerminalSearchDirection::Previous).into(),
-                continuation.into(),
-            )
-        };
-        e.dirty = true;
-        match result {
-            0 => Ok(Some(false)),
-            1 => Ok(Some(true)),
-            2 => Ok(None),
-            code => bail!("Ghostty search: {code}"),
-        }
+        self.engine.update(|e| {
+            let result = unsafe {
+                vg_search_step(
+                    e.p(),
+                    query.as_ptr(),
+                    query.len(),
+                    (direction == TerminalSearchDirection::Previous).into(),
+                    continuation.into(),
+                )
+            };
+            e.dirty = true;
+            match result {
+                0 => Ok(Some(false)),
+                1 => Ok(Some(true)),
+                2 => Ok(None),
+                code => bail!("Ghostty search: {code}"),
+            }
+        })
     }
     fn hyperlink_at(&self, point: TerminalPoint) -> Option<String> {
         let s = self.snapshot();

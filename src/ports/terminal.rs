@@ -292,6 +292,9 @@ pub enum TerminalEvent {
     ClipboardStore(String),
     ClipboardLoad(Arc<dyn Fn(&str) -> String + Send + Sync>),
     Bell,
+    /// The backend cannot safely continue; its last valid snapshot may remain
+    /// visible while the PTY shuts down. Preserve this error after `Exit`.
+    Failed(String),
     Exit(Option<i32>),
 }
 

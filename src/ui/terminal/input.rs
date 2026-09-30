@@ -40,6 +40,9 @@ impl TerminalView {
     }
 
     pub(crate) fn send(&mut self, input: Vec<u8>, cx: &mut Context<Self>) -> bool {
+        if self.failed || self.exited {
+            return false;
+        }
         let Some(handle) = &self.handle else {
             return false;
         };
@@ -61,6 +64,9 @@ impl TerminalView {
     }
 
     pub(crate) fn send_protocol(&mut self, input: Vec<u8>, cx: &mut Context<Self>) -> bool {
+        if self.failed || self.exited {
+            return false;
+        }
         let Some(handle) = &self.handle else {
             return false;
         };
@@ -73,6 +79,9 @@ impl TerminalView {
         event_type: TerminalKeyEventType,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.failed || self.exited {
+            return false;
+        }
         let Some(handle) = &self.handle else {
             return false;
         };
@@ -88,6 +97,9 @@ impl TerminalView {
     }
 
     pub(crate) fn current_input_mode(&self) -> TerminalInputMode {
+        if self.failed || self.exited {
+            return TerminalInputMode::default();
+        }
         self.handle
             .as_ref()
             .map(|handle| handle.input_mode())
@@ -108,6 +120,9 @@ impl TerminalView {
         token: Uuid,
         cx: &mut Context<Self>,
     ) -> TerminalInsertStatus {
+        if self.failed || self.exited {
+            return TerminalInsertStatus::Rejected;
+        }
         let Some(handle) = &self.handle else {
             return TerminalInsertStatus::Rejected;
         };
@@ -149,6 +164,9 @@ impl TerminalView {
     }
 
     pub(crate) fn request_paste(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.failed || self.exited {
+            return;
+        }
         // When the app enabled bracketed paste, inject immediately (Warp/iTerm).
         // Confirm only for raw pastes that could execute as typed input.
         let bracketed = self.current_input_mode().bracketed_paste;
