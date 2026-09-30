@@ -20,3 +20,12 @@ still produce alpha 1. The continuous base keeps corners and gaps covered.
 The root Cargo patch applies to both the application and its tests. No Cargo
 registry sources are modified. Remove this override when an upstream release
 contains the correction and has been validated with Vibra.
+
+## Vendored footprint
+
+The upstream example programs and their assets are omitted, along with their
+`[[example]]` targets in the normalized `Cargo.toml`. They are not used by Vibra;
+the example GIF alone occupied 4.47 MB. The standalone GPUI `Cargo.lock` is also
+omitted: Vibra's root lockfile pins the dependency graph used by the app and its
+tests. Library sources, build inputs, upstream tests, provenance and license files
+are retained. `Cargo.toml.orig` remains the original upstream manifest for reference.
