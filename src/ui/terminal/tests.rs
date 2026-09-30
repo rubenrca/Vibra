@@ -1,9 +1,11 @@
+use super::render::{collect_background_runs, to_hsla};
 use super::*;
 use crate::domain::agents::AgentRuntimeState;
 use crate::ports::terminal::TerminalAgentKindSource;
+use crate::ports::terminal_keyboard::{TerminalKeyEventType, TerminalKeyInput};
 use anyhow::Result;
 use async_channel::{Receiver, Sender};
-use gpui::{KeyBinding, Modifiers, TestAppContext};
+use gpui::{Context, KeyBinding, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, TestAppContext};
 use std::{cell::RefCell, rc::Rc};
 
 struct MockTerminalPort {
@@ -142,20 +144,52 @@ fn key(key: &str, modifiers: Modifiers) -> Keystroke {
     }
 }
 
-#[gpui::test]
-fn terminal_only_resizes_pty_when_grid_metrics_change(cx: &mut TestAppContext) {
+fn mock_port() -> (Arc<MockTerminalPort>, Arc<MockTerminalHandle>) {
     let port = Arc::new(MockTerminalPort::new());
     let handle = port.handle.clone();
-    let (view, cx) = cx.add_window_view(|_, cx| {
-        TerminalView::new_with_environment(
-            Uuid::new_v4(),
-            "Terminal".into(),
-            Path::new("/"),
-            port,
-            HashMap::new(),
-            cx,
-        )
-    });
+    (port, handle)
+}
+
+fn spawn_terminal(port: Arc<MockTerminalPort>, cx: &mut Context<TerminalView>) -> TerminalView {
+    spawn_terminal_with_id(Uuid::new_v4(), port, cx)
+}
+
+fn spawn_terminal_with_id(
+    session_id: Uuid,
+    port: Arc<MockTerminalPort>,
+    cx: &mut Context<TerminalView>,
+) -> TerminalView {
+    TerminalView::new_with_environment(
+        session_id,
+        "Terminal".into(),
+        Path::new("/"),
+        port,
+        HashMap::new(),
+        cx,
+    )
+}
+
+fn open_terminal(
+    cx: &mut TestAppContext,
+    configure: impl FnOnce(&MockTerminalHandle),
+) -> (gpui::WindowHandle<TerminalView>, Arc<MockTerminalHandle>) {
+    let (port, handle) = mock_port();
+    configure(&handle);
+    let window = cx
+        .update(|cx| {
+            let port = port.clone();
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| spawn_terminal(port, cx))
+            })
+        })
+        .unwrap();
+    (window, handle)
+}
+
+#[gpui::test]
+fn terminal_only_resizes_pty_when_grid_metrics_change(cx: &mut TestAppContext) {
+    let (port, handle) = mock_port();
+    let (view, cx) = cx.add_window_view(|_, cx| spawn_terminal(port, cx));
     let draw = |cx: &mut gpui::VisualTestContext| {
         cx.update(|window, cx| window.draw(cx).clear());
         cx.run_until_parked();
@@ -183,26 +217,12 @@ fn terminal_key_context_dispatches_product_shortcuts(cx: &mut TestAppContext) {
             KeyBinding::new("cmd-=", IncreaseTerminalFontSize, Some("Terminal")),
         ]);
     });
-    let port = Arc::new(MockTerminalPort::new());
-    let mock_handle = port.handle.clone();
-    let window = cx.update(|cx| {
-        let port = port.clone();
-        cx.open_window(Default::default(), |window, cx| {
-            let terminal = cx.new(|cx| {
-                TerminalView::new_with_environment(
-                    Uuid::new_v4(),
-                    "Terminal".into(),
-                    Path::new("/"),
-                    port,
-                    std::collections::HashMap::new(),
-                    cx,
-                )
-            });
-            terminal.read(cx).focus_handle(cx).focus(window);
-            terminal
+    let (window, mock_handle) = open_terminal(cx, |_| {});
+    window
+        .update(cx, |terminal, window, cx| {
+            terminal.focus_handle(cx).focus(window);
         })
-        .unwrap()
-    });
+        .unwrap();
 
     cx.dispatch_keystroke(*window, Keystroke::parse("cmd-f").unwrap());
     window
@@ -227,28 +247,13 @@ fn terminal_key_context_dispatches_product_shortcuts(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn key_release_does_not_follow_exited_foreground_job_into_shell(cx: &mut TestAppContext) {
-    let port = Arc::new(MockTerminalPort::new());
-    let handle = port.handle.clone();
-    *handle.mode.lock().unwrap() = TerminalInputMode {
-        disambiguate_escape_codes: true,
-        report_event_types: true,
-        ..TerminalInputMode::default()
-    };
-    *handle.foreground.lock().unwrap() = Some(200);
-    let window = cx.update(|cx| {
-        cx.open_window(Default::default(), |_, cx| {
-            cx.new(|cx| {
-                TerminalView::new_with_environment(
-                    Uuid::new_v4(),
-                    "Terminal".into(),
-                    Path::new("/"),
-                    port,
-                    HashMap::new(),
-                    cx,
-                )
-            })
-        })
-        .unwrap()
+    let (window, handle) = open_terminal(cx, |handle| {
+        *handle.mode.lock().unwrap() = TerminalInputMode {
+            disambiguate_escape_codes: true,
+            report_event_types: true,
+            ..TerminalInputMode::default()
+        };
+        *handle.foreground.lock().unwrap() = Some(200);
     });
     let ctrl_c = key(
         "c",
@@ -316,24 +321,7 @@ fn key_release_does_not_follow_exited_foreground_job_into_shell(cx: &mut TestApp
 #[gpui::test]
 fn osc52_clipboard_reads_wait_for_explicit_consent(cx: &mut TestAppContext) {
     cx.write_to_clipboard(ClipboardItem::new_string("token-super-secreto".into()));
-    let port = Arc::new(MockTerminalPort::new());
-    let mock_handle = port.handle.clone();
-    let window = cx.update(|cx| {
-        let port = port.clone();
-        cx.open_window(Default::default(), |_, cx| {
-            cx.new(|cx| {
-                TerminalView::new_with_environment(
-                    Uuid::new_v4(),
-                    "Terminal".into(),
-                    Path::new("/"),
-                    port,
-                    std::collections::HashMap::new(),
-                    cx,
-                )
-            })
-        })
-        .unwrap()
-    });
+    let (window, mock_handle) = open_terminal(cx, |_| {});
 
     window
         .update(cx, |terminal, _, cx| {
@@ -360,24 +348,7 @@ fn osc52_clipboard_reads_wait_for_explicit_consent(cx: &mut TestAppContext) {
 #[gpui::test]
 fn denying_an_osc52_clipboard_read_sends_empty_response(cx: &mut TestAppContext) {
     cx.write_to_clipboard(ClipboardItem::new_string("no-compartir".into()));
-    let port = Arc::new(MockTerminalPort::new());
-    let mock_handle = port.handle.clone();
-    let window = cx.update(|cx| {
-        let port = port.clone();
-        cx.open_window(Default::default(), |_, cx| {
-            cx.new(|cx| {
-                TerminalView::new_with_environment(
-                    Uuid::new_v4(),
-                    "Terminal".into(),
-                    Path::new("/"),
-                    port,
-                    std::collections::HashMap::new(),
-                    cx,
-                )
-            })
-        })
-        .unwrap()
-    });
+    let (window, mock_handle) = open_terminal(cx, |_| {});
 
     window
         .update(cx, |terminal, _, cx| {
@@ -398,24 +369,7 @@ fn denying_an_osc52_clipboard_read_sends_empty_response(cx: &mut TestAppContext)
 #[gpui::test]
 fn osc52_read_flood_caps_pending_confirmations(cx: &mut TestAppContext) {
     cx.write_to_clipboard(ClipboardItem::new_string("private".into()));
-    let port = Arc::new(MockTerminalPort::new());
-    let mock_handle = port.handle.clone();
-    let window = cx.update(|cx| {
-        let port = port.clone();
-        cx.open_window(Default::default(), |_, cx| {
-            cx.new(|cx| {
-                TerminalView::new_with_environment(
-                    Uuid::new_v4(),
-                    "Terminal".into(),
-                    Path::new("/"),
-                    port,
-                    std::collections::HashMap::new(),
-                    cx,
-                )
-            })
-        })
-        .unwrap()
-    });
+    let (window, mock_handle) = open_terminal(cx, |_| {});
     window
         .update(cx, |terminal, _, cx| {
             for _ in 0..MAX_CLIPBOARD_CONFIRMATIONS + 1 {
@@ -438,24 +392,7 @@ fn osc52_read_flood_caps_pending_confirmations(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn rejected_terminal_input_shows_error_until_a_write_succeeds(cx: &mut TestAppContext) {
-    let port = Arc::new(MockTerminalPort::new());
-    let handle = port.handle.clone();
-    let window = cx.update(|cx| {
-        let port = port.clone();
-        cx.open_window(Default::default(), |_, cx| {
-            cx.new(|cx| {
-                TerminalView::new_with_environment(
-                    Uuid::new_v4(),
-                    "Terminal".into(),
-                    Path::new("/"),
-                    port,
-                    std::collections::HashMap::new(),
-                    cx,
-                )
-            })
-        })
-        .unwrap()
-    });
+    let (window, handle) = open_terminal(cx, |_| {});
 
     *handle.reject_input.lock().unwrap() = true;
     window
@@ -489,19 +426,9 @@ fn rejected_terminal_input_shows_error_until_a_write_succeeds(cx: &mut TestAppCo
 
 #[gpui::test]
 fn external_paste_reports_confirmation_cancellation_and_exit(cx: &mut TestAppContext) {
-    let port = Arc::new(MockTerminalPort::new());
-    let handle = port.handle.clone();
+    let (port, handle) = mock_port();
     let session_id = Uuid::new_v4();
-    let (view, cx) = cx.add_window_view(|_, cx| {
-        TerminalView::new_with_environment(
-            session_id,
-            "Terminal".into(),
-            Path::new("/"),
-            port,
-            std::collections::HashMap::new(),
-            cx,
-        )
-    });
+    let (view, cx) = cx.add_window_view(|_, cx| spawn_terminal_with_id(session_id, port, cx));
     let resolved = Rc::new(RefCell::new(Vec::new()));
     let sink = resolved.clone();
     cx.update(|_, cx| {
@@ -577,24 +504,7 @@ fn external_paste_reports_confirmation_cancellation_and_exit(cx: &mut TestAppCon
 
 #[gpui::test]
 fn external_paste_immediate_status_tracks_pty_acceptance(cx: &mut TestAppContext) {
-    let port = Arc::new(MockTerminalPort::new());
-    let handle = port.handle.clone();
-    let window = cx.update(|cx| {
-        let port = port.clone();
-        cx.open_window(Default::default(), |_, cx| {
-            cx.new(|cx| {
-                TerminalView::new_with_environment(
-                    Uuid::new_v4(),
-                    "Terminal".into(),
-                    Path::new("/"),
-                    port,
-                    std::collections::HashMap::new(),
-                    cx,
-                )
-            })
-        })
-        .unwrap()
-    });
+    let (window, handle) = open_terminal(cx, |_| {});
     handle.mode.lock().unwrap().bracketed_paste = true;
     window
         .update(cx, |terminal, _, cx| {

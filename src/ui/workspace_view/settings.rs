@@ -63,6 +63,7 @@ impl SettingsPage {
     }
 }
 
+#[derive(Clone, Copy)]
 struct SettingsToggleRow {
     label: &'static str,
     description: &'static str,
@@ -75,6 +76,7 @@ struct FontSizeRow {
     label: &'static str,
     description: &'static str,
     size: f32,
+    default: f32,
     ids: [&'static str; 3],
 }
 
@@ -459,15 +461,14 @@ impl WorkspaceView {
             SettingsPage::Inbox => panel
                 .child(self.settings_section_heading(
                     "Connections",
-                    "GitHub uses your gh session. Connect Linear with a personal API key stored only on this Mac.",
+                    concat!(
+                        "GitHub uses your gh session. Connect Linear with a personal API key ",
+                        "stored only on this Mac.",
+                    ),
                 ))
                 .child(
-                    div()
+                    settings_card()
                         .py_3()
-                        .rounded(px(12.0))
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(surface_tint(colors().elevated, colors().background))
                         .child(self.inbox_connection_controls(cx)),
                 ),
         };
@@ -522,8 +523,11 @@ impl WorkspaceView {
             .child(self.settings_button("−", down, cx, move |this, cx| {
                 set(this, size - 1.0, cx);
             }))
-            .child(self.settings_button("Reset", reset, cx, move |this, cx| {
-                set(this, 12.0, cx);
+            .child(self.settings_button("Reset", reset, cx, {
+                let default = row.default;
+                move |this, cx| {
+                    set(this, default, cx);
+                }
             }))
             .child(self.settings_button("+", up, cx, move |this, cx| {
                 set(this, size + 1.0, cx);
@@ -531,6 +535,37 @@ impl WorkspaceView {
     }
 
     fn general_settings(&self, panel: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
+        let startup = [
+            SettingsToggleRow {
+                label: "Hidden files",
+                description: "Include files and folders whose names start with a dot.",
+                enabled: self.settings.show_hidden_files,
+                divider: true,
+                id: "settings-hidden",
+            },
+            SettingsToggleRow {
+                label: "Global navigation",
+                description: "Show projects and global shortcuts when the app opens.",
+                enabled: self.settings.left_sidebar_visible,
+                divider: true,
+                id: "settings-sidebar-visible",
+            },
+            SettingsToggleRow {
+                label: "Workspace panel",
+                description: "Show Explorer and Changes on the right.",
+                enabled: self.settings.right_sidebar_visible,
+                divider: false,
+                id: "settings-git-visible",
+            },
+        ];
+        let mut startup_card = settings_card().overflow_hidden();
+        for row in startup {
+            let id = row.id;
+            startup_card =
+                startup_card.child(self.settings_toggle_row(row, cx, move |this, cx| {
+                    this.toggle_general_setting(id, cx);
+                }));
+        }
         panel
             .child(self.settings_section_heading(
                 "Alerts",
@@ -542,73 +577,51 @@ impl WorkspaceView {
                     .child(self.settings_toggle_row(
                         SettingsToggleRow {
                             label: "Activity notifications",
-                            description: "Notify when an agent finishes or needs attention outside the current pane.",
+                            description: concat!(
+                                "Notify when an agent finishes or needs attention ",
+                                "outside the current pane.",
+                            ),
                             enabled: self.settings.agent_notifications,
                             divider: false,
                             id: "settings-agent-notifications",
                         },
                         cx,
-                        |this, cx| {
-                            this.settings.agent_notifications = !this.settings.agent_notifications;
-                            if this.settings.agent_notifications {
-                                crate::infrastructure::notifications::request_authorization();
-                            }
-                            this.persist_settings(cx);
-                        },
+                        |this, cx| this.toggle_general_setting("settings-agent-notifications", cx),
                     )),
             )
             .child(self.settings_section_heading(
                 "On startup",
                 "Choose which elements appear when Vibra opens.",
             ))
-            .child(
-                settings_card().overflow_hidden()
-                    .child(self.settings_toggle_row(
-                        SettingsToggleRow {
-                            label: "Hidden files",
-                            description: "Include files and folders whose names start with a dot.",
-                            enabled: self.settings.show_hidden_files,
-                            divider: true,
-                            id: "settings-hidden",
-                        },
-                        cx,
-                        |this, cx| {
-                            this.settings.show_hidden_files = !this.settings.show_hidden_files;
-                            this.refresh_project_files(cx);
-                            this.persist_settings(cx);
-                        },
-                    ))
-                    .child(self.settings_toggle_row(
-                        SettingsToggleRow {
-                            label: "Global navigation",
-                            description: "Show projects and global shortcuts when the app opens.",
-                            enabled: self.settings.left_sidebar_visible,
-                            divider: true,
-                            id: "settings-sidebar-visible",
-                        },
-                        cx,
-                        |this, cx| {
-                            this.set_left_sidebar_visible(!this.settings.left_sidebar_visible, true, cx);
-                        },
-                    ))
-                    .child(self.settings_toggle_row(
-                        SettingsToggleRow {
-                            label: "Workspace panel",
-                            description: "Show Explorer and Changes on the right.",
-                            enabled: self.settings.right_sidebar_visible,
-                            divider: false,
-                            id: "settings-git-visible",
-                        },
-                        cx,
-                        |this, cx| {
-                            let open = !this.settings.right_sidebar_visible;
-                            this.set_right_sidebar_visible(open, true, cx);
-                            if open {
-                                this.sync_diff_root(cx);
-                            }
-                        },
-                    )),
-            )
+            .child(startup_card)
+    }
+
+    fn toggle_general_setting(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        match id {
+            "settings-agent-notifications" => {
+                self.settings.agent_notifications = !self.settings.agent_notifications;
+                if self.settings.agent_notifications {
+                    crate::infrastructure::notifications::request_authorization();
+                }
+                self.persist_settings(cx);
+            }
+            "settings-hidden" => {
+                self.settings.show_hidden_files = !self.settings.show_hidden_files;
+                self.refresh_project_files(cx);
+                self.persist_settings(cx);
+            }
+            "settings-sidebar-visible" => {
+                self.set_left_sidebar_visible(!self.settings.left_sidebar_visible, true, cx);
+            }
+            "settings-git-visible" => {
+                let open = !self.settings.right_sidebar_visible;
+                self.set_right_sidebar_visible(open, true, cx);
+                if open {
+                    self.sync_diff_root(cx);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn agent_settings(&self, panel: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {

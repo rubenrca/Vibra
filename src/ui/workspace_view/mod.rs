@@ -2,8 +2,10 @@
 //! settings owns its pages and automation resolves agent activity.
 //! None of them introduces a second workspace model.
 
+mod actions;
 mod automation;
 mod automations_page;
+mod bootstrap;
 mod chrome;
 mod context_menu;
 mod drag;
@@ -23,11 +25,13 @@ mod tab_drag;
 mod tabs;
 mod terminals;
 mod titlebar;
+mod types;
 mod usage;
 mod work_inbox;
 
 use automation::HookAgentPresence;
 use automations_page::AutomationForm;
+pub(crate) use chrome::icon_button;
 use chrome::*;
 pub(crate) use drag::*;
 pub(crate) use files::{file_tree_icon, file_tree_icon_color};
@@ -35,7 +39,7 @@ use settings::SettingsPage;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,33 +52,23 @@ use uuid::Uuid;
 
 use crate::domain::inbox::Inbox;
 use crate::domain::library::Library;
-use crate::domain::workspace::{
-    PaneFocusDirection, PaneResizeDirection, PaneSplitDirection, WorkspaceSnapshot,
-};
-use crate::infrastructure::automation::{
-    AgentAttention, AgentHookStatus, AgentRuntimeState, AutomationServer, agent_hook_status,
-};
+use crate::domain::workspace::{PaneSplitDirection, WorkspaceSnapshot};
+use crate::infrastructure::automation::{AgentHookStatus, AutomationServer};
 use crate::infrastructure::editor::InstalledEditor;
 use crate::infrastructure::library::LibraryRepository;
 use crate::infrastructure::notifications::AgentActivitySnapshot;
-use crate::infrastructure::persistence::{FinishError, PersistenceQueue, WorkspaceRepository};
+use crate::infrastructure::persistence::{PersistenceQueue, WorkspaceRepository};
 use crate::infrastructure::settings::{
     AppSettings, MAX_LEFT_SIDEBAR_WIDTH, MAX_RIGHT_SIDEBAR_WIDTH, MIN_LEFT_SIDEBAR_WIDTH,
     MIN_RIGHT_SIDEBAR_WIDTH, SettingsRepository,
 };
-use crate::ports::files::{FileEntry, FileSystemPort};
+use crate::ports::files::FileSystemPort;
 use crate::ports::git::GitPort;
 use crate::ports::terminal::TerminalAgentPresence;
 use crate::ports::terminal::TerminalPort;
-use crate::ui::diff_view::{DiffFileIndexView, DiffView, DiffViewEvent};
-use crate::ui::terminal::{TerminalInsertStatus, TerminalView};
-use crate::ui::theme::{self, colors, surface, window_surface};
-use crate::{
-    CloseTerminal, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NewTerminalTab,
-    NextPane, NextProject, PreviousPane, PreviousProject, ResizePaneDown, ResizePaneLeft,
-    ResizePaneRight, ResizePaneUp, ShowSettings, SplitPaneDown, SplitPaneLeft, SplitPaneRight,
-    SplitPaneUp, ToggleLeftSidebar, ToggleRightSidebar,
-};
+use crate::ui::diff_view::{DiffFileIndexView, DiffView};
+use crate::ui::terminal::TerminalView;
+use crate::ui::theme::{colors, surface, window_surface};
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
 const TITLEBAR_CHROME_COLLAPSED: f32 = 184.0;
@@ -85,111 +79,7 @@ const TITLEBAR_HEIGHT: f32 = 40.0;
 const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(160);
 /// ~60 fps ticks; only runs while a sidebar is mid-animation.
 const SIDEBAR_ANIM_FRAME: Duration = Duration::from_millis(16);
-#[derive(Clone)]
-struct PaneIdentity {
-    title: String,
-    detail: Option<String>,
-    agent_kind: Option<String>,
-    agent_state: Option<AgentRuntimeState>,
-    agent_attention: Option<AgentAttention>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkspaceSection {
-    Workspace,
-    Inbox,
-    Notes,
-    Automations,
-    Settings,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RightSidebarMode {
-    Files,
-    Diff,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ProjectFileRow {
-    entry: FileEntry,
-    depth: usize,
-    expanded: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PaletteMode {
-    Commands,
-    Files,
-}
-
-#[derive(Debug, Clone)]
-enum PaletteAction {
-    AddProject,
-    SelectProject(Uuid),
-    NewTerminalTab,
-    OpenIde,
-    Split(PaneSplitDirection),
-    EqualizePanes,
-    TogglePaneZoom,
-    ToggleWorkspacePanel,
-    ShowFiles,
-    ShowSettings,
-    ShowSection(WorkspaceSection),
-    NewNote,
-    NewAutomation,
-    RunAutomation(Uuid),
-    OpenFile(PathBuf),
-}
-
-#[derive(Debug, Clone)]
-struct PaletteItem {
-    label: String,
-    detail: String,
-    action: PaletteAction,
-}
-
-#[derive(Debug, Clone)]
-enum ContextMenuKind {
-    Pane { session_id: Uuid },
-    Project { project_id: Uuid },
-    SidebarBackground,
-}
-
-#[derive(Debug, Clone)]
-struct ContextMenuState {
-    kind: ContextMenuKind,
-    x: f32,
-    y: f32,
-}
-
-#[derive(Debug, Clone)]
-enum RenamePromptKind {
-    Pane { session_id: Uuid },
-    Project { project_id: Uuid },
-    NewFile { directory: PathBuf },
-    NewFolder { directory: PathBuf },
-}
-
-#[derive(Debug, Clone)]
-struct RenamePrompt {
-    kind: RenamePromptKind,
-    value: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContextMenuAction {
-    Rename,
-    AddProject,
-    NewTab,
-    AssociateFolder,
-    RevealProject,
-    RemoveProject,
-    ToggleProjectPin,
-    ClosePane,
-    SplitRight,
-    SplitDown,
-    ToggleZoom,
-}
+pub(super) use types::*;
 
 pub struct WorkspaceView {
     snapshot: WorkspaceSnapshot,
@@ -322,375 +212,6 @@ pub struct WorkspaceDependencies {
 }
 
 impl WorkspaceView {
-    pub fn new(
-        dependencies: WorkspaceDependencies,
-        launch_directory: PathBuf,
-        focus_handle: FocusHandle,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let WorkspaceDependencies {
-            repository,
-            settings_repository,
-            terminal_port,
-            file_port,
-            git_port,
-        } = dependencies;
-        let (mut snapshot, mut persistence_error, first_launch, workspace_load_error) =
-            match repository.load() {
-                Ok(Some(snapshot)) => (snapshot, None, false, None),
-                Ok(None) => (WorkspaceSnapshot::default(), None, true, None),
-                Err(error) => {
-                    let message: SharedString = format!(
-                        concat!(
-                            "Could not restore the workspace: {error}. ",
-                            "Changes will not be saved until the file is repaired."
-                        ),
-                        error = error
-                    )
-                    .into();
-                    (WorkspaceSnapshot::default(), None, false, Some(message))
-                }
-            };
-        theme::refresh_user_themes();
-        let (settings, settings_load_error) = match settings_repository.load() {
-            Ok(settings) => (settings, None),
-            Err(error) => {
-                let message: SharedString = format!(
-                    "Could not load settings: {error}. Changes will not be saved until the file is repaired."
-                )
-                .into();
-                (AppSettings::default(), Some(message))
-            }
-        };
-        let library_repository = settings_repository
-            .directory()
-            .map(LibraryRepository::in_directory);
-        let (library, library_load_error) = match library_repository
-            .as_ref()
-            .map(|repo| repo.load())
-        {
-            Some(Ok(library)) => (library, None),
-            Some(Err(error)) => (
-                Library::default(),
-                Some(SharedString::from(format!(
-                    "Could not load notes and automations: {error}. Changes will not be saved until the file is repaired."
-                ))),
-            ),
-            None => (Library::default(), None),
-        };
-        // Earlier versions kept several sessions per project; the UI now has
-        // one row of tabs per project, so their tabs are merged on load.
-        let consolidated =
-            workspace_load_error.is_none() && snapshot.consolidate_project_sessions();
-        let relocated =
-            launch_directory.is_dir() && snapshot.relocate_root(Path::new("/"), &launch_directory);
-        let mut snapshot_changed = consolidated || relocated;
-        if first_launch {
-            let project = snapshot.add_project(&launch_directory);
-            snapshot.open_tab_in_project(project, true);
-            snapshot_changed = true;
-        }
-        if snapshot_changed
-            && workspace_load_error.is_none()
-            && let Err(error) = repository.save(&snapshot)
-        {
-            persistence_error = Some(format!("Could not save the workspace: {error}").into());
-        }
-
-        let (automation_server, automation_socket, automation_task) =
-            match AutomationServer::start() {
-                Ok(server) => {
-                    let socket = server.path().to_path_buf();
-                    let requests = server.receiver();
-                    let task = cx.spawn(async move |this, cx| {
-                        while let Ok(request) = requests.recv().await {
-                            if this
-                                .update(cx, |this, cx| {
-                                    this.handle_automation_request(request, cx);
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    });
-                    (Some(server), Some(socket), Some(task))
-                }
-                Err(error) => {
-                    if persistence_error.is_none() {
-                        persistence_error =
-                            Some(format!("Local automation unavailable: {error}").into());
-                    }
-                    (None, None, None)
-                }
-            };
-
-        let diff_root = snapshot
-            .selected_project()
-            .and_then(|project| project.directory().map(PathBuf::from))
-            .unwrap_or_else(|| launch_directory.clone());
-        let diff_view = cx.new(|cx| {
-            let mut view = DiffView::new(diff_root, git_port.clone(), cx);
-            view.set_preferences(
-                settings.diff_split,
-                settings.diff_wrap,
-                settings.diff_font_size,
-                cx,
-            );
-            view
-        });
-        let diff_file_index = cx.new(|cx| DiffFileIndexView::new(diff_view.clone(), cx));
-        let diff_subscription = cx.subscribe(
-            &diff_view,
-            |this, _diff_view, event: &DiffViewEvent, cx| match event {
-                DiffViewEvent::ReviewOpened => {
-                    this.sync_review_docking(cx);
-                    if let Some(tab_id) = this.review_dock_owner() {
-                        this.snapshot.select_tab(tab_id);
-                    }
-                    this.review_tab_active = true;
-                    this.sync_terminal_surface_visibility(cx);
-                    cx.notify();
-                }
-                DiffViewEvent::Changed => {
-                    this.sync_review_docking(cx);
-                    if !this.diff_view.read(cx).review_expanded() {
-                        this.review_tab_active = false;
-                    }
-                    this.sync_terminal_surface_visibility(cx);
-                    this.sync_git_panel_visibility(cx);
-                    cx.notify();
-                }
-                DiffViewEvent::ReturnToTerminal => {
-                    if this.workspace_section == WorkspaceSection::Workspace {
-                        this.pending_focus_session =
-                            this.snapshot.selected_session().map(|session| session.id);
-                        cx.notify();
-                    }
-                }
-                DiffViewEvent::RunInTerminal { title, command } => {
-                    if let Some(project_id) = this.snapshot.selected_project_id
-                        && let Err(reason) =
-                            this.run_in_new_tab(project_id, title, command, true, cx)
-                    {
-                        this.persistence_error = Some(reason.into());
-                    }
-                    cx.notify();
-                }
-                DiffViewEvent::PreferencesChanged { split, wrap } => {
-                    this.settings.diff_split = *split;
-                    this.settings.diff_wrap = *wrap;
-                    this.sync_inbox_review_preferences(cx);
-                    this.persist_settings(cx);
-                }
-                DiffViewEvent::SendReview {
-                    prompt,
-                    delivery_id,
-                } => {
-                    let status = this.send_review_to_agent(prompt, *delivery_id, cx);
-                    if status == TerminalInsertStatus::Pending {
-                        return;
-                    }
-                    let diff_view = this.diff_view.clone();
-                    let delivery_id = *delivery_id;
-                    cx.spawn(async move |_, cx| {
-                        let _ = diff_view.update(cx, |view, cx| {
-                            view.resolve_review_delivery(
-                                delivery_id,
-                                status == TerminalInsertStatus::Accepted,
-                                cx,
-                            );
-                        });
-                    })
-                    .detach();
-                }
-            },
-        );
-        let (agent_hook_status, agent_hook_error) = match agent_hook_status() {
-            Ok(status) => (Some(status), None),
-            Err(error) => (
-                None,
-                Some(format!("Could not query integrations: {error}").into()),
-            ),
-        };
-        let (persistence_queue, persistence_result_task) = match PersistenceQueue::start(
-            repository.clone(),
-            settings_repository.clone(),
-            library_repository.clone(),
-        ) {
-            Ok((queue, results)) => {
-                let task = cx.spawn(async move |this, cx| {
-                    while let Ok(result) = results.recv().await {
-                        if this
-                            .update(cx, |this, cx| this.apply_persistence_result(result, cx))
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                });
-                (Some(queue), Some(task))
-            }
-            Err(error) => {
-                if persistence_error.is_none() {
-                    persistence_error =
-                        Some(format!("Background saving unavailable: {error}").into());
-                }
-                (None, None)
-            }
-        };
-        let release_subscription = cx.on_release(|this, _| {
-            let workspace = (this.persist_generation > 0 && this.workspace_load_error.is_none())
-                .then(|| (this.persist_generation, this.snapshot.clone()));
-            let settings = ((this.settings_generation > 0
-                || this.window_size_persist_generation > 0)
-                && this.settings_load_error.is_none())
-            .then(|| (this.settings_generation, this.settings.clone()));
-            let library = (this.library_generation > 0 && this.library_load_error.is_none())
-                .then(|| (this.library_generation, this.library.clone()));
-            if let Some(queue) = &this.persistence_queue {
-                match queue.finish(workspace, settings, library) {
-                    Ok(()) => {}
-                    Err(FinishError::Save(error)) => eprintln!("{error}"),
-                    Err(FinishError::Unavailable) => this.save_final_direct(),
-                }
-            } else {
-                this.save_final_direct();
-            }
-        });
-        let mut view = Self {
-            snapshot,
-            repository,
-            settings_repository,
-            settings: settings.clone(),
-            launch_directory,
-            terminal_port,
-            file_port,
-            git_port,
-            branch_summary: None,
-            project_diff_stats: HashMap::new(),
-            _status_task: None,
-            usage: usage::UsageState::default(),
-            diff_view,
-            diff_file_index,
-            _diff_subscription: diff_subscription,
-            pending_focus_session: None,
-            terminals: HashMap::new(),
-            terminal_subscriptions: HashMap::new(),
-            pending_review_pastes: HashMap::new(),
-            automation_tokens: HashMap::new(),
-            automation_socket,
-            _automation_server: automation_server,
-            _automation_task: automation_task,
-            agent_presence: HashMap::new(),
-            hook_agent_presence: HashMap::new(),
-            pane_names: HashMap::new(),
-            agent_activity_seen: HashMap::new(),
-            agent_hook_status,
-            agent_hook_error,
-            window_is_active: true,
-            focus_handle,
-            left_sidebar_progress: if settings.left_sidebar_visible {
-                1.0
-            } else {
-                0.0
-            },
-            workspace_section: WorkspaceSection::Workspace,
-            review_tab_active: false,
-            review_split_direction: PaneSplitDirection::Right,
-            review_docked_tab_id: None,
-            pane_drop_preview: None,
-            tab_strip_drop: None,
-            tab_motion: SlotMotion::default(),
-            tab_width: Rc::new(Cell::new(px(0.0))),
-            project_motion: RefCell::new([SlotMotion::default(), SlotMotion::default()]),
-            project_drop: None,
-            navigation: tabs::Navigation::default(),
-            inbox: Inbox::default(),
-            work_inbox: work_inbox::WorkInbox::default(),
-            library,
-            library_repository,
-            library_error: None,
-            library_load_error,
-            library_save_error: None,
-            library_generation: 0,
-            _library_task: None,
-            selected_note_id: None,
-            note_editing: false,
-            automation_form: None,
-            _automation_scheduler: None,
-            expanded_directories: HashSet::new(),
-            project_files_root: None,
-            project_files: Arc::new(Vec::new()),
-            selected_file_path: None,
-            file_error: None,
-            palette_mode: None,
-            palette_query: String::new(),
-            palette_selected: 0,
-            palette_files: Vec::new(),
-            palette_loading: false,
-            palette_error: None,
-            settings_page: SettingsPage::General,
-            theme_query: String::new(),
-            context_menu: None,
-            ide_menu_open: false,
-            ide_discovering: false,
-            installed_editors: Vec::new(),
-            ide_icons: HashMap::new(),
-            rename_prompt: None,
-            right_sidebar_progress: if settings.right_sidebar_visible {
-                1.0
-            } else {
-                0.0
-            },
-            right_sidebar_mode: RightSidebarMode::Files,
-            sidebar_anim_token: 0,
-            _sidebar_anim_task: None,
-            initial_terminal_focus_pending: true,
-            pane_resize_dirty: false,
-            sidebar_resize_dirty: false,
-            reorder_drag: None,
-            dismissed_banner_errors: HashSet::new(),
-            persistence_error,
-            workspace_save_error: workspace_load_error.clone(),
-            settings_save_error: settings_load_error.clone(),
-            workspace_load_error,
-            settings_load_error,
-            persistence_queue,
-            _persistence_result_task: persistence_result_task,
-            persist_generation: 0,
-            _persist_task: None,
-            settings_generation: 0,
-            files_request_id: 0,
-            _files_task: None,
-            files_watch: None,
-            palette_request_id: 0,
-            _palette_task: None,
-            _open_ide_task: None,
-            home_directory: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
-            _appearance_subscription: None,
-            _activation_subscription: None,
-            _window_bounds_subscription: None,
-            _release_subscription: release_subscription,
-            window_size_persist_generation: 0,
-            _window_size_persist_task: None,
-        };
-        if settings.agent_notifications {
-            crate::infrastructure::notifications::request_authorization();
-        }
-        // System appearance is refined on first paint via observe_window_appearance.
-        view.apply_theme_preference(true, cx);
-        view.reconcile_terminal_views(cx);
-        view.sync_diff_root(cx);
-        view.refresh_project_files(cx);
-        view.sync_git_panel_visibility(cx);
-        view.start_automation_scheduler(cx);
-        view.start_status_poll(cx);
-        view.start_usage_poll(cx);
-        view.start_inbox_poll(cx);
-        view
-    }
-
     fn sync_git_panel_visibility(&self, cx: &mut Context<Self>) {
         let visible = self.has_project_context()
             && self.workspace_section == WorkspaceSection::Workspace
@@ -954,97 +475,6 @@ impl WorkspaceView {
             }));
     }
 
-    fn new_terminal_tab(
-        &mut self,
-        _: &NewTerminalTab,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_terminal_tab_in_project(window, cx);
-    }
-
-    /// `⌘T` / `⌘N`: a new tab in the selected project, or a folder picker
-    /// when there is no project yet.
-    fn open_terminal_tab_in_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.snapshot.selected_project_id {
-            Some(project_id) => self.open_project_tab(project_id, window, cx),
-            None => self.choose_project_folder(None, true, window, cx),
-        }
-    }
-
-    fn close_terminal(&mut self, _: &CloseTerminal, window: &mut Window, cx: &mut Context<Self>) {
-        if self.workspace_section != WorkspaceSection::Workspace {
-            self.select_section(WorkspaceSection::Workspace, window, cx);
-            return;
-        }
-        if self.review_visible(cx)
-            && (self.review_covers_terminal(cx)
-                || self.diff_view.read(cx).review_has_focus(window, cx))
-        {
-            self.close_review(window, cx);
-            return;
-        }
-        if let Some(session_id) = self.snapshot.selected_session().map(|session| session.id) {
-            self.close_pane(session_id, window, cx);
-        }
-    }
-
-    fn toggle_left_sidebar(
-        &mut self,
-        _: &ToggleLeftSidebar,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.set_left_sidebar_visible(!self.settings.left_sidebar_visible, true, cx);
-    }
-
-    fn show_settings(&mut self, _: &ShowSettings, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_settings(window, cx);
-    }
-
-    fn toggle_right_sidebar(
-        &mut self,
-        _: &ToggleRightSidebar,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_workspace_panel(window, cx);
-    }
-
-    fn previous_project(
-        &mut self,
-        _: &PreviousProject,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.cycle_project(-1, window, cx);
-    }
-
-    fn next_project(&mut self, _: &NextProject, window: &mut Window, cx: &mut Context<Self>) {
-        self.cycle_project(1, window, cx);
-    }
-
-    /// Moves through projects in sidebar order (pinned first).
-    fn cycle_project(&mut self, offset: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let order = self.visible_project_order();
-        if order.is_empty() {
-            return;
-        }
-        let current = self
-            .snapshot
-            .selected_project_id
-            .and_then(|id| order.iter().position(|item| *item == id))
-            .unwrap_or(0) as isize;
-        let next = (current + offset).rem_euclid(order.len() as isize) as usize;
-        self.select_project(order[next], window, cx);
-    }
-
-    fn select_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        if self.snapshot.select_tab(tab_id) {
-            self.show_terminal_tab(window, cx);
-        }
-    }
-
     fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let content = self.global_sidebar_content(cx);
         let full_width = self.left_sidebar_width();
@@ -1212,68 +642,8 @@ impl Render for WorkspaceView {
                 this.focus_terminal(session_id, window, cx);
             });
         }
-        let mut body = div()
-            .id("vibra-root")
-            .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::add_project))
-            .on_action(cx.listener(Self::new_terminal_tab))
-            .on_action(cx.listener(Self::close_terminal))
-            .on_action(cx.listener(Self::toggle_left_sidebar))
-            .on_action(cx.listener(Self::toggle_right_sidebar))
-            .on_action(cx.listener(Self::previous_project))
-            .on_action(cx.listener(Self::next_project))
-            .on_action(cx.listener(Self::go_to_project))
-            .on_action(cx.listener(Self::go_to_tab))
-            .on_action(cx.listener(Self::navigate_back))
-            .on_action(cx.listener(Self::navigate_forward))
-            .on_action(cx.listener(|this, _: &SplitPaneLeft, window, cx| {
-                this.split_pane(PaneSplitDirection::Left, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SplitPaneRight, window, cx| {
-                this.split_pane(PaneSplitDirection::Right, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SplitPaneUp, window, cx| {
-                this.split_pane(PaneSplitDirection::Up, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SplitPaneDown, window, cx| {
-                this.split_pane(PaneSplitDirection::Down, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &FocusPaneLeft, window, cx| {
-                this.focus_pane(PaneFocusDirection::Left, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &FocusPaneRight, window, cx| {
-                this.focus_pane(PaneFocusDirection::Right, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &FocusPaneUp, window, cx| {
-                this.focus_pane(PaneFocusDirection::Up, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &FocusPaneDown, window, cx| {
-                this.focus_pane(PaneFocusDirection::Down, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &PreviousPane, window, cx| {
-                this.cycle_pane(-1, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &NextPane, window, cx| {
-                this.cycle_pane(1, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ResizePaneLeft, _, cx| {
-                this.resize_pane(PaneResizeDirection::Left, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ResizePaneRight, _, cx| {
-                this.resize_pane(PaneResizeDirection::Right, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ResizePaneUp, _, cx| {
-                this.resize_pane(PaneResizeDirection::Up, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ResizePaneDown, _, cx| {
-                this.resize_pane(PaneResizeDirection::Down, cx);
-            }))
-            .on_action(cx.listener(Self::equalize_panes))
-            .on_action(cx.listener(Self::toggle_pane_zoom))
-            .on_action(cx.listener(Self::toggle_command_palette))
-            .on_action(cx.listener(Self::quick_open))
-            .on_action(cx.listener(Self::open_ide))
-            .on_action(cx.listener(Self::show_settings))
+        let mut body = self
+            .bind_workspace_actions(div().id("vibra-root").track_focus(&self.focus_handle), cx)
             .capture_key_down(cx.listener(Self::on_workspace_key_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_pane_resize))
             .size_full()

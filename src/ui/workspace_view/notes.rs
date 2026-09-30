@@ -63,12 +63,7 @@ impl WorkspaceView {
     pub(super) fn project_active_session(&self, project_id: Option<Uuid>) -> Option<Uuid> {
         project_id
             .or(self.snapshot.selected_project_id)
-            .and_then(|id| {
-                self.snapshot
-                    .projects
-                    .iter()
-                    .find(|project| project.id == id)
-            })
+            .and_then(|id| self.snapshot.project(id))
             .and_then(|project| {
                 let workspaces = project.workspaces.as_deref().unwrap_or_default();
                 let workspace = project
@@ -153,13 +148,9 @@ impl WorkspaceView {
     }
 
     fn project_name(&self, project_id: Option<Uuid>) -> Option<String> {
-        project_id.and_then(|id| {
-            self.snapshot
-                .projects
-                .iter()
-                .find(|project| project.id == id)
-                .map(|project| project.name.clone())
-        })
+        project_id
+            .and_then(|id| self.snapshot.project(id))
+            .map(|project| project.name.clone())
     }
 
     pub(super) fn notes_content(&mut self, cx: &mut Context<Self>) -> AnyElement {

@@ -445,7 +445,7 @@ pub(super) fn section_frame(title: &str, actions: Vec<AnyElement>, body: AnyElem
         .into_any_element()
 }
 
-pub(super) fn section_button(
+pub(crate) fn section_button(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     primary: bool,

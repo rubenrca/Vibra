@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use gpui::{Div, SharedString, Stateful, div, prelude::*, px};
+use gpui::{Div, SharedString, Stateful, div, prelude::*, px, svg};
 
 use crate::domain::workspace::WorkspaceSplitAxis;
 use crate::ui::menu::{menu_border, menu_surface};
@@ -18,6 +18,27 @@ pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
 
 pub(crate) fn sidebar_row_width(panel_width: f32) -> f32 {
     panel_width - PANEL_BORDER_WIDTH - 2.0 * SIDEBAR_ROW_INSET
+}
+
+pub(crate) fn icon_button(
+    id: impl Into<SharedString>,
+    icon: &'static str,
+    size: f32,
+    enabled: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id.into())
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .child(svg().path(icon).size(px(14.0)).text_color(if enabled {
+            colors().muted
+        } else {
+            colors().subtle
+        }))
 }
 
 /// Keep a usable resize target between the flat split panes.

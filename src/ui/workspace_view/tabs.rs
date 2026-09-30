@@ -294,9 +294,7 @@ impl WorkspaceView {
             } => {
                 let exists = self
                     .snapshot
-                    .projects
-                    .iter()
-                    .find(|project| project.id == project_id)
+                    .project(project_id)
                     .and_then(|project| project.workspaces.as_deref())
                     .and_then(|workspaces| workspaces.iter().find(|item| item.id == workspace_id))
                     .is_some_and(|workspace| workspace.tabs.iter().any(|tab| tab.id == tab_id));

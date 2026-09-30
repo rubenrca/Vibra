@@ -229,12 +229,7 @@ impl WorkspaceView {
         let project_id = automation
             .project_id
             .or(self.snapshot.selected_project_id)
-            .filter(|id| {
-                self.snapshot
-                    .projects
-                    .iter()
-                    .any(|project| project.id == *id)
-            });
+            .filter(|id| self.snapshot.project(*id).is_some());
         let Some(project_id) = project_id else {
             self.report_automation_failure(
                 &automation,
@@ -381,9 +376,7 @@ impl WorkspaceView {
         let id = automation.id;
         let project = automation.project_id.and_then(|project_id| {
             self.snapshot
-                .projects
-                .iter()
-                .find(|project| project.id == project_id)
+                .project(project_id)
                 .map(|project| (project_id, project.name.clone()))
         });
         let schedule = if automation.schedule == AutomationSchedule::Manual {
@@ -499,13 +492,10 @@ impl WorkspaceView {
     }
 
     fn automation_form_card(&self, form: &AutomationForm, cx: &mut Context<Self>) -> AnyElement {
-        let project = form.project_id.and_then(|project_id| {
-            self.snapshot
-                .projects
-                .iter()
-                .find(|project| project.id == project_id)
-                .map(|project| project.name.clone())
-        });
+        let project = form
+            .project_id
+            .and_then(|project_id| self.snapshot.project(project_id))
+            .map(|project| project.name.clone());
         let field = |id: &'static str,
                      label: &'static str,
                      value: &str,

@@ -1110,23 +1110,10 @@ fn icon_button(
     enabled: bool,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .size(px(26.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(5.0))
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|button| button.bg(colors().hover))
-                .on_click(on_click)
-        })
-        .child(svg().path(icon).size(px(14.0)).text_color(if enabled {
-            colors().muted
-        } else {
-            colors().subtle
-        }))
+    crate::ui::workspace_view::icon_button(id, icon, 26.0, enabled).when(enabled, |button| {
+        button
+            .cursor_pointer()
+            .hover(|button| button.bg(colors().hover))
+            .on_click(on_click)
+    })
 }

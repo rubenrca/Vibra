@@ -186,7 +186,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(project) = self.snapshot.projects.iter().find(|p| p.id == id) else {
+        let Some(project) = self.snapshot.project(id) else {
             return;
         };
         if project
@@ -243,7 +243,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(project) = self.snapshot.projects.iter().find(|p| p.id == id) else {
+        let Some(project) = self.snapshot.project(id) else {
             return;
         };
         let confirmation = window.prompt(

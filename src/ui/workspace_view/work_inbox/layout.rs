@@ -743,18 +743,10 @@ fn icon_button(
     path: &'static str,
     label: &'static str,
 ) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .size(px(24.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(5.0))
+    super::super::chrome::icon_button(id, path, 24.0, true)
         .cursor_pointer()
         .hover(|button| button.bg(surface_tint(colors().hover, colors().background)))
         .tooltip(move |_, cx| sidebar_tooltip(label, cx))
-        .child(svg().path(path).size(px(14.0)).text_color(colors().muted))
 }
 
 fn quiet_button(

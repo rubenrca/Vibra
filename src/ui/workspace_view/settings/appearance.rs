@@ -474,6 +474,9 @@ impl WorkspaceView {
                                     label: "Terminal text",
                                     description: "JetBrains Mono in all terminals.",
                                     size: self.settings.terminal_font_size,
+                                    default:
+                                        crate::infrastructure::settings::default_terminal_font_size(
+                                        ),
                                     ids: [
                                         "settings-font-down",
                                         "settings-font-reset",
@@ -489,6 +492,8 @@ impl WorkspaceView {
                                     label: "Diff text",
                                     description: "Code in reviews, independent of the terminal.",
                                     size: self.settings.diff_font_size,
+                                    default:
+                                        crate::infrastructure::settings::DEFAULT_DIFF_FONT_SIZE,
                                     ids: [
                                         "settings-diff-font-down",
                                         "settings-diff-font-reset",

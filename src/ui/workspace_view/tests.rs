@@ -1,6 +1,8 @@
 use super::*;
+use crate::infrastructure::automation::AgentRuntimeState;
 use crate::ports::terminal::TerminalAgentKindSource;
 use crate::ui::terminal::TerminalViewEvent;
+use crate::{CloseTerminal, NextProject, ShowSettings, ToggleRightSidebar};
 use gpui::Focusable;
 use std::path::Path;
 

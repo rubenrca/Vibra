@@ -50,9 +50,7 @@ impl WorkspaceView {
                 .unwrap_or_default(),
             RenamePromptKind::Project { project_id } => self
                 .snapshot
-                .projects
-                .iter()
-                .find(|project| project.id == project_id)
+                .project(project_id)
                 .map(|project| project.name.clone())
                 .unwrap_or_default(),
             RenamePromptKind::NewFile { .. } | RenamePromptKind::NewFolder { .. } => String::new(),
@@ -143,9 +141,7 @@ impl WorkspaceView {
             (ContextMenuKind::Project { project_id }, ContextMenuAction::RevealProject) => {
                 if let Some(path) = self
                     .snapshot
-                    .projects
-                    .iter()
-                    .find(|p| p.id == project_id)
+                    .project(project_id)
                     .and_then(|p| p.directory())
                 {
                     cx.reveal_path(Path::new(path));

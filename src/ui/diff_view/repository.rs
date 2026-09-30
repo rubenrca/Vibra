@@ -9,13 +9,39 @@ use crate::ports::git::{GitCommit, GitDiffRow, GitDiffRowKind, GitRepositorySnap
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::git_graph::assign_commit_lanes;
 use crate::ui::theme::{colors, surface_tint};
-use gpui::{Context, IntoElement, ListOffset, div, prelude::*, px};
+use gpui::{Context, IntoElement, ListOffset, Task, div, prelude::*, px};
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 impl DiffView {
+    fn spawn_query<T, Check, Apply>(
+        &mut self,
+        cx: &mut Context<Self>,
+        request_id: u64,
+        still_current: Check,
+        work: impl Future<Output = T> + Send + 'static,
+        apply: Apply,
+    ) -> Task<()>
+    where
+        T: Send + 'static,
+        Check: Fn(&Self) -> u64 + 'static,
+        Apply: FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+    {
+        let task = cx.background_spawn(work);
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if still_current(this) != request_id {
+                    return;
+                }
+                apply(this, result, cx);
+            });
+        })
+    }
+
     pub fn mark_turn_started(&mut self, cwd: PathBuf, agent: String, cx: &mut Context<Self>) {
         let port = self.git_port.clone();
         let started = Instant::now();
@@ -176,13 +202,12 @@ impl DiffView {
         let request_id = self.snapshot_request_id;
         let root = self.context_root.clone();
         let port = self.git_port.clone();
-        let task = cx.background_spawn(async move { port.snapshot(&root) });
-        self._snapshot_task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if request_id != this.snapshot_request_id {
-                    return;
-                }
+        self._snapshot_task = Some(self.spawn_query(
+            cx,
+            request_id,
+            |this| this.snapshot_request_id,
+            async move { port.snapshot(&root) },
+            |this, result, cx| {
                 this.refreshing = false;
                 let mut changed = !this.snapshot_settled;
                 this.snapshot_settled = true;
@@ -216,8 +241,8 @@ impl DiffView {
                 if changed {
                     cx.notify();
                 }
-            });
-        }));
+            },
+        ));
     }
 
     fn change_branch_selection(
@@ -373,17 +398,16 @@ impl DiffView {
         let port = self.git_port.clone();
         let base = self.selected_base.clone();
         let head = self.selected_head.clone();
-        let task = cx.background_spawn(async move {
-            let branches = port.branches(&root);
-            let changes = port.branch_changes(&root, base.as_deref(), head.as_deref());
-            (branches, changes)
-        });
-        self._branch_task = Some(cx.spawn(async move |this, cx| {
-            let (branches, result) = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if request_id != this.branch_request_id {
-                    return;
-                }
+        self._branch_task = Some(self.spawn_query(
+            cx,
+            request_id,
+            |this| this.branch_request_id,
+            async move {
+                let branches = port.branches(&root);
+                let changes = port.branch_changes(&root, base.as_deref(), head.as_deref());
+                (branches, changes)
+            },
+            |this, (branches, result), cx| {
                 this.branch_refreshing = false;
                 if let Ok(branches) = branches {
                     this.branches = branches;
@@ -415,8 +439,8 @@ impl DiffView {
                     }
                 }
                 cx.notify();
-            });
-        }));
+            },
+        ));
     }
 
     pub(super) fn refresh_history(&mut self, notify_loading: bool, cx: &mut Context<Self>) {
@@ -431,13 +455,12 @@ impl DiffView {
         let request_id = self.history_request_id;
         let root = self.context_root.clone();
         let port = self.git_port.clone();
-        let task = cx.background_spawn(async move { port.history(&root, HISTORY_PAGE) });
-        self._history_task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if request_id != this.history_request_id {
-                    return;
-                }
+        self._history_task = Some(self.spawn_query(
+            cx,
+            request_id,
+            |this| this.history_request_id,
+            async move { port.history(&root, HISTORY_PAGE) },
+            |this, result, cx| {
                 this.history_refreshing = false;
                 match result {
                     Ok(Some(history)) => {
@@ -451,8 +474,8 @@ impl DiffView {
                     Err(error) => this.error = Some(format!("Git: {error:#}").into()),
                 }
                 cx.notify();
-            });
-        }));
+            },
+        ));
     }
 
     /// A different scope or commit starts at the top instead of anchoring to
@@ -489,22 +512,21 @@ impl DiffView {
         let root = self.context_root.clone();
         let port = self.git_port.clone();
         let baselines = self.turn_baselines.clone();
-        let task = cx.background_spawn(async move {
-            let Some(current) = port.capture_worktree(&root)? else {
-                return Ok::<_, anyhow::Error>(None);
-            };
-            let Some(baseline) = baselines.get(&current.root).cloned() else {
-                return Ok(Some((None, None)));
-            };
-            let changes = port.tree_changes(&current.root, &baseline.tree, &current.tree)?;
-            Ok(Some((Some(baseline), Some(changes))))
-        });
-        self._turn_task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if request_id != this.turn_request_id {
-                    return;
-                }
+        self._turn_task = Some(self.spawn_query(
+            cx,
+            request_id,
+            |this| this.turn_request_id,
+            async move {
+                let Some(current) = port.capture_worktree(&root)? else {
+                    return Ok::<_, anyhow::Error>(None);
+                };
+                let Some(baseline) = baselines.get(&current.root).cloned() else {
+                    return Ok(Some((None, None)));
+                };
+                let changes = port.tree_changes(&current.root, &baseline.tree, &current.tree)?;
+                Ok(Some((Some(baseline), Some(changes))))
+            },
+            |this, result, cx| {
                 this.turn_refreshing = false;
                 this.turn_settled = true;
                 match result {
@@ -542,8 +564,8 @@ impl DiffView {
                     Err(error) => this.turn_error = Some(format!("Git: {error:#}").into()),
                 }
                 cx.notify();
-            });
-        }));
+            },
+        ));
     }
 
     fn clear_commit(&mut self) {
@@ -594,13 +616,12 @@ impl DiffView {
         let request_id = self.commit_request_id;
         let root = self.context_root.clone();
         let port = self.git_port.clone();
-        let task = cx.background_spawn(async move { port.commit_changes(&root, &revision) });
-        self._commit_task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                if request_id != this.commit_request_id {
-                    return;
-                }
+        self._commit_task = Some(self.spawn_query(
+            cx,
+            request_id,
+            |this| this.commit_request_id,
+            async move { port.commit_changes(&root, &revision) },
+            |this, result, cx| {
                 this.commit_refreshing = false;
                 match result {
                     Ok(changes) => {
@@ -619,8 +640,8 @@ impl DiffView {
                     Err(error) => this.commit_error = Some(format!("Git: {error:#}").into()),
                 }
                 cx.notify();
-            });
-        }));
+            },
+        ));
         cx.notify();
     }
 
@@ -906,41 +927,49 @@ impl DiffView {
         let port = self.git_port.clone();
         let external_loader = self.external.as_ref().map(|source| source.load.clone());
         let source_for_task = source.clone();
-        let task = cx.background_spawn(async move {
-            let source = &source_for_task;
-            if let Some(load) = external_loader {
-                return load(&source.change.path);
-            }
-            let diff = if let Some(revision) = &source.against {
-                port.diff_against(
-                    &source.repository,
-                    revision,
-                    source.head.as_deref(),
-                    &source.change,
-                )
-            } else {
-                port.diff(&source.repository, &source.change)
-            }?;
-            // Whole files are optional: without them each row is highlighted
-            // on its own, exactly as before.
-            let sources = port
-                .diff_sources(
-                    &source.repository,
-                    &source.change,
-                    source.against.as_deref(),
-                    source.head.as_deref(),
-                )
-                .ok();
-            Ok::<_, anyhow::Error>(DiffDocument::prepare_with_sources(diff, sources.as_ref()))
-        });
         let path_for_task = path.clone();
-        self._diff_tasks.push(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
+        let pending_path = path.clone();
+        let task = self.spawn_query(
+            cx,
+            request_id,
+            move |this| {
+                this.pending_loads
+                    .get(&pending_path)
+                    .map(|pending| pending.request_id)
+                    .unwrap_or(0)
+            },
+            async move {
+                let source = &source_for_task;
+                if let Some(load) = external_loader {
+                    return load(&source.change.path);
+                }
+                let diff = if let Some(revision) = &source.against {
+                    port.diff_against(
+                        &source.repository,
+                        revision,
+                        source.head.as_deref(),
+                        &source.change,
+                    )
+                } else {
+                    port.diff(&source.repository, &source.change)
+                }?;
+                // Whole files are optional: without them each row is highlighted
+                // on its own, exactly as before.
+                let sources = port
+                    .diff_sources(
+                        &source.repository,
+                        &source.change,
+                        source.against.as_deref(),
+                        source.head.as_deref(),
+                    )
+                    .ok();
+                Ok::<_, anyhow::Error>(DiffDocument::prepare_with_sources(diff, sources.as_ref()))
+            },
+            move |this, result, cx| {
                 let Some(pending) = this.pending_loads.get(&path_for_task) else {
                     return;
                 };
-                if pending.request_id != request_id || pending.source != source {
+                if pending.source != source {
                     return;
                 }
                 this.pending_loads.remove(&path_for_task);
@@ -996,8 +1025,9 @@ impl DiffView {
                     this.load_missing_expanded(cx);
                 }
                 cx.notify();
-            });
-        }));
+            },
+        );
+        self._diff_tasks.push(task);
         // Keep the handle list bounded without cancelling an in-flight load.
         // Cancelling its callback would leave `pending_loads` stuck forever.
         if self._diff_tasks.len() > 12 {
