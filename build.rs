@@ -161,9 +161,10 @@ fn sparkle_candidates(manifest_dir: &Path) -> [PathBuf; 5] {
     [
         manifest_dir.join("third_party/sparkle-2.9.4/Sparkle.framework"),
         // Legacy Swift Package Manager layouts, still checked for local caches.
-        manifest_dir.join(
-            ".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework",
-        ),
+        manifest_dir.join(concat!(
+            ".build/artifacts/sparkle/Sparkle/",
+            "Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+        )),
         manifest_dir.join(
             ".build/checkouts/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework",
         ),

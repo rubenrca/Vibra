@@ -216,7 +216,9 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_notarized_package_requires_source_matching_clean_commit(self):
-        shutil.copy2(Path(__file__).with_name("package_app.sh"), self.root / "Scripts/package_app.sh")
+        shutil.copy2(
+            Path(__file__).with_name("package_app.sh"), self.root / "Scripts/package_app.sh"
+        )
         shutil.copy2(Path(__file__).with_name("lib.zsh"), self.root / "Scripts/lib.zsh")
         subprocess.run(["git", "add", "Scripts/package_app.sh"], cwd=self.root, check=True)
         subprocess.run(["git", "commit", "-qm", "package guard"], cwd=self.root, check=True)
@@ -244,8 +246,58 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertEqual(mismatched.returncode, 65, mismatched.stderr)
         self.assertIn("does not match", mismatched.stderr)
 
+    def test_package_rejects_symlinked_output_before_replacing_bundle(self):
+        shutil.copy2(
+            Path(__file__).with_name("package_app.sh"), self.root / "Scripts/package_app.sh"
+        )
+        external = self.app.parent / "outside-dist"
+        external.mkdir()
+        bundle = external / "Vibra.app"
+        bundle.mkdir()
+        sentinel = bundle / "keep.txt"
+        sentinel.write_text("untouched")
+        (self.root / "dist").rmdir()
+        (self.root / "dist").symlink_to(external, target_is_directory=True)
+
+        result = subprocess.run(
+            [str(self.root / "Scripts/package_app.sh"), "debug", "--sign", "-"],
+            cwd=self.root,
+            env=self.environment,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 65, result.stderr)
+        self.assertIn("must not be a symlink", result.stderr)
+        self.assertEqual(sentinel.read_text(), "untouched")
+
+    def test_verify_checks_every_shell_script_and_shared_helpers(self):
+        shutil.copy2(Path(__file__).with_name("verify.sh"), self.root / "Scripts/verify.sh")
+        self.write_executable("mock-bin/cargo", "#!/bin/zsh\nexit 0\n")
+        self.write_executable("mock-bin/plutil", "#!/bin/zsh\nexit 0\n")
+        (self.root / "Scripts/test_release.py").write_text("# Isolated verification fixture.\n")
+
+        for relative_path in ("Scripts/package_app.sh", "Scripts/lib.zsh"):
+            with self.subTest(script=relative_path):
+                path = self.root / relative_path
+                original = path.read_text()
+                path.write_text("if then\n")
+                result = subprocess.run(
+                    [str(self.root / "Scripts/verify.sh")],
+                    cwd=self.root,
+                    env=self.environment,
+                    capture_output=True,
+                    text=True,
+                )
+                path.write_text(original)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(relative_path, result.stderr)
+
     def test_sparkle_refresh_replaces_cache_only_after_checksum_verification(self):
-        shutil.copy2(Path(__file__).with_name("fetch_sparkle.sh"), self.root / "Scripts/fetch_sparkle.sh")
+        shutil.copy2(
+            Path(__file__).with_name("fetch_sparkle.sh"), self.root / "Scripts/fetch_sparkle.sh"
+        )
         source = Path(self.temporary.name) / "sparkle-source"
         (source / "Sparkle.framework").mkdir(parents=True)
         (source / "bin").mkdir()

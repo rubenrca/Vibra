@@ -5,7 +5,7 @@ set -euo pipefail
 source "${0:A:h}/lib.zsh"
 
 script_name=${0:A}
-repo_root=$(vibra_repo_root "$script_name")
+repo_root=${script_name:h:h}
 configuration=debug
 universal=0
 make_dmg=0
@@ -14,7 +14,8 @@ signing_identity=${VIBRA_SIGNING_IDENTITY:-}
 force_ad_hoc=0
 
 usage() {
-  print -u2 -- "usage: $script_name [debug|release] [--universal] [--dmg] [--notarize] [--sign <identity>]"
+  print -u2 -- "usage: $script_name [debug|release] [--universal] [--dmg]" \
+    "[--notarize] [--sign <identity>]"
   print -u2 --
   print -u2 -- "  --universal  build aarch64 and x86_64 slices and merge them"
   print -u2 -- "  --dmg        also produce dist/Vibra.dmg"
@@ -24,7 +25,8 @@ usage() {
   print -u2 --
   print -u2 -- "Notarization reads APPLE_KEYCHAIN_PROFILE, or APPLE_ID + APPLE_TEAM_ID +"
   print -u2 -- "APPLE_APP_SPECIFIC_PASSWORD. Set VIBRA_NOTARY_WAIT_TIMEOUT (default: 2h)"
-  print -u2 -- "to bound how long the command waits; the submission continues at Apple after a timeout."
+  print -u2 -- "to bound how long the command waits;" \
+    "the submission continues at Apple after a timeout."
   exit 64
 }
 
@@ -63,6 +65,11 @@ if [[ $signing_identity == - ]]; then
   force_ad_hoc=1
 fi
 
+if [[ -L "$repo_root/dist" ]]; then
+  print -u2 -- "packaging dist path must not be a symlink."
+  exit 65
+fi
+
 if (( notarize )); then
   if ! source_head=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null); then
     print -u2 -- "--notarize requires a Git checkout with a committed source revision."
@@ -73,14 +80,22 @@ if (( notarize )); then
     exit 65
   fi
   if [[ -n $source_status ]]; then
-    print -u2 -- "--notarize requires a clean checkout so the embedded commit matches the app source."
+    print -u2 -- "--notarize requires a clean checkout" \
+      "so the embedded commit matches the app source."
     exit 65
   fi
   if [[ -n ${VIBRA_SOURCE_COMMIT:-} && ${VIBRA_SOURCE_COMMIT:l} != ${source_head:l} ]]; then
     print -u2 -- "VIBRA_SOURCE_COMMIT does not match the source checkout."
     exit 65
   fi
+  if [[ -z $signing_identity ]]; then
+    print -u2 -- "--notarize requires --sign or VIBRA_SIGNING_IDENTITY."
+    exit 78
+  fi
 fi
+
+temporary_dirs=()
+trap 'rm -rf -- "${temporary_dirs[@]}"' EXIT
 
 app_dir="$repo_root/dist/Vibra.app"
 contents_dir="$app_dir/Contents"
@@ -118,11 +133,12 @@ done
 
 resolve_sparkle_framework() {
   local candidate
+  local xcframework="Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
   for candidate in \
     "${VIBRA_SPARKLE_FRAMEWORK:-}" \
     "$repo_root/third_party/sparkle-$sparkle_version/Sparkle.framework" \
-    "$repo_root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" \
-    "$repo_root/.build/checkouts/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" \
+    "$repo_root/.build/artifacts/sparkle/Sparkle/$xcframework" \
+    "$repo_root/.build/checkouts/Sparkle/$xcframework" \
     "$repo_root/third_party/Sparkle.framework" \
     "$repo_root/dist/Vibra.app/Contents/Frameworks/Sparkle.framework"
   do
@@ -149,7 +165,7 @@ fi
 # dist/Vibra.app below, including when the caller points at it explicitly.
 if [[ ${sparkle_source:A} == ${app_dir:A}/* ]]; then
   sparkle_staging_dir=$(mktemp -d)
-  trap 'rm -rf "$sparkle_staging_dir"' EXIT
+  temporary_dirs+=("$sparkle_staging_dir")
   ditto "$sparkle_source" "$sparkle_staging_dir/Sparkle.framework"
   sparkle_source="$sparkle_staging_dir/Sparkle.framework"
 fi
@@ -201,7 +217,8 @@ for target in $targets; do
   fi
 
   target_arch=${target%%-*}
-  if [[ ! -f "$repo_root/.build/ghostty/$target_arch/lib/libghostty-vt.a" && -z ${GHOSTTY_LIB_DIR:-} ]]; then
+  if [[ ! -f "$repo_root/.build/ghostty/$target_arch/lib/libghostty-vt.a" \
+      && -z ${GHOSTTY_LIB_DIR:-} ]]; then
     "$repo_root/Scripts/fetch_ghostty.sh" "$target_arch"
   fi
   cargo_args=(build --locked --target "$target")
@@ -213,7 +230,7 @@ for target in $targets; do
 
   print "building Vibra ($configuration, $target)"
   # Ensure the build script can find Sparkle while compiling the ObjC bridge.
-  VIBRA_SPARKLE_FRAMEWORK=$sparkle_source cargo "${cargo_args[@]}" --manifest-path "$repo_root/Cargo.toml"
+  cargo "${cargo_args[@]}" --manifest-path "$repo_root/Cargo.toml"
   binary="$target_dir/$target/$profile_dir/vibra"
   if [[ ! -x $binary ]]; then
     print -u2 -- "Cargo did not produce the expected binary: $binary"
@@ -254,10 +271,6 @@ plutil -replace SUEnableAutomaticChecks -bool true "$plist"
 plutil -replace SUScheduledCheckInterval -integer 86400 "$plist"
 plutil -lint "$plist" "$entitlements" >/dev/null
 
-if (( notarize )) && [[ -z $signing_identity ]]; then
-  print -u2 -- "--notarize requires --sign or VIBRA_SIGNING_IDENTITY; selecting the first certificate is unsafe."
-  exit 78
-fi
 if [[ -z $signing_identity ]] && (( ! force_ad_hoc )); then
   signing_identity=$(
     security find-identity -v -p codesigning 2>/dev/null \
@@ -317,6 +330,7 @@ fi
 
 if (( make_dmg )); then
   staging_dir=$(mktemp -d)
+  temporary_dirs+=("$staging_dir")
   # Preserve the bundle's signature, symlinks and extended attributes.
   ditto "$app_dir" "$staging_dir/Vibra.app"
   ln -s /Applications "$staging_dir/Applications"
@@ -369,7 +383,8 @@ if (( notarize )); then
   xcrun notarytool wait "$submission_id" "${notary_auth[@]}" \
     --timeout "$notary_wait_timeout" || {
       wait_status=$?
-      print -u2 -- "Notarization did not complete successfully. Apple keeps processing after a timeout."
+      print -u2 -- "Notarization did not complete successfully." \
+        "Apple keeps processing after a timeout."
       print -u2 -- "Submission ID: $submission_id"
       print -u2 -- \
         "Check:  xcrun notarytool info $submission_id" \

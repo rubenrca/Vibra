@@ -11,4 +11,6 @@ cargo test --locked
 cargo clippy --locked --all-targets --all-features -- -D warnings
 python3 Scripts/test_release.py
 plutil -lint Resources/Info.plist Resources/Vibra.entitlements
-zsh -n Scripts/*.sh
+for script in Scripts/*.{sh,zsh}; do
+  zsh -n "$script"
+done

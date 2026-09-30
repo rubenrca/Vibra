@@ -5,7 +5,12 @@ import Foundation
 let package = Package(
     name: "TerminalReplay",
     platforms: [.macOS(.v14)],
-    dependencies: [.package(name: "SwiftTerm", path: ProcessInfo.processInfo.environment["SWIFTTERM_SOURCE"]!)],
+    dependencies: [
+        .package(
+            name: "SwiftTerm",
+            path: ProcessInfo.processInfo.environment["SWIFTTERM_SOURCE"]!
+        )
+    ],
     targets: [
         .executableTarget(
             name: "TerminalReplay",

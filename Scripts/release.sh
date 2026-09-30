@@ -11,7 +11,7 @@ source "${0:A:h}/lib.zsh"
 # run can never point Sparkle at a URL that 404s.
 
 script_name=${0:A}
-repo_root=$(vibra_repo_root "$script_name")
+repo_root=${script_name:h:h}
 dry_run=0
 # Published releases always use Developer ID and Apple notarization.
 # --no-notarize is only available for local dry packaging.
@@ -27,14 +27,16 @@ staging_dir="$repo_root/dist/appcast"
 sparkle_version=${VIBRA_SPARKLE_VERSION:-2.9.4}
 signing_identity=${VIBRA_SIGNING_IDENTITY:-}
 if [[ -L "$repo_root/dist" || -L $feed_dir || -L $feed_dir/appcast.xml || -L $staging_dir ]]; then
-  print -u2 -- "release dist, feed and staging paths must be regular directories/files, not symlinks."
+  print -u2 -- "release dist, feed and staging paths must be regular directories/files," \
+    "not symlinks."
   exit 65
 fi
 # Used by package_app.sh when --notarize is set.
 export APPLE_KEYCHAIN_PROFILE="${APPLE_KEYCHAIN_PROFILE:-Vibra-Notary}"
 
 usage() {
-  print -u2 -- "usage: $script_name <version> [--prerelease] [--notarize|--no-notarize] [--resume-dmg] [--dry-run]"
+  print -u2 -- "usage: $script_name <version> [--prerelease]" \
+    "[--notarize|--no-notarize] [--resume-dmg] [--dry-run]"
   print -u2 --
   print -u2 -- "  <version>       marketing version, e.g. 0.3.0 or 0.3.1-beta.1"
   print -u2 -- "  --prerelease    GitHub prerelease only; does not update docs/appcast.xml"
@@ -106,7 +108,8 @@ if (( ! notarize && ! dry_run )); then
 fi
 if (( notarize )); then
   if [[ ! $signing_identity =~ '^Developer ID Application: .+ \([A-Z0-9]{10}\)$' ]]; then
-    print -u2 -- "set VIBRA_SIGNING_IDENTITY to the full Developer ID Application name, including its Team ID."
+    print -u2 -- "set VIBRA_SIGNING_IDENTITY to the full Developer ID Application name," \
+      "including its Team ID."
     exit 78
   fi
   expected_team=$(print -r -- "$signing_identity" | sed -E 's/.*\(([A-Z0-9]{10})\)$/\1/')
@@ -185,9 +188,13 @@ fi
 remote_tag_commit=
 if (( ! dry_run )); then
   remote_tags=$(git -C "$repo_root" ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")
-  remote_tag_commit=$(print -r -- "$remote_tags" | awk -v ref="refs/tags/$tag^{}" '$2 == ref { print $1; exit }')
+  remote_tag_commit=$(
+    print -r -- "$remote_tags" | awk -v ref="refs/tags/$tag^{}" '$2 == ref { print $1; exit }'
+  )
   if [[ -z $remote_tag_commit ]]; then
-    remote_tag_commit=$(print -r -- "$remote_tags" | awk -v ref="refs/tags/$tag" '$2 == ref { print $1; exit }')
+    remote_tag_commit=$(
+      print -r -- "$remote_tags" | awk -v ref="refs/tags/$tag" '$2 == ref { print $1; exit }'
+    )
   fi
   if [[ -n $remote_tag_commit ]] && (( ! resume_dmg )); then
     print -u2 -- "origin tag $tag already exists."
@@ -195,7 +202,8 @@ if (( ! dry_run )); then
   fi
 fi
 
-if [[ -n $local_tag_commit && -n $remote_tag_commit && $local_tag_commit != $remote_tag_commit ]]; then
+if [[ -n $local_tag_commit && -n $remote_tag_commit \
+    && $local_tag_commit != $remote_tag_commit ]]; then
   print -u2 -- "Local and origin tags for $tag point to different commits."
   exit 65
 fi
@@ -218,7 +226,8 @@ fi
 
 source_commit=${existing_tag_commit:-$head_commit}
 if [[ $(git -C "$repo_root" rev-parse --is-shallow-repository) == true ]]; then
-  print -u2 -- "release builds require a full Git clone; a shallow clone gives an incorrect build number."
+  print -u2 -- "release builds require a full Git clone;" \
+    "a shallow clone gives an incorrect build number."
   exit 65
 fi
 source_build=$(git -C "$repo_root" rev-list --count "$source_commit")
@@ -231,7 +240,8 @@ if (( ! dry_run )); then
     print -u2 -- "could not resolve origin/main; publication stopped."
     exit 69
   fi
-  if [[ $remote_main != $head_commit && ( $head_commit == $source_commit || $remote_main != $source_commit ) ]]; then
+  if [[ $remote_main != $head_commit \
+      && ( $head_commit == $source_commit || $remote_main != $source_commit ) ]]; then
     print -u2 -- "origin/main moved away from this release source; update main before publishing."
     exit 65
   fi
@@ -239,7 +249,8 @@ fi
 
 if (( notarize && ! resume_dmg )); then
   if ! security find-identity -v -p codesigning 2>/dev/null \
-      | awk -F'"' -v expected="$signing_identity" '$2 == expected { found = 1 } END { exit !found }'; then
+      | awk -F'"' -v expected="$signing_identity" \
+        '$2 == expected { found = 1 } END { exit !found }'; then
     print -u2 -- "VIBRA_SIGNING_IDENTITY is not a valid identity in the keychain: $signing_identity"
     exit 78
   fi
@@ -271,11 +282,14 @@ verify_bundle_metadata() {
   actual_build=$(plutil -extract CFBundleVersion raw -o - "$bundled_plist")
   actual_source=$(plutil -extract VibraSourceCommit raw -o - "$bundled_plist" 2>/dev/null || true)
   actual_bundle_id=$(plutil -extract CFBundleIdentifier raw -o - "$bundled_plist")
-  expected_bundle_id=$(plutil -extract CFBundleIdentifier raw -o - "$repo_root/Resources/Info.plist")
+  expected_bundle_id=$(
+    plutil -extract CFBundleIdentifier raw -o - "$repo_root/Resources/Info.plist"
+  )
   if [[ $actual_version != $version || $actual_build != $source_build \
       || $actual_source != $source_commit || $actual_bundle_id != $expected_bundle_id ]]; then
     print -u2 -- \
-      "The DMG contains $actual_bundle_id $actual_version build $actual_build commit $actual_source;" \
+      "The DMG contains $actual_bundle_id $actual_version" \
+      "build $actual_build commit $actual_source;" \
       "expected $expected_bundle_id $version build $source_build commit $source_commit."
     return 65
   fi
@@ -314,7 +328,8 @@ if (( resume_dmg )); then
   dist_dmg="$repo_root/dist/Vibra.dmg"
   staged_dmg="$staging_dir/$dmg_name"
   if [[ -f $dist_dmg && -f $staged_dmg ]] && ! cmp -s "$dist_dmg" "$staged_dmg"; then
-    print -u2 -- "Two different DMGs exist at $dist_dmg and $staged_dmg; choose one before resuming."
+    print -u2 -- "Two different DMGs exist at $dist_dmg and $staged_dmg;" \
+      "choose one before resuming."
     exit 65
   fi
   if [[ -f $dist_dmg ]]; then
@@ -329,7 +344,8 @@ if (( resume_dmg )); then
   if ! xcrun stapler validate "$resume_source"; then
     submission_record="$repo_root/dist/notarization/Vibra.dmg.submission-id"
     if [[ ! -f $submission_record ]]; then
-      print -u2 -- "The DMG is not stapled and no notarization submission ID was found at $submission_record."
+      print -u2 -- "The DMG is not stapled" \
+        "and no notarization submission ID was found at $submission_record."
       exit 65
     fi
     submission_id=$(< "$submission_record")
@@ -343,7 +359,8 @@ if (( resume_dmg )); then
     )
     notary_status=$(print -r -- "$notary_response" | plutil -extract status raw -o - -)
     if [[ $notary_status != Accepted ]]; then
-      print -u2 -- "Notarization is $notary_status for $submission_id; resume after Apple accepts it."
+      print -u2 -- "Notarization is $notary_status for $submission_id;" \
+        "resume after Apple accepts it."
       exit 65
     fi
     xcrun stapler staple "$resume_source"
@@ -358,7 +375,8 @@ notes_markdown=$(
     {
       heading = "## " version
       suffix = substr($0, length(heading) + 1)
-      if (substr($0, 1, length(heading)) == heading && (suffix == "" || substr(suffix, 1, 1) == " ")) {
+      if (substr($0, 1, length(heading)) == heading &&
+          (suffix == "" || substr(suffix, 1, 1) == " ")) {
         capture = 1
         next
       }
@@ -423,7 +441,8 @@ print "signing the appcast entry"
   --link "https://github.com/$repo_slug/releases/tag/$tag" \
   "$staging_dir"
 if (( feed_dirty )) && ! cmp -s "$feed_dir/appcast.xml" "$staging_dir/appcast.xml"; then
-  print -u2 -- "The uncommitted docs/appcast.xml differs from the regenerated feed; resolve it before resuming."
+  print -u2 -- "The uncommitted docs/appcast.xml differs from the regenerated feed;" \
+    "resolve it before resuming."
   exit 65
 fi
 
@@ -464,11 +483,14 @@ verify_published_asset() (
 )
 
 if (( release_exists )); then
-  published_channel=$(gh release view "$tag" --repo "$repo_slug" --json isPrerelease --jq '.isPrerelease')
+  published_channel=$(
+    gh release view "$tag" --repo "$repo_slug" --json isPrerelease --jq '.isPrerelease'
+  )
   expected_channel=false
   (( prerelease )) && expected_channel=true
   if [[ $published_channel != $expected_channel ]]; then
-    print -u2 -- "GitHub release $tag has isPrerelease=$published_channel; expected $expected_channel."
+    print -u2 -- "GitHub release $tag has isPrerelease=$published_channel;" \
+      "expected $expected_channel."
     exit 65
   fi
   asset_names=$(gh release view "$tag" --repo "$repo_slug" --json assets --jq '.assets[].name')

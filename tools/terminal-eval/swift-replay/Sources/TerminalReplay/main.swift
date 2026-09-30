@@ -36,7 +36,9 @@ for (name, expected) in cases.sorted(by: { $0.key < $1.key }) {
     }.joined(separator: "\n")
     precondition(text.contains(expected), "\(name): \(text)")
     if name == "truecolor" {
-        precondition(terminal.getLine(row: 0)![0].attribute.fg == .trueColor(red: 17, green: 101, blue: 221))
+        precondition(
+            terminal.getLine(row: 0)![0].attribute.fg == .trueColor(red: 17, green: 101, blue: 221)
+        )
     }
     precondition(delegate.replies == 0, "Unexpected terminal replies during replay")
     print("PASS SwiftTerm \(name)")
