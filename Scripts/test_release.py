@@ -33,6 +33,7 @@ class ReleaseScriptTests(unittest.TestCase):
             (self.root / directory).mkdir(parents=True, exist_ok=True)
         (self.app / "Contents").mkdir(parents=True)
         shutil.copy2(Path(__file__).with_name("release.sh"), self.root / "Scripts/release.sh")
+        shutil.copy2(Path(__file__).with_name("lib.zsh"), self.root / "Scripts/lib.zsh")
         self.install_command_stubs()
         (self.root / ".gitignore").write_text("dist/\n")
         (self.root / "Cargo.toml").write_text(
@@ -216,6 +217,7 @@ class ReleaseScriptTests(unittest.TestCase):
 
     def test_notarized_package_requires_source_matching_clean_commit(self):
         shutil.copy2(Path(__file__).with_name("package_app.sh"), self.root / "Scripts/package_app.sh")
+        shutil.copy2(Path(__file__).with_name("lib.zsh"), self.root / "Scripts/lib.zsh")
         subprocess.run(["git", "add", "Scripts/package_app.sh"], cwd=self.root, check=True)
         subprocess.run(["git", "commit", "-qm", "package guard"], cwd=self.root, check=True)
 

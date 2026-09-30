@@ -2,8 +2,10 @@
 
 set -euo pipefail
 
+source "${0:A:h}/lib.zsh"
+
 script_name=${0:A}
-repo_root=${script_name:h:h}
+repo_root=$(vibra_repo_root "$script_name")
 configuration=debug
 universal=0
 make_dmg=0
@@ -156,9 +158,7 @@ print "using Sparkle: $sparkle_source"
 
 marketing_version=${VIBRA_MARKETING_VERSION:-}
 if [[ -z $marketing_version ]]; then
-  marketing_version=$(
-    sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo_root/Cargo.toml" | head -n 1
-  )
+  marketing_version=$(vibra_cargo_version "$repo_root")
   marketing_version=${marketing_version:-0.3.0}
 fi
 

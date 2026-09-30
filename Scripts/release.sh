@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+source "${0:A:h}/lib.zsh"
+
 # Publishes a Vibra release: universal DMG, Sparkle EdDSA appcast entry,
 # GitHub Release, and (for stable builds) the live feed on docs/appcast.xml.
 #
@@ -9,7 +11,7 @@ set -euo pipefail
 # run can never point Sparkle at a URL that 404s.
 
 script_name=${0:A}
-repo_root=${script_name:h:h}
+repo_root=$(vibra_repo_root "$script_name")
 dry_run=0
 # Published releases always use Developer ID and Apple notarization.
 # --no-notarize is only available for local dry packaging.
@@ -145,9 +147,7 @@ if [[ ! -d $pinned_sparkle/Sparkle.framework || ! -x $appcast_tool ]]; then
 fi
 export VIBRA_SPARKLE_FRAMEWORK="$pinned_sparkle/Sparkle.framework"
 
-cargo_version=$(
-  sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo_root/Cargo.toml" | head -n 1
-)
+cargo_version=$(vibra_cargo_version "$repo_root")
 if [[ $cargo_version != $version ]]; then
   print -u2 -- "Cargo.toml declares $cargo_version, but the requested release is $version."
   exit 65
