@@ -3,7 +3,6 @@
 //! as the terminal, and nothing is sent anywhere the user's CLI would not.
 
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -35,13 +34,8 @@ fi
 "#;
 
 pub fn generate_commit_message(root: &Path, context: &str) -> Result<String> {
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|shell| !shell.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_owned());
-    let mut command = Command::new(shell);
+    let mut command = super::login_shell::command(SCRIPT);
     command
-        .args(["-l", "-c", SCRIPT])
         .current_dir(root)
         .env("VIBRA_COMMIT_PROMPT", INSTRUCTIONS);
     let input = format!("{INSTRUCTIONS}\n\n{context}");

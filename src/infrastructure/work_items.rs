@@ -70,8 +70,9 @@ pub fn prepare_prompt_launch(agent: &str, prompt: &str) -> Result<(String, PathB
     let path = std::env::temp_dir().join(format!("vibra-inbox-{}.txt", Uuid::new_v4()));
     atomic_write(&path, prompt.as_bytes()).context("Could not prepare the task context.")?;
     let script = launch_script(agent, &path);
-    // zsh guarantees the same expansion even when the project's shell is fish.
-    Ok((format!("/bin/zsh -lc {}", shell_argument(&script)), path))
+    // The terminal already loaded its user's login environment. Preserve that
+    // PATH, and let POSIX sh parse the script even in fish or Nushell panes.
+    Ok((format!("/bin/sh -c {}", shell_argument(&script)), path))
 }
 
 fn launch_script(agent: &str, path: &std::path::Path) -> String {
@@ -178,5 +179,32 @@ mod tests {
         let output = bounded_output(&mut Command::new("/bin/cat"), Some(input.clone())).unwrap();
         assert_eq!(output, input);
         assert!(bounded_output(&mut Command::new("/usr/bin/false"), None).is_err());
+    }
+
+    #[test]
+    fn inbox_launch_preserves_the_terminal_path_without_loading_another_login_shell() {
+        let root = std::env::temp_dir().join(format!("vibra-launch-{}", Uuid::new_v4()));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("claude");
+        std::fs::write(&executable, "#!/bin/sh\nprintf '%s' \"$1\"\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // If the launcher loads zsh again, its profile removes the fake CLI
+        // from PATH. This also ensures the regression cannot start a real agent.
+        std::fs::write(root.join(".zprofile"), "export PATH=/usr/bin:/bin\n").unwrap();
+        let (command, context) =
+            prepare_prompt_launch("claude", "literal $(touch injected)").unwrap();
+        let output = Command::new("/bin/sh")
+            .args(["-c", &command])
+            .current_dir(&root)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("ZDOTDIR", &root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        assert_eq!(output.stdout, b"literal $(touch injected)");
+        assert!(!root.join("injected").exists());
+        assert!(!context.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

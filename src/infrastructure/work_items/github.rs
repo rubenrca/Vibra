@@ -32,14 +32,16 @@ pub(super) fn gh(arguments: &[&str], input: Option<Vec<u8>>) -> Result<Value> {
 }
 
 pub(super) fn gh_output(arguments: &[&str], input: Option<Vec<u8>>) -> Result<Vec<u8>> {
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".into());
+    let script = format!(
+        "exec gh {}",
+        arguments
+            .iter()
+            .map(|argument| crate::domain::work_items::shell_argument(argument))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     bounded_output(
-        Command::new(shell)
-            .args(["-l", "-c", "exec gh \"$@\"", "vibra-inbox"])
-            .args(arguments)
+        super::super::login_shell::command(&script)
             .env("GH_PROMPT_DISABLED", "1")
             .env("GH_PAGER", "cat")
             .env("GH_HOST", "github.com"),

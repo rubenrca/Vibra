@@ -5,6 +5,7 @@ pub mod files;
 pub mod ghostty;
 pub mod git;
 pub mod library;
+mod login_shell;
 pub mod notifications;
 pub mod paths;
 pub mod persistence;

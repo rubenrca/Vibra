@@ -364,7 +364,7 @@ fn work_inbox_prepares_a_draft_then_starts_a_linked_session_in_its_project(
             let (target, bytes) = sent.last().unwrap();
             assert_eq!(*target, pane);
             let command = String::from_utf8(bytes.clone()).unwrap();
-            assert!(command.starts_with("/bin/zsh -lc "));
+            assert!(command.starts_with("/bin/sh -c "));
             assert!(command.ends_with('\r'));
             assert!(!command.contains('\n'));
             // The recording port does not run commands: clean its prompt file.
