@@ -308,6 +308,13 @@ fn legacy_flat_order_and_spacers_preserve_all_sessions_once() {
     flat.workspace_order = vec![second, first, second, Uuid::new_v4()];
     flat.normalize();
     assert_eq!(session_ids(&flat), [second, first]);
+    assert!(flat.workspace_order.is_empty());
+    assert!(
+        serde_json::to_value(&flat)
+            .unwrap()
+            .get("workspaceOrder")
+            .is_none()
+    );
     assert_eq!(round_trip(&flat), flat);
 
     let space = Uuid::new_v4();

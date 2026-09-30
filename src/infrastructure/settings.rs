@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -7,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::appearance::AppearanceMode;
 use crate::infrastructure::paths::{
-    RevisionGuard, application_support_directory, atomic_write, gpui_preview_support_directory,
-    read_file_limited,
+    RevisionGuard, application_support_directory, atomic_write_if_missing,
+    gpui_preview_support_directory, read_file_limited,
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
@@ -353,18 +352,13 @@ impl SettingsRepository {
         else {
             return Ok(());
         };
-        let parent = self
-            .path
-            .parent()
-            .context("settings.json has no parent directory")?;
-        fs::create_dir_all(parent)?;
         let data = read_settings_file(preview_path)?;
         let preview: AppSettings = serde_json::from_slice(&data)
             .with_context(|| format!("Invalid JSON in {}", preview_path.display()))?;
         if preview.schema_version > CURRENT_SETTINGS_SCHEMA_VERSION {
             bail!("{} uses a newer schema", preview_path.display());
         }
-        atomic_write(&self.path, &data).with_context(|| {
+        atomic_write_if_missing(&self.path, &data).with_context(|| {
             format!(
                 "could not import {} to {}",
                 preview_path.display(),
@@ -413,6 +407,7 @@ fn read_settings_file(path: &std::path::Path) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use uuid::Uuid;
 
     #[test]

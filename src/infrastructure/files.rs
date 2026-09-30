@@ -52,9 +52,10 @@ impl FileSystemPort for LocalFileSystemPort {
             )
         })?;
         if text.lines().any(|line| line.len() > 32_768) {
-            bail!(
-                "This file contains lines that are too long for the viewer. You can open it in its application."
-            );
+            bail!(concat!(
+                "This file contains lines that are too long for the viewer. ",
+                "You can open it in its application."
+            ));
         }
         Ok(text)
     }

@@ -20,7 +20,7 @@ pub struct WorkspaceSnapshot {
     pub projects: Vec<ProjectSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_project_id: Option<Uuid>,
-    /// Legacy order, maintained as a mirror of the project/session hierarchy.
+    /// Pre-project ordering, consumed during schema-7 migration.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_order: Vec<Uuid>,
     /// Pre-project sidebar groups, consumed during schema-7 migration.

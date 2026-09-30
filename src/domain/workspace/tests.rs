@@ -392,6 +392,41 @@ fn split_ratios_are_addressed_by_tree_path_and_clamped() {
 }
 
 #[test]
+fn resizing_a_clamped_nearest_divider_preserves_ancestor_geometry() {
+    for direction in [PaneSplitDirection::Right, PaneSplitDirection::Down] {
+        let axis = direction.axis();
+        let first = Uuid::new_v4();
+        let selected = Uuid::new_v4();
+        let mut layout = PaneLayoutSnapshot::joining(
+            vec![
+                PaneLayoutSnapshot::terminal(first),
+                PaneLayoutSnapshot::terminal(selected),
+            ],
+            axis,
+        );
+        layout.split_with_layout(
+            selected,
+            &PaneLayoutSnapshot::terminal(Uuid::new_v4()),
+            direction,
+        );
+        for (limit, delta) in [(MAX_PANE_SPLIT_RATIO, 500), (MIN_PANE_SPLIT_RATIO, -500)] {
+            layout.set_split_ratio(&[PaneBranch::Second], limit);
+            let before = layout.clone();
+            assert!(!layout.move_nearest_divider(selected, axis, delta));
+            assert_eq!(layout, before);
+            assert!(layout.move_nearest_divider(selected, axis, -delta));
+            assert!(matches!(
+                layout,
+                PaneLayoutSnapshot::Split {
+                    ratio: DEFAULT_PANE_SPLIT_RATIO,
+                    ..
+                }
+            ));
+        }
+    }
+}
+
+#[test]
 fn tabs_can_be_reordered_and_addressed_by_number() {
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/tmp/vibra-tab-order"));

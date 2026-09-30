@@ -170,28 +170,9 @@ impl PaneLayoutSnapshot {
         axis: WorkspaceSplitAxis,
         delta: i16,
     ) -> bool {
-        let Self::Split {
-            axis: split_axis,
-            ratio,
-            first,
-            second,
-        } = self
-        else {
+        let Some(ratio) = self.nearest_divider_mut(terminal_id, axis) else {
             return false;
         };
-        let child = if first.contains_terminal(terminal_id) {
-            first
-        } else if second.contains_terminal(terminal_id) {
-            second
-        } else {
-            return false;
-        };
-        if child.move_nearest_divider(terminal_id, axis, delta) {
-            return true;
-        }
-        if *split_axis != axis {
-            return false;
-        }
         let adjusted = (*ratio as i32 + i32::from(delta))
             .clamp(MIN_PANE_SPLIT_RATIO as i32, MAX_PANE_SPLIT_RATIO as i32)
             as u16;
@@ -200,6 +181,35 @@ impl PaneLayoutSnapshot {
         }
         *ratio = adjusted;
         true
+    }
+
+    /// Find the closest matching split, including one already at its limit.
+    /// A clamped resize must not fall through to an unrelated ancestor split.
+    fn nearest_divider_mut(
+        &mut self,
+        terminal_id: Uuid,
+        axis: WorkspaceSplitAxis,
+    ) -> Option<&mut u16> {
+        let Self::Split {
+            axis: split_axis,
+            ratio,
+            first,
+            second,
+        } = self
+        else {
+            return None;
+        };
+        let child = if first.contains_terminal(terminal_id) {
+            first
+        } else if second.contains_terminal(terminal_id) {
+            second
+        } else {
+            return None;
+        };
+        if let Some(ratio) = child.nearest_divider_mut(terminal_id, axis) {
+            return Some(ratio);
+        }
+        (*split_axis == axis).then_some(ratio)
     }
 
     pub fn set_split_ratio(&mut self, path: &[PaneBranch], ratio: u16) -> bool {

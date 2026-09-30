@@ -4,14 +4,13 @@ pub(crate) use queue::{
     DocumentKind, FinishError, PersistenceQueue, SaveResult, save_final_blocking,
 };
 
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::domain::workspace::{CURRENT_WORKSPACE_SCHEMA_VERSION, WorkspaceSnapshot};
 use crate::infrastructure::paths::{
-    RevisionGuard, application_support_directory, atomic_write, gpui_preview_support_directory,
-    read_file_limited,
+    RevisionGuard, application_support_directory, atomic_write, atomic_write_if_missing,
+    gpui_preview_support_directory, read_file_limited,
 };
 use anyhow::{Context, Result, bail};
 
@@ -128,19 +127,13 @@ impl WorkspaceRepository {
                 .as_ref()
                 .filter(|preview_path| preview_path.exists())
         {
-            let parent = self
-                .path
-                .parent()
-                .context("workspace.json has no parent directory")?;
-            fs::create_dir_all(parent)
-                .with_context(|| format!("could not create {}", parent.display()))?;
             let data = read_workspace_file(preview_path)?;
             let preview: WorkspaceSnapshot = serde_json::from_slice(&data)
                 .with_context(|| format!("Invalid JSON in {}", preview_path.display()))?;
             if preview.schema_version > CURRENT_WORKSPACE_SCHEMA_VERSION {
                 bail!("{} uses a newer schema", preview_path.display());
             }
-            atomic_write(&self.path, &data).with_context(|| {
+            atomic_write_if_missing(&self.path, &data).with_context(|| {
                 format!(
                     "could not import {} to {}",
                     preview_path.display(),
@@ -186,6 +179,7 @@ fn valid_json_backup(path: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::Path;
 
     use super::*;

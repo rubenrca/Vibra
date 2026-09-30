@@ -27,11 +27,7 @@ impl super::WorkspaceSnapshot {
         {
             self.selected_project_id = self.projects.first().map(|p| p.id);
         }
-        self.workspace_order = self
-            .projects
-            .iter()
-            .flat_map(|p| p.workspaces.iter().flatten().map(|w| w.id))
-            .collect();
+        self.workspace_order.clear();
         self.sidebar_items.clear();
         self.schema_version = CURRENT_WORKSPACE_SCHEMA_VERSION;
     }
@@ -103,7 +99,7 @@ impl super::WorkspaceSnapshot {
         let original = std::mem::take(&mut self.projects);
         let mut pending = HashMap::new();
         let mut owners = HashMap::new();
-        let mut order = self.workspace_order.clone();
+        let mut order = std::mem::take(&mut self.workspace_order);
         let mut originally_empty = Vec::new();
         for mut project in original {
             let workspaces = project.workspaces.take().unwrap_or_default();

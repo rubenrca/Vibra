@@ -49,6 +49,21 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     atomic_write_with(path, bytes, AtomicWriteOptions::default())
 }
 
+/// Import an older file without replacing a snapshot another instance created.
+pub fn atomic_write_if_missing(path: &Path, bytes: &[u8]) -> Result<bool> {
+    with_exclusive_file_lock(path, || {
+        match fs::symlink_metadata(path) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("could not inspect {}", path.display()));
+            }
+        }
+        atomic_write(path, bytes)?;
+        Ok(true)
+    })
+}
+
 pub fn atomic_write_with(path: &Path, bytes: &[u8], options: AtomicWriteOptions) -> Result<()> {
     let parent = path
         .parent()
@@ -238,8 +253,12 @@ impl RevisionGuard {
                 Err(error) => {
                     let recovery = self.preserve_local_copy(path, bytes)?;
                     bail!(
-                        "{error}; the settings file was preserved and your local copy was saved at {}",
-                        recovery.display()
+                        concat!(
+                            "{error}; the settings file was preserved ",
+                            "and your local copy was saved at {}"
+                        ),
+                        recovery.display(),
+                        error = error
                     );
                 }
             };
@@ -324,7 +343,10 @@ impl RevisionGuard {
                 FileRevision::Loaded(expected) if oversized || *expected != current => {
                     let recovery_path = self.preserve_local_copy(path, bytes)?;
                     bail!(
-                        "{} changed in another process; the newer file was preserved and your local copy was saved at {}",
+                        concat!(
+                            "{} changed in another process; the newer file was preserved ",
+                            "and your local copy was saved at {}"
+                        ),
                         path.display(),
                         recovery_path.display()
                     );
@@ -386,6 +408,38 @@ mod tests {
         atomic_write(&path, b"one").unwrap();
         atomic_write(&path, b"two").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"two");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_wait_for_a_writer_and_preserve_its_new_snapshot() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let root = std::env::temp_dir().join(format!("vibra-import-{}", Uuid::new_v4()));
+        let path = root.join("workspace.json");
+        let (started, start) = mpsc::channel();
+        let (completed, completion) = mpsc::channel();
+        let importer = with_exclusive_file_lock(&path, || {
+            let import_path = path.clone();
+            let importer = std::thread::spawn(move || {
+                started.send(()).unwrap();
+                completed
+                    .send(atomic_write_if_missing(&import_path, b"old preview"))
+                    .unwrap();
+            });
+            start.recv().unwrap();
+            assert!(matches!(
+                completion.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            atomic_write(&path, b"new snapshot")?;
+            Ok(importer)
+        })
+        .unwrap();
+        importer.join().unwrap();
+        assert!(!completion.recv().unwrap().unwrap());
+        assert_eq!(fs::read(&path).unwrap(), b"new snapshot");
         fs::remove_dir_all(root).unwrap();
     }
 

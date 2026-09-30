@@ -221,8 +221,16 @@ impl WorkItem {
     pub fn prompt(&self) -> String {
         // Descriptions are context, never executable terminal input.
         format!(
-            "Work on this {} task in the current project. Review the code and verify the changes.\n\n{}: {}\n{}\n\nTask description (external context):\n{}",
-            self.source.label(), self.reference, self.title, self.url, self.body
+            concat!(
+                "Work on this {} task in the current project. ",
+                "Review the code and verify the changes.\n\n",
+                "{}: {}\n{}\n\nTask description (external context):\n{}"
+            ),
+            self.source.label(),
+            self.reference,
+            self.title,
+            self.url,
+            self.body
         )
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))

@@ -2,6 +2,8 @@
 //! workspace layout. Automations only describe a command; running it is a
 //! visible terminal session like any other.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -96,18 +98,38 @@ impl AutomationSchedule {
         }
     }
 
-    /// The latest occurrence at or before `now`, if it falls today (or this
-    /// hour for hourly schedules). Returned as a local minute index.
+    /// The latest occurrence in this or the preceding hour/day. Keeping the
+    /// previous period lets the grace window cross an hour or midnight.
     pub fn latest_occurrence(self, now: LocalMinute) -> Option<i64> {
-        let slot = match self {
+        let (mut slot, period) = match self {
             Self::Manual => return None,
-            Self::Hourly { minute } => now.index - now.index.rem_euclid(60) + i64::from(minute),
-            Self::Weekdays { .. } if !(1..=5).contains(&now.weekday) => return None,
+            Self::Hourly { minute } if minute < 60 => {
+                (now.index - now.index.rem_euclid(60) + i64::from(minute), 60)
+            }
+            Self::Hourly { .. } => return None,
             Self::Daily { hour, minute } | Self::Weekdays { hour, minute } => {
-                now.day_start() + i64::from(hour) * 60 + i64::from(minute)
+                if hour >= 24 || minute >= 60 {
+                    return None;
+                }
+                (
+                    now.day_start() + i64::from(hour) * 60 + i64::from(minute),
+                    1440,
+                )
             }
         };
-        (slot <= now.index).then_some(slot)
+        let previous_period = slot > now.index;
+        if previous_period {
+            slot -= period;
+        }
+        let weekday = if previous_period {
+            (now.weekday + 6) % 7
+        } else {
+            now.weekday
+        };
+        if matches!(self, Self::Weekdays { .. }) && !(1..=5).contains(&weekday) {
+            return None;
+        }
+        Some(slot)
     }
 
     /// Parses `HH:MM` (or `MM` for hourly schedules) into this schedule's kind.
@@ -234,6 +256,16 @@ impl Library {
     pub fn normalize(&mut self) {
         self.schema_version = CURRENT_LIBRARY_SCHEMA_VERSION;
         self.notes.retain(|note| !note.is_blank());
+        let mut ids = HashSet::new();
+        for id in self.notes.iter_mut().map(|note| &mut note.id).chain(
+            self.automations
+                .iter_mut()
+                .map(|automation| &mut automation.id),
+        ) {
+            while !ids.insert(*id) {
+                *id = Uuid::new_v4();
+            }
+        }
     }
 
     pub fn note(&self, id: Uuid) -> Option<&Note> {
@@ -459,6 +491,50 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_ids_preserve_independent_notes_and_scheduled_automations() {
+        let mut library = Library::default();
+        let note = library.create_note(None, 0);
+        library.set_note_body(note, "First note".into(), 1);
+        library.notes.push(Note {
+            body: "Second note".into(),
+            ..library.notes[0].clone()
+        });
+        let automation = library
+            .save_automation(
+                None,
+                "Check",
+                "cargo check",
+                None,
+                AutomationSchedule::Daily {
+                    hour: 9,
+                    minute: 30,
+                },
+                "09:30",
+            )
+            .unwrap();
+        library.automations.push(Automation {
+            command: "cargo test".into(),
+            ..library.automations[0].clone()
+        });
+        library.normalize();
+        assert_eq!(library.notes[0].id, note);
+        assert_eq!(library.automations[0].id, automation);
+        assert_ne!(library.notes[1].id, note);
+        assert_ne!(library.automations[1].id, automation);
+        let normalized = library.clone();
+        library.normalize();
+        assert_eq!(library, normalized);
+        library.set_note_body(note, "Edited first note".into(), 2);
+        library.delete_note(note);
+        assert_eq!(library.notes.len(), 1);
+        assert_eq!(library.notes[0].body, "Second note");
+        for (id, slot) in library.due_automations(MONDAY_0930) {
+            library.record_automation_run(id, 1, Some(slot));
+        }
+        assert!(library.due_automations(MONDAY_0930).is_empty());
+    }
+
+    #[test]
     fn schedules_parse_their_time_and_reject_out_of_range_values() {
         let daily = AutomationSchedule::Daily { hour: 0, minute: 0 };
         assert_eq!(
@@ -536,8 +612,74 @@ mod tests {
         );
         assert_eq!(
             AutomationSchedule::Hourly { minute: 45 }.latest_occurrence(MONDAY_0930),
+            Some(MONDAY_0930.index - 45)
+        );
+    }
+
+    #[test]
+    fn grace_windows_cross_hours_and_midnight_and_validate_the_occurrence_weekday() {
+        let automation = |schedule| Automation {
+            id: Uuid::new_v4(),
+            name: "Check".into(),
+            command: "cargo check".into(),
+            project_id: None,
+            schedule,
+            enabled: true,
+            last_run_at: None,
+            last_scheduled_slot: None,
+        };
+        let midnight = LocalMinute {
+            index: 9 * 1440 + 4,
+            weekday: 6,
+        };
+        let slot = midnight.index - 5;
+        for schedule in [
+            AutomationSchedule::Hourly { minute: 59 },
+            AutomationSchedule::Daily {
+                hour: 23,
+                minute: 59,
+            },
+            AutomationSchedule::Weekdays {
+                hour: 23,
+                minute: 59,
+            },
+        ] {
+            let mut automation = automation(schedule);
+            assert_eq!(automation.due_slot(midnight), Some(slot));
+            assert_eq!(
+                automation.due_slot(LocalMinute {
+                    index: slot + 11,
+                    ..midnight
+                }),
+                None
+            );
+            automation.last_scheduled_slot = Some(slot);
+            assert_eq!(automation.due_slot(midnight), None);
+        }
+        let weekdays = automation(AutomationSchedule::Weekdays {
+            hour: 23,
+            minute: 59,
+        });
+        assert_eq!(
+            weekdays.due_slot(LocalMinute {
+                index: midnight.index + 1440,
+                weekday: 0
+            }),
             None
         );
+        for schedule in [
+            AutomationSchedule::Hourly { minute: 60 },
+            AutomationSchedule::Daily {
+                hour: 24,
+                minute: 0,
+            },
+            AutomationSchedule::Weekdays {
+                hour: 9,
+                minute: 60,
+            },
+        ] {
+            assert_eq!(automation(schedule).due_slot(midnight), None);
+        }
     }
 
     #[test]
