@@ -250,80 +250,89 @@ impl WorkspaceView {
     ) -> AnyElement {
         let mut grid = div().flex().flex_col().gap_3();
         for families in families.chunks(columns) {
-            let mut row = div().flex().gap_3();
-            for family in families {
-                let selected = family.id == self.settings.theme_id;
-                let theme_id = family.id.clone();
-                row = row.child(
-                    div()
-                        .id(SharedString::from(format!("settings-theme-{theme_id}")))
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .p_4()
-                        .rounded(px(13.0))
-                        .border_1()
-                        .border_color(if selected {
-                            colors().accent
-                        } else {
-                            colors().border_subtle
-                        })
-                        .bg(surface_tint(colors().elevated, colors().background))
-                        .cursor_pointer()
-                        .hover(|card| card.border_color(colors().accent))
-                        .child(
-                            div()
-                                .h(px(86.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .gap_3()
-                                .child(theme_orb(
-                                    family,
-                                    ThemeTone::Light,
-                                    selected && preview_tone == ThemeTone::Light,
-                                ))
-                                .child(theme_orb(
-                                    family,
-                                    ThemeTone::Dark,
-                                    selected && preview_tone == ThemeTone::Dark,
-                                )),
-                        )
-                        .child(
-                            div()
-                                .pt_2()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.0))
-                                        .truncate()
-                                        .text_size(px(13.0))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .child(family.label.clone()),
-                                )
-                                .when(selected, |label| {
-                                    label.child(
-                                        svg()
-                                            .path("chrome-icons/check.svg")
-                                            .size(px(15.0))
-                                            .flex_none()
-                                            .text_color(colors().accent),
-                                    )
-                                }),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.set_theme_id(&theme_id, window, cx);
-                        })),
-                );
-            }
-            for _ in families.len()..columns {
-                row = row.child(div().flex_1().min_w(px(0.0)));
-            }
+            let row = div()
+                .flex()
+                .gap_3()
+                .children(
+                    families
+                        .iter()
+                        .map(|family| self.settings_theme_card(family, preview_tone, cx)),
+                )
+                .children((families.len()..columns).map(|_| div().flex_1().min_w(px(0.0))));
             grid = grid.child(row);
         }
         grid.into_any_element()
+    }
+
+    fn settings_theme_card(
+        &self,
+        family: &ThemeFamily,
+        preview_tone: ThemeTone,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let selected = family.id == self.settings.theme_id;
+        let theme_id = family.id.clone();
+        div()
+            .id(SharedString::from(format!("settings-theme-{theme_id}")))
+            .flex_1()
+            .min_w(px(0.0))
+            .p_4()
+            .rounded(px(13.0))
+            .border_1()
+            .border_color(if selected {
+                colors().accent
+            } else {
+                colors().border_subtle
+            })
+            .bg(surface_tint(colors().elevated, colors().background))
+            .cursor_pointer()
+            .hover(|card| card.border_color(colors().accent))
+            .child(
+                div()
+                    .h(px(86.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .child(theme_orb(
+                        family,
+                        ThemeTone::Light,
+                        selected && preview_tone == ThemeTone::Light,
+                    ))
+                    .child(theme_orb(
+                        family,
+                        ThemeTone::Dark,
+                        selected && preview_tone == ThemeTone::Dark,
+                    )),
+            )
+            .child(
+                div()
+                    .pt_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(13.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(family.label.clone()),
+                    )
+                    .when(selected, |label| {
+                        label.child(
+                            svg()
+                                .path("chrome-icons/check.svg")
+                                .size(px(15.0))
+                                .flex_none()
+                                .text_color(colors().accent),
+                        )
+                    }),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.set_theme_id(&theme_id, window, cx);
+            }))
     }
 
     fn settings_theme_search(&self) -> Div {

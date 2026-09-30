@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
-    TabSnapshot, WorkspaceSplitAxis, WorkspaceTabId,
+    WorkspaceSplitAxis, WorkspaceTabId,
 };
 use crate::ui::agent_marks::agent_compact_badge;
 use crate::ui::terminal::TerminalDragPreview;
@@ -91,12 +91,7 @@ impl super::WorkspaceView {
             .child(canvas)
     }
 
-    pub(super) fn tab_bar(
-        &mut self,
-        tabs: Vec<TabSnapshot>,
-        selected_tab_id: Option<Uuid>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    pub(super) fn tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         // A docked review belongs to its terminal tab; only standalone reviews
         // occupy a separate position in the strip.
         let terminal_hidden = self.review_covers_terminal(cx);
@@ -105,6 +100,11 @@ impl super::WorkspaceView {
         let slots = self.tab_strip_slots(cx);
         self.tab_motion
             .update(&slots, self.tab_width.get() + px(TAB_GAP));
+        let workspace = self.snapshot.selected_workspace();
+        let tabs = workspace
+            .map(|workspace| workspace.tabs.as_slice())
+            .unwrap_or_default();
+        let selected_tab_id = workspace.and_then(|workspace| workspace.selected_tab_id);
         let tab_list = div()
             .h_full()
             .flex_1()
@@ -754,19 +754,13 @@ impl super::WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let tab = self.snapshot.selected_tab().cloned();
-        let panes = tab.as_ref().map(|tab| {
-            if let Some(zoomed_id) = tab.zoomed_session_id {
-                self.render_pane_layout(
-                    &PaneLayoutSnapshot::terminal(zoomed_id),
-                    Vec::new(),
-                    window,
-                    cx,
-                )
-            } else {
-                self.render_pane_layout(&tab.layout, Vec::new(), window, cx)
-            }
+        let layout = self.snapshot.selected_tab().map(|tab| {
+            tab.zoomed_session_id
+                .map_or_else(|| tab.layout.clone(), PaneLayoutSnapshot::terminal)
         });
+        let panes = layout
+            .as_ref()
+            .map(|layout| self.render_pane_layout(layout, Vec::new(), window, cx));
         let is_empty = panes.is_none();
         // Terminals share the continuous workspace surface; split panes keep
         // thin boundaries so focus and resize targets remain legible.

@@ -91,15 +91,6 @@ impl super::WorkspaceView {
                 + (right_expanded_width - TITLEBAR_RIGHT_CHROME_COLLAPSED) * right_progress
         };
         let right_open = right_progress > 0.5;
-        let tabs = self
-            .snapshot
-            .selected_workspace()
-            .map(|workspace| workspace.tabs.clone())
-            .unwrap_or_default();
-        let selected_tab_id = self
-            .snapshot
-            .selected_workspace()
-            .and_then(|workspace| workspace.selected_tab_id);
         let show_tab_selector = self.workspace_section == WorkspaceSection::Workspace
             && !self.visible_tab_order(cx).is_empty();
         let section_label = match self.workspace_section {
@@ -116,7 +107,7 @@ impl super::WorkspaceView {
         .to_owned();
         let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();
         if show_tab_selector {
-            center_chrome = center_chrome.child(self.tab_bar(tabs, selected_tab_id, cx));
+            center_chrome = center_chrome.child(self.tab_bar(cx));
         } else {
             center_chrome = center_chrome
                 .px_4()

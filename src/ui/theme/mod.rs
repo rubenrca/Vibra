@@ -4,7 +4,6 @@
 //! (theme id + light/dark/system) lives in [`resolve`] / [`apply_preference`].
 //! User Warp YAML / Ghostty files load from `~/.vibra/themes`.
 
-use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
 use gpui::{Hsla, Rgba, WindowAppearance, rgb, rgba};
@@ -12,14 +11,16 @@ use gpui::{Hsla, Rgba, WindowAppearance, rgb, rgba};
 pub use crate::domain::appearance::AppearanceMode;
 
 mod palettes;
+mod user;
 use crate::ports::terminal::TerminalRgb;
 pub use palettes::built_in_themes;
 #[cfg(test)]
 pub(crate) use palettes::{DEFAULT_THEME_ID, midnight_light, moss_dark};
 use palettes::{midnight_dark, seed, theme_from_seed};
+pub use user::{refresh_user_themes, user_themes, user_themes_directory};
 
 pub use crate::ports::terminal::TerminalPalette;
-use crate::ui::theme_import::{self, ImportedScheme};
+use crate::ui::theme_import::ImportedScheme;
 
 /// Family name of the bundled JetBrains Mono Variable font.
 pub const MONO_FONT: &str = "JetBrains Mono";
@@ -276,210 +277,6 @@ impl ThemeFamily {
     }
 }
 
-const USER_THEME_PREFIX: &str = "user:";
-const MAX_USER_THEMES: usize = 200;
-
-fn user_theme_slot() -> &'static RwLock<Vec<ThemeFamily>> {
-    static SLOT: OnceLock<RwLock<Vec<ThemeFamily>>> = OnceLock::new();
-    SLOT.get_or_init(|| RwLock::new(Vec::new()))
-}
-
-/// `~/.vibra/themes` when a home directory is available.
-pub fn user_themes_directory() -> Option<PathBuf> {
-    directories::BaseDirs::new()
-        .map(|directories| directories.home_dir().join(".vibra").join("themes"))
-}
-
-pub fn user_themes() -> Vec<ThemeFamily> {
-    user_theme_slot()
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
-}
-
-/// Reload Warp YAML / Ghostty files from `~/.vibra/themes`.
-pub fn refresh_user_themes() {
-    let themes = user_themes_directory()
-        .map(|directory| load_user_themes(&directory))
-        .unwrap_or_default();
-    *user_theme_slot()
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = themes;
-}
-
-pub fn load_user_themes(directory: &Path) -> Vec<ThemeFamily> {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return Vec::new();
-    };
-    let mut loaded = Vec::new();
-    for entry in entries.flatten() {
-        if loaded.len() >= MAX_USER_THEMES {
-            break;
-        }
-        let path = entry.path();
-        if !theme_import::is_theme_file(&path) {
-            continue;
-        }
-        let Ok(scheme) = theme_import::parse_theme_file(&path) else {
-            continue;
-        };
-        let stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("theme");
-        loaded.push(LoadedUserTheme {
-            filename: path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            stem: stem.to_string(),
-            group: grouping_key(stem),
-            label: scheme
-                .name
-                .clone()
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| pretty_label(stem)),
-            dark: scheme_is_dark(&scheme),
-            theme: theme_from_scheme(&scheme),
-        });
-    }
-    pair_user_themes(loaded)
-}
-
-struct LoadedUserTheme {
-    filename: String,
-    stem: String,
-    group: String,
-    label: String,
-    dark: bool,
-    theme: Theme,
-}
-
-fn pair_user_themes(loaded: Vec<LoadedUserTheme>) -> Vec<ThemeFamily> {
-    let mut groups: Vec<(String, Vec<LoadedUserTheme>)> = Vec::new();
-    for item in loaded {
-        if let Some((_, members)) = groups.iter_mut().find(|(key, _)| *key == item.group) {
-            members.push(item);
-        } else {
-            groups.push((item.group.clone(), vec![item]));
-        }
-    }
-    let mut families = Vec::new();
-    for (group, mut members) in groups {
-        members.sort_by(|left, right| left.stem.cmp(&right.stem));
-        let light = members.iter().find(|item| !item.dark);
-        let dark = members.iter().find(|item| item.dark);
-        if members.len() == 2
-            && let (Some(light), Some(dark)) = (light, dark)
-        {
-            families.push((
-                ThemeFamily {
-                    id: format!(
-                        "{USER_THEME_PREFIX}{}",
-                        if sanitize_theme_id(&group).is_empty() {
-                            "theme"
-                        } else {
-                            &group
-                        }
-                    ),
-                    label: preferred_user_label(&light.label, &dark.label, &group),
-                    light: light.theme,
-                    dark: dark.theme,
-                },
-                light.filename.clone(),
-            ));
-            continue;
-        }
-        for item in members {
-            let id_stem = sanitize_theme_id(&item.stem);
-            families.push((
-                ThemeFamily {
-                    id: format!("{USER_THEME_PREFIX}{id_stem}"),
-                    label: item.label,
-                    light: item.theme,
-                    dark: item.theme,
-                },
-                item.filename,
-            ));
-        }
-    }
-    families.sort_by(|(left, left_filename), (right, right_filename)| {
-        left.label
-            .to_ascii_lowercase()
-            .cmp(&right.label.to_ascii_lowercase())
-            .then_with(|| left.id.cmp(&right.id))
-            .then_with(|| left_filename.cmp(right_filename))
-    });
-    let mut assigned = std::collections::HashSet::new();
-    families
-        .into_iter()
-        .map(|(mut family, filename)| {
-            // Preserve the original ID for its first family, including saved
-            // preferences. Other files with the same slug need stable identities.
-            if !assigned.insert(family.id.clone()) {
-                family.id.push(':');
-                const HEX: &[u8; 16] = b"0123456789abcdef";
-                for byte in filename.bytes() {
-                    family.id.push(HEX[usize::from(byte >> 4)] as char);
-                    family.id.push(HEX[usize::from(byte & 0x0f)] as char);
-                }
-            }
-            family
-        })
-        .collect()
-}
-
-fn preferred_user_label(light: &str, dark: &str, group: &str) -> String {
-    let light_key = grouping_key(light);
-    let dark_key = grouping_key(dark);
-    if light_key == dark_key || light_key == group {
-        light.to_string()
-    } else if dark_key == group {
-        dark.to_string()
-    } else {
-        pretty_label(group)
-    }
-}
-
-fn grouping_key(stem: &str) -> String {
-    let lowered = stem.to_ascii_lowercase();
-    let stripped = lowered
-        .strip_suffix("-dark")
-        .or_else(|| lowered.strip_suffix("_dark"))
-        .or_else(|| lowered.strip_suffix("-light"))
-        .or_else(|| lowered.strip_suffix("_light"))
-        .or_else(|| lowered.strip_suffix("-darker"))
-        .or_else(|| lowered.strip_suffix("-lighter"))
-        .or_else(|| lowered.strip_suffix(" dark"))
-        .or_else(|| lowered.strip_suffix(" light"))
-        .unwrap_or(&lowered);
-    let id = sanitize_theme_id(stripped);
-    if id.is_empty() {
-        // A fallback slug is an ID, not a grouping identity: unrelated
-        // Unicode filenames must not become one light/dark pair.
-        if !stripped.is_ascii() {
-            stripped.to_string()
-        } else {
-            "theme".to_string()
-        }
-    } else {
-        id
-    }
-}
-
-fn sanitize_theme_id(raw: &str) -> String {
-    let mut out = String::new();
-    for character in raw.chars() {
-        if character.is_ascii_alphanumeric() {
-            out.push(character.to_ascii_lowercase());
-        } else if !out.is_empty() && !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_matches('-').to_string()
-}
-
 fn pretty_label(raw: &str) -> String {
     raw.replace(['-', '_'], " ")
         .split_whitespace()
@@ -536,13 +333,21 @@ fn theme_from_scheme(scheme: &ImportedScheme) -> Theme {
     theme_from_seed(spec)
 }
 
-fn family_by_id(id: &str) -> ThemeFamily {
+fn find_family(id: &str) -> Option<ThemeFamily> {
     built_in_themes()
         .iter()
         .find(|family| family.id == id)
         .cloned()
-        .or_else(|| user_themes().into_iter().find(|family| family.id == id))
-        .unwrap_or_else(|| built_in_themes()[0].clone())
+        .or_else(|| user::find_user_theme(id))
+}
+
+fn family_by_id(id: &str) -> ThemeFamily {
+    find_family(id).unwrap_or_else(|| built_in_themes()[0].clone())
+}
+
+/// Resolve known legacy IDs while retaining preferences for temporarily missing files.
+pub(crate) fn available_theme_id(id: &str) -> Option<String> {
+    find_family(id).map(|family| family.id)
 }
 
 pub fn canonicalize_theme_id(id: &str) -> String {
@@ -662,7 +467,7 @@ mod tests {
                 family.id
             );
             assert!(!family.label.is_empty());
-            assert!(!family.id.starts_with(USER_THEME_PREFIX));
+            assert!(!family.id.starts_with("user:"));
         }
         assert_eq!(canonicalize_theme_id("missing"), DEFAULT_THEME_ID);
         assert_eq!(
@@ -709,140 +514,6 @@ mod tests {
                 .terminal_colors
                 .is_none()
         );
-    }
-
-    #[test]
-    fn user_themes_load_and_pair_light_dark_files() {
-        let root = std::env::temp_dir().join(format!("vibra-themes-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join("nord.yaml"),
-            r###"
-name: Nord
-background: "#2E3440"
-foreground: "#D8DEE9"
-details: darker
-accent: "#81A1C1"
-terminal_colors:
-  normal:
-    black: "#3B4252"
-    red: "#BF616A"
-    green: "#A3BE8C"
-    yellow: "#EBCB8B"
-    blue: "#81A1C1"
-    magenta: "#B48EAD"
-    cyan: "#88C0D0"
-    white: "#E5E9F0"
-  bright:
-    black: "#4C566A"
-    red: "#BF616A"
-    green: "#A3BE8C"
-    yellow: "#EBCB8B"
-    blue: "#81A1C1"
-    magenta: "#B48EAD"
-    cyan: "#8FBCBB"
-    white: "#ECEFF4"
-"###,
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("nord-light.yaml"),
-            r###"
-name: Nord Light
-background: "#ECEFF4"
-foreground: "#2E3440"
-details: lighter
-accent: "#5E81AC"
-"###,
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("solo.conf"),
-            "background = #101010\nforeground = #ffffff\npalette = 1=#ff8080\n",
-        )
-        .unwrap();
-
-        let themes = load_user_themes(&root);
-        std::fs::remove_dir_all(&root).unwrap();
-        assert!(themes.iter().any(|family| family.id == "user:nord"));
-        let nord = themes
-            .iter()
-            .find(|family| family.id == "user:nord")
-            .unwrap();
-        assert!(nord.dark.is_dark());
-        assert!(!nord.light.is_dark());
-        assert_eq!(
-            nord.dark.terminal_palette().ansi[1],
-            TerminalRgb::new(0xbf, 0x61, 0x6a)
-        );
-        let solo = themes
-            .iter()
-            .find(|family| family.id == "user:solo")
-            .unwrap();
-        assert_eq!(solo.light.background, solo.dark.background);
-    }
-
-    #[test]
-    fn colliding_user_theme_slugs_remain_selectable_and_stable() {
-        let root = std::env::temp_dir().join(format!("vibra-theme-ids-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let source = "background = 101010\nforeground = ffffff\n";
-        for filename in [
-            "same-name.conf",
-            "same_name.conf",
-            "same-name.yaml",
-            "紫.conf",
-            "緑.conf",
-        ] {
-            let source = if filename == "緑.conf" {
-                "background = eceff4\nforeground = 111111\n"
-            } else {
-                source
-            };
-            std::fs::write(root.join(filename), source).unwrap();
-        }
-        let first = load_user_themes(&root);
-        let ids = |themes: &[ThemeFamily]| {
-            themes
-                .iter()
-                .map(|theme| theme.id.clone())
-                .collect::<Vec<_>>()
-        };
-        let first_ids = ids(&first);
-        assert_eq!(first.len(), 5);
-        assert_eq!(
-            first_ids
-                .iter()
-                .collect::<std::collections::HashSet<_>>()
-                .len(),
-            5
-        );
-        assert!(first_ids.contains(&"user:same-name".to_owned()));
-        assert!(first_ids.contains(&"user:".to_owned()));
-        assert_eq!(first_ids, ids(&load_user_themes(&root)));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn matching_unicode_light_dark_filenames_preserve_the_legacy_pair_id() {
-        let root = std::env::temp_dir().join(format!("vibra-theme-pair-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join("紫-dark.conf"),
-            "background = 101010\nforeground = ffffff\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("紫-light.conf"),
-            "background = eceff4\nforeground = 111111\n",
-        )
-        .unwrap();
-        let families = load_user_themes(&root);
-        assert_eq!(families.len(), 1);
-        assert_eq!(families[0].id, "user:theme");
-        assert!(families[0].dark.is_dark());
-        assert!(!families[0].light.is_dark());
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -843,6 +843,12 @@ impl WorkspaceView {
     }
 
     pub(super) fn apply_theme_preference(&mut self, system_dark: bool, cx: &mut Context<Self>) {
+        if let Some(id) = theme::available_theme_id(&self.settings.theme_id)
+            && self.settings.theme_id != id
+        {
+            self.settings.theme_id = id;
+            self.persist_settings(cx);
+        }
         theme::apply_preference(&self.settings.theme_id, self.appearance_mode(), system_dark);
         for terminal in self.terminals.values() {
             terminal.update(cx, |_, cx| cx.notify());
