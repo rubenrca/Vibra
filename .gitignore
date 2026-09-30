@@ -1,5 +1,6 @@
 .DS_Store
 /target
+/third_party/block/target
 /.build
 /.delta
 /.swiftpm

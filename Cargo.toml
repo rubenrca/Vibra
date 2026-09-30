@@ -32,6 +32,7 @@ gpui = { version = "=0.2.2", default-features = false, features = ["test-support
 # opaque. Keep the source-over correction reproducible in builds and releases.
 [patch.crates-io]
 gpui = { path = "third_party/gpui" }
+block = { path = "third_party/block" }
 
 [profile.release]
 lto = "thin"
