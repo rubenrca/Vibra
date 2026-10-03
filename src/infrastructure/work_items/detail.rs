@@ -49,7 +49,7 @@ const GITHUB_REOPEN: &str = concat!(
 
 pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
     if item.remote_id.is_empty() {
-        bail!("The task has no remote ID. Refresh the Inbox.");
+        bail!("The task has no remote ID. Refresh Review.");
     }
     match item.source {
         WorkSource::GitHub => {

@@ -78,7 +78,7 @@ impl WorkspaceView {
             .any(|state| state.posting || state.mutation_busy)
         {
             self.work_inbox.connection_error =
-                Some("Wait for the Inbox action to finish before changing the connection.".into());
+                Some("Wait for the Review action to finish before changing the connection.".into());
             cx.notify();
             return;
         }

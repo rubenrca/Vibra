@@ -369,7 +369,11 @@ impl WorkspaceView {
         for automation in &self.library.automations {
             body = body.child(self.automation_row(automation, now, cx));
         }
-        section_frame("Automations", actions, body.into_any_element())
+        section_frame(
+            "Automations · In development",
+            actions,
+            body.into_any_element(),
+        )
     }
 
     fn automation_row(

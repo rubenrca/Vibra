@@ -28,7 +28,7 @@ impl SettingsPage {
             Self::Appearance => "Appearance",
             Self::Agents => "Agents",
             Self::Security => "Privacy",
-            Self::Inbox => "Inbox",
+            Self::Inbox => "Review",
         }
     }
 

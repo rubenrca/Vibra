@@ -93,7 +93,7 @@ fn bounded_output(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u
             stderr: 0,
         },
     )
-    .context("Could not complete the Inbox query.")?;
+    .context("Could not complete the Review query.")?;
     if !output.status.success() {
         bail!("Could not query the service. Check your connection and provider session.");
     }

@@ -19,7 +19,7 @@ impl WorkspaceView {
                         .size(px(24.0))
                         .text_color(colors().subtle),
                 )
-                .child(div().text_size(px(13.0)).child("Select a task from Inbox"))
+                .child(div().text_size(px(13.0)).child("Select a task from Review"))
                 .into_any_element();
         };
         let state = self.work_inbox.details.get(&item.url);

@@ -196,7 +196,7 @@ impl WorkspaceView {
             })
             .child(
                 item("status-agents")
-                    .tooltip(|_, cx| sidebar_tooltip("View agents in Inbox", cx))
+                    .tooltip(|_, cx| sidebar_tooltip("View agents in Review", cx))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.work_inbox.activity = true;
                         this.select_section(WorkspaceSection::Inbox, window, cx)
@@ -228,7 +228,7 @@ impl WorkspaceView {
             .child(self.usage_status(cx))
             .child(
                 item("status-inbox")
-                    .tooltip(|_, cx| sidebar_tooltip("Inbox", cx))
+                    .tooltip(|_, cx| sidebar_tooltip("Review", cx))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.select_section(WorkspaceSection::Inbox, window, cx)
                     }))

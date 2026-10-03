@@ -31,7 +31,7 @@ impl WorkspaceView {
         let notes = self.library.notes_by_recency();
         if notes.is_empty() {
             return section_frame(
-                "Notes",
+                "Notes · In development",
                 actions,
                 section_empty_state(
                     "chrome-icons/notes.svg",
@@ -60,7 +60,7 @@ impl WorkspaceView {
             );
         let editor = self.note_editor(selected.and_then(|id| self.library.note(id)), now, cx);
         section_frame(
-            "Notes",
+            "Notes · In development",
             actions,
             div()
                 .w_full()

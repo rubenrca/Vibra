@@ -161,7 +161,7 @@ impl WorkspaceView {
             .map(|project| (project.id, project.name.clone()))
             .partition(|(id, _)| self.settings.pinned_project_ids.contains(id));
         let nav_items = [
-            (WorkspaceSection::Inbox, "Inbox", "chrome-icons/inbox.svg"),
+            (WorkspaceSection::Inbox, "Review", "chrome-icons/inbox.svg"),
             (WorkspaceSection::Notes, "Notes", "chrome-icons/notes.svg"),
             (
                 WorkspaceSection::Automations,
@@ -224,6 +224,10 @@ impl WorkspaceView {
                     )
                     .children(nav_items.into_iter().map(|(section, label, icon)| {
                         let selected = self.workspace_section == section;
+                        let in_development = matches!(
+                            section,
+                            WorkspaceSection::Notes | WorkspaceSection::Automations
+                        );
                         rail_row(SharedString::from(format!("nav-{label}")))
                             .when(selected, |row| {
                                 row.bg(surface_tint(colors().selection, colors().sidebar))
@@ -240,7 +244,28 @@ impl WorkspaceView {
                                     colors().subtle
                                 },
                             ))
-                            .child(div().flex_1().child(label))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().line_height(px(16.0)).truncate().child(label))
+                                    .when(in_development, |label| {
+                                        label.child(
+                                            div()
+                                                .text_size(px(10.0))
+                                                .line_height(px(12.0))
+                                                .text_color(colors().subtle)
+                                                .child("In development"),
+                                        )
+                                    }),
+                            )
+                            .when(in_development, |row| {
+                                row.tooltip(move |_, cx| {
+                                    sidebar_tooltip(format!("{label} · In development"), cx)
+                                })
+                            })
                             .when(section == WorkspaceSection::Inbox, |row| {
                                 row.children(self.inbox_unread_badge())
                             })

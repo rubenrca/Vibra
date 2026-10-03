@@ -99,9 +99,9 @@ impl super::WorkspaceView {
                 .selected_project()
                 .map(|project| project.name.as_str())
                 .unwrap_or("Vibra"),
-            WorkspaceSection::Inbox => "Inbox",
-            WorkspaceSection::Notes => "Notes",
-            WorkspaceSection::Automations => "Automations",
+            WorkspaceSection::Inbox => "Review",
+            WorkspaceSection::Notes => "Notes · In development",
+            WorkspaceSection::Automations => "Automations · In development",
             WorkspaceSection::Settings => "Settings",
         }
         .to_owned();

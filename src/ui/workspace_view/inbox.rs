@@ -205,7 +205,7 @@ impl WorkspaceView {
             body = body.child(self.inbox_item_row(item, now, cx));
         }
 
-        section_frame("Inbox", actions, body.into_any_element())
+        section_frame("Review", actions, body.into_any_element())
     }
 
     fn inbox_item_row(&self, item: &InboxItem, now: u64, cx: &mut Context<Self>) -> AnyElement {

@@ -29,7 +29,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 ### Proyectos, tabs y panes
 
 - proyectos asociados a carpetas, cada uno con su fila de tabs persistente; se agregan desde la sidebar o con `⇧⌘O`;
-- navegación global con Search, Inbox, Notes, Automations y Settings (ver [Inbox, Notes y Automations](#inbox-notes-y-automations)); cada proyecto se muestra con un icono de carpeta de su color y un punto con el estado más urgente de sus agentes (pide permiso, espera, trabajando) y cuántos corren, que al pasar el cursor se vuelve el botón de nuevo tab;
+- navegación global con Search, Review, Notes, Automations y Settings (ver [Review, Notes y Automations](#review-notes-y-automations)); Notes y Automations se muestran como **In development**; cada proyecto se muestra con un icono de carpeta de su color y un punto con el estado más urgente de sus agentes (pide permiso, espera, trabajando) y cuántos corren, que al pasar el cursor se vuelve el botón de nuevo tab;
 - proyectos renombrables, reordenables y fijables desde su menú contextual; cerrar el último tab conserva el proyecto;
 - `⌘T` o `⌘N`, el `＋` de la barra de tabs o el de cada proyecto abren un tab en la carpeta del proyecto; los panes también parten desde esa raíz. Las versiones anteriores permitían varias sesiones ocultas por proyecto: al abrir el workspace sus tabs se unen a la fila del proyecto, para que ninguna terminal quede fuera de alcance;
 - los tabs de un proyecto comparten sus archivos y rama Git; Files, Git y búsqueda conservan la raíz del proyecto aunque una terminal haga `cd`;
@@ -38,7 +38,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - arrastrar un tab al centro de otro crea un split; sobre el contenido de una terminal, la zona de destino permite elegir izquierda, derecha, arriba o abajo. Los tabs con varios panes conservan sus divisiones internas; una tarjeta compacta acompaña al cursor y la guía muestra la mitad donde quedará el nuevo pane;
 - arrastrar la cabecera de un pane a la barra de tabs, al `＋` o al espacio libre lo convierte en un tab independiente, conservando el proceso. Los panes también se intercambian entre sí por arrastre y los proyectos se reordenan desde la sidebar;
 - navegación **atrás/adelante** (`⌃⌘←` / `⌃⌘→` o las flechas de la barra de título) entre tabs, proyectos y la revisión, sin importar cómo se llegó a cada lugar; `⌃⌘[` / `⌃⌘]` pasan al proyecto anterior o siguiente;
-- barra de estado inferior con la rama del proyecto (cambios sin commit, ↑ahead ↓behind), los agentes activos, el uso de suscripciones IA y los eventos sin leer del Inbox;
+- barra de estado inferior con la rama del proyecto (cambios sin commit, ↑ahead ↓behind), los agentes activos, el uso de suscripciones IA y los eventos sin leer de Review;
 - monitor propio de cuotas de **Claude Code, Codex y Grok Build**, sin otra app de uso instalada. La barra muestra el porcentaje **consumido** de la cuota más utilizada de cada proveedor. Un clic abre ventanas de uso, saldos reportados y tiempos de reinicio; se destacan cuotas desde el 80 % y el 95 %. Vibra consulta directamente a cada servicio cada cinco minutos y permite **Actualizar** manualmente, con espera mínima de 30 segundos y reintentos que respetan los límites del proveedor. Si una consulta falla, conserva el último dato de esa misma sesión marcado como desactualizado;
 
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
@@ -61,12 +61,12 @@ Esta versión sigue la cuenta actual de cada CLI; no importa cuentas guardadas
 en otras aplicaciones. Los servicios de cuota pueden cambiar sus respuestas;
 Vibra muestra un error si no reconoce el formato, sin inventar porcentajes.
 
-### Inbox, Notes y Automations
+### Review, Notes y Automations
 
 Vibra adopta la organización de una GUI de agentes, pero la superficie de trabajo
 sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
 
-- **Inbox** reúne issues y pull requests de **GitHub** y tareas de **Linear** en
+- **Review** reúne issues y pull requests de **GitHub** y tareas de **Linear** en
   una lista redimensionable, con conexiones por pestaña y un menú de filtros por
   asignación, estados múltiples, tiempo, tipo y proyecto. El detalle conserva el
   título y las acciones visibles, renderiza Markdown y permite leer y publicar
@@ -80,43 +80,43 @@ sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
   autenticado. Las sesiones relacionadas quedan enlazadas al detalle.
   **Ask** abre una conversación lateral con el agente y un contexto de consulta
   remota, reutilizable por tarea; su terminal también queda disponible en el proyecto;
-- **Actividad**, dentro del Inbox, reúne los agentes activos de todos los
+- **Actividad**, dentro de Review, reúne los agentes activos de todos los
   proyectos (trabajando, espera tu respuesta, pide permiso) y sus eventos: un
   agente que terminó, pidió permiso o espera respuesta en una terminal que no
   estabas mirando, y las automatizaciones que se iniciaron. La navegación muestra
   el número de eventos sin leer; al elegir uno se abre su terminal y se marca como
   leído, igual que al enfocar ese pane. El historial vive mientras la app está
   abierta;
-- **Notes** guarda notas de texto asociadas a un proyecto (el chip del proyecto
+- **Notes** (**In development**) guarda notas de texto asociadas a un proyecto (el chip del proyecto
   cambia la asociación). El título sale de la primera línea. **Pegar en la
   terminal** pega la nota en la terminal activa de su proyecto sin enviarla, para
   editarla ahí antes de pulsar Enter. Las notas vacías se descartan solas;
-- **Automations** guarda comandos con nombre, proyecto y horario: manual, cada
+- **Automations** (**In development**) guarda comandos con nombre, proyecto y horario: manual, cada
   hora, todos los días o de lunes a viernes. Cada ejecución abre un tab nuevo
   en el proyecto, con el nombre de la automatización, y escribe el comando en su
   shell, así que la salida queda visible y el tab sigue disponible. Las
   ejecuciones programadas no cambian el tab que estás mirando y avisan en el
-  Inbox. Solo corren mientras Vibra está abierta: una hora perdida por más de
+  Review. Solo corren mientras Vibra está abierta: una hora perdida por más de
   10 minutos (Mac dormido o app cerrada) se omite en lugar de ejecutarse tarde.
   Al quitar su proyecto quedan pausadas. Se pueden pausar, editar y lanzar desde la paleta (`Automatización: Ejecutar …`).
 
 Notas y automatizaciones se guardan en
 `~/Library/Application Support/Vibra/library.json`, junto a `settings.json`.
 
-El Inbox usa la sesión de **GitHub CLI** (`gh auth login`) y encuentra `gh` a
+Review usa la sesión de **GitHub CLI** (`gh auth login`) y encuentra `gh` a
 través de la shell de login, también al abrir Vibra desde Finder. Consulta los
 repositorios de `github.com` asociados a todos los remotos de tus proyectos locales,
-incluido upstream. Al entrar a Inbox desde un proyecto, GitHub muestra solo sus
+incluido upstream. Al entrar a Review desde un proyecto, GitHub muestra solo sus
 tareas; **All projects** permite ampliar la selección. Por defecto incluye
 **Open** y **Draft**, sin restringir la asignación. **Closed** y **Merged** se
 activan desde los filtros; **All statuses** muestra todos los estados.
 **Reset filters** vuelve al proyecto activo y a los estados predeterminados.
 Para **Linear**, copia una API key personal y pulsa **Conectar Linear desde
-portapapeles** en Settings → General; también puedes llegar desde **+** en Inbox. La clave se verifica antes
+portapapeles** en Settings → General; también puedes llegar desde **+** en Review. La clave se verifica antes
 de guardarla en `~/Library/Application Support/Vibra/linear-token`, con permisos
 `0600`. Solo se envía a la API de Linear y se elimina con **Desconectar**.
 
-Las fuentes se actualizan de forma independiente cada minuto mientras el Inbox
+Las fuentes se actualizan de forma independiente cada minuto mientras Review
 está abierto, además del botón **Actualizar**. GitHub consulta hasta 100 issues
 **y** 100 PRs por repositorio; Linear, hasta 100 tareas. Se avisa al alcanzar esos
 límites y cuando un repositorio falla. Descripción, comentarios, diffs y checks se
@@ -153,7 +153,7 @@ el comportamiento trasladado y las diferencias de esta versión nativa.
 - ✨ en la caja de mensaje redacta el commit con el agente CLI instalado (Claude Code, Gemini CLI o Codex, en ese orden), usando la shell de login del usuario. Recibe el patch de lo que se va a confirmar (hasta 48 KiB) y los últimos asuntos para imitar el estilo; el mensaje queda editable antes de confirmar;
 - Commit confirma lo que esté en stage o, si no hay nada, todos los cambios (como el *smart commit* de VS Code). Push, pull (`--ff-only`) y fetch corren en segundo plano sin pedir credenciales por terminal; si fallan, el panel muestra el error. Un primer push crea el upstream en `origin`;
 - Create PR abre un tab nuevo en el proyecto con `gh pr create`, así el flujo interactivo de GitHub CLI queda en una terminal normal;
-- al elegir un archivo o un commit del grafo, la revisión se abre como **un tab más** que ocupa el centro, igual que los tabs de terminal; su título y su cierre están en el tab. El botón de split de su barra la muestra junto a la terminal, con un divisor que se arrastra (la proporción se recuerda) y una cabecera para volver al tab completo o cerrarla; en ese modo la revisión pasa a ser un pane del tab receptor, desaparece de la barra y vuelve a mostrarse al regresar a ese tab. Arrastrar su cabecera a la barra la separa de nuevo. Elegir un tab de terminal, cambiar entre Explorer y Changes o ir al Inbox deja la revisión abierta; `⌘W` sobre ella la cierra sin cerrar el proceso de la terminal. Un commit abierto desde el grafo vuelve a Changes al cerrarlo; los archivos de Changes usan el mismo ícono por tipo que el Explorer;
+- al elegir un archivo o un commit del grafo, la revisión se abre como **un tab más** que ocupa el centro, igual que los tabs de terminal; su título y su cierre están en el tab. El botón de split de su barra la muestra junto a la terminal, con un divisor que se arrastra (la proporción se recuerda) y una cabecera para volver al tab completo o cerrarla; en ese modo la revisión pasa a ser un pane del tab receptor, desaparece de la barra y vuelve a mostrarse al regresar a ese tab. Arrastrar su cabecera a la barra la separa de nuevo. Elegir un tab de terminal, cambiar entre Explorer y Changes o ir a Review deja la revisión abierta; `⌘W` sobre ella la cierra sin cerrar el proceso de la terminal. Un commit abierto desde el grafo vuelve a Changes al cerrarlo; los archivos de Changes usan el mismo ícono por tipo que el Explorer;
 - diffs de solo lectura en una sola lista virtualizada: archivos plegables con animación, la cabecera del archivo actual fija arriba, numeración única en Unified (anterior en eliminaciones y nueva en contexto/adiciones), las líneas sin cambios entre bloques plegadas en barras «N unmodified lines» que se abren de 20 en 20 hacia arriba o abajo (o completas con un clic), botones para expandir o colapsar todos los archivos y resaltado de sintaxis con el archivo completo como contexto (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - vista unificada o lado a lado y ajuste de líneas largas, recordados entre sesiones; sin ajuste, el scroll horizontal mueve solo el código, sincronizado entre archivos y columnas; el tamaño del texto del diff se ajusta aparte en Ajustes › Apariencia;
 - comentarios de revisión por línea (botón `+` al pasar el cursor) que se pegan como un solo prompt en la terminal del agente, sin enviarlo, para editarlo antes de pulsar Enter;
@@ -350,10 +350,10 @@ La vista principal se organiza en `src/ui/workspace_view/`:
 
 - `mod.rs`: coordinación del workspace, eventos y composición de la ventana.
 - `titlebar.rs`: barra de título, pestañas de utilidad y menú de IDE.
-- `navigation.rs`: navegación global y marco compartido de Inbox, Notes y Automations.
+- `navigation.rs`: navegación global y marco compartido de Review, Notes y Automations.
 - `inbox.rs`: agentes activos, eventos sin leer y salto a su terminal.
 - `tabs.rs`: el tab de la revisión, el split redimensionable y la navegación atrás/adelante.
-- `status_bar.rs`: rama, agentes activos e Inbox en la barra inferior.
+- `status_bar.rs`: rama, agentes activos y Review en la barra inferior.
 - `explorer.rs`: barra del Explorer para crear archivos y carpetas.
 - `notes.rs`: lista, edición y pegado de notas.
 - `automations_page.rs`: formulario, ejecución y programación de automatizaciones.

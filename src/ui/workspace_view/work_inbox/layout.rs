@@ -51,7 +51,7 @@ impl WorkspaceView {
             list = list.child(message(error, true));
         }
         if feed.loading && feed.items.is_empty() {
-            list = list.child(message("Loading Inbox…", false));
+            list = list.child(message("Loading Review…", false));
         } else if visible.is_empty() {
             list = list.child(message(
                 if feed.connected == Some(false) {
@@ -193,7 +193,7 @@ impl WorkspaceView {
                                         colors().muted
                                     })
                                     .child(if self.work_inbox.filter.query.is_empty() {
-                                        "Filter Inbox".into()
+                                        "Filter Review".into()
                                     } else {
                                         self.work_inbox.filter.query.clone()
                                     }),
@@ -315,8 +315,8 @@ impl WorkspaceView {
                                             .iter()
                                             .find(|project| project.id == id)
                                     })
-                                    .map(|project| format!("Inbox · {}", project.name))
-                                    .unwrap_or_else(|| "Inbox".into()),
+                                    .map(|project| format!("Review · {}", project.name))
+                                    .unwrap_or_else(|| "Review".into()),
                             ),
                     )
                     .child(
