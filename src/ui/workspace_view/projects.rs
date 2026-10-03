@@ -24,7 +24,10 @@ use super::{
 
 /// A project row and the space below it.
 const PROJECT_ROW_PITCH: f32 = 34.0;
-const PROJECT_AGENT_ROW_PITCH: f32 = 30.0;
+const PROJECT_AGENT_ROW_PITCH: f32 = 28.0;
+/// Agent rows sit right of a guide line under the folder icon, like a tree.
+const PROJECT_AGENT_INDENT: f32 = 24.0;
+const PROJECT_AGENT_GUIDE_X: f32 = 15.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ProjectDiffStats {
@@ -595,7 +598,9 @@ impl WorkspaceView {
         );
         div()
             .id(SharedString::from(format!("project-agent-{session_id}")))
-            .w(px(sidebar_row_width(self.left_sidebar_width())))
+            .w(px(
+                sidebar_row_width(self.left_sidebar_width()) - PROJECT_AGENT_INDENT
+            ))
             .h(px(PROJECT_AGENT_ROW_PITCH - 2.0))
             .mb(px(2.0))
             .pl(px(6.0))
@@ -699,15 +704,35 @@ impl WorkspaceView {
                         .position(|(project, _)| *project == id)
                         .expect("project in section");
                     let (_, name) = projects.swap_remove(index);
+                    let agent_rows: Vec<_> = agents
+                        .remove(&id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(session_id, identity)| {
+                            self.project_agent_row(session_id, identity, cx)
+                        })
+                        .collect();
                     super::slide_into_place(
                         div()
                             .relative()
                             .child(self.project_sidebar_header(id, name, cx))
-                            .children(agents.remove(&id).unwrap_or_default().into_iter().map(
-                                |(session_id, identity)| {
-                                    self.project_agent_row(session_id, identity, cx)
-                                },
-                            )),
+                            .when(!agent_rows.is_empty(), |project| {
+                                project.child(
+                                    div()
+                                        .relative()
+                                        .pl(px(PROJECT_AGENT_INDENT))
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left(px(PROJECT_AGENT_GUIDE_X))
+                                                .top(px(0.0))
+                                                .bottom(px(6.0))
+                                                .w(px(1.0))
+                                                .bg(colors().border_subtle),
+                                        )
+                                        .children(agent_rows),
+                                )
+                            }),
                         motion.slide(id),
                         "project",
                         true,
