@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.34 — 2026-10-03
+
+- Rename Inbox to Review across navigation, the status bar, settings, and the command palette.
+- Remove Notes and Automations. Vibra no longer reads or writes `library.json`; an existing file is left untouched on disk.
+- Nest agent sessions under their project in the sidebar with an indent and a guide line, so agents running in several projects are easier to tell apart.
+- Keep a terminal's failure state visible and clean up sessions whose shell failed to start.
+- Preserve the login shell environment when running POSIX commands, including `gh` and commit message generation launched from Finder.
+- Bound Git queries and agent tracking I/O, and match agent process names on word boundaries so names like `mongoose` no longer register as Goose.
+- Stabilize theme resolution and previews in Appearance settings.
+
 ## 0.3.33 — 2026-09-28
 
 - Switch projects with numbered keyboard shortcuts (⌥1–⌥9, last project on ⌥9).
