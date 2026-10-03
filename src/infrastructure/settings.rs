@@ -266,11 +266,6 @@ impl SettingsRepository {
         }
     }
 
-    /// Folder holding `settings.json`, shared with the other app-owned files.
-    pub fn directory(&self) -> Option<&std::path::Path> {
-        self.path.parent()
-    }
-
     pub fn load(&self) -> Result<AppSettings> {
         let result = self.load_inner();
         if let Err(error) = &result {

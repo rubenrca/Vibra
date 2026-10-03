@@ -84,8 +84,6 @@ bundled_assets! {
     ("chrome-icons/close.svg", "ChromeIcons/close.svg"),
     ("chrome-icons/search.svg", "ChromeIcons/search.svg"),
     ("chrome-icons/inbox.svg", "ChromeIcons/inbox.svg"),
-    ("chrome-icons/notes.svg", "ChromeIcons/notes.svg"),
-    ("chrome-icons/automations.svg", "ChromeIcons/automations.svg"),
     ("chrome-icons/palette.svg", "ChromeIcons/palette.svg"),
     ("chrome-icons/shield.svg", "ChromeIcons/shield.svg"),
     ("chrome-icons/sun.svg", "ChromeIcons/sun.svg"),

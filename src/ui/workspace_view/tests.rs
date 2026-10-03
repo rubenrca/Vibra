@@ -416,12 +416,7 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
             // the user will return to or restarting any terminal process.
             let retained_snapshot = view.snapshot.clone();
             let terminal_count = view.terminals.len();
-            for section in [
-                WorkspaceSection::Inbox,
-                WorkspaceSection::Notes,
-                WorkspaceSection::Automations,
-                WorkspaceSection::Settings,
-            ] {
+            for section in [WorkspaceSection::Inbox, WorkspaceSection::Settings] {
                 view.select_section(section, window, cx);
                 assert!(
                     view.terminals
@@ -454,7 +449,7 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
 
             // Opening a workspace utility from global navigation restores the
             // active session and keeps the tools in the right sidebar.
-            view.select_section(WorkspaceSection::Notes, window, cx);
+            view.select_section(WorkspaceSection::Inbox, window, cx);
             view.set_workspace_mode(RightSidebarMode::Files, cx);
             assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
             assert_eq!(view.right_sidebar_mode, RightSidebarMode::Files);
@@ -468,7 +463,7 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
 
             // The right-sidebar shortcut also returns keyboard focus to the
             // terminal when invoked from a global page, even if tools were open.
-            view.select_section(WorkspaceSection::Notes, window, cx);
+            view.select_section(WorkspaceSection::Inbox, window, cx);
             view.toggle_right_sidebar(&ToggleRightSidebar, window, cx);
             assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
             assert!(view.settings.right_sidebar_visible);
@@ -784,74 +779,6 @@ pub(super) fn open_recording_workspace(
 }
 
 #[gpui::test]
-fn scheduled_automations_run_in_a_new_tab_without_stealing_focus(cx: &mut gpui::TestAppContext) {
-    use crate::domain::inbox::InboxKind;
-    use crate::domain::library::AutomationSchedule;
-
-    let (root, snapshot, inputs, window) = open_recording_workspace(cx, "automation");
-    let selected_workspace = snapshot.selected_workspace().unwrap().id;
-    let selected_tab = snapshot.selected_tab().unwrap().id;
-    window
-        .update(cx, |view, window, cx| {
-            let id = view
-                .library
-                .save_automation(
-                    None,
-                    "Resumen",
-                    "echo hola",
-                    None,
-                    AutomationSchedule::Daily { hour: 0, minute: 0 },
-                    "09:00",
-                )
-                .unwrap();
-            let session = view.run_automation(id, Some(42), false, cx).unwrap();
-
-            assert_eq!(
-                view.snapshot.selected_tab().unwrap().id,
-                selected_tab,
-                "a scheduled run keeps what the user is looking at"
-            );
-            // The run is one more tab of the project, named after it.
-            let workspace = view.snapshot.selected_workspace().unwrap();
-            assert_eq!(workspace.id, selected_workspace);
-            assert!(
-                workspace
-                    .tabs
-                    .iter()
-                    .any(|tab| tab.sessions.iter().any(|pane| pane.id == session))
-            );
-            assert_eq!(
-                view.pane_names.get(&session).map(String::as_str),
-                Some("Resumen")
-            );
-            assert!(view.terminals.contains_key(&session));
-            assert!(
-                inputs
-                    .lock()
-                    .unwrap()
-                    .contains(&(session, b"echo hola\r".to_vec()))
-            );
-            let automation = view.library.automation(id).unwrap();
-            assert_eq!(automation.last_scheduled_slot, Some(42));
-            assert!(automation.last_run_at.is_some());
-            let item = view.inbox.items().next().unwrap();
-            assert_eq!(item.kind, InboxKind::AutomationStarted);
-            assert_eq!(item.pane_id, Some(session));
-            assert!(!item.read);
-
-            // Opening it from the Inbox shows the run and acknowledges it.
-            view.select_section(WorkspaceSection::Inbox, window, cx);
-            view.open_pane(session, window, cx);
-            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
-            assert_eq!(view.snapshot.selected_session().unwrap().id, session);
-            assert_eq!(view.inbox.unread_count(), 0);
-            window.remove_window();
-        })
-        .unwrap();
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[gpui::test]
 fn agents_that_finish_in_another_pane_land_in_the_inbox(cx: &mut gpui::TestAppContext) {
     use crate::domain::inbox::InboxKind;
     use crate::ports::terminal::TerminalAgentPresence;
@@ -904,54 +831,6 @@ fn agents_that_finish_in_another_pane_land_in_the_inbox(cx: &mut gpui::TestAppCo
                 cx,
             );
             assert_eq!(view.inbox.unread_count(), 0);
-            window.remove_window();
-        })
-        .unwrap();
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[gpui::test]
-fn notes_are_typed_saved_and_pasted_into_the_project_terminal(cx: &mut gpui::TestAppContext) {
-    let (root, snapshot, inputs, window) = open_recording_workspace(cx, "notes");
-    let selected = snapshot.selected_session().unwrap().id;
-    window
-        .update(cx, |view, window, cx| {
-            view.create_note(window, cx);
-            assert_eq!(view.workspace_section, WorkspaceSection::Notes);
-        })
-        .unwrap();
-    cx.run_until_parked();
-    cx.simulate_keystrokes(window.into(), "h->h i->i enter o->o shift-k->K");
-    let note_id = window
-        .update(cx, |view, _, _| {
-            let note = view.library.note(view.selected_note_id.unwrap()).unwrap();
-            assert_eq!(note.body, "hi\noK");
-            assert_eq!(note.title(), "hi");
-            assert_eq!(note.project_id, snapshot.selected_project_id);
-            note.id
-        })
-        .unwrap();
-    // A multi-line paste into a shell without bracketed paste asks first;
-    // keep one line so it reaches the shell directly.
-    cx.simulate_keystrokes(window.into(), "cmd-backspace escape");
-    window
-        .update(cx, |view, window, cx| {
-            assert!(!view.note_editing);
-            view.flush_library(cx);
-            view.persistence_queue.as_ref().unwrap().wait_for_idle();
-            let saved = crate::infrastructure::library::LibraryRepository::in_directory(&root)
-                .load()
-                .unwrap();
-            assert_eq!(saved.notes.len(), 1);
-            view.paste_note_into_terminal(note_id, window, cx);
-            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
-            let sent = inputs.lock().unwrap();
-            let (target, bytes) = sent.last().unwrap();
-            assert_eq!(*target, selected);
-            let text = String::from_utf8_lossy(bytes);
-            assert_eq!(text, "hi");
-            assert!(!text.ends_with('\r'), "a pasted note is never submitted");
-            drop(sent);
             window.remove_window();
         })
         .unwrap();
@@ -1295,109 +1174,6 @@ fn explorer_opens_unchanged_documents_without_replacing_terminals(cx: &mut gpui:
 }
 
 #[gpui::test]
-fn project_notes_never_fall_through_to_another_projects_terminal(cx: &mut gpui::TestAppContext) {
-    let (root, snapshot, inputs, window) = open_recording_workspace(cx, "note-target");
-    window
-        .update(cx, |view, window, cx| {
-            let active = snapshot.selected_project_id.unwrap();
-            let empty = view.snapshot.add_project(&root.join("empty-project"));
-            view.select_project(active, window, cx);
-            let note = view.library.create_note(Some(empty), 1);
-            view.library
-                .set_note_body(note, "private project prompt".into(), 2);
-            view.paste_note_into_terminal(note, window, cx);
-            assert!(inputs.lock().unwrap().is_empty());
-            assert!(view.library_error.is_some());
-            assert_eq!(view.snapshot.selected_project_id, Some(active));
-
-            view.library.note_mut(note).unwrap().project_id = Some(Uuid::new_v4());
-            view.paste_note_into_terminal(note, window, cx);
-            assert!(inputs.lock().unwrap().is_empty());
-
-            view.library.note_mut(note).unwrap().project_id = None;
-            view.paste_note_into_terminal(note, window, cx);
-            assert_eq!(
-                inputs.lock().unwrap().last().unwrap().0,
-                snapshot.selected_session().unwrap().id
-            );
-            assert!(view.library_error.is_none());
-            window.remove_window();
-        })
-        .unwrap();
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[gpui::test]
-fn oversized_note_edits_keep_the_previous_text_and_show_the_limit(cx: &mut gpui::TestAppContext) {
-    use crate::domain::library::MAX_NOTE_CHARS;
-    let (root, _, _, window) = open_recording_workspace(cx, "note-limit");
-    window
-        .update(cx, |view, window, cx| {
-            view.create_note(window, cx);
-            let id = view.selected_note_id.unwrap();
-            let body = "é".repeat(MAX_NOTE_CHARS);
-            assert!(view.library.set_note_body(id, body.clone(), 1));
-            let edit = |key: &str, text: Option<&str>| gpui::KeyDownEvent {
-                keystroke: gpui::Keystroke {
-                    key_char: text.map(str::to_owned),
-                    ..gpui::Keystroke::parse(key).unwrap()
-                },
-                is_held: false,
-            };
-
-            assert!(view.handle_note_key(&edit("x", Some("x")), cx));
-            assert_eq!(view.library.note(id).unwrap().body, body);
-            assert_eq!(view.library.note(id).unwrap().updated_at, 1);
-            assert!(
-                view.library_error
-                    .as_ref()
-                    .is_some_and(|error| error.contains("100000"))
-            );
-
-            assert!(view.handle_note_key(&edit("backspace", None), cx));
-            assert_eq!(
-                view.library.note(id).unwrap().body.chars().count(),
-                MAX_NOTE_CHARS - 1
-            );
-            assert!(view.library_error.is_none());
-            window.remove_window();
-        })
-        .unwrap();
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[gpui::test]
-fn missing_automation_projects_do_not_run_in_the_selected_project(cx: &mut gpui::TestAppContext) {
-    use crate::domain::inbox::InboxKind;
-    use crate::domain::library::AutomationSchedule;
-    let (root, snapshot, inputs, window) = open_recording_workspace(cx, "automation-target");
-    window
-        .update(cx, |view, window, cx| {
-            let id = view
-                .library
-                .save_automation(
-                    None,
-                    "Build",
-                    "cargo build",
-                    Some(Uuid::new_v4()),
-                    AutomationSchedule::Manual,
-                    "",
-                )
-                .unwrap();
-            assert!(view.run_automation(id, None, false, cx).is_none());
-            assert!(inputs.lock().unwrap().is_empty());
-            assert_eq!(view.snapshot, snapshot);
-            assert_eq!(
-                view.inbox.items().next().unwrap().kind,
-                InboxKind::AutomationFailed
-            );
-            window.remove_window();
-        })
-        .unwrap();
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[gpui::test]
 fn changing_project_hides_old_branch_and_ignores_late_results(cx: &mut gpui::TestAppContext) {
     use crate::ports::git::GitBranchSummary;
     let (root, _, _, window) = open_recording_workspace(cx, "status-root");
@@ -1558,27 +1334,6 @@ fn project_agent_sessions_follow_presence_across_tabs_and_projects(cx: &mut gpui
 }
 
 #[gpui::test]
-fn workspace_panel_navigation_leaves_library_editors(cx: &mut gpui::TestAppContext) {
-    let (root, _, _, window) = open_recording_workspace(cx, "section-cleanup");
-    window
-        .update(cx, |view, window, cx| {
-            view.create_note(window, cx);
-            let blank_note = view.selected_note_id.unwrap();
-            view.set_workspace_mode(RightSidebarMode::Files, cx);
-            assert!(!view.note_editing);
-            assert!(view.library.note(blank_note).is_none());
-            view.open_automation_form(None, window, cx);
-            assert!(view.automation_form.is_some());
-            view.set_workspace_mode(RightSidebarMode::Diff, cx);
-            assert!(view.automation_form.is_none());
-            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
-            window.remove_window();
-        })
-        .unwrap();
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[gpui::test]
 fn inbox_reveals_a_pane_hidden_by_another_panes_zoom(cx: &mut gpui::TestAppContext) {
     let (root, snapshot, _, window) = open_recording_workspace(cx, "inbox-zoom");
     let panes: Vec<_> = snapshot
@@ -1598,73 +1353,6 @@ fn inbox_reveals_a_pane_hidden_by_another_panes_zoom(cx: &mut gpui::TestAppConte
             window.remove_window();
         })
         .unwrap();
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[gpui::test]
-fn library_load_errors_survive_note_actions_and_cannot_enable_saving(
-    cx: &mut gpui::TestAppContext,
-) {
-    let (root, _, _, window) = open_recording_workspace(cx, "library-error");
-    let invalid = b"{ invalid library";
-    std::fs::write(root.join("library.json"), invalid).unwrap();
-    window
-        .update(cx, |view, window, cx| {
-            assert!(view.library_repository.as_ref().unwrap().load().is_err());
-            view.library_load_error = Some("No se pudieron cargar las notas".into());
-            assert!(view.error_banner(cx).is_some());
-            view.dismiss_error_banner(cx);
-            assert!(view.error_banner(cx).is_none());
-
-            // New errors still surface while the dismissed load error stays hidden.
-            let error = SharedString::from("Could not open the folder");
-            view.persistence_error = Some(error.clone());
-            assert!(view.error_banner(cx).is_some());
-            view.dismiss_error_banner(cx);
-            assert!(view.error_banner(cx).is_none());
-            assert_eq!(view.persistence_error.as_ref(), Some(&error));
-            view.persistence_error = None;
-            assert!(view.error_banner(cx).is_none());
-            view.persistence_error = Some(error);
-            assert!(
-                view.error_banner(cx).is_some(),
-                "a later occurrence is visible"
-            );
-
-            let note = view.library.create_note(Some(Uuid::new_v4()), 1);
-            view.library.set_note_body(note, "Prompt".into(), 2);
-            view.paste_note_into_terminal(note, window, cx);
-            view.persist_library(cx);
-            assert_eq!(view.library_generation, 0);
-            assert!(view.library_load_error.is_some());
-            view.flush_library(cx);
-            window.remove_window();
-        })
-        .unwrap();
-    assert_eq!(std::fs::read(root.join("library.json")).unwrap(), invalid);
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[gpui::test]
-fn closing_the_window_saves_library_edits_before_the_debounce(cx: &mut gpui::TestAppContext) {
-    let (root, _, _, window) = open_recording_workspace(cx, "library-close");
-    let id = window
-        .update(cx, |view, window, cx| {
-            let note = view.library.create_note(None, 1);
-            view.library
-                .set_note_body(note, "Older queued edit".into(), 1);
-            view.persist_library(cx);
-            view.flush_library(cx);
-            view.library
-                .set_note_body(note, "Last edit before closing".into(), 2);
-            view.persist_library(cx);
-            window.remove_window();
-            note
-        })
-        .unwrap();
-    cx.run_until_parked();
-    let saved = LibraryRepository::in_directory(&root).load().unwrap();
-    assert_eq!(saved.note(id).unwrap().body, "Last edit before closing");
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1767,12 +1455,7 @@ fn project_shortcuts_restore_the_selected_terminal_from_global_pages(
     let tab = snapshot.selected_tab().unwrap().id;
     window
         .update(cx, |view, window, cx| {
-            for section in [
-                WorkspaceSection::Inbox,
-                WorkspaceSection::Notes,
-                WorkspaceSection::Automations,
-                WorkspaceSection::Settings,
-            ] {
+            for section in [WorkspaceSection::Inbox, WorkspaceSection::Settings] {
                 view.select_section(section, window, cx);
                 view.go_to_project(&crate::GoToProject { index: 1 }, window, cx);
                 assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
@@ -1799,12 +1482,7 @@ fn tab_shortcuts_return_from_global_pages_even_when_the_tab_is_selected(
     let pane = snapshot.selected_session().unwrap().id;
     window
         .update(cx, |view, window, cx| {
-            for section in [
-                WorkspaceSection::Inbox,
-                WorkspaceSection::Notes,
-                WorkspaceSection::Automations,
-                WorkspaceSection::Settings,
-            ] {
+            for section in [WorkspaceSection::Inbox, WorkspaceSection::Settings] {
                 view.select_section(section, window, cx);
                 view.go_to_tab(&crate::GoToTab { index: 1 }, window, cx);
                 assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
@@ -1960,7 +1638,7 @@ fn delayed_focus_cannot_return_to_a_hidden_tab_or_cover_a_global_page(
                     .is_focused(window)
             );
 
-            view.select_section(WorkspaceSection::Notes, window, cx);
+            view.select_section(WorkspaceSection::Inbox, window, cx);
             view.focus_terminal(current, window, cx);
             assert!(view.focus_handle.is_focused(window));
 

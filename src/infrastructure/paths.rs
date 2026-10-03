@@ -418,7 +418,6 @@ mod tests {
 
     #[test]
     fn dangling_snapshot_links_block_loading_and_saving() {
-        use crate::infrastructure::library::LibraryRepository;
         use crate::infrastructure::persistence::WorkspaceRepository;
         use crate::infrastructure::settings::{AppSettings, SettingsRepository};
         use std::os::unix::fs::symlink;
@@ -433,25 +432,18 @@ mod tests {
         );
         let workspace = WorkspaceRepository::at(root.join("workspace.json"));
         let settings = SettingsRepository::at(root.join("settings.json"));
-        let library = LibraryRepository::in_directory(&root);
-        for name in ["workspace.json", "settings.json", "library.json"] {
+        for name in ["workspace.json", "settings.json"] {
             symlink(&absent, root.join(name)).unwrap();
         }
         assert!(workspace.load().is_err());
         assert!(settings.load().is_err());
-        assert!(library.load().is_err());
         assert!(
             workspace
                 .save(&crate::domain::workspace::WorkspaceSnapshot::default())
                 .is_err()
         );
         assert!(settings.save(&AppSettings::default()).is_err());
-        assert!(
-            library
-                .save(&crate::domain::library::Library::default())
-                .is_err()
-        );
-        for name in ["workspace.json", "settings.json", "library.json"] {
+        for name in ["workspace.json", "settings.json"] {
             assert_eq!(fs::read_link(root.join(name)).unwrap(), absent);
         }
         fs::remove_dir_all(root).unwrap();

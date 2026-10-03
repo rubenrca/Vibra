@@ -11,9 +11,7 @@ use std::time::Duration;
 
 use async_channel::Receiver;
 
-use crate::domain::library::Library;
 use crate::domain::workspace::WorkspaceSnapshot;
-use crate::infrastructure::library::LibraryRepository;
 use crate::infrastructure::persistence::WorkspaceRepository;
 use crate::infrastructure::settings::{AppSettings, SettingsRepository};
 
@@ -24,7 +22,6 @@ const TEST_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) enum DocumentKind {
     Workspace,
     Settings,
-    Library,
 }
 
 impl DocumentKind {
@@ -32,7 +29,6 @@ impl DocumentKind {
         match self {
             Self::Workspace => "projects",
             Self::Settings => "settings",
-            Self::Library => "notes and automations",
         }
     }
 }
@@ -40,7 +36,6 @@ impl DocumentKind {
 enum Document {
     Workspace(WorkspaceSnapshot),
     Settings(Box<AppSettings>),
-    Library(Library),
 }
 
 impl Document {
@@ -48,7 +43,6 @@ impl Document {
         match self {
             Self::Workspace(_) => DocumentKind::Workspace,
             Self::Settings(_) => DocumentKind::Settings,
-            Self::Library(_) => DocumentKind::Library,
         }
     }
 }
@@ -76,13 +70,12 @@ enum Command {
     Stop,
 }
 
-// One latest snapshot per document, written in workspace/settings/library order.
+// One latest snapshot per document, written in workspace/settings order.
 type PendingWrites = BTreeMap<DocumentKind, (u64, Document)>;
 
 struct Repositories {
     workspace: WorkspaceRepository,
     settings: SettingsRepository,
-    library: Option<LibraryRepository>,
 }
 
 pub(crate) struct PersistenceQueue {
@@ -96,7 +89,6 @@ impl PersistenceQueue {
     pub fn start(
         workspace: WorkspaceRepository,
         settings: SettingsRepository,
-        library: Option<LibraryRepository>,
     ) -> io::Result<(Self, Receiver<SaveResult>)> {
         let (commands, receiver) = mpsc::channel();
         let (results, result_receiver) = async_channel::unbounded();
@@ -107,7 +99,6 @@ impl PersistenceQueue {
         let repositories = Repositories {
             workspace,
             settings,
-            library,
         };
         let worker = thread::Builder::new()
             .name("vibra-persistence".into())
@@ -143,10 +134,6 @@ impl PersistenceQueue {
         self.enqueue(generation, Document::Settings(Box::new(settings)))
     }
 
-    pub fn save_library(&self, generation: u64, library: Library) -> Result<(), String> {
-        self.enqueue(generation, Document::Library(library))
-    }
-
     fn enqueue(&self, generation: u64, document: Document) -> Result<(), String> {
         let kind = document.kind();
         self.pending
@@ -168,12 +155,11 @@ impl PersistenceQueue {
         &self,
         workspace: Option<(u64, WorkspaceSnapshot)>,
         settings: Option<(u64, AppSettings)>,
-        library: Option<(u64, Library)>,
     ) -> Result<(), FinishError> {
         let (completed, reply) = mpsc::channel();
         self.commands
             .send(Command::Finish {
-                state: final_writes(workspace, settings, library),
+                state: final_writes(workspace, settings),
                 completed,
             })
             .map_err(|_| FinishError::Unavailable)?;
@@ -201,20 +187,16 @@ impl Drop for PersistenceQueue {
 pub(crate) fn save_final_blocking(
     workspace_repository: WorkspaceRepository,
     settings_repository: SettingsRepository,
-    library_repository: Option<LibraryRepository>,
     workspace: Option<WorkspaceSnapshot>,
     settings: Option<AppSettings>,
-    library: Option<Library>,
 ) -> Result<(), FinishError> {
     let repositories = Repositories {
         workspace: workspace_repository,
         settings: settings_repository,
-        library: library_repository,
     };
     let writes = final_writes(
         workspace.map(|snapshot| (0, snapshot)),
         settings.map(|settings| (0, settings)),
-        library.map(|library| (0, library)),
     );
     finish_result(persist_batch(writes, &repositories, None))
 }
@@ -222,12 +204,10 @@ pub(crate) fn save_final_blocking(
 fn final_writes(
     workspace: Option<(u64, WorkspaceSnapshot)>,
     settings: Option<(u64, AppSettings)>,
-    library: Option<(u64, Library)>,
 ) -> PendingWrites {
     [
         workspace.map(|(generation, snapshot)| (generation, Document::Workspace(snapshot))),
         settings.map(|(generation, settings)| (generation, Document::Settings(Box::new(settings)))),
-        library.map(|(generation, library)| (generation, Document::Library(library))),
     ]
     .into_iter()
     .flatten()
@@ -289,11 +269,6 @@ fn persist_batch(
         let saved = match document {
             Document::Workspace(snapshot) => repositories.workspace.save(&snapshot).map(|_| ()),
             Document::Settings(settings) => repositories.settings.save(&settings),
-            Document::Library(library) => repositories
-                .library
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("saving is unavailable"))
-                .and_then(|repository| repository.save(&library)),
         };
         let error = saved
             .err()
@@ -324,13 +299,9 @@ mod tests {
         let root = std::env::temp_dir().join(format!("vibra-persistence-{}", Uuid::new_v4()));
         let workspace_repository = WorkspaceRepository::at(root.join("workspace.json"));
         let settings_repository = SettingsRepository::at(root.join("settings.json"));
-        let library_repository = LibraryRepository::in_directory(&root);
-        let (queue, _) = PersistenceQueue::start(
-            workspace_repository.clone(),
-            settings_repository.clone(),
-            Some(library_repository.clone()),
-        )
-        .unwrap();
+        let (queue, _) =
+            PersistenceQueue::start(workspace_repository.clone(), settings_repository.clone())
+                .unwrap();
         let mut older = WorkspaceSnapshot::default();
         older.create_workspace(Path::new("/tmp/old"));
         let mut latest = older.clone();
@@ -343,25 +314,17 @@ mod tests {
             terminal_font_size: 19.0,
             ..AppSettings::default()
         };
-        let mut older_library = Library::default();
-        let note = older_library.create_note(None, 1);
-        older_library.set_note_body(note, "Earlier edit".into(), 1);
-        let mut latest_library = older_library.clone();
-        latest_library.set_note_body(note, "Last edit before close".into(), 2);
 
         queue.save_workspace(1, older).unwrap();
         queue.save_settings(1, older_settings).unwrap();
-        queue.save_library(1, older_library).unwrap();
         queue
             .finish(
                 Some((2, latest.clone())),
                 Some((2, latest_settings.clone())),
-                Some((2, latest_library.clone())),
             )
             .unwrap();
         assert_eq!(workspace_repository.load().unwrap().unwrap(), latest);
         assert_eq!(settings_repository.load().unwrap(), latest_settings);
-        assert_eq!(library_repository.load().unwrap(), latest_library);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -373,11 +336,10 @@ mod tests {
         std::fs::write(&blocker, b"blocker").unwrap();
         let repository = WorkspaceRepository::at(blocker.join("workspace.json"));
         let settings_repository = SettingsRepository::at(root.join("settings.json"));
-        let (queue, results) =
-            PersistenceQueue::start(repository, settings_repository, None).unwrap();
+        let (queue, results) = PersistenceQueue::start(repository, settings_repository).unwrap();
 
         let error = queue
-            .finish(Some((1, WorkspaceSnapshot::default())), None, None)
+            .finish(Some((1, WorkspaceSnapshot::default())), None)
             .unwrap_err();
         assert!(matches!(error, FinishError::Save(message) if message.contains("projects")));
         assert!(matches!(
@@ -411,10 +373,9 @@ mod tests {
         let workspace_repository = WorkspaceRepository::at(&path);
         let settings_repository = SettingsRepository::at(root.join("settings.json"));
         let (queue, _) =
-            PersistenceQueue::start(workspace_repository, settings_repository, None).unwrap();
-        let finish = thread::spawn(move || {
-            queue.finish(Some((1, WorkspaceSnapshot::default())), None, None)
-        });
+            PersistenceQueue::start(workspace_repository, settings_repository).unwrap();
+        let finish =
+            thread::spawn(move || queue.finish(Some((1, WorkspaceSnapshot::default())), None));
         thread::sleep(Duration::from_millis(2100));
         assert!(
             !finish.is_finished(),

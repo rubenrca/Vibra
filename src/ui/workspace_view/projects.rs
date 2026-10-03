@@ -10,7 +10,6 @@ use gpui::{
 use uuid::Uuid;
 
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
-use crate::domain::workspace::ProjectSnapshot;
 use crate::ui::agent_marks::{agent_compact_badge, agent_status_color};
 use crate::ui::theme::{colors, surface_tint};
 use crate::{AddProject, GoToProject};
@@ -33,18 +32,6 @@ const PROJECT_AGENT_GUIDE_X: f32 = 15.5;
 pub(super) struct ProjectDiffStats {
     pub additions: usize,
     pub deletions: usize,
-}
-
-/// Notes and automations cycle through projects, then the unassigned option.
-pub(super) fn next_library_project(
-    projects: &[ProjectSnapshot],
-    current: Option<Uuid>,
-) -> Option<Uuid> {
-    let next = projects
-        .iter()
-        .position(|project| Some(project.id) == current)
-        .map_or(0, |index| index + 1);
-    projects.get(next).map(|project| project.id)
 }
 
 impl WorkspaceView {
@@ -265,9 +252,6 @@ impl WorkspaceView {
             }
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.snapshot.remove_project(id) {
-                    if this.library.detach_project(id) {
-                        this.persist_library(cx);
-                    }
                     this.reconcile_terminal_views(cx);
                     this.show_terminal_tab(window, cx);
                 }

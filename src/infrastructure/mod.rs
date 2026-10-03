@@ -1,10 +1,10 @@
 pub mod automation;
+pub mod clock;
 pub mod commit_message;
 pub mod editor;
 pub mod files;
 pub mod ghostty;
 pub mod git;
-pub mod library;
 mod login_shell;
 pub mod notifications;
 pub mod paths;

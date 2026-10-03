@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use super::{WorkItemsPage, WorkQuery, github, linear};
 use crate::domain::work_items::WorkSource;
-use crate::infrastructure::library::unix_now;
+use crate::infrastructure::clock::unix_now;
 use crate::infrastructure::paths::{atomic_write, read_file_limited};
 
 const VERSION: u32 = 1;

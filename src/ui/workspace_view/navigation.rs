@@ -107,7 +107,6 @@ impl WorkspaceView {
             self.theme_query.clear();
             crate::ui::theme::refresh_user_themes();
         }
-        self.leave_library_section(section);
         self.usage.open = false;
         self.workspace_section = section;
         if section == WorkspaceSection::Inbox {
@@ -136,7 +135,6 @@ impl WorkspaceView {
     }
 
     pub(super) fn set_workspace_mode(&mut self, mode: RightSidebarMode, cx: &mut Context<Self>) {
-        self.leave_library_section(WorkspaceSection::Workspace);
         self.workspace_section = WorkspaceSection::Workspace;
         self.right_sidebar_mode = mode;
         self.set_right_sidebar_visible(true, true, cx);
@@ -160,15 +158,7 @@ impl WorkspaceView {
             .iter()
             .map(|project| (project.id, project.name.clone()))
             .partition(|(id, _)| self.settings.pinned_project_ids.contains(id));
-        let nav_items = [
-            (WorkspaceSection::Inbox, "Review", "chrome-icons/inbox.svg"),
-            (WorkspaceSection::Notes, "Notes", "chrome-icons/notes.svg"),
-            (
-                WorkspaceSection::Automations,
-                "Automations",
-                "chrome-icons/automations.svg",
-            ),
-        ];
+        let nav_items = [(WorkspaceSection::Inbox, "Review", "chrome-icons/inbox.svg")];
         let has_projects = !self.snapshot.projects.is_empty();
         let settings_selected = self.workspace_section == WorkspaceSection::Settings;
         div()
@@ -224,10 +214,6 @@ impl WorkspaceView {
                     )
                     .children(nav_items.into_iter().map(|(section, label, icon)| {
                         let selected = self.workspace_section == section;
-                        let in_development = matches!(
-                            section,
-                            WorkspaceSection::Notes | WorkspaceSection::Automations
-                        );
                         rail_row(SharedString::from(format!("nav-{label}")))
                             .when(selected, |row| {
                                 row.bg(surface_tint(colors().selection, colors().sidebar))
@@ -244,28 +230,7 @@ impl WorkspaceView {
                                     colors().subtle
                                 },
                             ))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().line_height(px(16.0)).truncate().child(label))
-                                    .when(in_development, |label| {
-                                        label.child(
-                                            div()
-                                                .text_size(px(10.0))
-                                                .line_height(px(12.0))
-                                                .text_color(colors().subtle)
-                                                .child("In development"),
-                                        )
-                                    }),
-                            )
-                            .when(in_development, |row| {
-                                row.tooltip(move |_, cx| {
-                                    sidebar_tooltip(format!("{label} · In development"), cx)
-                                })
-                            })
+                            .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
                             .when(section == WorkspaceSection::Inbox, |row| {
                                 row.children(self.inbox_unread_badge())
                             })
@@ -405,30 +370,13 @@ impl WorkspaceView {
     ) -> AnyElement {
         match self.workspace_section {
             WorkspaceSection::Inbox => self.inbox_content(cx),
-            WorkspaceSection::Notes => self.notes_content(cx),
-            WorkspaceSection::Automations => self.automations_content(cx),
             WorkspaceSection::Settings => self.settings_content(window, cx),
             WorkspaceSection::Workspace => unreachable!("workspace renders its terminal canvas"),
         }
     }
-
-    /// Ends in-progress editing when the user leaves Notes or Automations.
-    pub(super) fn leave_library_section(&mut self, next: WorkspaceSection) {
-        if next != WorkspaceSection::Notes {
-            self.note_editing = false;
-            if let Some(id) = self.selected_note_id
-                && self.library.discard_blank_note(id)
-            {
-                self.selected_note_id = None;
-            }
-        }
-        if next != WorkspaceSection::Automations {
-            self.automation_form = None;
-        }
-    }
 }
 
-/// Page chrome shared by Inbox, Notes and Automations.
+/// Page chrome shared by Review and other global pages.
 pub(super) fn section_frame(title: &str, actions: Vec<AnyElement>, body: AnyElement) -> AnyElement {
     div()
         .id("global-section")

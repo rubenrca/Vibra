@@ -7,7 +7,6 @@ independiente del workspace.
 ## Responsabilidades
 
 - `src/domain/workspace`: proyectos, tabs, panes, selección, geometría y migraciones.
-- `src/domain/library.rs`: notas, automatizaciones y reglas del horario.
 - `src/domain/work_items.rs`: tareas externas, filtros, detalle remoto y marcas de
   lectura. `src/infrastructure/work_items` contiene los conectores GitHub/Linear,
   consultas acotadas, comentarios, acciones de PR y preparación del contexto para
@@ -22,14 +21,13 @@ independiente del workspace.
 - `src/ports`: contratos de terminal, Git y filesystem; `src/infrastructure` implementa
   esos contratos y los repositorios de JSON.
 - `src/infrastructure/paths.rs`: lecturas de archivos con límite, escrituras atómicas
-  y control de revisiones. Workspace, settings, library, caché del Inbox y temas
+  y control de revisiones. Workspace, settings, caché del Inbox y temas
   comparten el mismo lector; comprueba también el tamaño después de leer.
   La importación del preview toma el mismo lock que los guardados y comprueba
   dentro del lock que el destino siga ausente.
   Un documento ausente permite el primer arranque; un symlink roto bloquea carga
   y guardado. RevisionGuard protege revisión, recuperación y merge-input juntos.
-  Workspace comparte una lectura/decode para migración y backups bajo lock;
-  library serializa registros prestados y copia solo identidades que necesita reparar.
+  Workspace comparte una lectura/decode para migración y backups bajo lock.
 - `src/infrastructure/process.rs`: captura acotada de comandos breves, entrada y
   salida concurrentes y cierre del grupo de procesos antes de reunir los lectores.
   Inbox, consulta de cuotas, lectura del llavero por CLI y generación de mensajes
@@ -62,7 +60,7 @@ independiente del workspace.
 - `storage.rs`: debounce y errores de guardado de la vista.
   `src/infrastructure/persistence/queue.rs`: cola de escrituras fuera del hilo GPUI.
   Conserva un último estado por documento y comparte guardado y errores con la
-  ruta de emergencia. El orden sigue siendo workspace, settings y library.
+  ruta de emergencia. El orden sigue siendo workspace y settings.
 - `src/ui/diff_view/changes_panel.rs`: operaciones y controles de Changes.
   Commit, sync y staging pasan por `write_repository`, que centraliza ocupación,
   generaciones, errores y actualización posterior de la vista.
@@ -74,8 +72,8 @@ independiente del workspace.
 
 ## Contratos que conviene conservar
 
-La interfaz muestra una fila de tabs por proyecto. Las aperturas interactivas y las
-automatizaciones usan `open_tab_in_project`. El contenedor serializado
+La interfaz muestra una fila de tabs por proyecto. Las aperturas interactivas y los
+lanzamientos desde Review usan `open_tab_in_project`. El contenedor serializado
 `TerminalWorkspaceSnapshot` se conserva para leer instalaciones anteriores; al
 cargar la ventana, sus sesiones antiguas se consolidan sin perder tabs ni panes.
 Los campos Swift y los grupos antiguos solo sirven para migrar datos. No deben
@@ -85,7 +83,7 @@ Los constructores de varias sesiones y sus operaciones antiguas están aislados 
 contenedores ocultos: también usa `open_tab_in_project`.
 
 La selección de un pane desactiva el zoom de otro pane; el teclado nunca debe apuntar
-a una terminal oculta. Los nombres manuales y de automatizaciones pertenecen al pane,
+a una terminal oculta. Los nombres manuales y de lanzamientos pertenecen al pane,
 no al proceso del agente. Solo se descartan al cerrar ese pane. Cambiar su `cwd` no
 renombra los contenedores antiguos. Los recorridos de sesiones devuelven referencias,
 sin clonar el workspace en cada render de la barra de estado o el Inbox.
@@ -101,14 +99,9 @@ los temas propios usan los mismos valores por defecto de roles que el resto del
 catálogo, con sus colores particulares explícitos.
 El catálogo propio está en `theme/user.rs`: sus IDs independientes de colisiones
 se resuelven junto a aliases legacy antes de persistir una preferencia disponible.
-Notes separa edición de `notes/rendering.rs`; lista, controles y cuerpo tienen
-responsabilidades propias y usan referencias de la biblioteca.
 
 La raíz del proyecto define Explorer, Changes y las terminales nuevas. El `cwd`
-de una terminal puede cambiar sin alterar esa raíz. Las notas y automatizaciones
-con un proyecto explícito no deben usar otro proyecto si el destino falta.
-Al quitar un proyecto se conservan sus notas y comandos, y sus automatizaciones
-quedan pausadas.
+de una terminal puede cambiar sin alterar esa raíz.
 
 Los resultados asíncronos pertenecen al contexto que los pidió. La barra de estado
 conserva la raíz junto al resumen Git. Changes usa una generación al cambiar de
@@ -121,10 +114,10 @@ su búsqueda pendiente. Cada envío de comentarios tiene un UUID propio: una res
 tardía no puede confirmar ni desbloquear otra revisión, incluso si reintenta los
 mismos comentarios.
 
-Al cerrar, la cola recibe el último estado de los tres documentos y espera a que
-llegue al disco. No lanzar guardados independientes de library ni competir con la
-cola durante el cierre. Los errores de carga, guardado y acciones de notas están
-separados; una acción no puede borrar el bloqueo de un JSON que no se pudo cargar.
+Al cerrar, la cola recibe el último estado de ambos documentos y espera a que
+llegue al disco. No lanzar guardados independientes ni competir con la cola
+durante el cierre. Los errores de carga y de guardado están separados; un guardado
+no puede borrar el bloqueo de un JSON que no se pudo cargar.
 
 Crear archivos pertenece a `FileSystemPort`, no a la UI. El adaptador local valida
 la raíz y los padres existentes, incluidos enlaces simbólicos, antes de crear

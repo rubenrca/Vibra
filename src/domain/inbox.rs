@@ -12,8 +12,6 @@ pub enum InboxKind {
     Finished,
     NeedsPermission,
     NeedsAttention,
-    AutomationStarted,
-    AutomationFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +58,7 @@ impl Inbox {
         // A pane has one live state: a newer event supersedes its unread ones.
         if let Some(pane_id) = pane_id {
             self.items
-                .retain(|item| item.read || item.pane_id != Some(pane_id) || is_automation(item));
+                .retain(|item| item.read || item.pane_id != Some(pane_id));
         }
         self.next_id += 1;
         self.items.push(InboxItem {
@@ -131,13 +129,6 @@ impl Inbox {
     }
 }
 
-fn is_automation(item: &InboxItem) -> bool {
-    matches!(
-        item.kind,
-        InboxKind::AutomationStarted | InboxKind::AutomationFailed
-    )
-}
-
 /// Short relative time for list rows.
 pub fn relative_time(now: u64, then: u64) -> String {
     let seconds = now.saturating_sub(then);
@@ -165,20 +156,18 @@ mod tests {
         let seen = push(&mut inbox, InboxKind::Finished, Some(pane), true);
         push(&mut inbox, InboxKind::NeedsAttention, Some(pane), false);
         push(&mut inbox, InboxKind::Finished, Some(other), false);
-        push(&mut inbox, InboxKind::AutomationStarted, Some(pane), false);
         let latest = push(&mut inbox, InboxKind::NeedsPermission, Some(pane), false);
         let kinds: Vec<_> = inbox.items().map(|item| item.kind).collect();
         assert_eq!(
             kinds,
             [
                 InboxKind::NeedsPermission,
-                InboxKind::AutomationStarted,
                 InboxKind::Finished,
                 InboxKind::Finished,
             ]
         );
         assert!(inbox.item(seen).is_some());
-        assert_eq!(inbox.unread_count(), 3);
+        assert_eq!(inbox.unread_count(), 2);
         assert!(inbox.mark_pane_read(pane));
         assert!(inbox.item(latest).unwrap().read);
         assert_eq!(inbox.unread_count(), 1);
@@ -194,7 +183,7 @@ mod tests {
         assert!(inbox.forget_closed_panes(&HashSet::new()));
         assert_eq!(inbox.item(id).unwrap().pane_id, None);
         for _ in 0..MAX_INBOX_ITEMS + 5 {
-            push(&mut inbox, InboxKind::AutomationStarted, None, false);
+            push(&mut inbox, InboxKind::Finished, None, false);
         }
         assert_eq!(inbox.items().count(), MAX_INBOX_ITEMS);
         assert!(inbox.item(id).is_none());

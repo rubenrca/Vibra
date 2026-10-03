@@ -1,4 +1,4 @@
-//! Keyboard editing for the Notes, Automations, and commit message fields. Like the review
+//! Keyboard editing for the review comment and commit message fields. Like the review
 //! comment drafts, text is edited at its end; there is no caret to move.
 
 use gpui::Modifiers;

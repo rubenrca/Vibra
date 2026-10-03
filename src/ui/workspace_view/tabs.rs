@@ -223,7 +223,6 @@ impl WorkspaceView {
         if let Some(tab_id) = self.review_dock_owner() {
             self.snapshot.select_tab(tab_id);
         }
-        self.leave_library_section(WorkspaceSection::Workspace);
         self.workspace_section = WorkspaceSection::Workspace;
         self.review_tab_active = true;
         self.pending_focus_session = None;
@@ -244,10 +243,9 @@ impl WorkspaceView {
     }
 
     /// Shared transition for interactive navigation and commands that focus
-    /// their new terminal on the next frame (for example, automations).
+    /// their new terminal on the next frame (for example, review launches).
     pub(super) fn prepare_terminal_tab(&mut self, cx: &mut Context<Self>) {
         self.sync_review_docking(cx);
-        self.leave_library_section(WorkspaceSection::Workspace);
         self.workspace_section = WorkspaceSection::Workspace;
         self.review_tab_active = false;
         self.pending_focus_session = None;
@@ -261,6 +259,39 @@ impl WorkspaceView {
         self.sync_diff_root(cx);
         self.sync_git_panel_visibility(cx);
         self.refresh_project_files(cx);
+    }
+
+    /// Opens a tab named `title` in the project and types `command` into its
+    /// shell. Returns the new terminal and whether the shell took the
+    /// command. With `reveal` off the user's current tab stays selected.
+    pub(super) fn run_in_new_tab(
+        &mut self,
+        project_id: Uuid,
+        title: &str,
+        command: &str,
+        reveal: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(Uuid, bool), &'static str> {
+        let (_, session_id) = self
+            .snapshot
+            .open_tab_in_project(project_id, reveal)
+            .ok_or("The project has no associated folder.")?;
+        // The tab keeps its name while its shell runs.
+        self.pane_names.insert(session_id, title.to_owned());
+        self.reconcile_terminal_views(cx);
+        let started = self
+            .terminals
+            .get(&session_id)
+            .cloned()
+            .is_some_and(|terminal| {
+                terminal.update(cx, |terminal, cx| terminal.run_command(command, cx))
+            });
+        if reveal {
+            self.prepare_terminal_tab(cx);
+            self.pending_focus_session = Some(session_id);
+        }
+        self.persist(cx);
+        Ok((session_id, started))
     }
 
     fn apply_location(

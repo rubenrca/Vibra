@@ -6,10 +6,8 @@ use std::rc::Rc;
 use gpui::{Context, FocusHandle, SharedString, px};
 
 use crate::domain::inbox::Inbox;
-use crate::domain::library::Library;
 use crate::domain::workspace::{PaneSplitDirection, WorkspaceSnapshot};
 use crate::infrastructure::automation::{AutomationServer, agent_hook_status};
-use crate::infrastructure::library::LibraryRepository;
 use crate::infrastructure::persistence::{FinishError, PersistenceQueue};
 use crate::infrastructure::settings::AppSettings;
 use crate::ui::diff_view::{DiffFileIndexView, DiffView, DiffViewEvent};
@@ -63,24 +61,6 @@ impl WorkspaceView {
                 (AppSettings::default(), Some(message))
             }
         };
-        let library_repository = settings_repository
-            .directory()
-            .map(LibraryRepository::in_directory);
-        let (library, library_load_error) =
-            match library_repository.as_ref().map(|repo| repo.load()) {
-                Some(Ok(library)) => (library, None),
-                Some(Err(error)) => (
-                    Library::default(),
-                    Some(SharedString::from(format!(
-                        concat!(
-                            "Could not load notes and automations: {error}. ",
-                            "Changes will not be saved until the file is repaired."
-                        ),
-                        error = error
-                    ))),
-                ),
-                None => (Library::default(), None),
-            };
         // Earlier versions kept several sessions per project; the UI now has
         // one row of tabs per project, so their tabs are merged on load.
         let consolidated =
@@ -216,32 +196,29 @@ impl WorkspaceView {
                 Some(format!("Could not query integrations: {error}").into()),
             ),
         };
-        let (persistence_queue, persistence_result_task) = match PersistenceQueue::start(
-            repository.clone(),
-            settings_repository.clone(),
-            library_repository.clone(),
-        ) {
-            Ok((queue, results)) => {
-                let task = cx.spawn(async move |this, cx| {
-                    while let Ok(result) = results.recv().await {
-                        if this
-                            .update(cx, |this, cx| this.apply_persistence_result(result, cx))
-                            .is_err()
-                        {
-                            break;
+        let (persistence_queue, persistence_result_task) =
+            match PersistenceQueue::start(repository.clone(), settings_repository.clone()) {
+                Ok((queue, results)) => {
+                    let task = cx.spawn(async move |this, cx| {
+                        while let Ok(result) = results.recv().await {
+                            if this
+                                .update(cx, |this, cx| this.apply_persistence_result(result, cx))
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
-                    }
-                });
-                (Some(queue), Some(task))
-            }
-            Err(error) => {
-                if persistence_error.is_none() {
-                    persistence_error =
-                        Some(format!("Background saving unavailable: {error}").into());
+                    });
+                    (Some(queue), Some(task))
                 }
-                (None, None)
-            }
-        };
+                Err(error) => {
+                    if persistence_error.is_none() {
+                        persistence_error =
+                            Some(format!("Background saving unavailable: {error}").into());
+                    }
+                    (None, None)
+                }
+            };
         let release_subscription = cx.on_release(|this, _| {
             let workspace = (this.persist_generation > 0 && this.workspace_load_error.is_none())
                 .then(|| (this.persist_generation, this.snapshot.clone()));
@@ -249,10 +226,8 @@ impl WorkspaceView {
                 || this.window_size_persist_generation > 0)
                 && this.settings_load_error.is_none())
             .then(|| (this.settings_generation, this.settings.clone()));
-            let library = (this.library_generation > 0 && this.library_load_error.is_none())
-                .then(|| (this.library_generation, this.library.clone()));
             if let Some(queue) = &this.persistence_queue {
-                match queue.finish(workspace, settings, library) {
+                match queue.finish(workspace, settings) {
                     Ok(()) => {}
                     Err(FinishError::Save(error)) => eprintln!("{error}"),
                     Err(FinishError::Unavailable) => this.save_final_direct(),
@@ -311,17 +286,6 @@ impl WorkspaceView {
             navigation: tabs::Navigation::default(),
             inbox: Inbox::default(),
             work_inbox: work_inbox::WorkInbox::default(),
-            library,
-            library_repository,
-            library_error: None,
-            library_load_error,
-            library_save_error: None,
-            library_generation: 0,
-            _library_task: None,
-            selected_note_id: None,
-            note_editing: false,
-            automation_form: None,
-            _automation_scheduler: None,
             expanded_directories: HashSet::new(),
             project_files_root: None,
             project_files: Arc::new(Vec::new()),
@@ -387,7 +351,6 @@ impl WorkspaceView {
         view.sync_diff_root(cx);
         view.refresh_project_files(cx);
         view.sync_git_panel_visibility(cx);
-        view.start_automation_scheduler(cx);
         view.start_status_poll(cx);
         view.start_usage_poll(cx);
         view.start_inbox_poll(cx);

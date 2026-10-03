@@ -29,7 +29,7 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 ### Proyectos, tabs y panes
 
 - proyectos asociados a carpetas, cada uno con su fila de tabs persistente; se agregan desde la sidebar o con `⇧⌘O`;
-- navegación global con Search, Review, Notes, Automations y Settings (ver [Review, Notes y Automations](#review-notes-y-automations)); Notes y Automations se muestran como **In development**; cada proyecto se muestra con un icono de carpeta de su color y un punto con el estado más urgente de sus agentes (pide permiso, espera, trabajando) y cuántos corren, que al pasar el cursor se vuelve el botón de nuevo tab;
+- navegación global con Search, Review y Settings (ver [Review](#review)); cada proyecto se muestra con un icono de carpeta de su color y un punto con el estado más urgente de sus agentes (pide permiso, espera, trabajando) y cuántos corren, que al pasar el cursor se vuelve el botón de nuevo tab;
 - proyectos renombrables, reordenables y fijables desde su menú contextual; cerrar el último tab conserva el proyecto;
 - `⌘T` o `⌘N`, el `＋` de la barra de tabs o el de cada proyecto abren un tab en la carpeta del proyecto; los panes también parten desde esa raíz. Las versiones anteriores permitían varias sesiones ocultas por proyecto: al abrir el workspace sus tabs se unen a la fila del proyecto, para que ninguna terminal quede fuera de alcance;
 - los tabs de un proyecto comparten sus archivos y rama Git; Files, Git y búsqueda conservan la raíz del proyecto aunque una terminal haga `cd`;
@@ -61,7 +61,7 @@ Esta versión sigue la cuenta actual de cada CLI; no importa cuentas guardadas
 en otras aplicaciones. Los servicios de cuota pueden cambiar sus respuestas;
 Vibra muestra un error si no reconoce el formato, sin inventar porcentajes.
 
-### Review, Notes y Automations
+### Review
 
 Vibra adopta la organización de una GUI de agentes, pero la superficie de trabajo
 sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
@@ -83,25 +83,10 @@ sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
 - **Actividad**, dentro de Review, reúne los agentes activos de todos los
   proyectos (trabajando, espera tu respuesta, pide permiso) y sus eventos: un
   agente que terminó, pidió permiso o espera respuesta en una terminal que no
-  estabas mirando, y las automatizaciones que se iniciaron. La navegación muestra
+  estabas mirando. La navegación muestra
   el número de eventos sin leer; al elegir uno se abre su terminal y se marca como
   leído, igual que al enfocar ese pane. El historial vive mientras la app está
-  abierta;
-- **Notes** (**In development**) guarda notas de texto asociadas a un proyecto (el chip del proyecto
-  cambia la asociación). El título sale de la primera línea. **Pegar en la
-  terminal** pega la nota en la terminal activa de su proyecto sin enviarla, para
-  editarla ahí antes de pulsar Enter. Las notas vacías se descartan solas;
-- **Automations** (**In development**) guarda comandos con nombre, proyecto y horario: manual, cada
-  hora, todos los días o de lunes a viernes. Cada ejecución abre un tab nuevo
-  en el proyecto, con el nombre de la automatización, y escribe el comando en su
-  shell, así que la salida queda visible y el tab sigue disponible. Las
-  ejecuciones programadas no cambian el tab que estás mirando y avisan en el
-  Review. Solo corren mientras Vibra está abierta: una hora perdida por más de
-  10 minutos (Mac dormido o app cerrada) se omite en lugar de ejecutarse tarde.
-  Al quitar su proyecto quedan pausadas. Se pueden pausar, editar y lanzar desde la paleta (`Automatización: Ejecutar …`).
-
-Notas y automatizaciones se guardan en
-`~/Library/Application Support/Vibra/library.json`, junto a `settings.json`.
+  abierta.
 
 Review usa la sesión de **GitHub CLI** (`gh auth login`) y encuentra `gh` a
 través de la shell de login, también al abrir Vibra desde Finder. Consulta los
@@ -172,8 +157,8 @@ el comportamiento trasladado y las diferencias de esta versión nativa.
 
 La CLI de Vibra no orquesta agentes ni layouts desde una terminal: no crea panes o
 tabs, no lanza agentes en otras sesiones y no envía prompts a otros procesos. Los
-agentes se ejecutan en la terminal (a mano o con una automatización que tú
-configuraste, siempre en un tab visible) y Vibra conserva su detección,
+agentes se ejecutan en la terminal (a mano o desde Review, siempre en un tab
+visible) y Vibra conserva su detección,
 estado y notificaciones.
 
 La detección automática está siempre activa. Para obtener estados más precisos
@@ -350,14 +335,12 @@ La vista principal se organiza en `src/ui/workspace_view/`:
 
 - `mod.rs`: coordinación del workspace, eventos y composición de la ventana.
 - `titlebar.rs`: barra de título, pestañas de utilidad y menú de IDE.
-- `navigation.rs`: navegación global y marco compartido de Review, Notes y Automations.
+- `navigation.rs`: navegación global y marco compartido de las páginas globales.
 - `inbox.rs`: agentes activos, eventos sin leer y salto a su terminal.
 - `tabs.rs`: el tab de la revisión, el split redimensionable y la navegación atrás/adelante.
 - `status_bar.rs`: rama, agentes activos y Review en la barra inferior.
 - `explorer.rs`: barra del Explorer para crear archivos y carpetas.
-- `notes.rs`: lista, edición y pegado de notas.
-- `automations_page.rs`: formulario, ejecución y programación de automatizaciones.
-- `text_edit.rs`: edición por teclado de notas y formularios.
+- `text_edit.rs`: edición por teclado de comentarios y del mensaje de commit.
 - `panes.rs`: layout de panes, tab bar y atajos de división.
 - `projects.rs`: selector de carpetas, navegación y encabezados de proyectos.
 - `palette.rs`: paleta de comandos y apertura rápida de archivos.

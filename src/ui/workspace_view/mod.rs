@@ -4,7 +4,6 @@
 
 mod actions;
 mod automation;
-mod automations_page;
 mod bootstrap;
 mod chrome;
 mod context_menu;
@@ -14,7 +13,6 @@ mod files;
 mod inbox;
 mod input;
 mod navigation;
-mod notes;
 mod palette;
 mod panes;
 mod projects;
@@ -30,7 +28,6 @@ mod usage;
 mod work_inbox;
 
 use automation::HookAgentPresence;
-use automations_page::AutomationForm;
 pub(crate) use chrome::icon_button;
 use chrome::*;
 pub(crate) use drag::*;
@@ -51,11 +48,9 @@ use gpui::{
 use uuid::Uuid;
 
 use crate::domain::inbox::Inbox;
-use crate::domain::library::Library;
 use crate::domain::workspace::{PaneSplitDirection, WorkspaceSnapshot};
 use crate::infrastructure::automation::{AgentHookStatus, AutomationServer};
 use crate::infrastructure::editor::InstalledEditor;
-use crate::infrastructure::library::LibraryRepository;
 use crate::infrastructure::notifications::AgentActivitySnapshot;
 use crate::infrastructure::persistence::{PersistenceQueue, WorkspaceRepository};
 use crate::infrastructure::settings::{
@@ -136,18 +131,6 @@ pub struct WorkspaceView {
     /// Agent and automation events, newest last; lives only while the app runs.
     inbox: Inbox,
     work_inbox: work_inbox::WorkInbox,
-    /// Notes and automations, saved to `library.json`.
-    library: Library,
-    library_repository: Option<LibraryRepository>,
-    library_error: Option<SharedString>,
-    library_load_error: Option<SharedString>,
-    library_save_error: Option<SharedString>,
-    library_generation: u64,
-    _library_task: Option<Task<()>>,
-    selected_note_id: Option<Uuid>,
-    note_editing: bool,
-    automation_form: Option<AutomationForm>,
-    _automation_scheduler: Option<Task<()>>,
     expanded_directories: HashSet<PathBuf>,
     project_files_root: Option<PathBuf>,
     project_files: Arc<Vec<ProjectFileRow>>,
@@ -547,9 +530,6 @@ impl WorkspaceView {
             self.persistence_error.as_ref(),
             self.workspace_save_error.as_ref(),
             self.settings_save_error.as_ref(),
-            self.library_load_error.as_ref(),
-            self.library_save_error.as_ref(),
-            self.library_error.as_ref(),
         ]
         .into_iter()
         .flatten()

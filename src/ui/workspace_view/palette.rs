@@ -127,22 +127,6 @@ impl super::WorkspaceView {
                     "Pull requests, issues, and agent activity",
                     PaletteAction::ShowSection(WorkspaceSection::Inbox),
                 ),
-                (
-                    "Notes: Open",
-                    "In development",
-                    PaletteAction::ShowSection(WorkspaceSection::Notes),
-                ),
-                ("Notes: New note", "In development", PaletteAction::NewNote),
-                (
-                    "Automations: Open",
-                    "In development",
-                    PaletteAction::ShowSection(WorkspaceSection::Automations),
-                ),
-                (
-                    "Automations: New automation",
-                    "In development",
-                    PaletteAction::NewAutomation,
-                ),
                 ("Settings: Open", "⌘,", PaletteAction::ShowSettings),
             ]
             .into_iter()
@@ -184,16 +168,6 @@ impl super::WorkspaceView {
             }
         };
         if mode == PaletteMode::Commands {
-            items.extend(
-                self.library
-                    .automations
-                    .iter()
-                    .map(|automation| PaletteItem {
-                        label: format!("Automations: Run {}", automation.name),
-                        detail: automation.command.clone(),
-                        action: PaletteAction::RunAutomation(automation.id),
-                    }),
-            );
             items.extend(self.snapshot.projects.iter().map(|project| PaletteItem {
                 label: format!("Project: {}", project.name),
                 detail: project.root_path.clone(),
@@ -242,11 +216,6 @@ impl super::WorkspaceView {
                 self.focus_selected_terminal(window, cx);
             }
             PaletteAction::ShowSection(section) => self.select_section(section, window, cx),
-            PaletteAction::NewNote => self.create_note(window, cx),
-            PaletteAction::NewAutomation => self.open_automation_form(None, window, cx),
-            PaletteAction::RunAutomation(id) => {
-                self.run_automation(id, None, true, cx);
-            }
             PaletteAction::ShowSettings => {
                 self.open_settings(window, cx);
             }

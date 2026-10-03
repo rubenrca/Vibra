@@ -7,7 +7,7 @@ mod item_detail;
 use super::*;
 use crate::domain::inbox::relative_time;
 use crate::domain::work_items::{InboxPreferences, InboxTime, toggle_value};
-use crate::infrastructure::library::unix_now;
+use crate::infrastructure::clock::unix_now;
 use crate::ui::menu::{MenuRow, menu_heading, menu_panel, menu_separator};
 use crate::ui::theme::{surface, surface_tint};
 use crate::ui::workspace_view::drag::SidebarResizeDragView;

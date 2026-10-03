@@ -476,6 +476,7 @@ impl super::WorkspaceSnapshot {
     }
 }
 
+#[cfg(test)]
 impl TerminalWorkspaceSnapshot {
     fn primary_tab(&self) -> Option<&TabSnapshot> {
         self.tabs

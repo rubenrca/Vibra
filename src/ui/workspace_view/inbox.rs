@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 use crate::domain::inbox::{InboxItem, InboxKind, relative_time};
-use crate::infrastructure::library::unix_now;
+use crate::infrastructure::clock::unix_now;
 use crate::infrastructure::notifications::{AgentNotificationKind, agent_notification_copy};
 use crate::ui::agent_marks::{agent_compact_badge, agent_status_color};
 use crate::ui::theme::{colors, surface_tint};
@@ -28,10 +28,9 @@ pub(super) fn agent_state_label(
 
 fn inbox_kind_color(kind: InboxKind) -> gpui::Rgba {
     match kind {
-        InboxKind::NeedsPermission | InboxKind::AutomationFailed => colors().danger,
+        InboxKind::NeedsPermission => colors().danger,
         InboxKind::NeedsAttention => colors().warning,
         InboxKind::Finished => colors().success,
-        InboxKind::AutomationStarted => colors().accent,
     }
 }
 
@@ -211,12 +210,6 @@ impl WorkspaceView {
     fn inbox_item_row(&self, item: &InboxItem, now: u64, cx: &mut Context<Self>) -> AnyElement {
         let id = item.id;
         let openable = item.pane_id.is_some();
-        let icon = match item.kind {
-            InboxKind::AutomationStarted | InboxKind::AutomationFailed => {
-                "chrome-icons/automations.svg"
-            }
-            _ => "chrome-icons/inbox.svg",
-        };
         inbox_row(SharedString::from(format!("inbox-item-{id}")))
             .when(!openable, |row| row.cursor_default())
             .on_click(cx.listener(move |this, _, window, cx| this.open_inbox_item(id, window, cx)))
@@ -238,7 +231,7 @@ impl WorkspaceView {
                     .bg(surface_tint(colors().elevated, colors().background))
                     .child(
                         svg()
-                            .path(icon)
+                            .path("chrome-icons/inbox.svg")
                             .size(px(14.0))
                             .text_color(inbox_kind_color(item.kind)),
                     ),

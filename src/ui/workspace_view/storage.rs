@@ -69,50 +69,10 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Saves notes and automations shortly after the last edit, off the UI thread.
-    pub(super) fn persist_library(&mut self, cx: &mut Context<Self>) {
-        cx.notify();
-        if self.library_load_error.is_some() || self.library_repository.is_none() {
-            return;
-        }
-        self.library_generation = self.library_generation.wrapping_add(1);
-        let generation = self.library_generation;
-        self._library_task = Some(cx.spawn(async move |this, cx| {
-            Timer::after(Duration::from_millis(400)).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.library_generation == generation {
-                    this.flush_library(cx);
-                }
-            });
-        }));
-    }
-
-    pub(super) fn flush_library(&mut self, cx: &mut Context<Self>) {
-        if self.library_load_error.is_some() {
-            return;
-        }
-        let Some(repository) = &self.library_repository else {
-            return;
-        };
-        if self.persistence_queue.as_ref().is_some_and(|queue| {
-            queue
-                .save_library(self.library_generation, self.library.clone())
-                .is_ok()
-        }) {
-            return;
-        }
-        self.library_save_error = repository
-            .save(&self.library)
-            .err()
-            .map(|error| format!("Could not save notes and automations: {error}").into());
-        cx.notify();
-    }
-
     pub(super) fn apply_persistence_result(&mut self, result: SaveResult, cx: &mut Context<Self>) {
         let (generation, error) = match result.kind {
             DocumentKind::Workspace => (self.persist_generation, &mut self.workspace_save_error),
             DocumentKind::Settings => (self.settings_generation, &mut self.settings_save_error),
-            DocumentKind::Library => (self.library_generation, &mut self.library_save_error),
         };
         if result.error.is_some() || result.generation == generation {
             *error = result.error.map(Into::into);
@@ -126,18 +86,14 @@ impl WorkspaceView {
         let settings = ((self.settings_generation > 0 || self.window_size_persist_generation > 0)
             && self.settings_load_error.is_none())
         .then(|| self.settings.clone());
-        let library = (self.library_generation > 0 && self.library_load_error.is_none())
-            .then(|| self.library.clone());
-        if workspace.is_none() && settings.is_none() && library.is_none() {
+        if workspace.is_none() && settings.is_none() {
             return;
         }
         match save_final_blocking(
             self.repository.clone(),
             self.settings_repository.clone(),
-            self.library_repository.clone(),
             workspace,
             settings,
-            library,
         ) {
             Ok(()) => {}
             Err(FinishError::Save(error)) => eprintln!("{error}"),

@@ -19,8 +19,6 @@ pub(super) struct PaneIdentity {
 pub(super) enum WorkspaceSection {
     Workspace,
     Inbox,
-    Notes,
-    Automations,
     Settings,
 }
 
@@ -56,9 +54,6 @@ pub(super) enum PaletteAction {
     ShowFiles,
     ShowSettings,
     ShowSection(WorkspaceSection),
-    NewNote,
-    NewAutomation,
-    RunAutomation(Uuid),
     OpenFile(PathBuf),
 }
 
