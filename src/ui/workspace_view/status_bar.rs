@@ -1,4 +1,4 @@
-//! Bottom status bar: project branch, running agents, subscription usage, and Inbox.
+//! Bottom status bar: project branch, running agents, usage, Keep Awake, and Review.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -22,6 +22,19 @@ pub(super) struct AgentCounts {
 }
 
 impl WorkspaceView {
+    fn toggle_keep_awake(&mut self, cx: &mut Context<Self>) {
+        self.keep_awake_error = self
+            .keep_awake
+            .set_enabled(!self.keep_awake.is_enabled())
+            .err()
+            .map(|error| error.to_string().into());
+        // A failed retry should show its error even after the banner was dismissed.
+        if let Some(error) = &self.keep_awake_error {
+            self.dismissed_banner_errors.remove(error);
+        }
+        cx.notify();
+    }
+
     /// Refreshes branch chrome and diff counts for the visible project list.
     pub(super) fn start_status_poll(&mut self, cx: &mut Context<Self>) {
         self._status_task = Some(cx.spawn(async move |this, cx| {
@@ -136,7 +149,7 @@ impl WorkspaceView {
 
     pub(super) fn status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let counts = self.agent_counts();
-        let unread = self.inbox.unread_count() + self.work_inbox_unread_count();
+        let keep_awake = self.keep_awake.is_enabled();
         let item = |id: &'static str| {
             div()
                 .id(id)
@@ -227,18 +240,37 @@ impl WorkspaceView {
             .child(div().flex_1())
             .child(self.usage_status(cx))
             .child(
+                item("status-keep-awake")
+                    .when(keep_awake, |item| {
+                        item.bg(surface_tint(colors().accent, colors().titlebar))
+                            .text_color(colors().accent)
+                    })
+                    .tooltip(move |_, cx| {
+                        sidebar_tooltip(
+                            if keep_awake {
+                                "Keep Awake is on. Click to allow display and system sleep."
+                            } else {
+                                "Keep Awake is off. Click to prevent display and system sleep."
+                            },
+                            cx,
+                        )
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_awake(cx)))
+                    .child(icon("chrome-icons/coffee.svg").text_color(if keep_awake {
+                        colors().accent
+                    } else {
+                        colors().muted
+                    }))
+                    .child("Keep Awake"),
+            )
+            .child(
                 item("status-inbox")
                     .tooltip(|_, cx| sidebar_tooltip("Review", cx))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.select_section(WorkspaceSection::Inbox, window, cx)
                     }))
-                    .when(unread > 0, |item| item.text_color(colors().accent))
                     .child(icon("chrome-icons/inbox.svg"))
-                    .child(if unread > 0 {
-                        format!("{unread} unread")
-                    } else {
-                        "Up to date".to_owned()
-                    }),
+                    .child("Review"),
             )
             .into_any_element()
     }

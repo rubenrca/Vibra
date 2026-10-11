@@ -830,7 +830,7 @@ fn agents_that_finish_in_another_pane_land_in_the_inbox(cx: &mut gpui::TestAppCo
                 &TerminalViewEvent::Activated { session_id: other },
                 cx,
             );
-            assert_eq!(view.inbox.unread_count(), 0);
+            assert!(view.inbox.items().all(|item| item.read));
             window.remove_window();
         })
         .unwrap();

@@ -281,14 +281,4 @@ impl WorkspaceView {
             .iter()
             .find(|item| Some(&item.url) == self.work_inbox.selected.as_ref())
     }
-
-    pub(crate) fn work_inbox_unread_count(&self) -> usize {
-        self.work_inbox
-            .github
-            .items
-            .iter()
-            .chain(&self.work_inbox.linear.items)
-            .filter(|item| item.unread(&self.settings.inbox.seen))
-            .count()
-    }
 }

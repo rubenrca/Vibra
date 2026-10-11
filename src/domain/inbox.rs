@@ -42,10 +42,6 @@ impl Inbox {
         self.items.is_empty()
     }
 
-    pub fn unread_count(&self) -> usize {
-        self.items.iter().filter(|item| !item.read).count()
-    }
-
     pub fn push(
         &mut self,
         kind: InboxKind,
@@ -101,15 +97,6 @@ impl Inbox {
         changed
     }
 
-    pub fn mark_all_read(&mut self) -> bool {
-        let mut changed = false;
-        for item in &mut self.items {
-            changed |= !item.read;
-            item.read = true;
-        }
-        changed
-    }
-
     pub fn clear(&mut self) -> bool {
         let changed = !self.items.is_empty();
         self.items.clear();
@@ -155,7 +142,7 @@ mod tests {
         let other = Uuid::new_v4();
         let seen = push(&mut inbox, InboxKind::Finished, Some(pane), true);
         push(&mut inbox, InboxKind::NeedsAttention, Some(pane), false);
-        push(&mut inbox, InboxKind::Finished, Some(other), false);
+        let other_event = push(&mut inbox, InboxKind::Finished, Some(other), false);
         let latest = push(&mut inbox, InboxKind::NeedsPermission, Some(pane), false);
         let kinds: Vec<_> = inbox.items().map(|item| item.kind).collect();
         assert_eq!(
@@ -167,12 +154,12 @@ mod tests {
             ]
         );
         assert!(inbox.item(seen).is_some());
-        assert_eq!(inbox.unread_count(), 2);
+        assert_eq!(inbox.items().filter(|item| !item.read).count(), 2);
         assert!(inbox.mark_pane_read(pane));
         assert!(inbox.item(latest).unwrap().read);
-        assert_eq!(inbox.unread_count(), 1);
-        assert!(inbox.mark_all_read());
-        assert!(!inbox.mark_all_read());
+        assert_eq!(inbox.items().filter(|item| !item.read).count(), 1);
+        assert!(inbox.mark_read(other_event));
+        assert!(!inbox.mark_read(other_event));
     }
 
     #[test]

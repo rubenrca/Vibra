@@ -249,6 +249,8 @@ impl WorkspaceView {
             project_diff_stats: HashMap::new(),
             _status_task: None,
             usage: usage::UsageState::default(),
+            keep_awake: KeepAwake::default(),
+            keep_awake_error: None,
             diff_view,
             diff_file_index,
             _diff_subscription: diff_subscription,

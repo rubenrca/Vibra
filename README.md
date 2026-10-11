@@ -38,7 +38,8 @@ La identidad `app.vibra.Vibra` y la migración de `workspace.json` se mantienen.
 - arrastrar un tab al centro de otro crea un split; sobre el contenido de una terminal, la zona de destino permite elegir izquierda, derecha, arriba o abajo. Los tabs con varios panes conservan sus divisiones internas; una tarjeta compacta acompaña al cursor y la guía muestra la mitad donde quedará el nuevo pane;
 - arrastrar la cabecera de un pane a la barra de tabs, al `＋` o al espacio libre lo convierte en un tab independiente, conservando el proceso. Los panes también se intercambian entre sí por arrastre y los proyectos se reordenan desde la sidebar;
 - navegación **atrás/adelante** (`⌃⌘←` / `⌃⌘→` o las flechas de la barra de título) entre tabs, proyectos y la revisión, sin importar cómo se llegó a cada lugar; `⌃⌘[` / `⌃⌘]` pasan al proyecto anterior o siguiente;
-- barra de estado inferior con la rama del proyecto (cambios sin commit, ↑ahead ↓behind), los agentes activos, el uso de suscripciones IA y los eventos sin leer de Review;
+- barra de estado inferior con la rama del proyecto (cambios sin commit, ↑ahead ↓behind), los agentes activos, el uso de suscripciones IA y el acceso a Review;
+- **Keep Awake** en la barra inferior: un botón con icono de café que evita el reposo de la pantalla y el computador por inactividad, tanto con batería como conectado. Se desactiva al pulsarlo otra vez o cerrar Vibra y empieza apagado en cada sesión;
 - monitor propio de cuotas de **Claude Code, Codex y Grok Build**, sin otra app de uso instalada. La barra muestra el porcentaje **consumido** de la cuota más utilizada de cada proveedor. Un clic abre ventanas de uso, saldos reportados y tiempos de reinicio; se destacan cuotas desde el 80 % y el 95 %. Vibra consulta directamente a cada servicio cada cinco minutos y permite **Actualizar** manualmente, con espera mínima de 30 segundos y reintentos que respetan los límites del proveedor. Si una consulta falla, conserva el último dato de esa misma sesión marcado como desactualizado;
 
 - foco geométrico, resize por teclado o arrastrando, reparto equitativo y zoom;
@@ -83,10 +84,9 @@ sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
 - **Actividad**, dentro de Review, reúne los agentes activos de todos los
   proyectos (trabajando, espera tu respuesta, pide permiso) y sus eventos: un
   agente que terminó, pidió permiso o espera respuesta en una terminal que no
-  estabas mirando. La navegación muestra
-  el número de eventos sin leer; al elegir uno se abre su terminal y se marca como
-  leído, igual que al enfocar ese pane. El historial vive mientras la app está
-  abierta.
+  estabas mirando. Al elegir un evento se abre su terminal. Review y Actividad
+  muestran el historial sin contadores ni puntos de mensajes no leídos. El
+  historial vive mientras la app está abierta.
 
 Review usa la sesión de **GitHub CLI** (`gh auth login`) y encuentra `gh` a
 través de la shell de login, también al abrir Vibra desde Finder. Consulta los
@@ -107,9 +107,8 @@ está abierto, además del botón **Actualizar**. GitHub consulta hasta 100 issu
 límites y cuando un repositorio falla. Descripción, comentarios, diffs y checks se
 cargan por tarea sin bloquear la ventana. Los errores de actualización conservan
 los datos disponibles. Los filtros, el ancho de lista, las marcas de lectura y
-las sesiones relacionadas se guardan en `settings.json`; una tarea actualizada
-vuelve a aparecer sin leer. Los borradores de comentarios viven por tarea durante
-la sesión. Las descripciones se entregan al agente mediante un archivo temporal
+las sesiones relacionadas se guardan en `settings.json`. Los borradores de
+comentarios viven por tarea durante la sesión. Las descripciones se entregan al agente mediante un archivo temporal
 privado que la shell elimina al leerlo.
 
 La implementación sigue el [código abierto del Inbox de MonoCode](https://github.com/hardbeat920/monocode/tree/c576783ac14a50a0998222146fd9838d85d52ffb/src/features/inbox).
@@ -336,9 +335,9 @@ La vista principal se organiza en `src/ui/workspace_view/`:
 - `mod.rs`: coordinación del workspace, eventos y composición de la ventana.
 - `titlebar.rs`: barra de título, pestañas de utilidad y menú de IDE.
 - `navigation.rs`: navegación global y marco compartido de las páginas globales.
-- `inbox.rs`: agentes activos, eventos sin leer y salto a su terminal.
+- `inbox.rs`: agentes activos, historial de eventos y salto a su terminal.
 - `tabs.rs`: el tab de la revisión, el split redimensionable y la navegación atrás/adelante.
-- `status_bar.rs`: rama, agentes activos y Review en la barra inferior.
+- `status_bar.rs`: rama, agentes activos, cuotas, Keep Awake y Review en la barra inferior.
 - `explorer.rs`: barra del Explorer para crear archivos y carpetas.
 - `text_edit.rs`: edición por teclado de comentarios y del mensaje de commit.
 - `panes.rs`: layout de panes, tab bar y atajos de división.

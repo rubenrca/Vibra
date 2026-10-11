@@ -13,6 +13,8 @@ fn main() {
     println!("cargo:rerun-if-changed=native/editor_bridge.m");
     println!("cargo:rerun-if-changed=native/editor_bridge.h");
     println!("cargo:rerun-if-changed=native/usage_bridge.m");
+    println!("cargo:rerun-if-changed=native/keep_awake_bridge.c");
+    println!("cargo:rerun-if-changed=native/keep_awake_bridge.h");
     println!("cargo:rerun-if-env-changed=VIBRA_SPARKLE_FRAMEWORK");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -21,6 +23,13 @@ fn main() {
     }
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    cc::Build::new()
+        .file(manifest_dir.join("native/keep_awake_bridge.c"))
+        .include(manifest_dir.join("native"))
+        .warnings_into_errors(true)
+        .compile("vibra_keep_awake_bridge");
+    println!("cargo:rustc-link-lib=framework=IOKit");
+    println!("cargo:rustc-link-lib=framework=CoreFoundation");
     let sparkle_framework = find_sparkle_framework(&manifest_dir);
     // Cargo otherwise keeps a previously built stub bridge after Sparkle is
     // fetched. Watch only the selected framework and higher-priority paths;

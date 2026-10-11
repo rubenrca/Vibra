@@ -320,16 +320,14 @@ impl WorkspaceView {
                             ),
                     )
                     .child(
-                        quiet_button(
-                            "inbox-activity",
-                            format!("Activity · {}", self.inbox.unread_count()),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.work_inbox.activity = true;
-                            this.work_inbox.menu = None;
-                            this.sync_terminal_surface_visibility(cx);
-                            cx.notify();
-                        })),
+                        quiet_button("inbox-activity", "Activity").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.work_inbox.activity = true;
+                                this.work_inbox.menu = None;
+                                this.sync_terminal_surface_visibility(cx);
+                                cx.notify();
+                            },
+                        )),
                     ),
             )
             .child(
@@ -403,16 +401,7 @@ impl WorkspaceView {
                                 .text_color(colors().accent),
                         )
                     })
-                    .child(short_time(item.updated_at))
-                    .when(item.unread(&self.settings.inbox.seen), |row| {
-                        row.child(
-                            div()
-                                .size(px(6.0))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(colors().accent),
-                        )
-                    }),
+                    .child(short_time(item.updated_at)),
             )
             .child(
                 div()

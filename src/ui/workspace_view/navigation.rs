@@ -231,9 +231,6 @@ impl WorkspaceView {
                                 },
                             ))
                             .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
-                            .when(section == WorkspaceSection::Inbox, |row| {
-                                row.children(self.inbox_unread_badge())
-                            })
                     })),
             )
             .child(

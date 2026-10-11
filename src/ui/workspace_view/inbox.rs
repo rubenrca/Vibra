@@ -91,21 +91,12 @@ impl WorkspaceView {
                     .map(|presence| (session.id, presence))
             })
             .collect();
-        let unread = self.inbox.unread_count();
         let actions = vec![
             section_button("inbox-show-tasks", "← Tasks", false)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.work_inbox.activity = false;
                     this.ensure_inbox_loaded(cx);
                     cx.notify();
-                }))
-                .into_any_element(),
-            section_button("inbox-mark-read", "Mark as read", false)
-                .when(unread == 0, |button| button.opacity(0.5))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if this.inbox.mark_all_read() {
-                        cx.notify();
-                    }
                 }))
                 .into_any_element(),
             section_button("inbox-clear", "Clear", false)
@@ -185,11 +176,7 @@ impl WorkspaceView {
         }
 
         body = body.child(div().h(px(12.0)));
-        body = body.child(section_heading(if unread > 0 {
-            format!("Activity · {unread} unread")
-        } else {
-            "Activity".to_owned()
-        }));
+        body = body.child(section_heading("Activity"));
         if self.inbox.is_empty() {
             body = body.child(section_empty_state(
                 "chrome-icons/inbox.svg",
@@ -213,13 +200,6 @@ impl WorkspaceView {
         inbox_row(SharedString::from(format!("inbox-item-{id}")))
             .when(!openable, |row| row.cursor_default())
             .on_click(cx.listener(move |this, _, window, cx| this.open_inbox_item(id, window, cx)))
-            .child(
-                div()
-                    .size(px(8.0))
-                    .flex_none()
-                    .rounded_full()
-                    .when(!item.read, |dot| dot.bg(colors().accent)),
-            )
             .child(
                 div()
                     .size(px(28.0))
@@ -278,34 +258,6 @@ impl WorkspaceView {
                     .child(relative_time(now, item.at)),
             )
             .into_any_element()
-    }
-
-    /// Unread count for the global navigation badge.
-    pub(super) fn inbox_unread_badge(&self) -> Option<AnyElement> {
-        let unread = self.inbox.unread_count() + self.work_inbox_unread_count();
-        (unread > 0).then(|| {
-            div()
-                .min_w(px(20.0))
-                .h(px(18.0))
-                .px(px(6.0))
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(gpui::Rgba {
-                    a: 0.18,
-                    ..colors().accent
-                })
-                .text_size(px(10.5))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(colors().accent)
-                .child(if unread > 99 {
-                    "99+".to_owned()
-                } else {
-                    unread.to_string()
-                })
-                .into_any_element()
-        })
     }
 }
 

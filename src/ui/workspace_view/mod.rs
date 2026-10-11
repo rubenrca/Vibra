@@ -51,6 +51,7 @@ use crate::domain::inbox::Inbox;
 use crate::domain::workspace::{PaneSplitDirection, WorkspaceSnapshot};
 use crate::infrastructure::automation::{AgentHookStatus, AutomationServer};
 use crate::infrastructure::editor::InstalledEditor;
+use crate::infrastructure::keep_awake::KeepAwake;
 use crate::infrastructure::notifications::AgentActivitySnapshot;
 use crate::infrastructure::persistence::{PersistenceQueue, WorkspaceRepository};
 use crate::infrastructure::settings::{
@@ -89,6 +90,8 @@ pub struct WorkspaceView {
     project_diff_stats: HashMap<PathBuf, projects::ProjectDiffStats>,
     _status_task: Option<Task<()>>,
     usage: usage::UsageState,
+    keep_awake: KeepAwake,
+    keep_awake_error: Option<SharedString>,
     diff_view: Entity<DiffView>,
     diff_file_index: Entity<DiffFileIndexView>,
     _diff_subscription: Subscription,
@@ -530,6 +533,7 @@ impl WorkspaceView {
             self.persistence_error.as_ref(),
             self.workspace_save_error.as_ref(),
             self.settings_save_error.as_ref(),
+            self.keep_awake_error.as_ref(),
         ]
         .into_iter()
         .flatten()
