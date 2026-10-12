@@ -53,6 +53,7 @@ impl WorkspaceView {
                     roots.dedup();
                     this.project_diff_stats
                         .retain(|root, _| roots.contains(root));
+                    this.project_branches.retain(|root, _| roots.contains(root));
                     if !this.settings.left_sidebar_visible {
                         roots.clear();
                     }
@@ -75,7 +76,13 @@ impl WorkspaceView {
                                         deletions: snapshot.deletions,
                                     }
                                 });
-                                (root, stats)
+                                // The snapshot just filled the branch cache.
+                                let branch = port
+                                    .branch_summary(&root)
+                                    .ok()
+                                    .flatten()
+                                    .map(|summary| summary.branch);
+                                (root, stats, branch)
                             })
                             .collect::<Vec<_>>();
                         // Snapshots populate the branch cache, so reuse it when possible.
@@ -91,7 +98,8 @@ impl WorkspaceView {
                         if let Some((root, summary)) = summary {
                             this.apply_branch_summary(root, summary, cx);
                         }
-                        for (root, stats) in stats {
+                        for (root, stats, branch) in stats {
+                            this.apply_project_branch(root.clone(), branch, cx);
                             this.apply_project_diff_stats(root, stats, cx);
                         }
                     })

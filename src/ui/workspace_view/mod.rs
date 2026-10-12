@@ -89,6 +89,8 @@ pub struct WorkspaceView {
     git_port: Arc<dyn GitPort>,
     branch_summary: Option<(PathBuf, crate::ports::git::GitBranchSummary)>,
     project_diff_stats: HashMap<PathBuf, projects::ProjectDiffStats>,
+    /// Checked-out branch per project root, shown on its agent cards.
+    project_branches: HashMap<PathBuf, String>,
     _status_task: Option<Task<()>>,
     usage: usage::UsageState,
     keep_awake: KeepAwake,

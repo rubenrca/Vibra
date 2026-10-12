@@ -247,6 +247,7 @@ impl WorkspaceView {
             git_port,
             branch_summary: None,
             project_diff_stats: HashMap::new(),
+            project_branches: HashMap::new(),
             _status_task: None,
             usage: usage::UsageState::default(),
             keep_awake: KeepAwake::default(),

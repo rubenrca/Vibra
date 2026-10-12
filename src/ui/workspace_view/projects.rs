@@ -15,7 +15,6 @@ use crate::ui::theme::{colors, surface_tint};
 use crate::{AddProject, GoToProject};
 
 use super::chrome::sidebar_row_width;
-use super::inbox::agent_state_label;
 use super::{
     ContextMenuKind, DragGhost, PaneIdentity, ProjectDrag, ReorderDrag, ReorderSlot,
     RightSidebarMode, SIDEBAR_CONTROL_SIZE, WorkspaceSection, WorkspaceView, sidebar_tooltip,
@@ -23,10 +22,12 @@ use super::{
 
 /// A project row and the space below it.
 const PROJECT_ROW_PITCH: f32 = 34.0;
-const PROJECT_AGENT_ROW_PITCH: f32 = 28.0;
-/// Agent rows sit right of a guide line under the folder icon, like a tree.
-const PROJECT_AGENT_INDENT: f32 = 24.0;
-const PROJECT_AGENT_GUIDE_X: f32 = 15.5;
+/// Agent cards: agent and status, task title, then the project's branch.
+const PROJECT_AGENT_CARD_PITCH: f32 = 64.0;
+const PROJECT_AGENT_CARD_PITCH_NO_BRANCH: f32 = 47.0;
+/// Agent cards sit flush under their project; the agent mark centers under the
+/// folder icon.
+const PROJECT_AGENT_CARD_PADDING: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ProjectDiffStats {
@@ -58,6 +59,33 @@ impl WorkspaceView {
             self.project_diff_stats.remove(&root);
         }
         cx.notify();
+    }
+
+    pub(super) fn apply_project_branch(
+        &mut self,
+        root: PathBuf,
+        branch: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.project_branches.get(&root) == branch.as_ref() {
+            return;
+        }
+        if let Some(branch) = branch {
+            self.project_branches.insert(root, branch);
+        } else {
+            self.project_branches.remove(&root);
+        }
+        cx.notify();
+    }
+
+    fn project_branch(&self, id: Uuid) -> Option<String> {
+        let root = self
+            .snapshot
+            .projects
+            .iter()
+            .find(|project| project.id == id)?
+            .directory()?;
+        self.project_branches.get(Path::new(root)).cloned()
     }
 
     pub(super) fn project_diff_stats(&self, id: Uuid) -> Option<ProjectDiffStats> {
@@ -555,10 +583,11 @@ impl WorkspaceView {
             .collect()
     }
 
-    fn project_agent_row(
+    fn project_agent_card(
         &self,
         session_id: Uuid,
         identity: PaneIdentity,
+        branch: Option<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let selected = self.workspace_section == WorkspaceSection::Workspace
@@ -567,12 +596,19 @@ impl WorkspaceView {
                 .snapshot
                 .selected_session()
                 .is_some_and(|session| session.id == session_id);
-        let state = identity.agent_state.unwrap_or(AgentRuntimeState::Idle);
-        let status = agent_state_label(state, identity.agent_attention);
+        let agent = identity
+            .agent_kind
+            .clone()
+            .unwrap_or_else(|| "Agent".into());
+        let status = identity.agent_state.map(|state| {
+            (
+                agent_state_short_label(state, identity.agent_attention),
+                agent_status_color(Some(state), identity.agent_attention)
+                    .unwrap_or_else(|| colors().subtle),
+            )
+        });
         let tooltip = format!(
-            "{} · {}\n{}{}",
-            identity.agent_kind.as_deref().unwrap_or("Agent"),
-            status,
+            "{}{}",
             identity.title,
             identity
                 .detail
@@ -580,28 +616,37 @@ impl WorkspaceView {
                 .map(|detail| format!("\n{detail}"))
                 .unwrap_or_default(),
         );
+        let meta = |child: AnyElement| {
+            div()
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .text_size(px(11.5))
+                .line_height(px(16.0))
+                .text_color(colors().subtle)
+                .child(child)
+        };
         div()
             .id(SharedString::from(format!("project-agent-{session_id}")))
-            .w(px(
-                sidebar_row_width(self.left_sidebar_width()) - PROJECT_AGENT_INDENT
-            ))
-            .h(px(PROJECT_AGENT_ROW_PITCH - 2.0))
+            .w(px(sidebar_row_width(self.left_sidebar_width())))
+            .h(px(project_agent_card_pitch(branch.is_some()) - 2.0))
             .mb(px(2.0))
-            .pl(px(6.0))
-            .pr(px(8.0))
+            .px(px(PROJECT_AGENT_CARD_PADDING))
+            .py(px(5.0))
             .rounded(px(7.0))
             .flex()
-            .items_center()
-            .gap(px(8.0))
+            .flex_col()
+            .gap(px(1.0))
             .cursor_pointer()
-            .when(selected, |row| {
-                row.bg(surface_tint(colors().selection, colors().sidebar))
+            .when(selected, |card| {
+                card.bg(surface_tint(colors().selection, colors().sidebar))
             })
-            .hover(move |row| {
+            .hover(move |card| {
                 if selected {
-                    row
+                    card
                 } else {
-                    row.bg(surface_tint(colors().hover, colors().sidebar))
+                    card.bg(surface_tint(colors().hover, colors().sidebar))
                 }
             })
             .tooltip(move |_, cx| sidebar_tooltip(tooltip.clone(), cx))
@@ -621,26 +666,69 @@ impl WorkspaceView {
                     cx.stop_propagation();
                 }),
             )
-            .child(agent_compact_badge(
-                identity.agent_kind.as_deref(),
-                identity.agent_state,
-                identity.agent_attention,
-                selected,
-            ))
             .child(
                 div()
-                    .flex_1()
-                    .min_w(px(0.0))
+                    .h(px(16.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(agent_compact_badge(
+                        identity.agent_kind.as_deref(),
+                        None,
+                        None,
+                        selected,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(11.5))
+                            .text_color(colors().muted)
+                            .child(agent),
+                    )
+                    .when_some(status, |line, (label, color)| {
+                        line.child(
+                            div()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.0))
+                                .text_size(px(11.0))
+                                .text_color(colors().subtle)
+                                .child(div().size(px(6.0)).rounded_full().bg(color))
+                                .child(label),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .h(px(18.0))
                     .truncate()
-                    .text_size(px(12.0))
+                    .text_size(px(13.0))
                     .line_height(px(18.0))
-                    .text_color(if selected {
-                        colors().foreground
-                    } else {
-                        colors().muted
-                    })
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(colors().foreground)
                     .child(identity.title),
             )
+            .when_some(branch, |card, branch| {
+                card.child(meta(
+                    div()
+                        .min_w(px(0.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            svg()
+                                .path("chrome-icons/git-branch.svg")
+                                .size(px(12.0))
+                                .flex_none()
+                                .text_color(colors().subtle),
+                        )
+                        .child(div().min_w(px(0.0)).truncate().child(branch))
+                        .into_any_element(),
+                ))
+            })
             .into_any_element()
     }
 
@@ -669,7 +757,8 @@ impl WorkspaceView {
         let mut motion = self.project_motion.borrow_mut();
         let motion = &mut motion[usize::from(section)];
         let project_height = |id: Uuid| {
-            PROJECT_ROW_PITCH + agents.get(&id).map_or(0, Vec::len) as f32 * PROJECT_AGENT_ROW_PITCH
+            let card = project_agent_card_pitch(self.project_branch(id).is_some());
+            PROJECT_ROW_PITCH + agents.get(&id).map_or(0, Vec::len) as f32 * card
         };
         let gap_height = source.map_or(PROJECT_ROW_PITCH, project_height);
         motion.update_with_sizes(&slots, |slot| {
@@ -688,35 +777,20 @@ impl WorkspaceView {
                         .position(|(project, _)| *project == id)
                         .expect("project in section");
                     let (_, name) = projects.swap_remove(index);
+                    let branch = self.project_branch(id);
                     let agent_rows: Vec<_> = agents
                         .remove(&id)
                         .unwrap_or_default()
                         .into_iter()
                         .map(|(session_id, identity)| {
-                            self.project_agent_row(session_id, identity, cx)
+                            self.project_agent_card(session_id, identity, branch.clone(), cx)
                         })
                         .collect();
                     super::slide_into_place(
                         div()
                             .relative()
                             .child(self.project_sidebar_header(id, name, cx))
-                            .when(!agent_rows.is_empty(), |project| {
-                                project.child(
-                                    div()
-                                        .relative()
-                                        .pl(px(PROJECT_AGENT_INDENT))
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .left(px(PROJECT_AGENT_GUIDE_X))
-                                                .top(px(0.0))
-                                                .bottom(px(6.0))
-                                                .w(px(1.0))
-                                                .bg(colors().border_subtle),
-                                        )
-                                        .children(agent_rows),
-                                )
-                            }),
+                            .children(agent_rows),
                         motion.slide(id),
                         "project",
                         true,
@@ -921,4 +995,25 @@ fn project_drag_ghost(
                 .child(name),
         )
         .into_any_element()
+}
+
+fn project_agent_card_pitch(has_branch: bool) -> f32 {
+    if has_branch {
+        PROJECT_AGENT_CARD_PITCH
+    } else {
+        PROJECT_AGENT_CARD_PITCH_NO_BRANCH
+    }
+}
+
+/// Fits the card's top line; the Inbox keeps the longer wording.
+fn agent_state_short_label(
+    state: AgentRuntimeState,
+    attention: Option<AgentAttention>,
+) -> &'static str {
+    match (state, attention) {
+        (AgentRuntimeState::Waiting, Some(AgentAttention::Permission)) => "Permission",
+        (AgentRuntimeState::Waiting, _) => "Waiting",
+        (AgentRuntimeState::Working, _) => "Working",
+        (AgentRuntimeState::Idle, _) => "Idle",
+    }
 }
