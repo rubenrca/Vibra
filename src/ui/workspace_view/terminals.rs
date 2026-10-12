@@ -124,6 +124,7 @@ impl WorkspaceView {
                 chat.view.update(cx, |view, cx| view.shutdown(cx));
             }
             self.pending_chat_panes.remove(&session_id);
+            self.pending_chat_setups.remove(&session_id);
             if let Some(terminal) = self.terminals.remove(&session_id) {
                 terminal.read(cx).shutdown();
             }

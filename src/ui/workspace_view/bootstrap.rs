@@ -260,6 +260,7 @@ impl WorkspaceView {
             terminal_subscriptions: HashMap::new(),
             agent_chats: HashMap::new(),
             pending_chat_panes: HashSet::new(),
+            pending_chat_setups: HashMap::new(),
             linked_worktrees: HashMap::new(),
             worktree_checks: HashSet::new(),
             pending_review_pastes: HashMap::new(),

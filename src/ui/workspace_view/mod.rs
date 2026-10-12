@@ -106,6 +106,8 @@ pub struct WorkspaceView {
     /// Panes the user switched to chat while their terminal agent still ran.
     /// They connect when that agent exits; restored panes never wait here.
     pending_chat_panes: HashSet<Uuid>,
+    /// Draft and selected model awaiting the replacement provider's connection.
+    pending_chat_setups: HashMap<Uuid, pane_chat::PendingChatSetup>,
     /// Whether each working directory is a linked Git worktree, once checked.
     linked_worktrees: HashMap<PathBuf, bool>,
     /// Working directories whose worktree check is still running.

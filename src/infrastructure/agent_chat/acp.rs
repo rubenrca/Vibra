@@ -441,18 +441,19 @@ impl Shared {
     }
 
     /// `setup` is the `session/new`, `load` or `resume` result. Its modes and
-    /// config options go out right after `SessionStarted`.
+    /// config options go out before `SessionStarted`, so the view can apply a
+    /// pending model before dispatching a prompt queued while connecting.
     fn session_started(&self, session_id: String, loaded: bool, setup: &Value) {
         let controls = {
             let mut session = lock(&self.session);
             session.session_id = Some(session_id.clone());
             session.controls.setup(setup)
         };
-        self.emitter
-            .emit(ChatEvent::SessionStarted { session_id, loaded });
         for event in controls {
             self.emitter.emit(event);
         }
+        self.emitter
+            .emit(ChatEvent::SessionStarted { session_id, loaded });
     }
 
     fn on_prompt_finished(&self, result: Result<Value, RpcError>) {
@@ -1392,13 +1393,6 @@ while True:
         let events = &connection.events;
 
         assert!(matches!(next_event(events), ChatEvent::Initialized { .. }));
-        assert_eq!(
-            next_event(events),
-            ChatEvent::SessionStarted {
-                session_id: "sess-1".to_owned(),
-                loaded: false,
-            }
-        );
         let modes = SessionModes {
             current: "default".to_owned(),
             available: vec![
@@ -1418,6 +1412,13 @@ while True:
         assert_eq!(
             next_event(events),
             with_model(controls_options("default", "high"), "m1")
+        );
+        assert_eq!(
+            next_event(events),
+            ChatEvent::SessionStarted {
+                session_id: "sess-1".to_owned(),
+                loaded: false,
+            }
         );
         // Notifications the agent sends right after the session is set up.
         assert_eq!(

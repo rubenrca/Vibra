@@ -49,7 +49,16 @@ impl std::error::Error for LaunchError {}
 /// Resolves the launch command for `agent` from the process environment.
 pub fn resolve_launch(agent: ChatAgent) -> Result<AgentLaunch, LaunchError> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    resolve_with_environment(agent, home.as_deref(), std::env::var_os("PATH").as_deref())
+    let cache = std::env::var_os("npm_config_cache")
+        .or_else(|| std::env::var_os("NPM_CONFIG_CACHE"))
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|home| home.join(".npm")));
+    resolve_with_cache(
+        agent,
+        &search_dirs(home.as_deref(), std::env::var_os("PATH").as_deref()),
+        cache.as_deref(),
+    )
 }
 
 /// Whether `agent` can be launched right now. Used by the UI to enable chat.
@@ -59,6 +68,7 @@ pub fn is_available(agent: ChatAgent) -> bool {
 }
 
 /// `resolve_launch` with its inputs injected, so tests control the search.
+#[cfg(test)]
 fn resolve_with_environment(
     agent: ChatAgent,
     home: Option<&Path>,
@@ -109,7 +119,16 @@ fn nvm_default_bin(home: &Path) -> Option<PathBuf> {
     bin.is_dir().then_some(bin)
 }
 
+#[cfg(test)]
 fn resolve_in(agent: ChatAgent, dirs: &[PathBuf]) -> Result<AgentLaunch, LaunchError> {
+    resolve_with_cache(agent, dirs, None)
+}
+
+fn resolve_with_cache(
+    agent: ChatAgent,
+    dirs: &[PathBuf],
+    cache: Option<&Path>,
+) -> Result<AgentLaunch, LaunchError> {
     let path_env = ("PATH".to_owned(), path_value(dirs));
     match agent {
         ChatAgent::Grok => {
@@ -130,6 +149,7 @@ fn resolve_in(agent: ChatAgent, dirs: &[PathBuf]) -> Result<AgentLaunch, LaunchE
                 adapter_bin: "claude-agent-acp",
                 package: CLAUDE_ACP_PACKAGE,
             },
+            cache,
             path_env,
         ),
         ChatAgent::Codex => resolve_adapter(
@@ -141,6 +161,7 @@ fn resolve_in(agent: ChatAgent, dirs: &[PathBuf]) -> Result<AgentLaunch, LaunchE
                 adapter_bin: "codex-acp",
                 package: CODEX_ACP_PACKAGE,
             },
+            cache,
             path_env,
         ),
     }
@@ -161,19 +182,25 @@ fn resolve_adapter(
     agent: ChatAgent,
     dirs: &[PathBuf],
     spec: AdapterSpec,
+    cache: Option<&Path>,
     path_env: (String, String),
 ) -> Result<AgentLaunch, LaunchError> {
     // Check the CLI first: without it the chat cannot work at all, whatever Node.js does.
     let cli_path = find_executable(spec.cli, dirs).ok_or(LaunchError::AgentNotFound { agent })?;
     // Both adapter forms are Node programs, so Node.js is always required.
-    if find_executable("node", dirs).is_none() {
-        return Err(LaunchError::NodeNotFound { agent });
-    }
+    let node = find_executable("node", dirs).ok_or(LaunchError::NodeNotFound { agent })?;
     let (program, args) = match find_executable(spec.adapter_bin, dirs) {
         Some(adapter) => (adapter, Vec::new()),
         None => {
-            let npx = find_executable("npx", dirs).ok_or(LaunchError::NodeNotFound { agent })?;
-            (npx, vec!["-y".to_owned(), spec.package.to_owned()])
+            if let Some(entry) = cache.and_then(|cache| cached_adapter_entry(cache, &spec)) {
+                // The exact pinned adapter is already installed. Starting it
+                // with Node skips npx's package resolution on every new chat.
+                (node, vec![entry.to_string_lossy().into_owned()])
+            } else {
+                let npx =
+                    find_executable("npx", dirs).ok_or(LaunchError::NodeNotFound { agent })?;
+                (npx, vec!["-y".to_owned(), spec.package.to_owned()])
+            }
         }
     };
     Ok(AgentLaunch {
@@ -184,6 +211,43 @@ fn resolve_adapter(
             (spec.cli_env.to_owned(), cli_path.display().to_string()),
         ],
     })
+}
+
+/// Reuses only a complete entry point of the pinned package. Missing, stale or
+/// unrecognized npm cache layouts fall back to npx's normal install path.
+fn cached_adapter_entry(cache: &Path, spec: &AdapterSpec) -> Option<PathBuf> {
+    let (name, version) = spec.package.rsplit_once('@')?;
+    for directory in std::fs::read_dir(cache.join("_npx")).ok()?.flatten() {
+        let package = directory.path().join("node_modules").join(name);
+        let Some(manifest) = std::fs::read(package.join("package.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        else {
+            continue;
+        };
+        if manifest["name"].as_str() != Some(name) || manifest["version"].as_str() != Some(version)
+        {
+            continue;
+        }
+        let Some(bin) = manifest["bin"]
+            .as_str()
+            .or_else(|| manifest["bin"][spec.adapter_bin].as_str())
+        else {
+            continue;
+        };
+        let bin = Path::new(bin);
+        if !bin
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let entry = package.join(bin);
+        if entry.is_file() {
+            return Some(entry);
+        }
+    }
+    None
 }
 
 /// The first executable regular file named `name` in `dirs`.
@@ -378,6 +442,85 @@ mod tests {
             env_value(&launch, "CLAUDE_CODE_EXECUTABLE"),
             Some(claude.display().to_string())
         );
+    }
+
+    fn cache_adapter(sandbox: &Sandbox, name: &str, version: &str, entry: &str) -> PathBuf {
+        let package = sandbox.dir(&format!("cache/_npx/{version}/node_modules/{name}"));
+        fs::write(
+            package.join("package.json"),
+            serde_json::json!({
+                "name": name,
+                "version": version,
+                "bin": {name.rsplit('/').next().unwrap(): entry}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let path = package.join(entry);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "// cached adapter entry point").unwrap();
+        path
+    }
+
+    #[test]
+    fn cached_pinned_adapters_run_with_node_without_needing_npx() {
+        for (agent, cli, name, version, variable) in [
+            (
+                ChatAgent::Claude,
+                "claude",
+                "@agentclientprotocol/claude-agent-acp",
+                "0.89.1",
+                "CLAUDE_CODE_EXECUTABLE",
+            ),
+            (
+                ChatAgent::Codex,
+                "codex",
+                "@agentclientprotocol/codex-acp",
+                "2.2.2",
+                "CODEX_PATH",
+            ),
+        ] {
+            let sandbox = Sandbox::new();
+            let bin = sandbox.dir("bin");
+            let cli = sandbox.exe(&bin, cli);
+            let node = sandbox.exe(&bin, "node");
+            let entry = cache_adapter(&sandbox, name, version, "dist/index.js");
+            let launch =
+                resolve_with_cache(agent, &[bin], Some(&sandbox.root.join("cache"))).unwrap();
+            assert_eq!(launch.program, node);
+            assert_eq!(launch.args, [entry.to_string_lossy()]);
+            assert_eq!(
+                env_value(&launch, variable),
+                Some(cli.to_string_lossy().into_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn stale_or_incomplete_cache_falls_back_to_the_pinned_npx_package() {
+        let sandbox = Sandbox::new();
+        let bin = sandbox.dir("bin");
+        sandbox.exe(&bin, "claude");
+        sandbox.exe(&bin, "node");
+        let npx = sandbox.exe(&bin, "npx");
+        cache_adapter(
+            &sandbox,
+            "@agentclientprotocol/claude-agent-acp",
+            "0.66.0",
+            "dist/index.js",
+        );
+        let pinned = cache_adapter(
+            &sandbox,
+            "@agentclientprotocol/claude-agent-acp",
+            "0.89.1",
+            "dist/index.js",
+        );
+        fs::remove_file(pinned).unwrap();
+        let launch =
+            resolve_with_cache(ChatAgent::Claude, &[bin], Some(&sandbox.root.join("cache")))
+                .unwrap();
+        assert_eq!(launch.program, npx);
+        assert_eq!(launch.args, ["-y", CLAUDE_ACP_PACKAGE]);
     }
 
     #[test]

@@ -142,6 +142,7 @@ impl AgentChatView {
         if self.list_state.item_count() != before || after < before {
             self.rows = rows;
             self.list_state.reset(after);
+            self.scrolled_away = false;
             return;
         }
         let mut changed: Vec<usize> = dirty
@@ -152,12 +153,20 @@ impl AgentChatView {
             .collect();
         changed.sort_unstable();
         changed.dedup();
+        // GPUI's splice resets the offset inside a replaced row. A reader can
+        // be partway through a long streaming message, so retain that offset.
+        let anchor = self
+            .scrolled_away
+            .then(|| self.list_state.logical_scroll_top());
         self.rows = rows;
         for index in changed {
             self.list_state.splice(index..index + 1, 1);
         }
         if after > before {
             self.list_state.splice(before..before, after - before);
+        }
+        if let Some(anchor) = anchor {
+            self.list_state.scroll_to(anchor);
         }
     }
 

@@ -1,6 +1,6 @@
 //! The composer at the bottom of the chat: a quiet card with the draft,
 //! attachments, the `/` command and `@` file popups, the model and mode menus,
-//! and the context meter, with a footer line below it (see `footer.rs`).
+//! and the context meter.
 //! Enter sends, or queues the draft while a turn runs. Shift+Enter adds a line,
 //! and Escape closes a menu or popup, or stops a running turn when the draft is empty.
 //! The draft field itself (caret, selection, IME) is `editor.rs`.
@@ -8,7 +8,6 @@
 mod approval;
 mod editor;
 mod files;
-mod footer;
 mod meter;
 mod picker;
 mod picker_view;
@@ -83,6 +82,19 @@ impl AgentChatView {
         if !self.accepts_input() {
             return;
         }
+        // A dedicated stop shortcut works even with a draft or an open picker.
+        let modifiers = &event.keystroke.modifiers;
+        if self.is_working()
+            && key == "."
+            && modifiers.platform
+            && !modifiers.control
+            && !modifiers.alt
+            && !modifiers.shift
+        {
+            self.cancel_turn(cx);
+            cx.stop_propagation();
+            return;
+        }
         // An open menu takes its keys first, so Escape closes it before a popup.
         if let Some(menu_key) = menu_key(key).filter(|_| self.composer.menu.is_some()) {
             self.handle_menu_key(menu_key, cx);
@@ -113,7 +125,7 @@ impl AgentChatView {
 
     /// Runs after a key edits the draft: a dismissed popup reopens and starts
     /// at its first row, and an `@` reference refreshes the file list.
-    fn after_edit(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn after_edit(&mut self, cx: &mut Context<Self>) {
         self.composer.popup_dismissed = false;
         self.composer.selection = 0;
         self.refresh_file_index_if_mentioning(cx);
@@ -159,8 +171,7 @@ impl AgentChatView {
             // the permission request that needs an answer now.
             .children(self.queue_strip(cx))
             .children(self.approval_dock(cx))
-            .child(card)
-            .child(self.composer_footer(cx));
+            .child(card);
         if menu_open {
             // A press outside the open menu closes it. The menu is deferred above this layer.
             outer = outer.child(div().absolute().inset_0().occlude().on_mouse_down(
@@ -321,7 +332,7 @@ impl AgentChatView {
     }
 
     /// The row under the draft: "+", the model and mode triggers, the context
-    /// meter, and the send or stop button.
+    /// meter, and the send and stop buttons.
     fn composer_toolbar(&self, enabled: bool, cx: &mut Context<Self>) -> AnyElement {
         // Switching model or mode would change the running turn, so the menus wait for it to end.
         let pickers = self.is_idle();
@@ -342,7 +353,10 @@ impl AgentChatView {
             .when_some(context_meter(self.timeline.usage), |row, meter| {
                 row.child(meter)
             })
-            .child(self.action_button(enabled, cx))
+            .when(self.is_working(), |row| row.child(self.stop_button(cx)))
+            .when(!self.is_working() || !self.draft.trim().is_empty(), |row| {
+                row.child(self.action_button(enabled, cx))
+            })
             .into_any_element()
     }
 
@@ -375,34 +389,36 @@ impl AgentChatView {
             .into_any_element()
     }
 
-    /// The round button at the end of the toolbar. Idle it sends the draft; while
-    /// a turn runs it queues a typed draft, and otherwise it stops the turn.
+    /// Remains available while writing a follow-up, without discarding the draft.
+    fn stop_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("agent-chat-stop")
+            .flex_none()
+            .size(px(28.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(14.0))
+            .bg(colors().hover)
+            .cursor_pointer()
+            .hover(|button| button.opacity(0.85))
+            .tooltip(|_, cx| tooltip("Stop response · ⌘.", cx))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, _, cx| this.cancel_turn(cx)))
+            .child(
+                div()
+                    .size(px(10.0))
+                    .rounded(px(2.0))
+                    .bg(colors().foreground),
+            )
+            .into_any_element()
+    }
+
+    /// Sends the draft while idle, or queues it while the agent is working.
     fn action_button(&self, enabled: bool, cx: &mut Context<Self>) -> AnyElement {
         let has_text = !self.draft.trim().is_empty();
-        if self.is_working() && !has_text {
-            return div()
-                .id("agent-chat-stop")
-                .flex_none()
-                .size(px(28.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(14.0))
-                .bg(colors().danger)
-                .cursor_pointer()
-                .hover(|button| button.opacity(0.85))
-                .tooltip(|_, cx| tooltip("Stop · esc", cx))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|this, _, _, cx| this.cancel_turn(cx)))
-                .child(
-                    div()
-                        .size(px(10.0))
-                        .rounded(px(2.0))
-                        .bg(colors().background),
-                )
-                .into_any_element();
-        }
-        let queueing = self.is_working();
+        let starting = self.is_starting();
+        let queueing = self.is_working() || starting;
         let can_send = enabled && has_text;
         div()
             .id(if queueing {
@@ -430,7 +446,9 @@ impl AgentChatView {
             .when(!can_send, |button| button.opacity(0.6))
             .tooltip(move |_, cx| {
                 tooltip(
-                    if queueing {
+                    if starting {
+                        "Send when ready · ↵"
+                    } else if queueing {
                         "Queue message · ↵"
                     } else {
                         "Send · ↵"
@@ -457,10 +475,9 @@ impl AgentChatView {
             .into_any_element()
     }
 
-    /// Whether the draft accepts typing: the session is open and either idle or
-    /// running a turn. Typed text is queued or sent, so it can be edited while a turn runs.
+    /// The draft can be edited immediately, including while the agent connects.
     pub(super) fn accepts_input(&self) -> bool {
-        self.is_idle() || self.is_working()
+        self.is_starting() || self.is_idle() || self.is_working()
     }
 }
 
@@ -834,5 +851,31 @@ mod tests {
             view.on_key_down(&key_event("escape", None), window, cx);
         });
         assert!(matches!(commands_rx.try_recv(), Ok(ChatCommand::Cancel)));
+    }
+
+    #[gpui::test]
+    fn command_period_stops_with_a_draft_and_file_popup_open(cx: &mut TestAppContext) {
+        let (commands_tx, commands_rx) = async_channel::unbounded();
+        let (view, cx) = ready_view(cx);
+        view.update_in(cx, |view, window, cx| {
+            view.timeline.state = Some(ChatConnectionState::Working);
+            view.commands = Some(commands_tx);
+            view.file_search = Some(FileSearch {
+                port: Arc::new(FakeFiles(Vec::new())),
+                root: PathBuf::from("/repo"),
+            });
+            type_text(view, window, cx, "check @src");
+            view.attachments.push(PromptFile {
+                path: "/repo/README.md".into(),
+                label: "README.md".into(),
+            });
+            assert!(view.active_popup().is_some());
+            view.on_key_down(&key_with(".", Some("."), Modifiers::command()), window, cx);
+            assert_eq!(view.draft, "check @src");
+            assert_eq!(view.attachments.len(), 1);
+            assert!(view.queue_paused);
+        });
+        assert!(matches!(commands_rx.try_recv(), Ok(ChatCommand::Cancel)));
+        assert!(commands_rx.try_recv().is_err());
     }
 }

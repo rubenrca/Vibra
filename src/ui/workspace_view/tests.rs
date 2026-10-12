@@ -2238,6 +2238,80 @@ fn toggle_chat_switches_the_selected_pane_without_a_picker(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
+fn switching_chat_providers_preserves_the_unsent_prompt_and_references(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-provider-draft");
+    let pane = snapshot.selected_session().unwrap().id;
+    let draft = (
+        "Review this file\nand explain the change".to_owned(),
+        vec![crate::domain::agent_chat::PromptFile {
+            path: root.join("src/main.rs").to_string_lossy().into_owned(),
+            label: "src/main.rs".to_owned(),
+        }],
+    );
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(ChatAgent::Claude, None, PaneViewMode::Chat)),
+            );
+            view.connect_pane_chat(pane, window, cx);
+            let first = view.agent_chats[&pane].view.clone();
+            first.update(cx, |chat, cx| chat.restore_draft(draft.clone(), cx));
+            view.handle_pane_chat_event(
+                pane,
+                &AgentChatViewEvent::SwitchAgent {
+                    agent: ChatAgent::Codex,
+                    model: Some("gpt-6.1-sol".into()),
+                },
+                window,
+                cx,
+            );
+            let next = view.agent_chats[&pane].view.clone();
+            assert_ne!(first.entity_id(), next.entity_id());
+            assert_eq!(next.read(cx).agent(), ChatAgent::Codex);
+            assert_eq!(next.update(cx, |chat, _| chat.take_draft()), draft);
+            assert!(!view.pending_chat_setups.contains_key(&pane));
+
+            next.update(cx, |chat, cx| chat.restore_draft(draft.clone(), cx));
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: pane,
+                    presence: Some(agent_presence("Claude")),
+                },
+                cx,
+            );
+            view.handle_pane_chat_event(
+                pane,
+                &AgentChatViewEvent::SwitchAgent {
+                    agent: ChatAgent::Claude,
+                    model: Some("opus".into()),
+                },
+                window,
+                cx,
+            );
+            assert!(!view.agent_chats.contains_key(&pane));
+            assert!(view.pending_chat_setups.contains_key(&pane));
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: pane,
+                    presence: None,
+                },
+                cx,
+            );
+            view.connect_waiting_pane_chat(pane, window, cx);
+            let resumed = view.agent_chats[&pane].view.clone();
+            assert_eq!(resumed.read(cx).agent(), ChatAgent::Claude);
+            assert_eq!(resumed.update(cx, |chat, _| chat.take_draft()), draft);
+            assert!(!view.pending_chat_setups.contains_key(&pane));
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn new_chats_use_the_remembered_agent_then_the_pane_agent(cx: &mut gpui::TestAppContext) {
     let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-default");
     let pane = snapshot.selected_session().unwrap().id;
@@ -2557,90 +2631,6 @@ fn detection_never_changes_the_mode_or_the_agent(cx: &mut gpui::TestAppContext) 
         })
         .unwrap();
     std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn reset_times_read_in_the_two_largest_units() {
-    use super::pane_chat::format_resets_in;
-
-    assert_eq!(format_resets_in(0), None);
-    assert_eq!(format_resets_in(-5), None);
-    assert_eq!(format_resets_in(1).as_deref(), Some("1m"));
-    assert_eq!(format_resets_in(45 * 60).as_deref(), Some("45m"));
-    assert_eq!(
-        format_resets_in(3 * 3600 + 52 * 60).as_deref(),
-        Some("3h 52m")
-    );
-    assert_eq!(format_resets_in(26 * 3600).as_deref(), Some("1d 2h"));
-}
-
-#[test]
-fn quota_meters_follow_the_agent_provider_shortest_window_first() {
-    use super::pane_chat::chat_quota_meters;
-    use crate::domain::usage::{UsageSnapshot, timestamp};
-    use serde_json::json;
-
-    let now = timestamp("2026-10-12T12:00:00Z").unwrap();
-    let usage: UsageSnapshot = serde_json::from_value(json!({
-        "providers": {
-            "claude": {
-                "displayName": "Claude",
-                "resources": {
-                    "weekly": {
-                        "kind": "consumption",
-                        "unit": "percent",
-                        "utilization": 0.5,
-                        "resetsAt": "2026-10-13T14:00:00Z"
-                    },
-                    "sonnet": {
-                        "kind": "consumption",
-                        "unit": "percent",
-                        "used": 120,
-                        "limit": 100
-                    },
-                    "session": {
-                        "kind": "consumption",
-                        "unit": "percent",
-                        "used": 19,
-                        "limit": 100,
-                        "resetsAt": "2026-10-12T15:52:00Z"
-                    },
-                    "credits": { "kind": "balance", "unit": "credits", "available": 1000 }
-                }
-            },
-            "codex": {
-                "displayName": "Codex",
-                "resources": {
-                    "session": { "kind": "consumption", "unit": "percent", "utilization": 0.9 }
-                }
-            }
-        }
-    }))
-    .unwrap();
-
-    let meters: Vec<_> = chat_quota_meters(&usage, ChatAgent::Claude, now)
-        .into_iter()
-        .map(|meter| {
-            (
-                meter.label,
-                meter.used_percent.round() as i32,
-                meter.resets_in,
-            )
-        })
-        .collect();
-    assert_eq!(
-        meters,
-        vec![
-            ("Session".to_owned(), 19, Some("3h 52m".to_owned())),
-            ("Week".to_owned(), 50, Some("1d 2h".to_owned())),
-            ("Sonnet".to_owned(), 100, None),
-        ],
-        "balances are left out and overage caps at 100%"
-    );
-    // Each agent reads only its own provider; unknown providers stay empty.
-    assert_eq!(chat_quota_meters(&usage, ChatAgent::Codex, now).len(), 1);
-    assert!(chat_quota_meters(&usage, ChatAgent::Grok, now).is_empty());
-    assert!(chat_quota_meters(&UsageSnapshot::default(), ChatAgent::Claude, now).is_empty());
 }
 
 #[test]

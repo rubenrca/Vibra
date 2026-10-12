@@ -10,14 +10,11 @@ use gpui::{App, AppContext, Context, Entity, FocusHandle, Focusable, Subscriptio
 use uuid::Uuid;
 
 use crate::domain::agent_chat::{
-    AgentChatBinding, AgentModelCatalog, CatalogModel, ChatAgent, PaneViewMode,
+    AgentChatBinding, AgentModelCatalog, CatalogModel, ChatAgent, PaneViewMode, PromptFile,
 };
-use crate::domain::usage::{UsageSnapshot, now_timestamp, resource_label, timestamp};
 use crate::domain::workspace::PaneSplitDirection;
 use crate::infrastructure::agent_chat::{AgentChatConnection, SessionTarget};
-use crate::ui::agent_chat::{
-    AgentChatView, AgentChatViewEvent, ChatViewContext, FileSearch, QuotaMeter,
-};
+use crate::ui::agent_chat::{AgentChatView, AgentChatViewEvent, ChatViewContext, FileSearch};
 
 use super::{WorkspaceSection, WorkspaceView};
 
@@ -33,6 +30,13 @@ pub(super) struct PaneChat {
     pub(super) view: Entity<AgentChatView>,
     pub(super) closed: bool,
     _subscription: Subscription,
+}
+
+/// Carries an unsent prompt across a provider switch, including a connection
+/// that must wait for the pane's terminal agent to exit.
+pub(super) struct PendingChatSetup {
+    draft: (String, Vec<PromptFile>),
+    model: Option<String>,
 }
 
 /// A resume command reaches a prompt only when no agent runs in the pane and a
@@ -81,77 +85,6 @@ pub(super) fn agent_mark_asset(agent: ChatAgent) -> &'static str {
         ChatAgent::Codex => "agent-marks/codex.svg",
         ChatAgent::Grok => "agent-marks/grok.svg",
     }
-}
-
-/// The provider id the usage monitor files an agent's quotas under.
-fn usage_provider_id(agent: ChatAgent) -> &'static str {
-    match agent {
-        ChatAgent::Claude => "claude",
-        ChatAgent::Codex => "codex",
-        ChatAgent::Grok => "grok",
-    }
-}
-
-/// Human text for the time left until a reset: "45m", "3h 52m", "1d 2h".
-/// `None` when the reset is not in the future.
-pub(super) fn format_resets_in(seconds: i64) -> Option<String> {
-    if seconds <= 0 {
-        return None;
-    }
-    let minutes = (seconds + 59) / 60;
-    Some(if minutes < 60 {
-        format!("{minutes}m")
-    } else if minutes < 24 * 60 {
-        format!("{}h {}m", minutes / 60, minutes % 60)
-    } else {
-        format!("{}d {}h", minutes / (24 * 60), minutes / 60 % 24)
-    })
-}
-
-/// Shorter windows first: the session window, then the week, then the rest.
-fn quota_rank(key: &str) -> u8 {
-    match key {
-        "session" => 0,
-        "weekly" => 1,
-        "daily" => 2,
-        "monthly" => 3,
-        _ => 4,
-    }
-}
-
-/// The quota windows of an agent's provider, shortest first. Resources without a
-/// percentage (balances, unknown limits) are left out, and overage shows as 100%.
-pub(super) fn chat_quota_meters(
-    usage: &UsageSnapshot,
-    agent: ChatAgent,
-    now: i64,
-) -> Vec<QuotaMeter> {
-    let Some(provider) = usage.providers.get(usage_provider_id(agent)) else {
-        return Vec::new();
-    };
-    let mut windows: Vec<(u8, QuotaMeter)> = provider
-        .resources
-        .iter()
-        .filter_map(|(key, resource)| {
-            let used = resource.percent_used()?;
-            let resets_in = resource
-                .resets_at
-                .as_deref()
-                .and_then(timestamp)
-                .and_then(|reset| format_resets_in(reset - now));
-            Some((
-                quota_rank(key),
-                QuotaMeter {
-                    label: resource_label(key).to_owned(),
-                    used_percent: used.min(100.0) as f32,
-                    resets_in,
-                },
-            ))
-        })
-        .collect();
-    // The sort is stable, so windows of equal rank keep the provider's key order.
-    windows.sort_by_key(|(rank, _)| *rank);
-    windows.into_iter().map(|(_, meter)| meter).collect()
 }
 
 /// Whether a `.git` file points into a repository's `worktrees/` directory.
@@ -371,6 +304,14 @@ impl WorkspaceView {
             },
         );
         self.refresh_chat_context(session_id, cx);
+        if let Some(setup) = self.pending_chat_setups.remove(&session_id) {
+            self.agent_chats[&session_id].view.update(cx, |view, cx| {
+                view.restore_draft(setup.draft, cx);
+                if let Some(model) = setup.model {
+                    view.apply_model_on_start(model);
+                }
+            });
+        }
     }
 
     pub(super) fn handle_pane_chat_event(
@@ -385,9 +326,6 @@ impl WorkspaceView {
                 agent,
                 session_id: agent_session,
             } => self.bind_agent_session(session_id, *agent, agent_session, cx),
-            AgentChatViewEvent::SwitchToTerminal => {
-                self.set_pane_view_mode(session_id, PaneViewMode::Terminal, window, cx);
-            }
             AgentChatViewEvent::Closed => {
                 if let Some(chat) = self.agent_chats.get_mut(&session_id) {
                     chat.closed = true;
@@ -434,6 +372,9 @@ impl WorkspaceView {
         {
             return;
         }
+        let draft = current.update(cx, |view, _| view.take_draft());
+        self.pending_chat_setups
+            .insert(session_id, PendingChatSetup { draft, model });
         if let Some(chat) = self.agent_chats.remove(&session_id) {
             chat.view.update(cx, |view, cx| view.shutdown(cx));
         }
@@ -449,10 +390,6 @@ impl WorkspaceView {
             cx,
         );
         self.connect_pane_chat(session_id, window, cx);
-        if let (Some(model), Some(chat)) = (model, self.agent_chats.get(&session_id)) {
-            chat.view
-                .update(cx, |view, _| view.apply_model_on_start(model));
-        }
         self.pending_focus_session = Some(session_id);
         cx.notify();
     }
@@ -770,8 +707,7 @@ impl WorkspaceView {
         }
     }
 
-    /// Pushes what each open chat shows (branch, worktree, quota, file search
-    /// root). Called when the branch, usage or a working directory changes.
+    /// Refreshes the branch, worktree and file-search root for each open chat.
     pub(super) fn refresh_chat_contexts(&mut self, cx: &mut Context<Self>) {
         let session_ids: Vec<Uuid> = self.agent_chats.keys().copied().collect();
         for session_id in session_ids {
@@ -787,13 +723,11 @@ impl WorkspaceView {
         else {
             return;
         };
-        let agent = view.read(cx).agent();
         let cwd = self.pane_working_directory(session_id, cx);
         let root = self.pane_project_root(session_id, &cwd);
         let context = ChatViewContext {
             branch: self.branch_for_root(&root),
             worktree: self.linked_worktree(&cwd, cx),
-            quota: chat_quota_meters(self.usage.snapshot(), agent, now_timestamp()),
         };
         let file_search = FileSearch {
             port: self.file_port.clone(),

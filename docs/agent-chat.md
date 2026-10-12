@@ -120,3 +120,20 @@ Mapping rules:
 - The synthetic model option (`__model`, from `models`) is added only when no option has category `model`. None of the three needs it.
 - `session/set_model` is used only for `__model`. Real options go through `session/set_config_option`.
 - Grouped options (`{group, name, options}`) are flattened. Boolean options are skipped.
+
+## Chat interaction direction
+
+Reviewed [T3 Code's scroll anchoring](https://github.com/pingdotgg/t3code/blob/main/apps/web/src/components/chat/timelineScrollAnchoring.ts),
+[MonoCode's queue dispatch](https://github.com/hardbeat920/monocode/blob/main/src/features/sessions/model/messageQueue.ts),
+and [its queue controls](https://github.com/hardbeat920/monocode/blob/main/src/features/sessions/ui/MessageQueue.tsx)
+on 2026-10-12. Vibra adapts the interaction patterns to its existing pane and composer:
+
+- A reader scrolling through the transcript keeps their position during streaming and automatic queued sends. A small **Jump to latest** control appears above the composer; explicit sends and queue resumption return to the newest message.
+- Only successful turns automatically advance the queue. Stop pauses it immediately, including when completion races with cancellation; errors, refusals and token limits hold the remaining prompts. **Resume** starts the next queued prompt, preserving the current draft. Sending a new prompt also releases the queue for subsequent successful turns.
+- The queue shows at most four rows before scrolling. File counts reveal the attachment names on hover; editing a queued prompt still returns its files to the composer.
+- **Stop** stays available while drafting a follow-up. **Command-period** stops without discarding the draft or attached files; Escape retains its existing behavior.
+- Choosing another provider before the first prompt preserves the unsent text and file references.
+- Empty chats show only the composer. Subscription usage stays in Vibra's status bar; the chat has no separate usage footer or Continue in Terminal button.
+- The editor accepts input while the agent connects. Prompts entered during startup wait in the queue and are dispatched after the session's model and mode metadata arrive. Cached adapters at the exact pinned version launch directly with Node; npx remains the fallback for first installs or an unavailable cache entry.
+
+The transcript remains the primary surface. These controls fit the existing composer and appear when relevant, without adding a new sidebar or permanent header.

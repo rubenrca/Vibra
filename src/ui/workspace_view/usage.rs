@@ -32,10 +32,6 @@ pub(super) struct UsageState {
 }
 
 impl UsageState {
-    pub(super) fn snapshot(&self) -> &UsageSnapshot {
-        &self.snapshot
-    }
-
     fn apply(&mut self, result: anyhow::Result<UsageSnapshot>) {
         self.loading = false;
         match result {
@@ -96,7 +92,6 @@ impl WorkspaceView {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.usage.apply(result);
-                this.refresh_chat_contexts(cx);
                 cx.notify();
             });
         }));

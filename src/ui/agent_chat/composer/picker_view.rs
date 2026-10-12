@@ -86,7 +86,7 @@ impl AgentChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let icon = svg()
-            .path("chrome-icons/sparkles.svg")
+            .path("chrome-icons/shield.svg")
             .size(px(12.0))
             .flex_none()
             .text_color(colors().muted)

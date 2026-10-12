@@ -1,9 +1,7 @@
-//! The context meter in the composer toolbar and the quota text the footer
-//! shows, with the pure formatting helpers behind both.
+//! The context meter in the composer toolbar and its formatting helpers.
 
 use gpui::{AnyElement, Div, Rgba, div, prelude::*, px, relative};
 
-use super::super::QuotaMeter;
 use super::super::tooltip::tooltip;
 use crate::domain::agent_chat::ContextUsage;
 use crate::ui::theme::colors;
@@ -31,20 +29,6 @@ pub(super) fn format_token_count(count: u64) -> String {
         } else {
             format!("{}.{}M", tenths / 10, tenths % 10)
         }
-    }
-}
-
-/// A quota percentage as a whole number, clamped to 0 … 100.
-pub(super) fn quota_percent(used: f32) -> u32 {
-    used.round().clamp(0.0, 100.0) as u32
-}
-
-/// "19% 3h 52m", or just "19%" when the reset time is unknown.
-pub(super) fn quota_text(meter: &QuotaMeter) -> String {
-    let percent = quota_percent(meter.used_percent);
-    match &meter.resets_in {
-        Some(resets_in) => format!("{percent}% {resets_in}"),
-        None => format!("{percent}%"),
     }
 }
 
@@ -120,24 +104,5 @@ mod tests {
         assert_eq!(context_percent(usage(0, 262_144)), Some(0));
         assert_eq!(context_percent(usage(300, 200)), Some(100));
         assert_eq!(context_percent(usage(10, 0)), None);
-    }
-
-    #[test]
-    fn quota_percent_rounds_and_clamps() {
-        assert_eq!(quota_percent(19.4), 19);
-        assert_eq!(quota_percent(19.6), 20);
-        assert_eq!(quota_percent(150.0), 100);
-        assert_eq!(quota_percent(-3.0), 0);
-    }
-
-    #[test]
-    fn quota_text_includes_the_reset_time_when_known() {
-        let meter = |resets_in: Option<&str>| QuotaMeter {
-            label: "5h".into(),
-            used_percent: 19.0,
-            resets_in: resets_in.map(str::to_owned),
-        };
-        assert_eq!(quota_text(&meter(Some("3h 52m"))), "19% 3h 52m");
-        assert_eq!(quota_text(&meter(None)), "19%");
     }
 }

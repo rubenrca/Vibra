@@ -16,7 +16,8 @@ use std::time::{Duration, SystemTime};
 
 use async_channel::{Receiver, Sender, TrySendError};
 use gpui::{
-    Context, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, Window, prelude::*, px,
+    Context, EventEmitter, FocusHandle, Focusable, ListAlignment, ListOffset, ListScrollEvent,
+    ListState, Window, prelude::*, px,
 };
 
 use crate::domain::agent_chat::{
@@ -35,8 +36,6 @@ pub enum AgentChatViewEvent {
         agent: ChatAgent,
         session_id: String,
     },
-    /// The user asked to continue this session in the terminal.
-    SwitchToTerminal,
     /// The connection closed (process exit or failure).
     Closed,
     /// The agent named the session; the pane's tab shows it.
@@ -62,18 +61,6 @@ pub struct ChatViewContext {
     pub branch: Option<String>,
     /// Whether the working directory is a linked Git worktree.
     pub worktree: bool,
-    /// The agent provider's quota windows, shortest first (for example 5 h, then weekly).
-    pub quota: Vec<QuotaMeter>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct QuotaMeter {
-    /// Short window name, for example "5h" or "Week".
-    pub label: String,
-    /// 0.0 … 100.0.
-    pub used_percent: f32,
-    /// Human text such as "3h 52m"; `None` when unknown.
-    pub resets_in: Option<String>,
 }
 
 /// Where `@` references search for files.
@@ -88,6 +75,8 @@ pub struct AgentChatView {
     timeline: ChatTimeline,
     focus_handle: FocusHandle,
     list_state: ListState,
+    /// The reader moved away from the newest message; streaming keeps their place.
+    scrolled_away: bool,
     /// Composer text. It is kept while the composer is locked.
     draft: String,
     /// Expanded reasoning and tool cards, and unfolded turns (`turns::turn_key`),
@@ -97,6 +86,8 @@ pub struct AgentChatView {
     rows: Vec<turns::Row>,
     /// Prompts written while a turn runs; the first one is sent when it ends.
     queued: Vec<composer::QueuedPrompt>,
+    /// Stop or a failed turn holds follow-ups until the user resumes or sends a new prompt.
+    queue_paused: bool,
     /// Sends commands to the agent. `None` once the session has ended.
     commands: Option<Sender<ChatCommand>>,
     /// Owns the agent process. Dropping it ends the process.
@@ -162,7 +153,7 @@ impl AgentChatView {
             .any(|item| matches!(item, ChatItem::UserMessage { .. }))
     }
 
-    /// Updates the branch, worktree and quota the composer shows.
+    /// Updates the branch and worktree the composer shows.
     pub fn set_context(&mut self, context: ChatViewContext, cx: &mut Context<Self>) {
         if self.context != context {
             self.context = context;
@@ -219,6 +210,20 @@ impl AgentChatView {
         self.file_search = file_search;
     }
 
+    /// Keeps an unsent prompt and its references when the workspace switches providers.
+    pub fn take_draft(&mut self) -> (String, Vec<PromptFile>) {
+        (
+            std::mem::take(&mut self.draft),
+            std::mem::take(&mut self.attachments),
+        )
+    }
+
+    pub fn restore_draft(&mut self, draft: (String, Vec<PromptFile>), cx: &mut Context<Self>) {
+        (self.draft, self.attachments) = draft;
+        self.after_edit(cx);
+        cx.notify();
+    }
+
     /// Sends `Shutdown` and drops the connection; used before a handoff.
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
         if let Some(commands) = self.commands.take() {
@@ -250,15 +255,24 @@ impl AgentChatView {
     }
 
     fn empty(agent: ChatAgent, cx: &mut Context<Self>) -> Self {
+        let list_state = ListState::new(0, ListAlignment::Bottom, px(400.0));
+        list_state.set_scroll_handler(cx.listener(|this, event: &ListScrollEvent, _, cx| {
+            if this.scrolled_away != event.is_scrolled {
+                this.scrolled_away = event.is_scrolled;
+                cx.notify();
+            }
+        }));
         Self {
             agent,
             timeline: ChatTimeline::default(),
             focus_handle: cx.focus_handle(),
-            list_state: ListState::new(0, ListAlignment::Bottom, px(400.0)),
+            list_state,
+            scrolled_away: false,
             draft: String::new(),
             expanded: HashSet::new(),
             rows: Vec::new(),
             queued: Vec::new(),
+            queue_paused: false,
             commands: None,
             connection: None,
             events_task: None,
@@ -300,6 +314,7 @@ impl AgentChatView {
             _ => None,
         };
         let exited = matches!(event, ChatEvent::Exited { .. });
+        let turn_finished = matches!(event, ChatEvent::TurnFinished { .. });
         let title = match &event {
             ChatEvent::Title(title) => Some(title.clone()),
             _ => None,
@@ -322,21 +337,28 @@ impl AgentChatView {
                 agent: self.agent,
                 session_id,
             });
+            // Setup metadata arrives before readiness, so a selected model is
+            // applied before the first prompt written during connection goes out.
+            self.send_next_queued(true, cx);
         }
         if exited && !was_closed {
             self.commands = None;
+            self.queue_paused = true;
             cx.emit(AgentChatViewEvent::Closed);
         }
-        // A finished turn hands over to the next queued prompt. A stopped turn
-        // holds the queue, since the user asked the agent to stop; the queue
-        // moves again after the next turn. A closed session keeps the queue.
-        let stopped = self
-            .timeline
-            .turns
-            .last()
-            .is_some_and(|turn| turn.outcome == TurnOutcome::Cancelled);
-        if was_working && self.is_idle() && !stopped {
-            self.send_next_queued(cx);
+        // Only successful turns advance the queue. Stop pauses it immediately,
+        // even if the agent completes before its cancellation is acknowledged.
+        if turn_finished && was_working && self.is_idle() {
+            if self
+                .timeline
+                .turns
+                .last()
+                .is_some_and(|turn| turn.outcome == TurnOutcome::Completed)
+            {
+                self.send_next_queued(false, cx);
+            } else {
+                self.queue_paused = true;
+            }
         }
         cx.notify();
     }
@@ -407,34 +429,62 @@ impl AgentChatView {
         }
         self.draft.clear();
         let files = std::mem::take(&mut self.attachments);
-        if self.is_working() {
+        if self.is_working() || self.is_starting() {
             self.queued.push(composer::QueuedPrompt { text, files });
             cx.notify();
         } else {
-            self.send_prompt(text, files, cx);
+            self.queue_paused = false;
+            self.send_prompt(text, files, true, cx);
         }
     }
 
-    /// Echoes a prompt as a new turn and sends it to the agent.
-    fn send_prompt(&mut self, text: String, files: Vec<PromptFile>, cx: &mut Context<Self>) {
+    /// Echoes a prompt as a new turn. Explicit sends follow the newest message;
+    /// automatic queued sends leave a scrolled-up reader in place.
+    fn send_prompt(
+        &mut self,
+        text: String,
+        files: Vec<PromptFile>,
+        follow_latest: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.timeline.items.len();
         let labels = files.iter().map(|file| file.label.clone()).collect();
         self.timeline.push_user_prompt(text.clone(), labels);
         self.timeline.stamp(SystemTime::now());
-        // A prompt means the reader wants the newest message, so pin to the bottom.
-        self.rows = turns::plan_rows(&self.timeline, &self.expanded);
-        self.list_state.reset(self.timeline.items.len());
+        self.sync_list(count, &[]);
+        if follow_latest {
+            self.jump_to_latest(cx);
+        }
         self.send(ChatCommand::Prompt { text, files }, cx);
         self.start_turn_clock(cx);
         cx.notify();
     }
 
     /// Sends the first queued prompt; the rest wait for the next turn to end.
-    fn send_next_queued(&mut self, cx: &mut Context<Self>) {
-        if self.queued.is_empty() {
+    fn send_next_queued(&mut self, follow_latest: bool, cx: &mut Context<Self>) {
+        if self.queued.is_empty() || self.queue_paused || !self.is_idle() {
             return;
         }
         let next = self.queued.remove(0);
-        self.send_prompt(next.text, next.files, cx);
+        self.send_prompt(next.text, next.files, follow_latest, cx);
+    }
+
+    /// Explicitly releases the queue after a stopped or failed turn.
+    fn resume_queue(&mut self, cx: &mut Context<Self>) {
+        if !self.is_idle() || self.queued.is_empty() {
+            return;
+        }
+        self.queue_paused = false;
+        self.send_next_queued(true, cx);
+    }
+
+    fn jump_to_latest(&mut self, cx: &mut Context<Self>) {
+        self.list_state.scroll_to(ListOffset {
+            item_ix: self.list_state.item_count(),
+            offset_in_item: px(0.0),
+        });
+        self.scrolled_away = false;
+        cx.notify();
     }
 
     fn start_turn_clock(&mut self, cx: &mut Context<Self>) {
@@ -456,12 +506,18 @@ impl AgentChatView {
 
     fn cancel_turn(&mut self, cx: &mut Context<Self>) {
         if self.is_working() {
+            self.queue_paused = true;
             self.send(ChatCommand::Cancel, cx);
+            cx.notify();
         }
     }
 
     fn is_working(&self) -> bool {
         self.timeline.is_working()
+    }
+
+    fn is_starting(&self) -> bool {
+        matches!(self.timeline.state, Some(ChatConnectionState::Starting))
     }
 
     /// The session is open and no turn runs. The model and mode menus need this.
@@ -546,6 +602,85 @@ mod tests {
             view.replace_text_in_range(None, "h", window, cx);
             assert!(view.draft.is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn connecting_chat_accepts_a_prompt_and_sends_it_after_setup(cx: &mut TestAppContext) {
+        let (commands_tx, commands_rx) = async_channel::unbounded();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut view = AgentChatView::empty(ChatAgent::Claude, cx);
+            view.timeline.state = Some(ChatConnectionState::Starting);
+            view.commands = Some(commands_tx);
+            view
+        });
+        view.update_in(cx, |view, window, cx| {
+            view.replace_text_in_range(None, "Review this file", window, cx);
+            view.attachments.push(PromptFile {
+                path: "/repo/main.rs".into(),
+                label: "main.rs".into(),
+            });
+            view.on_key_down(&key("enter", None), window, cx);
+            assert!(view.draft.is_empty());
+            assert_eq!(view.queued.len(), 1);
+            assert!(view.timeline.items.is_empty());
+            assert!(
+                commands_rx.try_recv().is_err(),
+                "no prompt before readiness"
+            );
+
+            view.apply_model_on_start("sonnet".into());
+            view.on_event(
+                ChatEvent::ConfigOptions(vec![ConfigOption {
+                    id: "model".into(),
+                    name: "Model".into(),
+                    category: ConfigCategory::Model,
+                    current: "opus".into(),
+                    values: Vec::new(),
+                }]),
+                cx,
+            );
+            view.on_event(
+                ChatEvent::SessionStarted {
+                    session_id: "session-1".into(),
+                    loaded: false,
+                },
+                cx,
+            );
+            assert!(view.is_working());
+            assert!(view.queued.is_empty());
+            assert!(view.has_conversation());
+        });
+        assert!(
+            matches!(commands_rx.try_recv(), Ok(ChatCommand::SetConfigOption { value, .. }) if value == "sonnet")
+        );
+        assert!(
+            matches!(commands_rx.try_recv(), Ok(ChatCommand::Prompt { text, files }) if text == "Review this file" && files[0].label == "main.rs")
+        );
+        assert!(commands_rx.try_recv().is_err());
+    }
+
+    #[gpui::test]
+    fn a_failed_connection_keeps_the_prompt_written_while_starting(cx: &mut TestAppContext) {
+        let (commands_tx, commands_rx) = async_channel::unbounded();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut view = AgentChatView::empty(ChatAgent::Claude, cx);
+            view.timeline.state = Some(ChatConnectionState::Starting);
+            view.commands = Some(commands_tx);
+            view
+        });
+        view.update_in(cx, |view, _, cx| {
+            enter_text(view, "Review this file", cx);
+            view.on_event(
+                ChatEvent::Exited {
+                    message: Some("Could not connect.".into()),
+                },
+                cx,
+            );
+            assert!(view.is_closed());
+            assert!(view.queue_paused);
+            assert_eq!(view.queued[0].text, "Review this file");
+        });
+        assert!(commands_rx.try_recv().is_err());
     }
 
     #[gpui::test]
@@ -700,8 +835,168 @@ mod tests {
         assert!(commands_rx.try_recv().is_err());
         view.read_with(cx, |view, _| {
             assert!(!view.is_working());
+            assert!(view.queue_paused);
             assert_eq!(view.queued.len(), 1);
         });
+        view.update_in(cx, |view, _, cx| {
+            view.draft = "still editing".into();
+            view.resume_queue(cx);
+        });
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Ok(ChatCommand::Prompt { text, .. }) if text == "later"
+        ));
+        view.read_with(cx, |view, _| {
+            assert!(view.is_working());
+            assert!(!view.queue_paused);
+            assert!(view.queued.is_empty());
+            assert_eq!(view.draft, "still editing");
+        });
+    }
+
+    #[gpui::test]
+    fn stop_holds_follow_ups_even_if_the_turn_completes_before_cancellation(
+        cx: &mut TestAppContext,
+    ) {
+        let (commands_tx, commands_rx) = async_channel::unbounded();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut view = AgentChatView::empty(ChatAgent::Claude, cx);
+            view.timeline.state = Some(ChatConnectionState::Ready);
+            view.commands = Some(commands_tx);
+            view
+        });
+        view.update_in(cx, |view, _, cx| {
+            enter_text(view, "first", cx);
+            view.cancel_turn(cx);
+            // A follow-up can be written while cancellation is still in flight.
+            enter_text(view, "later", cx);
+            view.on_event(
+                ChatEvent::TurnFinished {
+                    stop_reason: "end_turn".into(),
+                },
+                cx,
+            );
+        });
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Ok(ChatCommand::Prompt { .. })
+        ));
+        assert!(matches!(commands_rx.try_recv(), Ok(ChatCommand::Cancel)));
+        assert!(commands_rx.try_recv().is_err());
+        view.read_with(cx, |view, _| {
+            assert!(view.queue_paused);
+            assert_eq!(view.queued[0].text, "later");
+        });
+    }
+
+    #[gpui::test]
+    fn failed_turns_hold_the_queue_including_errors_reported_before_end_turn(
+        cx: &mut TestAppContext,
+    ) {
+        for reason in ["refusal", "max_tokens", "end_turn"] {
+            let (commands_tx, commands_rx) = async_channel::unbounded();
+            let (view, cx) = cx.add_window_view(|_, cx| {
+                let mut view = AgentChatView::empty(ChatAgent::Claude, cx);
+                view.timeline.state = Some(ChatConnectionState::Ready);
+                view.commands = Some(commands_tx);
+                view
+            });
+            view.update_in(cx, |view, _, cx| {
+                enter_text(view, "first", cx);
+                enter_text(view, "later", cx);
+                if reason == "end_turn" {
+                    view.on_event(
+                        ChatEvent::Error {
+                            message: "Provider unavailable.".into(),
+                        },
+                        cx,
+                    );
+                }
+                view.on_event(
+                    ChatEvent::TurnFinished {
+                        stop_reason: reason.into(),
+                    },
+                    cx,
+                );
+            });
+            assert!(matches!(
+                commands_rx.try_recv(),
+                Ok(ChatCommand::Prompt { .. })
+            ));
+            assert!(
+                commands_rx.try_recv().is_err(),
+                "queue advanced after {reason}"
+            );
+            view.read_with(cx, |view, _| {
+                assert!(view.is_idle());
+                assert!(view.queue_paused);
+                assert_eq!(view.queued[0].text, "later");
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn streaming_and_automatic_follow_ups_keep_the_readers_position(cx: &mut TestAppContext) {
+        let (commands_tx, commands_rx) = async_channel::unbounded();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut view = AgentChatView::empty(ChatAgent::Claude, cx);
+            view.timeline.state = Some(ChatConnectionState::Ready);
+            view.commands = Some(commands_tx);
+            view
+        });
+        view.update_in(cx, |view, _, cx| {
+            enter_text(view, "first", cx);
+            view.on_event(
+                ChatEvent::AgentMessageChunk {
+                    text: "A long answer".into(),
+                },
+                cx,
+            );
+            enter_text(view, "later", cx);
+            view.scrolled_away = true;
+            let anchor = ListOffset {
+                item_ix: 1,
+                offset_in_item: px(37.0),
+            };
+            view.list_state.scroll_to(anchor);
+            view.on_event(
+                ChatEvent::AgentMessageChunk {
+                    text: " continues".into(),
+                },
+                cx,
+            );
+            assert_eq!(view.list_state.logical_scroll_top().item_ix, anchor.item_ix);
+            assert_eq!(
+                view.list_state.logical_scroll_top().offset_in_item,
+                anchor.offset_in_item
+            );
+            view.on_event(
+                ChatEvent::TurnFinished {
+                    stop_reason: "end_turn".into(),
+                },
+                cx,
+            );
+            assert_eq!(view.list_state.logical_scroll_top().item_ix, anchor.item_ix);
+            assert_eq!(
+                view.list_state.logical_scroll_top().offset_in_item,
+                anchor.offset_in_item
+            );
+            assert!(view.scrolled_away);
+            assert!(view.is_working());
+            view.jump_to_latest(cx);
+            assert!(!view.scrolled_away);
+            assert_eq!(
+                view.list_state.logical_scroll_top().item_ix,
+                view.timeline.items.len()
+            );
+        });
+        assert!(
+            matches!(commands_rx.try_recv(), Ok(ChatCommand::Prompt { text, .. }) if text == "first")
+        );
+        assert!(
+            matches!(commands_rx.try_recv(), Ok(ChatCommand::Prompt { text, .. }) if text == "later")
+        );
+        assert!(commands_rx.try_recv().is_err());
     }
 
     #[gpui::test]

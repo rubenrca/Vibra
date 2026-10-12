@@ -51,13 +51,40 @@ impl AgentChatView {
                             div()
                                 .text_color(colors().subtle)
                                 .child(self.queued.len().to_string()),
-                        ),
+                        )
+                        .when(self.queue_paused, |header| {
+                            header.child(div().text_color(colors().subtle).child("· Paused"))
+                        })
+                        .child(div().flex_1())
+                        .when(self.queue_paused && self.is_idle(), |header| {
+                            header.child(
+                                div()
+                                    .id("agent-chat-resume-queue")
+                                    .px_2()
+                                    .py(px(2.0))
+                                    .rounded(px(5.0))
+                                    .text_color(colors().foreground)
+                                    .cursor_pointer()
+                                    .hover(|button| button.bg(colors().hover))
+                                    .tooltip(|_, cx| tooltip("Resume queued messages", cx))
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| this.resume_queue(cx)))
+                                    .child("Resume"),
+                            )
+                        }),
                 )
-                .children(
-                    self.queued
-                        .iter()
-                        .enumerate()
-                        .map(|(index, prompt)| self.queued_row(index, prompt, editable, cx)),
+                .child(
+                    div()
+                        .id("agent-chat-queue-list")
+                        .max_h(px(112.0))
+                        .overflow_y_scroll()
+                        .children(
+                            self.queued.iter().enumerate().map(|(index, prompt)| {
+                                self.queued_row(index, prompt, editable, cx)
+                            }),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -95,6 +122,29 @@ impl AgentChatView {
                     .text_color(colors().foreground)
                     .child(text),
             )
+            .when(!prompt.files.is_empty(), |row| {
+                let labels = prompt
+                    .files
+                    .iter()
+                    .map(|file| file.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                row.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "agent-chat-queued-files-{index}"
+                        )))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
+                        .text_size(px(11.0))
+                        .text_color(colors().muted)
+                        .tooltip(move |_, cx| tooltip(labels.clone(), cx))
+                        .child(svg().path("chrome-icons/files.svg").size(px(11.0)))
+                        .child(prompt.files.len().to_string()),
+                )
+            })
             .child(queued_button(
                 SharedString::from(format!("agent-chat-queued-edit-{index}")),
                 "chrome-icons/pencil.svg",

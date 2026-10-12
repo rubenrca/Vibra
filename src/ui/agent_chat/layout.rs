@@ -3,13 +3,10 @@
 
 pub(super) mod working;
 
-use std::path::Path;
-
-use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, Render, Window, div, list, prelude::*, px, svg,
-};
+use gpui::{AnyElement, Context, MouseButton, Render, Window, div, list, prelude::*, px, svg};
 
 use super::AgentChatView;
+use super::tooltip::tooltip;
 use crate::domain::agent_chat::{ChatAgent, ChatConnectionState};
 use crate::ui::theme::{MONO_FONT, colors, surface};
 
@@ -59,6 +56,7 @@ impl AgentChatView {
             .flex_col()
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_h(px(0.0))
                     .w_full()
@@ -71,23 +69,54 @@ impl AgentChatView {
                             cx.processor(|this, index: usize, _, cx| this.render_item(index, cx)),
                         )
                         .size_full(),
+                    )
+                    .when(
+                        self.scrolled_away
+                            && self.list_state.logical_scroll_top().item_ix
+                                < self.list_state.item_count(),
+                        |body| body.child(self.jump_to_latest_button(cx)),
                     ),
             )
             .into_any_element()
     }
 
-    /// Empty state before the first message: a centered column with the
-    /// heading, and the composer right under it.
+    /// A quiet floating control, shown only while the reader is above the tail.
+    fn jump_to_latest_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .absolute()
+            .bottom(px(12.0))
+            .left_0()
+            .w_full()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id("agent-chat-jump-latest")
+                    .size(px(30.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .bg(colors().elevated)
+                    .cursor_pointer()
+                    .hover(|button| button.bg(colors().hover))
+                    .tooltip(|_, cx| tooltip("Jump to latest", cx))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|this, _, _, cx| this.jump_to_latest(cx)))
+                    .child(
+                        svg()
+                            .path("chrome-icons/chevron-down.svg")
+                            .size(px(16.0))
+                            .text_color(colors().muted),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// An empty chat shows only the composer, including while connecting.
     fn start_body(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let starting = matches!(
-            self.timeline.state,
-            None | Some(ChatConnectionState::Starting)
-        );
-        let project = project_name(
-            self.file_search
-                .as_ref()
-                .map(|search| search.root.as_path()),
-        );
         div()
             .flex_1()
             .min_h(px(0.0))
@@ -101,29 +130,7 @@ impl AgentChatView {
                 div()
                     .w_full()
                     .max_w(px(COLUMN_WIDTH))
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .px_3()
-                            .truncate()
-                            .text_size(px(20.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(start_heading(project)),
-                    )
-                    .child(self.composer(window, cx))
-                    .when(starting, |column| {
-                        column.child(
-                            div()
-                                .px_3()
-                                .text_size(px(12.0))
-                                .text_color(colors().muted)
-                                .child(format!("Starting {}…", self.agent.label())),
-                        )
-                    }),
+                    .child(self.composer(window, cx)),
             )
             .into_any_element()
     }
@@ -183,18 +190,6 @@ impl AgentChatView {
                     .child(message.to_owned())
                     .into_any_element()
             })
-            .when(
-                self.session_id().is_some() && !self.has_conversation(),
-                |column| {
-                    column.child(
-                        div()
-                            .text_center()
-                            .text_size(px(12.0))
-                            .text_color(colors().subtle)
-                            .child("Use Continue in Terminal to keep working in the terminal."),
-                    )
-                },
-            )
             .into_any_element()
     }
 
@@ -248,19 +243,6 @@ impl AgentChatView {
     }
 }
 
-/// Last path component of the chat's folder, which names the project in the heading.
-fn project_name(folder: Option<&Path>) -> Option<&str> {
-    folder?.file_name()?.to_str()
-}
-
-/// Heading of the empty state, with the project when there is one.
-fn start_heading(project: Option<&str>) -> String {
-    match project {
-        Some(project) => format!("What should we work on in {project}?"),
-        None => "What should we work on?".to_owned(),
-    }
-}
-
 /// Bundled mark of `agent`, for example "agent-marks/claude.svg".
 fn agent_mark_path(agent: ChatAgent) -> String {
     format!("agent-marks/{}.svg", agent.label().to_lowercase())
@@ -271,25 +253,6 @@ mod tests {
     use super::*;
     use crate::ui::agent_marks::VibraAssets;
     use gpui::AssetSource;
-
-    #[test]
-    fn the_heading_names_the_project_folder() {
-        assert_eq!(
-            start_heading(project_name(Some(Path::new("/Users/me/Dev/Vibra")))),
-            "What should we work on in Vibra?"
-        );
-        assert_eq!(
-            start_heading(project_name(Some(Path::new("/Users/me/Dev/Vibra/")))),
-            "What should we work on in Vibra?"
-        );
-    }
-
-    #[test]
-    fn the_heading_falls_back_when_there_is_no_folder_name() {
-        assert_eq!(project_name(None), None);
-        assert_eq!(project_name(Some(Path::new("/"))), None);
-        assert_eq!(start_heading(None), "What should we work on?");
-    }
 
     #[test]
     fn every_agent_has_a_bundled_mark_at_its_path() {
