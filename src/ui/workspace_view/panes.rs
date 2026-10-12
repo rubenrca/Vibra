@@ -443,16 +443,13 @@ impl super::WorkspaceView {
                         .unwrap_or_else(|| "Terminal".into()),
                     preview: drag_preview,
                 };
-                // Split panes get a header: grip to reorder, title, zoom, close. A pane
-                // with a chat binding also gets one, for the Terminal | Chat switch.
-                let show_header =
-                    can_drag || self.snapshot.agent_chat_binding(session_id).is_some();
+                // Every pane has a header, so the Terminal | Chat switch is always
+                // reachable; grip and zoom only apply to split panes.
                 let zoomed = self
                     .snapshot
                     .selected_tab()
                     .is_some_and(|tab| tab.zoomed_session_id == Some(session_id));
-                let header = show_header
-                    .then(|| self.pane_header(session_id, highlighted, zoomed, can_drag, drag, cx));
+                let header = self.pane_header(session_id, highlighted, zoomed, can_drag, drag, cx);
                 div()
                     .id(SharedString::from(format!("pane-{session_id}")))
                     .size_full()
@@ -488,7 +485,7 @@ impl super::WorkspaceView {
                             cx.stop_propagation();
                         }),
                     )
-                    .children(header)
+                    .child(header)
                     .when_some(body, |pane, body| {
                         pane.child(
                             div()
@@ -731,24 +728,26 @@ impl super::WorkspaceView {
                     .child(title),
             )
             .child(view_switch)
-            .child(
-                button(
-                    format!("pane-zoom-{session_id}"),
-                    if zoomed {
-                        "chrome-icons/minimize.svg"
-                    } else {
-                        "chrome-icons/maximize.svg"
-                    },
-                    if zoomed {
-                        "Restore pane · ⇧⌘↵"
-                    } else {
-                        "Zoom pane · ⇧⌘↵"
-                    },
+            .when(can_drag || zoomed, |header| {
+                header.child(
+                    button(
+                        format!("pane-zoom-{session_id}"),
+                        if zoomed {
+                            "chrome-icons/minimize.svg"
+                        } else {
+                            "chrome-icons/maximize.svg"
+                        },
+                        if zoomed {
+                            "Restore pane · ⇧⌘↵"
+                        } else {
+                            "Zoom pane · ⇧⌘↵"
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_pane_zoom_for(session_id, window, cx);
+                    })),
                 )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.toggle_pane_zoom_for(session_id, window, cx);
-                })),
-            )
+            })
             .child(
                 button(
                     format!("pane-close-{session_id}"),
