@@ -6,7 +6,9 @@ use crate::{CloseTerminal, NextProject, ShowSettings, ToggleRightSidebar};
 use gpui::Focusable;
 use std::path::Path;
 
+use crate::domain::agent_chat::{AgentChatBinding, ChatAgent, PaneViewMode};
 use crate::domain::workspace::WorkspaceSnapshot;
+use crate::ui::agent_chat::AgentChatViewEvent;
 use uuid::Uuid;
 
 #[test]
@@ -125,11 +127,13 @@ struct SilentTerminalHandle {
     _keep_sender: async_channel::Sender<crate::ports::terminal::TerminalEvent>,
     inputs: SentInput,
     session_id: Uuid,
+    foreground: Option<&'static str>,
 }
 
 /// Records what each terminal was sent, as the shell would read it.
 struct RecordingTerminalPort {
     inputs: SentInput,
+    foreground: Option<&'static str>,
 }
 
 impl crate::ports::terminal::TerminalPort for RecordingTerminalPort {
@@ -149,6 +153,7 @@ impl crate::ports::terminal::TerminalPort for RecordingTerminalPort {
             _keep_sender: sender,
             inputs: self.inputs.clone(),
             session_id,
+            foreground: self.foreground,
         }))
     }
 }
@@ -170,6 +175,7 @@ impl crate::ports::terminal::TerminalPort for SilentTerminalPort {
             _keep_sender: sender,
             inputs: Default::default(),
             session_id,
+            foreground: None,
         }))
     }
 }
@@ -207,6 +213,9 @@ impl crate::ports::terminal::TerminalHandle for SilentTerminalHandle {
     fn send_input(&self, input: Vec<u8>) -> anyhow::Result<()> {
         self.inputs.lock().unwrap().push((self.session_id, input));
         Ok(())
+    }
+    fn foreground_process_name(&self) -> Option<String> {
+        self.foreground.map(str::to_owned)
     }
     fn send_key_input(
         &self,
@@ -732,6 +741,15 @@ pub(super) fn open_recording_workspace(
     cx: &mut gpui::TestAppContext,
     name: &str,
 ) -> RecordingWorkspace {
+    open_recording_workspace_with_foreground(cx, name, None)
+}
+
+/// Like `open_recording_workspace`, with `foreground` as each shell's foreground program.
+pub(super) fn open_recording_workspace_with_foreground(
+    cx: &mut gpui::TestAppContext,
+    name: &str,
+    foreground: Option<&'static str>,
+) -> RecordingWorkspace {
     use crate::infrastructure::files::LocalFileSystemPort;
     use crate::infrastructure::git::GitCliPort;
 
@@ -752,6 +770,7 @@ pub(super) fn open_recording_workspace(
     let inputs: SentInput = Default::default();
     let port = RecordingTerminalPort {
         inputs: inputs.clone(),
+        foreground,
     };
     let window = cx
         .update(|cx| {
@@ -1790,6 +1809,323 @@ fn dismissing_quick_open_cancels_pending_results(cx: &mut gpui::TestAppContext) 
         .update(cx, |view, window, _| {
             assert!(view.palette_files.is_empty());
             assert!(!view.palette_loading);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The bytes typed into one pane's terminal, in order.
+fn typed_into(inputs: &SentInput, pane: Uuid) -> Vec<Vec<u8>> {
+    inputs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(session_id, _)| *session_id == pane)
+        .map(|(_, bytes)| bytes.clone())
+        .collect()
+}
+
+fn agent_presence(kind: &str) -> crate::ports::terminal::TerminalAgentPresence {
+    crate::ports::terminal::TerminalAgentPresence {
+        kind: kind.into(),
+        kind_source: TerminalAgentKindSource::Process,
+        state: AgentRuntimeState::Working,
+        process_id: Some(7),
+    }
+}
+
+fn chat_binding(agent: ChatAgent, session: Option<&str>, mode: PaneViewMode) -> AgentChatBinding {
+    AgentChatBinding {
+        agent,
+        session_id: session.map(str::to_owned),
+        mode,
+    }
+}
+
+#[test]
+fn resume_commands_are_typed_only_at_an_idle_shell() {
+    use super::pane_chat::may_type_resume_command;
+
+    assert!(may_type_resume_command(false, true));
+    assert!(!may_type_resume_command(true, true));
+    assert!(!may_type_resume_command(false, false));
+}
+
+#[gpui::test]
+fn pane_chat_toggle_keeps_the_terminal_alive_and_hides_it_in_chat_view(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-toggle");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(
+                    ChatAgent::Claude,
+                    None,
+                    PaneViewMode::Terminal,
+                )),
+            );
+            let terminal = view.terminals[&pane].clone();
+
+            view.set_pane_view_mode(pane, PaneViewMode::Chat, window, cx);
+            assert_eq!(view.pane_view_mode(pane), PaneViewMode::Chat);
+            assert!(view.agent_chats.contains_key(&pane));
+            assert_eq!(view.terminals[&pane].entity_id(), terminal.entity_id());
+            assert!(!view.terminals[&pane].read(cx).is_surface_visible());
+            assert!(!view.visible_terminal_ids(cx).contains(&pane));
+            assert!(
+                view.pane_focus_handle(pane, cx)
+                    .is_some_and(|focus| focus.is_focused(window)),
+                "the chat takes focus in chat view"
+            );
+
+            // No session yet, so the chat stays alive while the terminal is shown.
+            view.set_pane_view_mode(pane, PaneViewMode::Terminal, window, cx);
+            assert_eq!(view.pane_view_mode(pane), PaneViewMode::Terminal);
+            assert!(view.agent_chats.contains_key(&pane));
+            assert_eq!(view.terminals[&pane].entity_id(), terminal.entity_id());
+            assert!(view.terminals[&pane].read(cx).is_surface_visible());
+            assert!(view.visible_terminal_ids(cx).contains(&pane));
+            assert!(
+                view.terminals[&pane]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn chat_handoff_resumes_the_session_in_an_idle_shell(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, inputs, window) =
+        open_recording_workspace_with_foreground(cx, "chat-resume", Some("zsh"));
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(
+                    ChatAgent::Codex,
+                    Some("thread-42"),
+                    PaneViewMode::Chat,
+                )),
+            );
+            view.ensure_pane_chat(pane, window, cx);
+            assert!(view.agent_chats.contains_key(&pane));
+
+            view.set_pane_view_mode(pane, PaneViewMode::Terminal, window, cx);
+            assert!(!view.agent_chats.contains_key(&pane), "the chat shut down");
+            assert_eq!(
+                typed_into(&inputs, pane),
+                vec![b"codex resume thread-42\r".to_vec()]
+            );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn chat_handoff_does_not_type_into_a_pane_that_runs_an_agent(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, inputs, window) =
+        open_recording_workspace_with_foreground(cx, "chat-busy", Some("zsh"));
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(
+                    ChatAgent::Codex,
+                    Some("thread-42"),
+                    PaneViewMode::Chat,
+                )),
+            );
+            view.ensure_pane_chat(pane, window, cx);
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: pane,
+                    presence: Some(agent_presence("Codex")),
+                },
+                cx,
+            );
+
+            view.set_pane_view_mode(pane, PaneViewMode::Terminal, window, cx);
+            assert_eq!(view.pane_view_mode(pane), PaneViewMode::Terminal);
+            assert!(typed_into(&inputs, pane).is_empty());
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn chat_handoff_does_not_type_over_a_running_program(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, inputs, window) =
+        open_recording_workspace_with_foreground(cx, "chat-program", Some("node"));
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(
+                    ChatAgent::Claude,
+                    Some("sess-1"),
+                    PaneViewMode::Chat,
+                )),
+            );
+            view.ensure_pane_chat(pane, window, cx);
+            view.set_pane_view_mode(pane, PaneViewMode::Terminal, window, cx);
+            assert!(!view.agent_chats.contains_key(&pane));
+            assert!(typed_into(&inputs, pane).is_empty());
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn waiting_chat_connects_once_the_terminal_agent_leaves(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-waiting");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(
+                    ChatAgent::Claude,
+                    Some("sess-1"),
+                    PaneViewMode::Chat,
+                )),
+            );
+            // Claude still runs in the terminal, so the pane waits for it to exit.
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: pane,
+                    presence: Some(agent_presence("Claude")),
+                },
+                cx,
+            );
+            view.ensure_pane_chat(pane, window, cx);
+            assert!(!view.agent_chats.contains_key(&pane));
+
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: pane,
+                    presence: None,
+                },
+                cx,
+            );
+            view.ensure_pane_chat(pane, window, cx);
+            assert!(view.agent_chats.contains_key(&pane));
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn closed_chat_reconnects_when_the_pane_is_toggled(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-closed");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(ChatAgent::Grok, None, PaneViewMode::Terminal)),
+            );
+            view.set_pane_view_mode(pane, PaneViewMode::Chat, window, cx);
+            let first = view.agent_chats[&pane].view.entity_id();
+            // The test connector cannot start an agent, so the chat begins closed.
+            assert!(view.agent_chats[&pane].closed);
+
+            // A live chat that closes keeps its view on screen with the error.
+            view.agent_chats.get_mut(&pane).unwrap().closed = false;
+            view.handle_pane_chat_event(pane, &AgentChatViewEvent::Closed, window, cx);
+            assert!(view.agent_chats[&pane].closed);
+            assert_eq!(view.agent_chats[&pane].view.entity_id(), first);
+
+            // Toggling away and back replaces the closed chat with a new connection.
+            view.set_pane_view_mode(pane, PaneViewMode::Terminal, window, cx);
+            view.set_pane_view_mode(pane, PaneViewMode::Chat, window, cx);
+            assert_ne!(view.agent_chats[&pane].view.entity_id(), first);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn session_ids_are_bound_to_the_pane_for_their_own_agent_only(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-bind");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(ChatAgent::Codex, None, PaneViewMode::Chat)),
+            );
+            let generation = view.persist_generation;
+
+            view.handle_pane_chat_event(
+                pane,
+                &AgentChatViewEvent::SessionBound {
+                    agent: ChatAgent::Codex,
+                    session_id: "thread-9".into(),
+                },
+                window,
+                cx,
+            );
+            assert_eq!(
+                view.snapshot
+                    .agent_chat_binding(pane)
+                    .and_then(|binding| binding.session_id.as_deref()),
+                Some("thread-9")
+            );
+            assert_ne!(view.persist_generation, generation, "the binding is saved");
+
+            view.handle_pane_chat_event(
+                pane,
+                &AgentChatViewEvent::SessionBound {
+                    agent: ChatAgent::Claude,
+                    session_id: "other".into(),
+                },
+                window,
+                cx,
+            );
+            assert_eq!(
+                view.snapshot
+                    .agent_chat_binding(pane)
+                    .and_then(|binding| binding.session_id.as_deref()),
+                Some("thread-9")
+            );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn open_chat_starts_a_new_tab_in_the_pane_folder(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-tab");
+    let project = snapshot.selected_project_id.unwrap();
+    let cwd = root.join("nested");
+    window
+        .update(cx, |view, window, cx| {
+            view.open_agent_chat_tab(project, ChatAgent::Grok, cwd.clone(), window, cx);
+            let session = view.snapshot.selected_session().unwrap();
+            let session_id = session.id;
+            assert_eq!(session.working_directory, cwd.to_str().unwrap());
+            assert_eq!(
+                view.snapshot.agent_chat_binding(session_id),
+                Some(&chat_binding(ChatAgent::Grok, None, PaneViewMode::Chat))
+            );
+            assert!(view.terminals.contains_key(&session_id));
             window.remove_window();
         })
         .unwrap();

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 
+use crate::domain::agent_chat::ChatAgent;
 use crate::domain::workspace::PaneSplitDirection;
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
 use crate::ports::files::FileEntry;
@@ -54,6 +55,7 @@ pub(super) enum PaletteAction {
     ShowFiles,
     ShowSettings,
     ShowSection(WorkspaceSection),
+    OpenChat(ChatAgent),
     OpenFile(PathBuf),
 }
 
@@ -105,4 +107,5 @@ pub(super) enum ContextMenuAction {
     SplitRight,
     SplitDown,
     ToggleZoom,
+    OpenChat(ChatAgent),
 }

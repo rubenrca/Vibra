@@ -1,3 +1,4 @@
+pub mod agent_chat;
 pub mod agent_marks;
 mod diff_document;
 mod diff_rows;

@@ -1,11 +1,12 @@
 //! Split pane layout, tab strip, and pane keyboard/mouse actions.
 
 use gpui::{
-    AnyElement, Context, DragMoveEvent, Focusable, MouseButton, MouseDownEvent, MouseUpEvent,
-    SharedString, Window, WindowControlArea, div, prelude::*, px, relative, svg,
+    AnyElement, Context, Div, DragMoveEvent, MouseButton, MouseDownEvent, MouseUpEvent,
+    SharedString, Stateful, Window, WindowControlArea, div, prelude::*, px, relative, svg,
 };
 use uuid::Uuid;
 
+use crate::domain::agent_chat::{ChatAgent, PaneViewMode};
 use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
     WorkspaceSplitAxis, WorkspaceTabId,
@@ -64,6 +65,42 @@ pub(super) fn tab_shortcut(shortcut: String) -> gpui::Div {
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(colors().subtle)
         .child(shortcut)
+}
+
+/// One half of the header's Terminal | Chat switch. The active half is raised.
+fn pane_view_segment(
+    id: String,
+    label: &'static str,
+    tooltip: &'static str,
+    active: bool,
+) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(id))
+        .h(px(18.0))
+        .px(px(7.0))
+        .flex()
+        .items_center()
+        .rounded(px(4.0))
+        .cursor_pointer()
+        .text_size(px(11.0))
+        .font_weight(if active {
+            gpui::FontWeight::MEDIUM
+        } else {
+            gpui::FontWeight::NORMAL
+        })
+        .when(active, |segment| {
+            segment
+                .bg(colors().selection)
+                .text_color(colors().foreground)
+        })
+        .when(!active, |segment| {
+            segment
+                .text_color(colors().subtle)
+                .hover(|segment| segment.bg(colors().hover).text_color(colors().foreground))
+        })
+        .tooltip(move |_, cx| super::sidebar_tooltip(tooltip, cx))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(label)
 }
 
 impl super::WorkspaceView {
@@ -355,7 +392,10 @@ impl super::WorkspaceView {
         match layout {
             PaneLayoutSnapshot::Terminal { id } => {
                 let session_id = *id;
+                self.ensure_pane_chat(session_id, window, cx);
+                let mode = self.pane_view_mode(session_id);
                 let terminal = self.terminals.get(&session_id).cloned();
+                let has_terminal = terminal.is_some();
                 let drag_preview = terminal
                     .as_ref()
                     .map(|terminal| terminal.read(cx).drag_preview())
@@ -365,9 +405,12 @@ impl super::WorkspaceView {
                     .selected_tab()
                     .map_or(1, |tab| tab.sessions.len());
                 let framed = self.center_has_splits();
-                let highlighted = terminal
-                    .as_ref()
-                    .is_some_and(|terminal| terminal.read(cx).focus_handle(cx).is_focused(window));
+                let highlighted = self.pane_has_focus(session_id, window, cx);
+                // The pane body is its chat in chat view, otherwise its terminal.
+                let body = match mode {
+                    PaneViewMode::Chat => Some(self.pane_chat_body(session_id, cx)),
+                    PaneViewMode::Terminal => terminal.map(|terminal| terminal.into_any_element()),
+                };
                 let review_split = self.review_visible(cx) && !self.review_covers_terminal(cx);
                 let can_drag = pane_count > 1 || review_split;
                 let dragging_pane = match self.reorder_drag {
@@ -383,8 +426,9 @@ impl super::WorkspaceView {
                         .unwrap_or_else(|| "Terminal".into()),
                     preview: drag_preview,
                 };
-                // Split panes get a header: grip to reorder, title, zoom, close.
-                let show_header = can_drag;
+                // Split panes get a header: grip to reorder, title, zoom, close. Panes
+                // with a chat agent also get one, for the Terminal | Chat switch.
+                let show_header = can_drag || self.pane_chat_agent(session_id).is_some();
                 let zoomed = self
                     .snapshot
                     .selected_tab()
@@ -400,9 +444,7 @@ impl super::WorkspaceView {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .when(terminal.is_none(), |pane| {
-                        pane.bg(surface(colors().terminal))
-                    })
+                    .when(!has_terminal, |pane| pane.bg(surface(colors().terminal)))
                     .when(framed, |pane| {
                         pane.border_1().border_color(if highlighted {
                             crate::ui::theme::mix(colors().border_subtle, colors().muted, 0.28)
@@ -429,14 +471,14 @@ impl super::WorkspaceView {
                         }),
                     )
                     .children(header)
-                    .when_some(terminal, |pane, terminal| {
+                    .when_some(body, |pane, body| {
                         pane.child(
                             div()
                                 .flex_1()
                                 .min_h(px(0.0))
                                 .min_w(px(0.0))
                                 .overflow_hidden()
-                                .child(terminal),
+                                .child(body),
                         )
                     })
                     // GPUI registers drop listeners while laying out the element. Keep this
@@ -571,6 +613,10 @@ impl super::WorkspaceView {
             .as_ref()
             .map(|identity| identity.title.clone())
             .unwrap_or_else(|| "Terminal".to_owned());
+        let view_switch = self
+            .pane_chat_agent(session_id)
+            .is_some()
+            .then(|| self.pane_view_switch(session_id, cx));
         let button = |id: String, icon: &'static str, label: &'static str| {
             div()
                 .id(SharedString::from(id))
@@ -669,6 +715,7 @@ impl super::WorkspaceView {
                     })
                     .child(title),
             )
+            .when_some(view_switch, |header, switch| header.child(switch))
             .child(
                 button(
                     format!("pane-zoom-{session_id}"),
@@ -696,6 +743,104 @@ impl super::WorkspaceView {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.close_pane(session_id, window, cx);
                 })),
+            )
+            .into_any_element()
+    }
+
+    /// Compact "Terminal | Chat" switch in the pane header.
+    fn pane_view_switch(&self, session_id: Uuid, cx: &mut Context<Self>) -> AnyElement {
+        let mode = self.pane_view_mode(session_id);
+        let terminal = pane_view_segment(
+            format!("pane-view-terminal-{session_id}"),
+            "Terminal",
+            "Show terminal",
+            mode == PaneViewMode::Terminal,
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.select_terminal(session_id, window, cx);
+            this.set_pane_view_mode(session_id, PaneViewMode::Terminal, window, cx);
+        }));
+        let chat = pane_view_segment(
+            format!("pane-view-chat-{session_id}"),
+            "Chat",
+            "Show agent chat",
+            mode == PaneViewMode::Chat,
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.select_terminal(session_id, window, cx);
+            this.set_pane_view_mode(session_id, PaneViewMode::Chat, window, cx);
+        }));
+        div()
+            .id(SharedString::from(format!("pane-view-switch-{session_id}")))
+            .h(px(22.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(1.0))
+            .p(px(2.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(colors().border_subtle)
+            .child(terminal)
+            .child(chat)
+            .into_any_element()
+    }
+
+    /// Chat content of a pane in chat view. While the same agent still runs in
+    /// the terminal, the pane waits instead of starting a second owner.
+    pub(super) fn pane_chat_body(&self, session_id: Uuid, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(chat) = self.agent_chats.get(&session_id) {
+            return chat.view.clone().into_any_element();
+        }
+        let agent = self
+            .pane_chat_agent(session_id)
+            .map_or("the agent", ChatAgent::label);
+        // Grok reports no session id, so its chat starts a new session.
+        let resumes = self
+            .snapshot
+            .agent_chat_binding(session_id)
+            .is_some_and(|binding| binding.session_id.is_some());
+        let message = if resumes {
+            format!("Quit {agent} in the terminal to continue this session here.")
+        } else {
+            format!("Quit {agent} in the terminal to start a chat here.")
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .px_4()
+            .bg(surface(colors().terminal))
+            .child(
+                div()
+                    .max_w(px(360.0))
+                    .text_size(px(12.0))
+                    .text_color(colors().muted)
+                    .text_center()
+                    .child(message),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "pane-chat-show-terminal-{session_id}"
+                    )))
+                    .px_3()
+                    .py_1()
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .cursor_pointer()
+                    .text_size(px(11.5))
+                    .text_color(colors().foreground)
+                    .hover(|button| button.bg(colors().hover))
+                    .tooltip(|_, cx| super::sidebar_tooltip("Show terminal", cx))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_pane_view_mode(session_id, PaneViewMode::Terminal, window, cx);
+                    }))
+                    .child("Show terminal"),
             )
             .into_any_element()
     }

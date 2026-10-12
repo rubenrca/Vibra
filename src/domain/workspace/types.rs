@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::domain::agent_chat::AgentChatBinding;
+
 pub const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 7;
 pub const DEFAULT_PANE_SPLIT_RATIO: u16 = 5_000;
 pub(crate) const MIN_PANE_SPLIT_RATIO: u16 = 1_000;
@@ -208,4 +210,7 @@ pub struct SessionSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_task_title: Option<String>,
     pub working_directory: String,
+    /// Chat binding for this pane; absent for plain terminals and older files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_chat: Option<AgentChatBinding>,
 }

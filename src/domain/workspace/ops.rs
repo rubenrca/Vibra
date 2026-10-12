@@ -4,6 +4,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 use super::types::*;
+use crate::domain::agent_chat::AgentChatBinding;
 
 impl super::WorkspaceSnapshot {
     /// Relocates workspaces created from an unsafe launcher fallback (typically `/`).
@@ -434,6 +435,29 @@ impl super::WorkspaceSnapshot {
         true
     }
 
+    pub fn agent_chat_binding(&self, session_id: Uuid) -> Option<&AgentChatBinding> {
+        self.terminal_sessions()
+            .find(|session| session.id == session_id)?
+            .agent_chat
+            .as_ref()
+    }
+
+    /// Replaces the pane's chat binding; `None` returns the pane to plain terminal.
+    pub fn set_agent_chat_binding(
+        &mut self,
+        session_id: Uuid,
+        binding: Option<AgentChatBinding>,
+    ) -> bool {
+        let Some(session) = self.session_mut(session_id) else {
+            return false;
+        };
+        if session.agent_chat == binding {
+            return false;
+        }
+        session.agent_chat = binding;
+        true
+    }
+
     pub fn update_session_working_directory(&mut self, session_id: Uuid, path: &Path) -> bool {
         let path = path.to_string_lossy().into_owned();
         let Some(session) = self.session_mut(session_id) else {
@@ -502,6 +526,7 @@ impl SessionSnapshot {
             title: super::DEFAULT_CONTAINER_NAME.to_owned(),
             agent_task_title: None,
             working_directory,
+            agent_chat: None,
         }
     }
 }

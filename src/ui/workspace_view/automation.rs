@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use gpui::Context;
 use uuid::Uuid;
 
+use crate::domain::agent_chat::ChatAgent;
 use crate::infrastructure::automation::{
     AgentAttention, AgentKind, AgentRuntimeState, AutomationCommand, AutomationIncoming,
     AutomationResponse,
@@ -35,7 +36,14 @@ pub(super) struct ResolvedAgentPresence {
     kind_source: &'static str,
     state_source: &'static str,
     process_id: Option<u32>,
-    session_id: Option<String>,
+    pub(super) session_id: Option<String>,
+}
+
+impl ResolvedAgentPresence {
+    /// The chat-capable agent this presence names, if any.
+    pub(super) fn chat_agent(&self) -> Option<ChatAgent> {
+        AgentKind::parse(&self.kind).and_then(ChatAgent::from_agent_kind)
+    }
 }
 
 fn turn_started(previous: Option<AgentRuntimeState>, current: AgentRuntimeState) -> bool {
@@ -123,6 +131,12 @@ impl WorkspaceView {
                 model,
                 session_id,
             } => {
+                // A session the hooks report becomes the pane's handoff target.
+                if let (Some(agent), Some(agent_session)) =
+                    (ChatAgent::from_agent_kind(kind), session_id.as_deref())
+                {
+                    self.bind_agent_session(pane_id, agent, agent_session, cx);
+                }
                 self.set_hook_agent_presence(
                     pane_id,
                     Some(kind),

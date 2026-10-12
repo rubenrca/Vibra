@@ -257,6 +257,7 @@ impl WorkspaceView {
             pending_focus_session: None,
             terminals: HashMap::new(),
             terminal_subscriptions: HashMap::new(),
+            agent_chats: HashMap::new(),
             pending_review_pastes: HashMap::new(),
             automation_tokens: HashMap::new(),
             automation_socket,

@@ -396,6 +396,12 @@ impl TerminalView {
             .and_then(|handle| handle.foreground_process_name())
     }
 
+    /// Whether a shell, rather than a program, owns the terminal's foreground.
+    pub fn foreground_is_interactive_shell(&self) -> bool {
+        self.foreground_process_name()
+            .is_some_and(|name| is_interactive_shell_process_name(&name))
+    }
+
     pub fn apply_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
         self.update_font_size(size, false, cx);
     }

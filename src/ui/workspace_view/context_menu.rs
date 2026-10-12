@@ -4,6 +4,7 @@ use std::path::Path;
 
 use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px};
 
+use crate::domain::agent_chat::ChatAgent;
 use crate::domain::workspace::PaneSplitDirection;
 use crate::ui::agent_marks::agent_compact_badge;
 use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
@@ -179,6 +180,16 @@ impl WorkspaceView {
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::ToggleZoom) => {
                 self.toggle_pane_zoom_for(session_id, window, cx);
             }
+            (ContextMenuKind::Pane { session_id }, ContextMenuAction::OpenChat(agent)) => {
+                if let Some(project_id) = self
+                    .snapshot
+                    .project_for_session(session_id)
+                    .map(|project| project.id)
+                {
+                    let cwd = self.pane_working_directory(session_id, cx);
+                    self.open_agent_chat_tab(project_id, agent, cwd, window, cx);
+                }
+            }
             _ => cx.notify(),
         }
     }
@@ -248,39 +259,57 @@ impl WorkspaceView {
                 )
                 .map(|(item, action)| (item.shortcut("⇧⌘O"), action)),
             ],
-            ContextMenuKind::Pane { .. } => vec![
-                row(
-                    "Rename",
-                    "chrome-icons/pencil.svg",
-                    ContextMenuAction::Rename,
-                ),
-                None,
-                row(
-                    "Split right",
-                    "chrome-icons/split-view.svg",
-                    ContextMenuAction::SplitRight,
-                )
-                .map(|(item, action)| (item.shortcut("⌘D"), action)),
-                row(
-                    "Split down",
-                    "chrome-icons/rows.svg",
-                    ContextMenuAction::SplitDown,
-                )
-                .map(|(item, action)| (item.shortcut("⇧⌘D"), action)),
-                row(
-                    "Zoom or restore",
-                    "chrome-icons/maximize.svg",
-                    ContextMenuAction::ToggleZoom,
-                )
-                .map(|(item, action)| (item.shortcut("⇧⌘↩"), action)),
-                None,
-                row(
-                    "Close pane",
-                    "chrome-icons/close.svg",
-                    ContextMenuAction::ClosePane,
-                )
-                .map(|(item, action)| (item.danger(), action)),
-            ],
+            ContextMenuKind::Pane { .. } => {
+                let mut entries = vec![
+                    row(
+                        "Rename",
+                        "chrome-icons/pencil.svg",
+                        ContextMenuAction::Rename,
+                    ),
+                    None,
+                    row(
+                        "Split right",
+                        "chrome-icons/split-view.svg",
+                        ContextMenuAction::SplitRight,
+                    )
+                    .map(|(item, action)| (item.shortcut("⌘D"), action)),
+                    row(
+                        "Split down",
+                        "chrome-icons/rows.svg",
+                        ContextMenuAction::SplitDown,
+                    )
+                    .map(|(item, action)| (item.shortcut("⇧⌘D"), action)),
+                    row(
+                        "Zoom or restore",
+                        "chrome-icons/maximize.svg",
+                        ContextMenuAction::ToggleZoom,
+                    )
+                    .map(|(item, action)| (item.shortcut("⇧⌘↩"), action)),
+                ];
+                let chat_rows: Vec<_> = ChatAgent::ALL
+                    .into_iter()
+                    .filter(|agent| crate::infrastructure::agent_chat::launch::is_available(*agent))
+                    .map(|agent| {
+                        Some((
+                            MenuRow::new(format!("Open Chat with {}", agent.label()))
+                                .icon("chrome-icons/sparkles.svg"),
+                            ContextMenuAction::OpenChat(agent),
+                        ))
+                    })
+                    .collect();
+                entries.push(None);
+                entries.extend(chat_rows);
+                entries.push(None);
+                entries.push(
+                    row(
+                        "Close pane",
+                        "chrome-icons/close.svg",
+                        ContextMenuAction::ClosePane,
+                    )
+                    .map(|(item, action)| (item.danger(), action)),
+                );
+                entries
+            }
         };
         Some(
             div()

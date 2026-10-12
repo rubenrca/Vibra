@@ -1,3 +1,4 @@
+pub mod agent_chat;
 pub mod automation;
 pub mod clock;
 pub mod commit_message;

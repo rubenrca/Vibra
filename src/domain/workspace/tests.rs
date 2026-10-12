@@ -4,6 +4,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 use super::*;
+use crate::domain::agent_chat::{AgentChatBinding, ChatAgent, PaneViewMode};
 
 #[test]
 fn agent_task_titles_persist_and_survive_terminal_updates_without_renaming_manual_workspaces() {
@@ -53,6 +54,50 @@ fn agent_task_titles_persist_and_survive_terminal_updates_without_renaming_manua
             .agent_task_title
             .is_none()
     );
+}
+
+#[test]
+fn sessions_without_an_agent_chat_load_and_stay_in_the_old_shape() {
+    let id = Uuid::new_v4();
+    let old = serde_json::json!({
+        "id": id,
+        "title": "Terminal",
+        "workingDirectory": "/tmp"
+    });
+    let session = serde_json::from_value::<SessionSnapshot>(old).unwrap();
+    assert!(session.agent_chat.is_none());
+    let encoded = serde_json::to_value(&session).unwrap();
+    assert!(encoded.get("agentChat").is_none());
+}
+
+#[test]
+fn agent_chat_bindings_persist_with_their_pane_and_default_to_terminal_mode() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(Path::new("/tmp/chat-binding"));
+    let session = snapshot.selected_session().unwrap().id;
+    let binding = AgentChatBinding {
+        agent: ChatAgent::Codex,
+        session_id: Some("session-1".into()),
+        mode: PaneViewMode::Chat,
+    };
+    assert!(snapshot.set_agent_chat_binding(session, Some(binding.clone())));
+    assert!(!snapshot.set_agent_chat_binding(session, Some(binding.clone())));
+    assert!(!snapshot.set_agent_chat_binding(Uuid::new_v4(), Some(binding.clone())));
+
+    let json = serde_json::to_string(&snapshot).unwrap();
+    assert!(json.contains("\"agentChat\""));
+    let restored: WorkspaceSnapshot = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.agent_chat_binding(session), Some(&binding));
+
+    let legacy: AgentChatBinding =
+        serde_json::from_value(serde_json::json!({ "agent": "claude" })).unwrap();
+    assert_eq!(legacy.mode, PaneViewMode::Terminal);
+    assert_eq!(legacy.session_id, None);
+
+    assert!(snapshot.set_agent_chat_binding(session, None));
+    assert!(snapshot.agent_chat_binding(session).is_none());
+    let encoded = serde_json::to_value(&snapshot).unwrap();
+    assert!(!encoded.to_string().contains("agentChat"));
 }
 
 #[test]

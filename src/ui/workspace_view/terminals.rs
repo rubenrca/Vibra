@@ -1,11 +1,12 @@
 //! Terminal lifecycle, visibility, focus, pane labels, and event delivery.
 //! This module coordinates live PTYs with the single workspace snapshot.
 
-use gpui::{AppContext, Context, Focusable, Window};
+use gpui::{AppContext, Context, Window};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use crate::domain::agent_chat::PaneViewMode;
 use crate::domain::workspace::SessionSnapshot;
 use crate::ports::terminal::TerminalAgentKindSource;
 use crate::ui::terminal::{TerminalInsertStatus, TerminalView, TerminalViewEvent};
@@ -103,6 +104,9 @@ impl WorkspaceView {
             .collect();
         for session_id in stale_ids {
             self.fail_pending_review_for_session(session_id, cx);
+            if let Some(chat) = self.agent_chats.remove(&session_id) {
+                chat.view.update(cx, |view, cx| view.shutdown(cx));
+            }
             if let Some(terminal) = self.terminals.remove(&session_id) {
                 terminal.read(cx).shutdown();
             }
@@ -169,15 +173,20 @@ impl WorkspaceView {
     }
 
     pub(super) fn visible_terminal_ids(&self, cx: &Context<Self>) -> HashSet<Uuid> {
-        if let Some(pane) = self.visible_inbox_terminal() {
-            return HashSet::from([pane]);
-        }
-        if self.workspace_section == WorkspaceSection::Workspace && !self.review_covers_terminal(cx)
+        let painted = if let Some(pane) = self.visible_inbox_terminal() {
+            HashSet::from([pane])
+        } else if self.workspace_section == WorkspaceSection::Workspace
+            && !self.review_covers_terminal(cx)
         {
             self.snapshot.painted_session_ids()
         } else {
             HashSet::new()
-        }
+        };
+        // A pane in chat view paints its chat, so its terminal is not visible.
+        painted
+            .into_iter()
+            .filter(|session_id| self.pane_view_mode(*session_id) == PaneViewMode::Terminal)
+            .collect()
     }
 
     pub(super) fn sync_terminal_surface_visibility(&self, cx: &mut Context<Self>) {
@@ -343,14 +352,13 @@ impl WorkspaceView {
             self.diff_view.read(cx).focus_review(window);
             return;
         }
-        if let Some(terminal) = self
+        match self
             .snapshot
             .selected_session()
-            .and_then(|session| self.terminals.get(&session.id))
+            .and_then(|session| self.pane_focus_handle(session.id, cx))
         {
-            terminal.read(cx).focus_handle(cx).focus(window);
-        } else {
-            self.focus_handle.focus(window);
+            Some(focus) => focus.focus(window),
+            None => self.focus_handle.focus(window),
         }
     }
 
@@ -365,17 +373,20 @@ impl WorkspaceView {
     ) -> TerminalInsertStatus {
         let selected = self.snapshot.selected_session().map(|session| session.id);
         let has_agent = |this: &Self, id: Uuid| this.resolved_agent_presence(id).is_some();
+        // A pane in chat view hides its terminal, so the review never goes there.
+        let in_terminal_view =
+            |this: &Self, id: Uuid| this.pane_view_mode(id) == PaneViewMode::Terminal;
         let target = selected
-            .filter(|id| has_agent(self, *id))
+            .filter(|id| in_terminal_view(self, *id) && has_agent(self, *id))
             .or_else(|| {
                 self.snapshot.selected_tab().and_then(|tab| {
                     tab.sessions
                         .iter()
                         .map(|session| session.id)
-                        .find(|id| has_agent(self, *id))
+                        .find(|id| in_terminal_view(self, *id) && has_agent(self, *id))
                 })
             })
-            .or(selected);
+            .or(selected.filter(|id| in_terminal_view(self, *id)));
         let Some(target) = target else {
             self.persistence_error =
                 Some("Open a terminal with an agent to send the review.".into());
@@ -444,8 +455,8 @@ impl WorkspaceView {
         {
             return;
         }
-        if let Some(terminal) = self.terminals.get(&session_id) {
-            terminal.read(cx).focus_handle(cx).focus(window);
+        if let Some(focus) = self.pane_focus_handle(session_id, cx) {
+            focus.focus(window);
         }
     }
 

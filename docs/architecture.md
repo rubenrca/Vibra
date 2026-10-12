@@ -51,6 +51,11 @@ independiente del workspace.
   Un fallo nativo o mutex poisoned invalida el motor Ghostty; el snapshot Rust sigue
   disponible y el proceso se recolecta. TerminalView conserva `Failed` tras `Exit`
   y cancela entrada, búsquedas y pegados pendientes.
+- `pane_chat.rs`: vista Terminal | Chat de cada pane (issue #36). El PTY sigue vivo bajo el chat y una
+  terminal oculta nunca recibe foco. Una sesión tiene un solo dueño: el chat espera mientras el mismo
+  agente siga en la terminal y se conecta con `session/load` al salir. Al volver a Terminal, un chat
+  con conversación se cierra y el comando de reanudación solo se escribe con el shell libre; un chat
+  vacío sigue vivo. El proceso ACP no hereda `VIBRA_PANE_ID`, así que los hooks no lo atan a un pane.
 - `explorer.rs`: carga y selección de archivos, filas del árbol y creación de entradas.
   `files.rs` reúne las filas visibles, el watcher y los iconos/estados de Git.
   Quick Open pide `FileSystemPort::search_files`; el adaptador local aplica ignores,

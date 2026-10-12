@@ -14,6 +14,7 @@ mod inbox;
 mod input;
 mod navigation;
 mod palette;
+mod pane_chat;
 mod panes;
 mod projects;
 mod settings;
@@ -98,6 +99,8 @@ pub struct WorkspaceView {
     pending_focus_session: Option<Uuid>,
     terminals: HashMap<Uuid, Entity<TerminalView>>,
     terminal_subscriptions: HashMap<Uuid, Subscription>,
+    /// Chat view per pane, created the first time the pane shows it.
+    agent_chats: HashMap<Uuid, pane_chat::PaneChat>,
     /// External paste token → destination pane. DiffView owns the comments.
     pending_review_pastes: HashMap<Uuid, Uuid>,
     automation_tokens: HashMap<Uuid, Uuid>,
