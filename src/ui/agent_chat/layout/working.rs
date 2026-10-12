@@ -1,57 +1,10 @@
-//! The status line above the composer while a turn runs, and the pure helpers
-//! behind it.
+//! Pure helpers for turn headers and message timestamps: elapsed time and
+//! local clock time.
 
-use gpui::{AnyElement, div, prelude::*, px};
+use std::time::SystemTime;
 
-use super::super::AgentChatView;
-use super::COLUMN_WIDTH;
-use crate::domain::agent_chat::{ConfigCategory, ConfigOption};
-use crate::ui::theme::colors;
-
-impl AgentChatView {
-    /// "✳ Opus 5.5 working for 1m 53s" while a turn runs. One muted line:
-    /// only the glyph carries the accent.
-    pub(super) fn working_line(&self) -> Option<AnyElement> {
-        let started = self.turn_started?;
-        let subject = model_name(&self.timeline.config_options).unwrap_or(self.agent.label());
-        let elapsed = format_elapsed(started.elapsed().as_secs());
-        Some(
-            div()
-                .w_full()
-                .flex_none()
-                .flex()
-                .justify_center()
-                .px_4()
-                .pb_2()
-                .child(
-                    div()
-                        .w_full()
-                        .max_w(px(COLUMN_WIDTH))
-                        .px_3()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .text_size(px(12.5))
-                        .text_color(colors().muted)
-                        .child(div().flex_none().text_color(colors().accent).child("✳"))
-                        .child(format!("{subject} working for {elapsed}")),
-                )
-                .into_any_element(),
-        )
-    }
-}
-
-/// Display name of the current model, from the Model session option.
-pub(super) fn model_name(options: &[ConfigOption]) -> Option<&str> {
-    options
-        .iter()
-        .find(|option| option.category == ConfigCategory::Model)
-        .map(ConfigOption::current_name)
-        .filter(|name| !name.is_empty())
-}
-
-/// Elapsed time for the status line: "12s", "1m 53s", "1h 2m".
-pub(super) fn format_elapsed(seconds: u64) -> String {
+/// Elapsed time for a turn header: "12s", "1m 53s", "1h 2m".
+pub(in crate::ui::agent_chat) fn format_elapsed(seconds: u64) -> String {
     match seconds {
         0..60 => format!("{seconds}s"),
         60..3600 => format!("{}m {}s", seconds / 60, seconds % 60),
@@ -59,10 +12,21 @@ pub(super) fn format_elapsed(seconds: u64) -> String {
     }
 }
 
+/// Local wall-clock time of `at` as "HH:MM", for message timestamps.
+pub(in crate::ui::agent_chat) fn clock_time(at: SystemTime) -> Option<String> {
+    let seconds = at.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
+    let time = seconds.min(i64::MAX as u64) as libc::time_t;
+    // SAFETY: `localtime_r` only writes the zeroed `tm` it is given.
+    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&time, &mut local) }.is_null() {
+        return None;
+    }
+    Some(format!("{:02}:{:02}", local.tm_hour, local.tm_min))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::agent_chat::ConfigValue;
 
     #[test]
     fn elapsed_time_drops_units_that_are_zero() {
@@ -76,26 +40,10 @@ mod tests {
     }
 
     #[test]
-    fn model_name_comes_from_the_model_option() {
-        let model = ConfigOption {
-            id: "model".into(),
-            name: "Model".into(),
-            category: ConfigCategory::Model,
-            current: "opus".into(),
-            values: vec![ConfigValue {
-                value: "opus".into(),
-                name: "Opus 5.5".into(),
-                description: None,
-            }],
-        };
-        let mode = ConfigOption {
-            category: ConfigCategory::Mode,
-            current: "auto".into(),
-            values: Vec::new(),
-            ..model.clone()
-        };
-        assert_eq!(model_name(&[mode.clone(), model]), Some("Opus 5.5"));
-        assert_eq!(model_name(&[mode]), None);
-        assert_eq!(model_name(&[]), None);
+    fn clock_time_is_hours_and_minutes() {
+        let text = clock_time(SystemTime::now()).expect("local time");
+        assert_eq!(text.len(), 5);
+        assert_eq!(&text[2..3], ":");
+        assert!(clock_time(SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1)).is_none());
     }
 }

@@ -305,7 +305,7 @@ impl WorkspaceView {
                 } else {
                     ("Show as Chat", "chrome-icons/comment.svg")
                 };
-                vec![
+                let mut entries = vec![
                     row(
                         "Rename",
                         "chrome-icons/pencil.svg",
@@ -340,17 +340,25 @@ impl WorkspaceView {
                         ContextMenuAction::ToggleZoom,
                     )
                     .map(|(item, action)| (item.shortcut("⇧⌘↩"), action)),
-                    None,
-                    row(chat_label, chat_icon, ContextMenuAction::ToggleChat)
-                        .map(|(item, action)| (item.shortcut("⇧⌘A"), action)),
-                    None,
+                ];
+                // A started chat stays a chat, so it offers no way back to the terminal.
+                if !self.pane_chat_started(*session_id, cx) {
+                    entries.push(None);
+                    entries.push(
+                        row(chat_label, chat_icon, ContextMenuAction::ToggleChat)
+                            .map(|(item, action)| (item.shortcut("⇧⌘A"), action)),
+                    );
+                }
+                entries.push(None);
+                entries.push(
                     row(
                         "Close pane",
                         "chrome-icons/close.svg",
                         ContextMenuAction::ClosePane,
                     )
                     .map(|(item, action)| (item.danger(), action)),
-                ]
+                );
+                entries
             }
         };
         Some(

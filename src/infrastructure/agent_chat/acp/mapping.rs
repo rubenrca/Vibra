@@ -511,6 +511,16 @@ pub(super) fn requires_sign_in(error: &RpcError) -> bool {
     message.contains("auth_required") || (error.code == -32000 && message.contains("auth"))
 }
 
+/// The session to load or resume no longer exists. ACP names this "resource
+/// not found" (-32002); Codex answers "Internal error" with "no rollout found"
+/// in its details.
+pub(super) fn is_missing_session(error: &RpcError) -> bool {
+    let message = error.message.to_ascii_lowercase();
+    error.code == -32002
+        || message.contains("no rollout found")
+        || message.contains("session not found")
+}
+
 fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key)?.as_str()
 }
@@ -844,6 +854,26 @@ mod tests {
             "Authentication required"
         )));
         assert!(requires_sign_in(&RpcError::new(-32000, "auth_required")));
+    }
+
+    #[test]
+    fn missing_sessions_are_told_apart_from_other_failures() {
+        assert!(is_missing_session(&RpcError::new(
+            -32603,
+            "Internal error (no rollout found for thread id 01a1)"
+        )));
+        assert!(is_missing_session(&RpcError::new(
+            -32002,
+            "Resource not found"
+        )));
+        assert!(is_missing_session(&RpcError::new(
+            -32603,
+            "Session not found: x"
+        )));
+        assert!(!is_missing_session(&RpcError::new(
+            -32603,
+            "Internal error"
+        )));
         assert!(!requires_sign_in(&RpcError::new(
             -32000,
             "model overloaded"

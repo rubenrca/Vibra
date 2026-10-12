@@ -185,7 +185,12 @@ impl AgentChatView {
     /// The popup for the draft, if one should show. The `/` popup needs a
     /// matching command; the `@` popup needs a file source.
     pub(super) fn active_popup(&self) -> Option<Popup> {
-        if !self.accepts_input() || self.composer.popup_dismissed {
+        // The popups complete the token at the end of the draft, so they wait
+        // while the caret is elsewhere.
+        if !self.accepts_input()
+            || self.composer.popup_dismissed
+            || !self.composer.editor.caret_at_end(&self.draft)
+        {
             return None;
         }
         if let Some(query) = command_query(&self.draft) {

@@ -32,8 +32,9 @@ use crate::domain::agent_chat::{
 use super::{AgentChatConnection, AgentLaunch, SessionTarget};
 use child::{ExitSlot, join_before, signal_group, signal_name};
 use mapping::{
-    Controls, MODEL_OPTION_ID, Negotiated, SessionSupport, parse_config_options, parse_initialize,
-    permission_item, permission_outcome, prompt_blocks, requires_sign_in, session_update_events,
+    Controls, MODEL_OPTION_ID, Negotiated, SessionSupport, is_missing_session,
+    parse_config_options, parse_initialize, permission_item, permission_outcome, prompt_blocks,
+    requires_sign_in, session_update_events,
 };
 use rpc::{INVALID_PARAMS, Incoming, Outbox, RpcError, StreamEnd, lock};
 use terminals::Terminals;
@@ -357,11 +358,7 @@ impl Shared {
         });
 
         match self.target.clone() {
-            SessionTarget::New => self.send_request(
-                Pending::NewSession,
-                "session/new",
-                json!({"cwd": self.cwd, "mcpServers": []}),
-            ),
+            SessionTarget::New => self.send_new(),
             SessionTarget::Load(session_id) => {
                 // Prefer resume when the agent cannot replay history but can reattach.
                 if !capabilities.load_session && support.resume {
@@ -395,6 +392,7 @@ impl Shared {
             {
                 self.send_resume(session_id)
             }
+            Err(error) if is_missing_session(&error) => self.replace_missing_session(),
             Err(error) => self.fail_setup(error),
         }
     }
@@ -402,8 +400,30 @@ impl Shared {
     fn on_resume_session(&self, session_id: String, result: Result<Value, RpcError>) {
         match result {
             Ok(value) => self.session_started(session_id, true, &value),
+            Err(error) if is_missing_session(&error) => self.replace_missing_session(),
             Err(error) => self.fail_setup(error),
         }
+    }
+
+    fn send_new(&self) {
+        self.send_request(
+            Pending::NewSession,
+            "session/new",
+            json!({"cwd": self.cwd, "mcpServers": []}),
+        );
+    }
+
+    /// The saved session is gone (for example a chat that never got a message,
+    /// so the agent never wrote it). Start a new one and say so, rather than
+    /// ending the chat.
+    fn replace_missing_session(&self) {
+        self.emitter.emit(ChatEvent::Notice {
+            text: format!(
+                "Previous {} session not found. Started a new one.",
+                self.agent.label()
+            ),
+        });
+        self.send_new();
     }
 
     fn send_load(&self, session_id: String) {
@@ -924,7 +944,16 @@ while True:
     method = message.get("method")
     request_id = message.get("id")
     params = message.get("params", {})
-    if method == "initialize":
+    if method == "initialize" and mode == "gone":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {
+            "protocolVersion": 1,
+            "agentInfo": {"name": "fake-agent", "version": "0.0.1"},
+            "agentCapabilities": {"loadSession": True}}})
+    elif method == "session/load" and mode == "gone":
+        send({"jsonrpc": "2.0", "id": request_id, "error": {
+            "code": -32603, "message": "Internal error",
+            "data": {"details": "no rollout found for thread id old-1"}}})
+    elif method == "initialize":
         send({"jsonrpc": "2.0", "id": request_id, "result": {
             "protocolVersion": 1,
             "agentInfo": {"name": "fake-agent", "version": "0.0.1"},
@@ -1094,6 +1123,39 @@ while True:
             next_event(&connection.events),
             ChatEvent::Initialized { .. }
         ));
+        assert_eq!(
+            next_event(&connection.events),
+            ChatEvent::SessionStarted {
+                session_id: "sess-1".to_owned(),
+                loaded: false,
+            }
+        );
+    }
+
+    #[test]
+    fn a_saved_session_that_is_gone_starts_a_new_one() {
+        let Some(python) = python3() else {
+            eprintln!("skipping: python3 is not installed");
+            return;
+        };
+        let agent = FakeAgent::new("gone", "gone", python);
+        let connection = spawn(
+            ChatAgent::Codex,
+            agent.launch.clone(),
+            agent.dir.clone(),
+            SessionTarget::Load("old-1".to_owned()),
+        )
+        .expect("spawn the fake agent");
+        assert!(matches!(
+            next_event(&connection.events),
+            ChatEvent::Initialized { .. }
+        ));
+        assert_eq!(
+            next_event(&connection.events),
+            ChatEvent::Notice {
+                text: "Previous Codex session not found. Started a new one.".to_owned(),
+            }
+        );
         assert_eq!(
             next_event(&connection.events),
             ChatEvent::SessionStarted {

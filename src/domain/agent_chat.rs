@@ -4,6 +4,8 @@
 //! The agent's own session stays the source of truth. Vibra keeps only the
 //! timeline it has seen while a chat is open and the pane ↔ session binding.
 
+use std::time::SystemTime;
+
 use serde::{Deserialize, Serialize};
 
 use super::agents::AgentKind;
@@ -407,6 +409,10 @@ pub enum ChatEvent {
     Error {
         message: String,
     },
+    /// Something the user should know that is not a failure.
+    Notice {
+        text: String,
+    },
     /// The agent process ended. This is always the last event.
     Exited {
         message: Option<String>,
@@ -446,6 +452,31 @@ struct PendingEcho {
     seen: String,
 }
 
+/// How a prompt turn ended, as far as the timeline knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// The agent is still answering, or a replayed turn whose end is not known yet.
+    Running,
+    /// Ended normally (`end_turn`), or a replayed turn followed by another prompt.
+    Completed,
+    /// The user stopped it.
+    Cancelled,
+    /// Refused, hit a limit, reported an error, or the agent process ended.
+    Failed,
+}
+
+/// One prompt turn: a user message and everything after it up to the next one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnRecord {
+    /// Index in `ChatTimeline::items` of the user message that starts the turn.
+    pub start: usize,
+    pub outcome: TurnOutcome,
+    /// When the turn ended; set by `ChatTimeline::stamp`, `None` for replayed history.
+    pub finished_at: Option<SystemTime>,
+    /// An error notice arrived while the turn ran.
+    errored: bool,
+}
+
 /// Everything the view renders, rebuilt only from `ChatEvent`s.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChatTimeline {
@@ -461,6 +492,11 @@ pub struct ChatTimeline {
     pub config_options: Vec<ConfigOption>,
     pub usage: Option<ContextUsage>,
     pub commands: Vec<SlashCommand>,
+    /// Prompt turns in order; `turns[i].start` indexes `items`.
+    pub turns: Vec<TurnRecord>,
+    /// When each item arrived, parallel to `items` up to the last `stamp`.
+    /// `None` for history replayed by `session/load`.
+    pub item_times: Vec<Option<SystemTime>>,
     /// Set while the agent may still echo the last local prompt.
     pending_echo: Option<PendingEcho>,
 }
@@ -494,6 +530,8 @@ impl ChatTimeline {
             ChatEvent::SessionStarted { session_id, .. } => {
                 self.session_id = Some(session_id);
                 self.state = Some(ChatConnectionState::Ready);
+                // A loaded session has replayed its history by now.
+                self.end_turn(TurnOutcome::Completed);
             }
             ChatEvent::UserMessageChunk { text } => self.apply_user_chunk(text),
             ChatEvent::AgentMessageChunk { text } => self.append_text(TextKind::Assistant, text),
@@ -513,10 +551,15 @@ impl ChatTimeline {
             ChatEvent::TurnFinished { stop_reason } => {
                 self.state = Some(ChatConnectionState::Ready);
                 self.cancel_unresolved_permissions();
+                self.end_turn(match stop_reason.as_str() {
+                    "cancelled" => TurnOutcome::Cancelled,
+                    "refusal" | "max_tokens" => TurnOutcome::Failed,
+                    _ => TurnOutcome::Completed,
+                });
+                // A stopped turn says so in its header, so it needs no notice.
                 let notice = match stop_reason.as_str() {
                     "refusal" => Some("The agent refused to continue."),
                     "max_tokens" => Some("The agent reached its token limit."),
-                    "cancelled" => Some("Stopped."),
                     _ => None,
                 };
                 if let Some(text) = notice {
@@ -528,10 +571,17 @@ impl ChatTimeline {
             ChatEvent::Title(title) => self.title = Some(title),
             ChatEvent::Usage(usage) => self.usage = Some(usage),
             ChatEvent::Commands(commands) => self.commands = commands,
-            ChatEvent::Error { message } => self.push_notice(NoticeLevel::Error, &message),
+            ChatEvent::Error { message } => {
+                if let Some(turn) = self.running_turn_mut() {
+                    turn.errored = true;
+                }
+                self.push_notice(NoticeLevel::Error, &message);
+            }
+            ChatEvent::Notice { text } => self.push_notice(NoticeLevel::Info, &text),
             ChatEvent::Exited { message } => {
                 self.state = Some(ChatConnectionState::Closed { message });
                 self.cancel_unresolved_permissions();
+                self.end_turn(TurnOutcome::Failed);
             }
         }
     }
@@ -542,8 +592,65 @@ impl ChatTimeline {
             prompt: text.clone(),
             seen: String::new(),
         });
-        self.items.push(ChatItem::UserMessage { text, files });
+        self.push_user_item(text, files);
         self.state = Some(ChatConnectionState::Working);
+    }
+
+    /// Records when new items and finished turns happened. `apply` stays pure;
+    /// the view calls this after each change. Items that arrive before the
+    /// session has an id are replayed history and get no time.
+    pub fn stamp(&mut self, now: SystemTime) {
+        let live = self.session_id.is_some();
+        while self.item_times.len() < self.items.len() {
+            self.item_times.push(live.then_some(now));
+        }
+        self.item_times.truncate(self.items.len());
+        for turn in &mut self.turns {
+            let timed = self.item_times.get(turn.start).copied().flatten().is_some();
+            if turn.outcome != TurnOutcome::Running && turn.finished_at.is_none() && timed {
+                turn.finished_at = Some(now);
+            }
+        }
+    }
+
+    /// When `items[index]` arrived, if known.
+    pub fn item_time(&self, index: usize) -> Option<SystemTime> {
+        self.item_times.get(index).copied().flatten()
+    }
+
+    /// When the turn started (its user message arrived), if known.
+    pub fn turn_started_at(&self, turn: &TurnRecord) -> Option<SystemTime> {
+        self.item_time(turn.start)
+    }
+
+    fn running_turn_mut(&mut self) -> Option<&mut TurnRecord> {
+        self.turns
+            .last_mut()
+            .filter(|turn| turn.outcome == TurnOutcome::Running)
+    }
+
+    /// Ends the running turn, if any. A turn that reported an error never counts as completed.
+    fn end_turn(&mut self, outcome: TurnOutcome) {
+        if let Some(turn) = self.running_turn_mut() {
+            turn.outcome = if outcome == TurnOutcome::Completed && turn.errored {
+                TurnOutcome::Failed
+            } else {
+                outcome
+            };
+        }
+    }
+
+    /// Pushes a user message and starts its turn; the previous turn, if still
+    /// open (replayed history), ends as completed.
+    fn push_user_item(&mut self, text: String, files: Vec<String>) {
+        self.end_turn(TurnOutcome::Completed);
+        self.turns.push(TurnRecord {
+            start: self.items.len(),
+            outcome: TurnOutcome::Running,
+            finished_at: None,
+            errored: false,
+        });
+        self.items.push(ChatItem::UserMessage { text, files });
     }
 
     /// True while a prompt turn is running.
@@ -573,10 +680,7 @@ impl ChatTimeline {
             }
             // Not an echo of the local prompt, so it is a separate message.
             self.pending_echo = None;
-            self.items.push(ChatItem::UserMessage {
-                text: candidate,
-                files: Vec::new(),
-            });
+            self.push_user_item(candidate, Vec::new());
             return;
         }
         self.append_text(TextKind::User, text);
@@ -597,14 +701,11 @@ impl ChatTimeline {
             _ => false,
         };
         if !appended {
-            self.items.push(match kind {
-                TextKind::User => ChatItem::UserMessage {
-                    text,
-                    files: Vec::new(),
-                },
-                TextKind::Assistant => ChatItem::AssistantMessage { text },
-                TextKind::Reasoning => ChatItem::Reasoning { text },
-            });
+            match kind {
+                TextKind::User => self.push_user_item(text, Vec::new()),
+                TextKind::Assistant => self.items.push(ChatItem::AssistantMessage { text }),
+                TextKind::Reasoning => self.items.push(ChatItem::Reasoning { text }),
+            }
         }
     }
 
@@ -1168,7 +1269,7 @@ mod tests {
         let cases = [
             ("refusal", Some("The agent refused to continue.")),
             ("max_tokens", Some("The agent reached its token limit.")),
-            ("cancelled", Some("Stopped.")),
+            ("cancelled", None),
             ("end_turn", None),
         ];
         for (stop_reason, expected) in cases {
@@ -1354,5 +1455,95 @@ mod tests {
                 mode: PaneViewMode::Terminal,
             }
         );
+    }
+
+    fn outcomes(timeline: &ChatTimeline) -> Vec<(usize, TurnOutcome)> {
+        timeline
+            .turns
+            .iter()
+            .map(|turn| (turn.start, turn.outcome))
+            .collect()
+    }
+
+    #[test]
+    fn each_prompt_starts_a_turn_that_ends_with_its_stop_reason() {
+        let mut timeline = replay(vec![ready()]);
+        timeline.push_user_prompt("one".to_owned(), Vec::new());
+        assert_eq!(outcomes(&timeline), vec![(0, TurnOutcome::Running)]);
+        timeline.apply(agent_chunk("done"));
+        timeline.apply(ChatEvent::TurnFinished {
+            stop_reason: "end_turn".to_owned(),
+        });
+        timeline.push_user_prompt("two".to_owned(), Vec::new());
+        timeline.apply(ChatEvent::TurnFinished {
+            stop_reason: "cancelled".to_owned(),
+        });
+        timeline.push_user_prompt("three".to_owned(), Vec::new());
+        timeline.apply(ChatEvent::Error {
+            message: "boom".to_owned(),
+        });
+        timeline.apply(ChatEvent::TurnFinished {
+            stop_reason: "end_turn".to_owned(),
+        });
+        assert_eq!(
+            outcomes(&timeline),
+            vec![
+                (0, TurnOutcome::Completed),
+                (2, TurnOutcome::Cancelled),
+                (3, TurnOutcome::Failed),
+            ]
+        );
+    }
+
+    #[test]
+    fn replayed_turns_complete_when_the_next_one_starts_or_the_session_opens() {
+        let timeline = replay(vec![
+            ChatEvent::UserMessageChunk {
+                text: "old".to_owned(),
+            },
+            agent_chunk("answer"),
+            ChatEvent::UserMessageChunk {
+                text: "older".to_owned(),
+            },
+            agent_chunk("again"),
+            ready(),
+        ]);
+        assert_eq!(
+            outcomes(&timeline),
+            vec![(0, TurnOutcome::Completed), (2, TurnOutcome::Completed)]
+        );
+    }
+
+    #[test]
+    fn an_exit_fails_the_running_turn() {
+        let mut timeline = replay(vec![ready()]);
+        timeline.push_user_prompt("go".to_owned(), Vec::new());
+        timeline.apply(ChatEvent::Exited { message: None });
+        assert_eq!(outcomes(&timeline), vec![(0, TurnOutcome::Failed)]);
+    }
+
+    #[test]
+    fn stamps_time_live_items_and_finished_turns_but_not_history() {
+        let start = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+        let end = start + std::time::Duration::from_secs(42);
+        let mut timeline = replay(vec![
+            ChatEvent::UserMessageChunk {
+                text: "old".to_owned(),
+            },
+            agent_chunk("answer"),
+        ]);
+        timeline.stamp(start);
+        timeline.apply(ready());
+        timeline.push_user_prompt("new".to_owned(), Vec::new());
+        timeline.stamp(start);
+        assert_eq!(timeline.item_times, vec![None, None, Some(start)]);
+        assert_eq!(timeline.turns[0].finished_at, None);
+        assert_eq!(timeline.turn_started_at(&timeline.turns[1]), Some(start));
+        timeline.apply(ChatEvent::TurnFinished {
+            stop_reason: "end_turn".to_owned(),
+        });
+        timeline.stamp(end);
+        timeline.stamp(end + std::time::Duration::from_secs(5));
+        assert_eq!(timeline.turns[1].finished_at, Some(end));
     }
 }

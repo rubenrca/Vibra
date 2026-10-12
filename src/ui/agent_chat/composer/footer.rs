@@ -1,5 +1,5 @@
-//! The quiet line under the composer card: the agent, its quota windows, and a
-//! small icon button that continues the session in the terminal.
+//! The quiet line under the composer card: the agent, its quota windows, and,
+//! before the first message, a small icon button that switches to the terminal.
 
 use gpui::{AnyElement, Context, div, prelude::*, px, svg};
 
@@ -41,8 +41,11 @@ impl AgentChatView {
                     .child(quota_text(meter)),
             );
         }
+        // A started chat stays a chat, so only an empty one offers the terminal.
         line.child(div().flex_1())
-            .child(self.continue_in_terminal_button(cx))
+            .when(!self.has_conversation(), |line| {
+                line.child(self.continue_in_terminal_button(cx))
+            })
             .into_any_element()
     }
 

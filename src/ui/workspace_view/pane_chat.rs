@@ -207,6 +207,16 @@ impl WorkspaceView {
             .map_or(PaneViewMode::Terminal, |binding| binding.mode)
     }
 
+    /// Whether the pane shows a chat that has started (it has a message). A
+    /// started chat stays a chat: nothing offers to switch it back to the terminal.
+    pub(super) fn pane_chat_started(&self, session_id: Uuid, cx: &App) -> bool {
+        self.pane_view_mode(session_id) == PaneViewMode::Chat
+            && self
+                .agent_chats
+                .get(&session_id)
+                .is_some_and(|chat| chat.view.read(cx).has_conversation())
+    }
+
     /// The chat-capable agent running in the pane's terminal, if any. It only
     /// picks the default agent of a new chat and decides when a waiting chat connects.
     pub(super) fn detected_chat_agent(&self, session_id: Uuid) -> Option<ChatAgent> {
@@ -532,6 +542,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if mode == PaneViewMode::Terminal && self.pane_chat_started(session_id, cx) {
+            return;
+        }
         match mode {
             PaneViewMode::Chat => self.switch_to_pane_chat(session_id, window, cx),
             PaneViewMode::Terminal => self.show_pane_terminal(session_id, cx),

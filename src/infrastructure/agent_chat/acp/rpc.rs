@@ -31,16 +31,30 @@ impl RpcError {
         )
     }
 
+    /// Reads an error object. Agents often put the real cause in `data`
+    /// (`{"details": "…"}` or a plain string) under a generic message such as
+    /// "Internal error", so the cause is appended in parentheses.
     fn from_json(value: &Value) -> Self {
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("The agent returned an unknown error.");
+        let details = value.get("data").and_then(|data| {
+            data.get("details")
+                .and_then(Value::as_str)
+                .or_else(|| data.as_str())
+                .map(str::trim)
+                .filter(|details| !details.is_empty() && *details != message)
+        });
         Self::new(
             value
                 .get("code")
                 .and_then(Value::as_i64)
                 .unwrap_or(INTERNAL_ERROR),
-            value
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("The agent returned an unknown error."),
+            match details {
+                Some(details) => format!("{message} ({details})"),
+                None => message.to_owned(),
+            },
         )
     }
 }

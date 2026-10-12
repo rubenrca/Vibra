@@ -72,6 +72,15 @@ independiente del workspace.
   Al volver a Terminal, un chat con conversación se cierra y el comando de reanudación solo se
   escribe con el shell libre; un chat vacío sigue vivo. El proceso ACP no hereda
   `VIBRA_PANE_ID`, así que los hooks no lo atan a un pane.
+- `src/ui/agent_chat/`: la vista del chat sigue el modelo de turnos de t3code. El dominio
+  (`ChatTimeline::turns`, `item_times`) registra cada turno y cómo terminó; `stamp` pone
+  la hora fuera del reductor, que sigue siendo puro, y el historial de `session/load`
+  queda sin hora. `turns.rs` decide qué dibuja cada fila: mientras el turno corre, su
+  cabecera dice «Working for …» y el trabajo final (herramientas y razonamiento) es una
+  sola fila en vivo; al completarse, todo salvo la respuesta y los avisos se pliega tras
+  «Worked for …». Un turno parado o fallido no se pliega. `sync_list` re-mide las filas
+  cuyo plan cambió. Los permisos pendientes se responden en el composer, no en el
+  timeline, y lo que se escribe durante un turno queda en cola y se envía al terminar.
 - `explorer.rs`: carga y selección de archivos, filas del árbol y creación de entradas.
   `files.rs` reúne las filas visibles, el watcher y los iconos/estados de Git.
   Quick Open pide `FileSystemPort::search_files`; el adaptador local aplica ignores,

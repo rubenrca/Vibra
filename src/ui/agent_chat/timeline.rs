@@ -2,22 +2,25 @@
 //! the GPUI list in step with `ChatTimeline::items`.
 //!
 //! Each item keeps its own row, so row and item indices match and appends never
-//! shift rows. Consecutive tool calls form a group: the first call (the group's
-//! leader) draws the whole group and the others draw nothing. A change to any
-//! call therefore re-measures the leader's row (see `row_of`).
+//! shift rows. What a row draws comes from `turns::plan_rows`: consecutive work
+//! items (tool calls, reasoning) form a run whose first item (the leader) draws
+//! the whole run, and a completed turn hides its work behind its header. A
+//! change to any work item therefore re-measures the leader's row (see
+//! `row_of`), and a change to the plan re-measures the rows whose plan changed.
 
+mod assistant_row;
 mod cards;
+mod user_row;
 
-use gpui::{AnyElement, Context, SharedString, div, prelude::*, px, relative, svg};
+use gpui::{AnyElement, Context, div, prelude::*, px};
 
 use super::AgentChatView;
 use super::layout::COLUMN_WIDTH;
 use super::tool_card::is_running;
+use super::turns::{Row, is_work, plan_rows, run_start, turn_range};
 use crate::domain::agent_chat::{
-    ChatCommand, ChatEvent, ChatItem, ChatTimeline, PermissionResolution, ToolContent,
+    ChatCommand, ChatEvent, ChatItem, ChatTimeline, PermissionResolution, ToolContent, TurnOutcome,
 };
-use crate::ui::markdown::markdown_prose;
-use crate::ui::theme::{colors, surface_tint};
 
 /// Rows that `event` may change when applied, sorted and without repeats.
 ///
@@ -41,8 +44,8 @@ fn changed_rows(timeline: &ChatTimeline, event: &ChatEvent) -> Vec<usize> {
             .map(|last| row_of(items, last))
             .into_iter()
             .collect(),
-        ChatEvent::ToolCall(call) => tool_rows(items, &call.id),
-        ChatEvent::ToolCallUpdate(update) => tool_rows(items, &update.id),
+        ChatEvent::ToolCall(call) => tool_rows(timeline, &call.id),
+        ChatEvent::ToolCallUpdate(update) => tool_rows(timeline, &update.id),
         ChatEvent::Plan(_) => items
             .iter()
             .rposition(|item| matches!(item, ChatItem::Plan(_)))
@@ -77,13 +80,17 @@ fn changed_rows(timeline: &ChatTimeline, event: &ChatEvent) -> Vec<usize> {
         | ChatEvent::Title(_)
         | ChatEvent::Usage(_)
         | ChatEvent::Commands(_)
-        | ChatEvent::Error { .. } => Vec::new(),
+        | ChatEvent::Error { .. }
+        | ChatEvent::Notice { .. } => Vec::new(),
     }
 }
 
 /// Rows to re-measure for the tool call `id`. A call that is not in the
 /// timeline yet is appended, so it only matters when it joins a group at the end.
-fn tool_rows(items: &[ChatItem], id: &str) -> Vec<usize> {
+/// A late update to an ended turn also re-measures its final answer, which
+/// lists the turn's changed files.
+fn tool_rows(timeline: &ChatTimeline, id: &str) -> Vec<usize> {
+    let items = &timeline.items;
     let index = items
         .iter()
         .position(|item| matches!(item, ChatItem::ToolCall(call) if call.id == id))
@@ -91,63 +98,62 @@ fn tool_rows(items: &[ChatItem], id: &str) -> Vec<usize> {
             items
                 .len()
                 .checked_sub(1)
-                .filter(|&last| is_tool(&items[last]))
+                .filter(|&last| is_work(&items[last]))
         });
-    index
-        .map(|index| row_of(items, index))
-        .into_iter()
-        .collect()
+    let Some(index) = index else {
+        return Vec::new();
+    };
+    let mut rows = vec![row_of(items, index)];
+    rows.extend(final_answer_of_ended_turn(timeline, index));
+    rows
 }
 
-/// The row that draws `items[index]`: a tool call's group leader, otherwise the item itself.
+/// The last agent message of the ended turn that contains `items[index]`.
+fn final_answer_of_ended_turn(timeline: &ChatTimeline, index: usize) -> Option<usize> {
+    let turn = timeline
+        .turns
+        .iter()
+        .rposition(|turn| turn.start <= index)?;
+    if timeline.turns[turn].outcome == TurnOutcome::Running {
+        return None;
+    }
+    turn_range(timeline, turn)
+        .rev()
+        .find(|&item| matches!(timeline.items[item], ChatItem::AssistantMessage { .. }))
+}
+
+/// The row that draws `items[index]`: a work item's run leader, otherwise the item itself.
 pub(super) fn row_of(items: &[ChatItem], index: usize) -> usize {
-    if is_tool(&items[index]) {
-        group_start(items, index)
+    if is_work(&items[index]) {
+        run_start(items, index)
     } else {
         index
     }
 }
 
-/// First item of the tool group that contains the tool call at `index`.
-pub(super) fn group_start(items: &[ChatItem], index: usize) -> usize {
-    let mut start = index;
-    while start > 0 && is_tool(&items[start - 1]) {
-        start -= 1;
-    }
-    start
-}
-
-/// One past the last item of the tool group that starts at `start`.
-pub(super) fn group_end(items: &[ChatItem], start: usize) -> usize {
-    start
-        + items[start..]
-            .iter()
-            .take_while(|item| is_tool(item))
-            .count()
-}
-
-fn is_tool(item: &ChatItem) -> bool {
-    matches!(item, ChatItem::ToolCall(_))
-}
-
 impl AgentChatView {
-    /// Brings the GPUI list in step with the timeline after a change. Splicing
-    /// only the changed rows keeps a scrolled-up reader in place; the list stays
-    /// pinned to the newest item while the reader is at the bottom.
+    /// Brings the GPUI list in step with the timeline after a change: rebuilds
+    /// the row plan, then re-measures the `dirty` rows and every row whose plan
+    /// changed. Splicing only those rows keeps a scrolled-up reader in place;
+    /// the list stays pinned to the newest item while the reader is at the bottom.
     pub(super) fn sync_list(&mut self, before: usize, dirty: &[usize]) {
-        let after = self.timeline.items.len();
+        let rows = plan_rows(&self.timeline, &self.expanded);
+        let after = rows.len();
         if self.list_state.item_count() != before || after < before {
+            self.rows = rows;
             self.list_state.reset(after);
             return;
         }
-        let mut dirty: Vec<usize> = dirty
+        let mut changed: Vec<usize> = dirty
             .iter()
             .copied()
+            .chain((0..before).filter(|&index| self.rows.get(index) != rows.get(index)))
             .filter(|index| *index < before)
             .collect();
-        dirty.sort_unstable();
-        dirty.dedup();
-        for index in dirty {
+        changed.sort_unstable();
+        changed.dedup();
+        self.rows = rows;
+        for index in changed {
             self.list_state.splice(index..index + 1, 1);
         }
         if after > before {
@@ -193,135 +199,34 @@ impl AgentChatView {
         cx.notify();
     }
 
-    /// One list row. The row owns the vertical rhythm and centers its content
-    /// in the transcript column, so the list still scrolls across the full
-    /// width. A group member draws nothing because its leader draws the group.
+    /// One list row, as the row plan says. The row owns the vertical rhythm
+    /// (the space under it) and centers its content in the transcript column,
+    /// so the list still scrolls across the full width. A hidden row draws
+    /// nothing and takes no space.
     pub(super) fn render_item(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let items = &self.timeline.items;
-        let Some(item) = items.get(index) else {
+        let (Some(item), Some(row)) = (self.timeline.items.get(index), self.rows.get(index)) else {
             return div().into_any_element();
         };
-        let content = match item {
-            ChatItem::UserMessage { text, files } => user_message(text, files),
-            ChatItem::AssistantMessage { text } => div()
-                .w_full()
-                .child(markdown_prose(&format!("chat-assistant-{index}"), text))
-                .into_any_element(),
-            ChatItem::Reasoning { text } => self.reasoning(index, text, cx),
-            ChatItem::ToolCall(_) => {
-                if group_start(items, index) != index {
-                    return div().into_any_element();
-                }
-                self.tool_group(index, group_end(items, index), cx)
+        let (content, space_below) = match (row, item) {
+            (Row::User { turn, header }, ChatItem::UserMessage { text, files }) => {
+                (self.user_row(index, text, files, *turn, header, cx), 12.0)
             }
-            ChatItem::Plan(entries) => cards::plan(entries),
-            ChatItem::Permission(permission) => self.permission_card(index, permission, cx),
-            ChatItem::Notice { level, text } => cards::notice(*level, text),
+            (Row::Assistant { final_of }, ChatItem::AssistantMessage { text }) => {
+                (self.assistant_row(index, text, *final_of, cx), 16.0)
+            }
+            (Row::Work { end, live }, _) => (self.work_row(index, *end, *live, cx), 6.0),
+            (Row::Plan, ChatItem::Plan(entries)) => (cards::plan(entries), 12.0),
+            (Row::Notice, ChatItem::Notice { level, text }) => (cards::notice(*level, text), 12.0),
+            _ => return div().into_any_element(),
         };
         div()
             .w_full()
             .flex()
             .justify_center()
-            .pb_4()
+            .pb(px(space_below))
             .child(div().w_full().max_w(px(COLUMN_WIDTH)).px_3().child(content))
             .into_any_element()
     }
-
-    fn reasoning(&self, index: usize, text: &str, cx: &mut Context<Self>) -> AnyElement {
-        let key = format!("thought-{index}");
-        let expanded = self.expanded.contains(&key);
-        let header = div()
-            .id(SharedString::from(format!("chat-thought-{index}")))
-            .flex()
-            .items_center()
-            .gap_2()
-            .cursor_pointer()
-            .text_size(px(12.5))
-            .text_color(colors().muted)
-            .hover(|row| row.text_color(colors().foreground))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.toggle_expanded(key.clone(), index, cx);
-            }))
-            .child(
-                svg()
-                    .path(if expanded {
-                        "chrome-icons/chevron-down.svg"
-                    } else {
-                        "chrome-icons/chevron-right.svg"
-                    })
-                    .size(px(12.0))
-                    .flex_none()
-                    .text_color(colors().subtle),
-            )
-            .child("Thinking");
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(header)
-            .when(expanded, |column| {
-                column.child(
-                    div()
-                        .pl_5()
-                        .text_size(px(12.5))
-                        .line_height(px(18.0))
-                        .text_color(colors().muted)
-                        .children(
-                            text.lines()
-                                .map(|line| div().min_h(px(18.0)).child(line.to_owned())),
-                        ),
-                )
-            })
-            .into_any_element()
-    }
-}
-
-fn user_message(text: &str, files: &[String]) -> AnyElement {
-    div()
-        .w_full()
-        .flex()
-        .flex_col()
-        .items_end()
-        .gap_1p5()
-        .when(!files.is_empty(), |row| {
-            row.child(
-                div()
-                    .max_w(relative(0.8))
-                    .flex()
-                    .flex_wrap()
-                    .justify_end()
-                    .gap_1()
-                    .children(files.iter().map(|file| {
-                        div()
-                            .px_2()
-                            .py(px(1.0))
-                            .rounded(px(5.0))
-                            .bg(colors().hover)
-                            .font_family(crate::ui::theme::MONO_FONT)
-                            .text_size(px(11.0))
-                            .text_color(colors().muted)
-                            .child(file.clone())
-                    })),
-            )
-        })
-        .child(
-            // A quiet fill and no border: the bubble is text first, not a card.
-            div()
-                .max_w(relative(0.8))
-                .px_3()
-                .py_2()
-                .rounded(px(12.0))
-                .bg(surface_tint(colors().elevated, colors().terminal))
-                .text_size(px(14.0))
-                .line_height(px(22.0))
-                .text_color(colors().foreground)
-                .children(
-                    text.lines()
-                        .map(|line| div().min_h(px(22.0)).child(line.to_owned())),
-                ),
-        )
-        .into_any_element()
 }
 
 #[cfg(test)]
@@ -448,7 +353,8 @@ mod tests {
         let finished = ChatEvent::TurnFinished {
             stop_reason: "end_turn".into(),
         };
-        assert_eq!(dirty_indices(&timeline, &finished), vec![1, 3]);
+        // The permission joins the tools' run, so the run leader covers both.
+        assert_eq!(dirty_indices(&timeline, &finished), vec![1]);
         let started = ChatEvent::SessionStarted {
             session_id: "s".into(),
             loaded: false,
@@ -457,13 +363,30 @@ mod tests {
     }
 
     #[test]
-    fn groups_run_from_their_leader_to_the_last_consecutive_call() {
-        let items = vec![tool("t1"), tool("t2"), message("a"), tool("t3")];
-        assert_eq!(group_start(&items, 1), 0);
-        assert_eq!(group_end(&items, 0), 2);
-        assert_eq!(group_start(&items, 3), 3);
-        assert_eq!(group_end(&items, 3), 4);
+    fn a_late_tool_update_remeasures_the_ended_turns_answer() {
+        let mut timeline = ChatTimeline::default();
+        timeline.push_user_prompt("go".into(), Vec::new());
+        timeline.apply(ChatEvent::ToolCall(call("t1", Vec::new())));
+        timeline.apply(ChatEvent::AgentMessageChunk {
+            text: "done".into(),
+        });
+        assert_eq!(dirty_indices(&timeline, &update("t1")), vec![1]);
+        timeline.apply(ChatEvent::TurnFinished {
+            stop_reason: "end_turn".into(),
+        });
+        assert_eq!(dirty_indices(&timeline, &update("t1")), vec![1, 2]);
+    }
+
+    #[test]
+    fn work_items_are_drawn_by_their_run_leader() {
+        let items = vec![
+            tool("t1"),
+            ChatItem::Reasoning { text: "hm".into() },
+            message("a"),
+            tool("t3"),
+        ];
         assert_eq!(row_of(&items, 1), 0);
         assert_eq!(row_of(&items, 2), 2);
+        assert_eq!(row_of(&items, 3), 3);
     }
 }

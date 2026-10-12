@@ -1,8 +1,7 @@
-//! Chrome around the timeline: the list, the empty and closed states, the
-//! working line, and the dock that holds the composer. The title lives in the
+//! Chrome around the timeline: the list, the empty and closed states, and the dock that holds the composer. The title lives in the
 //! pane's tab, so the view has no header of its own.
 
-mod working;
+pub(super) mod working;
 
 use std::path::Path;
 
@@ -16,13 +15,15 @@ use crate::ui::theme::{MONO_FONT, colors, surface};
 
 /// Width of the transcript, the empty-state column and the composer dock. The
 /// composer keeps this width when the first message moves it to the dock.
-pub(super) const COLUMN_WIDTH: f32 = 760.0;
+pub(super) const COLUMN_WIDTH: f32 = 736.0;
 
 /// Shown for a closed session that has no reason to give.
 const CLOSED_MESSAGE: &str = "The agent session ended.";
 
 impl Render for AgentChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let typing = self.focus_handle.is_focused(window) && self.accepts_input();
+        self.sync_editor(typing, cx);
         div()
             .id("agent-chat")
             .track_focus(&self.focus_handle)
@@ -50,7 +51,6 @@ impl AgentChatView {
                 self.start_body(window, cx)
             };
         }
-        let status = self.working_line();
         div()
             .flex_1()
             .min_h(px(0.0))
@@ -73,7 +73,6 @@ impl AgentChatView {
                         .size_full(),
                     ),
             )
-            .children(status)
             .into_any_element()
     }
 
@@ -184,15 +183,18 @@ impl AgentChatView {
                     .child(message.to_owned())
                     .into_any_element()
             })
-            .when(self.session_id().is_some(), |column| {
-                column.child(
-                    div()
-                        .text_center()
-                        .text_size(px(12.0))
-                        .text_color(colors().subtle)
-                        .child("Use Continue in Terminal to keep working in the terminal."),
-                )
-            })
+            .when(
+                self.session_id().is_some() && !self.has_conversation(),
+                |column| {
+                    column.child(
+                        div()
+                            .text_center()
+                            .text_size(px(12.0))
+                            .text_color(colors().subtle)
+                            .child("Use Continue in Terminal to keep working in the terminal."),
+                    )
+                },
+            )
             .into_any_element()
     }
 
@@ -214,7 +216,7 @@ impl AgentChatView {
             return div().into_any_element();
         }
         // A closed chat with messages says why above the composer, so the
-        // transcript stays readable and "Continue in Terminal" stays reachable.
+        // transcript stays readable.
         let notice = match self.closed_message() {
             Some(message) if !self.timeline.items.is_empty() => Some(
                 div()
