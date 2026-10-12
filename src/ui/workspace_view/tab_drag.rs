@@ -6,6 +6,7 @@ use gpui::{
 };
 use uuid::Uuid;
 
+use crate::domain::agent_chat::PaneViewMode;
 use crate::domain::workspace::{PaneSplitDirection, WorkspaceTabId};
 use crate::ui::theme::colors;
 
@@ -426,7 +427,11 @@ impl WorkspaceView {
             .flex()
             .items_center()
             .pl(px(4.0))
-            .when(!dragging, |zone| zone.child(new_tab_split_button(cx)))
+            .when(!dragging, |zone| {
+                zone.child(new_tab_split_button(cx))
+                    .child(div().flex_1())
+                    .children(self.pane_mode_toggle())
+            })
             .when(dragging, |zone| {
                 zone.on_drag_move(cx.listener(|this, event: &DragMoveEvent<TabDrag>, _, cx| {
                     this.hover_tab_strip_end(event.bounds, event.event.position, cx);
@@ -455,6 +460,82 @@ impl WorkspaceView {
                 cx,
             );
         }
+    }
+}
+
+impl WorkspaceView {
+    /// Terminal and chat icons at the end of the strip. They switch the selected
+    /// pane, so an unsplit pane needs no header of its own.
+    fn pane_mode_toggle(&self) -> Option<AnyElement> {
+        if self.review_tab_active {
+            return None;
+        }
+        let session_id = self.snapshot.selected_session()?.id;
+        let chat = self.pane_view_mode(session_id) == PaneViewMode::Chat;
+        // The bound agent's mark; an unbound pane only promises a chat.
+        let chat_icon = self
+            .snapshot
+            .agent_chat_binding(session_id)
+            .map_or("chrome-icons/sparkles.svg", |binding| {
+                super::pane_chat::agent_mark_asset(binding.agent)
+            });
+        let segment =
+            |id: &'static str, icon: &'static str, active: bool, tooltip: &'static str| {
+                div()
+                    .id(id)
+                    .size(px(22.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.0))
+                    .when(active, |segment| segment.bg(colors().hover))
+                    .when(!active, |segment| {
+                        segment
+                            .cursor_pointer()
+                            .hover(|segment| segment.bg(colors().hover))
+                    })
+                    .tooltip(move |_, cx| super::sidebar_tooltip(tooltip, cx))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size(px(13.0))
+                            .flex_none()
+                            .text_color(if active {
+                                colors().foreground
+                            } else {
+                                colors().subtle
+                            }),
+                    )
+            };
+        let toggle = || {
+            |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                window.dispatch_action(Box::new(crate::ToggleChat), cx);
+            }
+        };
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .mr(px(8.0))
+                .child(
+                    segment(
+                        "pane-mode-terminal",
+                        "chrome-icons/terminal.svg",
+                        !chat,
+                        "Terminal · ⇧⌘A",
+                    )
+                    .when(chat, |segment| segment.on_click(toggle())),
+                )
+                .child(
+                    segment("pane-mode-chat", chat_icon, chat, "Chat · ⇧⌘A")
+                        .when(!chat, |segment| segment.on_click(toggle())),
+                )
+                .into_any_element(),
+        )
     }
 }
 
