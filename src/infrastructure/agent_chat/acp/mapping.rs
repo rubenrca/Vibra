@@ -4,12 +4,17 @@
 use serde_json::{Value, json};
 
 use crate::domain::agent_chat::{
-    ChatCapabilities, ChatEvent, PermissionItem, PermissionOption, PermissionOptionKind,
-    PermissionResolution, PlanEntry, PlanEntryStatus, ToolCallItem, ToolCallUpdate, ToolContent,
-    ToolKind, ToolStatus,
+    ChatCapabilities, ChatEvent, ConfigCategory, ConfigOption, ConfigValue, ContextUsage,
+    PermissionItem, PermissionOption, PermissionOptionKind, PermissionResolution, PlanEntry,
+    PlanEntryStatus, PromptFile, SessionMode, SessionModes, SlashCommand, ToolCallItem,
+    ToolCallUpdate, ToolContent, ToolKind, ToolStatus,
 };
 
 use super::rpc::RpcError;
+
+/// Id of the option that stands for the agent's model list when the agent
+/// sends `models` but no config option in the model category.
+pub(super) const MODEL_OPTION_ID: &str = "__model";
 
 /// Which optional session calls the agent advertised in `initialize`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,8 +33,8 @@ pub(super) struct Negotiated {
 }
 
 /// Events for the `update` object of one `session/update` notification.
-/// Unknown kinds (commands, modes, usage) produce nothing.
-pub(super) fn session_update_events(update: &Value) -> Vec<ChatEvent> {
+/// Mode and config updates also change `controls`. Unknown kinds produce nothing.
+pub(super) fn session_update_events(update: &Value, controls: &mut Controls) -> Vec<ChatEvent> {
     match str_field(update, "sessionUpdate") {
         Some("user_message_chunk") => chunk(update, |text| ChatEvent::UserMessageChunk { text }),
         Some("agent_message_chunk") => chunk(update, |text| ChatEvent::AgentMessageChunk { text }),
@@ -37,8 +42,285 @@ pub(super) fn session_update_events(update: &Value) -> Vec<ChatEvent> {
         Some("tool_call") => vec![ChatEvent::ToolCall(tool_call_item(update))],
         Some("tool_call_update") => vec![ChatEvent::ToolCallUpdate(tool_call_update(update))],
         Some("plan") => vec![ChatEvent::Plan(plan_entries(update))],
+        Some("current_mode_update") => str_field(update, "currentModeId")
+            .map(|mode_id| vec![controls.set_current_mode(mode_id)])
+            .unwrap_or_default(),
+        Some("config_option_update") => parse_config_options(update)
+            .map(|options| vec![controls.replace_options(options)])
+            .unwrap_or_default(),
+        Some("session_info_update") => title(update)
+            .map(|title| vec![ChatEvent::Title(title)])
+            .unwrap_or_default(),
+        Some("usage_update") => usage(update)
+            .map(|usage| vec![ChatEvent::Usage(usage)])
+            .unwrap_or_default(),
+        Some("available_commands_update") => update
+            .get("availableCommands")
+            .and_then(Value::as_array)
+            .map(|items| vec![ChatEvent::Commands(commands(items))])
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+/// Session controls as the agent last described them. Filled from the session
+/// setup response and kept current by updates and by the answers to set calls.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Controls {
+    modes: Option<SessionModes>,
+    /// The agent's own config options, without the synthetic model option.
+    options: Vec<ConfigOption>,
+    /// The unstable `models` list, shown as a select when no option is a model.
+    model: Option<ConfigOption>,
+}
+
+impl Controls {
+    /// Reads `session/new`, `session/load` or `session/resume` results. Returns
+    /// the events to send after `SessionStarted`.
+    pub fn setup(&mut self, result: &Value) -> Vec<ChatEvent> {
+        *self = Self {
+            modes: parse_modes(result),
+            options: parse_config_options(result).unwrap_or_default(),
+            model: parse_models(result),
+        };
+        let mut events = Vec::new();
+        if let Some(modes) = &self.modes {
+            events.push(ChatEvent::Modes(modes.clone()));
+        }
+        let options = self.all_options();
+        if !options.is_empty() {
+            events.push(ChatEvent::ConfigOptions(options));
+        }
+        events
+    }
+
+    /// The options the view shows: the agent's own, then the synthetic model
+    /// option when the agent has no model option of its own.
+    pub fn all_options(&self) -> Vec<ConfigOption> {
+        let mut options = self.options.clone();
+        if let Some(model) = &self.model
+            && !options
+                .iter()
+                .any(|option| option.category == ConfigCategory::Model)
+        {
+            options.push(model.clone());
+        }
+        options
+    }
+
+    /// `current_mode_update` or the answer to `session/set_mode`. The last known
+    /// list of modes is kept.
+    pub fn set_current_mode(&mut self, mode_id: &str) -> ChatEvent {
+        let modes = self.modes.get_or_insert_with(SessionModes::default);
+        mode_id.clone_into(&mut modes.current);
+        ChatEvent::Modes(modes.clone())
+    }
+
+    /// `config_option_update` or the answer to `session/set_config_option` that
+    /// carries the full option list.
+    pub fn replace_options(&mut self, options: Vec<ConfigOption>) -> ChatEvent {
+        self.options = options;
+        ChatEvent::ConfigOptions(self.all_options())
+    }
+
+    /// The answer to `session/set_config_option` without options. The new value
+    /// is applied locally.
+    pub fn set_option_value(&mut self, option_id: &str, value: &str) -> ChatEvent {
+        if let Some(option) = self
+            .options
+            .iter_mut()
+            .find(|option| option.id == option_id)
+        {
+            value.clone_into(&mut option.current);
+        }
+        ChatEvent::ConfigOptions(self.all_options())
+    }
+
+    /// The answer to `session/set_model`, for the synthetic model option.
+    pub fn set_model(&mut self, model_id: &str) -> ChatEvent {
+        if let Some(model) = self.model.as_mut() {
+            model_id.clone_into(&mut model.current);
+        }
+        ChatEvent::ConfigOptions(self.all_options())
+    }
+
+    /// The option's name for messages, or its id when it is unknown.
+    pub fn option_label(&self, option_id: &str) -> String {
+        self.all_options()
+            .into_iter()
+            .find(|option| option.id == option_id)
+            .map_or_else(|| option_id.to_owned(), |option| option.name)
+    }
+}
+
+/// `modes` of a session setup result. Absent or null gives `None`.
+fn parse_modes(result: &Value) -> Option<SessionModes> {
+    let modes = object(result, "modes")?;
+    Some(SessionModes {
+        current: str_field(modes, "currentModeId")
+            .unwrap_or_default()
+            .to_owned(),
+        available: modes
+            .get("availableModes")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(session_mode).collect())
+            .unwrap_or_default(),
+    })
+}
+
+fn session_mode(item: &Value) -> Option<SessionMode> {
+    let id = str_field(item, "id")?;
+    Some(SessionMode {
+        id: id.to_owned(),
+        name: str_field(item, "name").unwrap_or(id).to_owned(),
+        description: str_field(item, "description").map(str::to_owned),
+    })
+}
+
+/// `configOptions` of a result or of a `config_option_update`. Returns `None`
+/// when the key is missing. Only select options are kept.
+pub(super) fn parse_config_options(value: &Value) -> Option<Vec<ConfigOption>> {
+    let items = value.get("configOptions")?.as_array()?;
+    Some(items.iter().filter_map(config_option).collect())
+}
+
+fn config_option(item: &Value) -> Option<ConfigOption> {
+    if str_field(item, "type")? != "select" {
+        return None;
+    }
+    let id = str_field(item, "id")?;
+    Some(ConfigOption {
+        id: id.to_owned(),
+        name: str_field(item, "name").unwrap_or(id).to_owned(),
+        category: match str_field(item, "category") {
+            Some("model") => ConfigCategory::Model,
+            Some("thought_level") => ConfigCategory::ThoughtLevel,
+            Some("mode") => ConfigCategory::Mode,
+            _ => ConfigCategory::Other,
+        },
+        current: str_field(item, "currentValue")?.to_owned(),
+        values: config_values(item.get("options")?),
+    })
+}
+
+/// Flattens grouped options (`{group, name, options: [...]}`) into one list.
+fn config_values(options: &Value) -> Vec<ConfigValue> {
+    options
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .flat_map(|item| -> Vec<ConfigValue> {
+                    match item.get("options").and_then(Value::as_array) {
+                        Some(group) => group.iter().filter_map(config_value).collect(),
+                        None => config_value(item).into_iter().collect(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn config_value(item: &Value) -> Option<ConfigValue> {
+    let value = str_field(item, "value")?;
+    Some(ConfigValue {
+        value: value.to_owned(),
+        name: str_field(item, "name").unwrap_or(value).to_owned(),
+        description: str_field(item, "description").map(str::to_owned),
+    })
+}
+
+/// The unstable `models` of a session setup result, as the synthetic model option.
+fn parse_models(result: &Value) -> Option<ConfigOption> {
+    let models = object(result, "models")?;
+    Some(ConfigOption {
+        id: MODEL_OPTION_ID.to_owned(),
+        name: "Model".to_owned(),
+        category: ConfigCategory::Model,
+        current: str_field(models, "currentModelId")
+            .unwrap_or_default()
+            .to_owned(),
+        values: models
+            .get("availableModels")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        let id = str_field(item, "modelId")?;
+                        Some(ConfigValue {
+                            value: id.to_owned(),
+                            name: str_field(item, "name").unwrap_or(id).to_owned(),
+                            description: str_field(item, "description").map(str::to_owned),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+/// `session/update` with `title`. Null or blank titles are ignored.
+fn title(update: &Value) -> Option<String> {
+    str_field(update, "title")
+        .filter(|title| !title.trim().is_empty())
+        .map(str::to_owned)
+}
+
+/// `session/update` with `used` and `size`. Either one missing ignores the update.
+fn usage(update: &Value) -> Option<ContextUsage> {
+    Some(ContextUsage {
+        used: update.get("used")?.as_u64()?,
+        size: update.get("size")?.as_u64()?,
+    })
+}
+
+fn commands(items: &[Value]) -> Vec<SlashCommand> {
+    items
+        .iter()
+        .filter_map(|item| {
+            Some(SlashCommand {
+                name: str_field(item, "name")?.to_owned(),
+                description: str_field(item, "description")
+                    .unwrap_or_default()
+                    .to_owned(),
+                input_hint: item
+                    .get("input")
+                    .and_then(|input| str_field(input, "hint"))
+                    .map(str::to_owned),
+            })
+        })
+        .collect()
+}
+
+/// The `prompt` array of `session/prompt`: the typed text, then one
+/// `resource_link` per attached file. Resource links are baseline ACP, so they
+/// need no capability check.
+pub(super) fn prompt_blocks(text: &str, files: &[PromptFile]) -> Value {
+    let mut blocks = vec![json!({"type": "text", "text": text})];
+    blocks.extend(files.iter().map(|file| {
+        json!({
+            "type": "resource_link",
+            "uri": file_uri(&file.path),
+            "name": file.label,
+        })
+    }));
+    Value::Array(blocks)
+}
+
+/// A `file://` URI for an absolute path. Everything but unreserved characters
+/// and `/` is percent-encoded, byte by byte.
+pub(super) fn file_uri(path: &str) -> String {
+    let mut uri = String::from("file://");
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                uri.push(char::from(byte));
+            }
+            _ => uri.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    uri
 }
 
 fn chunk(update: &Value, event: impl FnOnce(String) -> ChatEvent) -> Vec<ChatEvent> {
@@ -233,12 +515,17 @@ fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key)?.as_str()
 }
 
+/// A nested object; anything else (including null) is `None`.
+fn object<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    value.get(key).filter(|nested| nested.is_object())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn events(update: Value) -> Vec<ChatEvent> {
-        session_update_events(&update)
+        session_update_events(&update, &mut Controls::default())
     }
 
     #[test]
@@ -404,11 +691,7 @@ mod tests {
 
     #[test]
     fn unknown_update_kinds_are_ignored() {
-        for kind in [
-            "available_commands_update",
-            "current_mode_update",
-            "usage_update",
-        ] {
+        for kind in ["some_future_update", "_x.ai/models/update"] {
             assert!(
                 events(json!({"sessionUpdate": kind, "x": 1})).is_empty(),
                 "{kind}"
@@ -566,5 +849,428 @@ mod tests {
             "model overloaded"
         )));
         assert!(!requires_sign_in(&RpcError::new(-32603, "auth failed")));
+    }
+
+    fn option<'a>(options: &'a [ConfigOption], id: &str) -> &'a ConfigOption {
+        options
+            .iter()
+            .find(|option| option.id == id)
+            .unwrap_or_else(|| panic!("no config option {id}"))
+    }
+
+    fn only_config_options(events: Vec<ChatEvent>) -> Vec<ConfigOption> {
+        let [ChatEvent::ConfigOptions(options)] = events.as_slice() else {
+            panic!("expected one ConfigOptions event, got {events:?}");
+        };
+        options.clone()
+    }
+
+    /// Trimmed from the real `session/new` of claude-agent-acp 0.89.1
+    /// (Claude Code 2.1.296). Claude sends `modes` and `configOptions`, no `models`.
+    #[test]
+    fn real_claude_session_setup_maps_modes_and_options() {
+        let mut controls = Controls::default();
+        let events = controls.setup(&json!({
+            "sessionId": "1ffa0ebe",
+            "modes": {
+                "currentModeId": "default",
+                "availableModes": [
+                    {"id": "default", "name": "Manual", "description": "Always ask before making changes"},
+                    {"id": "acceptEdits", "name": "Accept edits", "description": "Automatically accept all file edits"},
+                    {"id": "plan", "name": "Plan", "description": "Create a plan before making changes"},
+                    {"id": "auto", "name": "Auto", "description": "Claude handles permission decisions"},
+                    {"id": "bypassPermissions", "name": "Bypass permissions", "description": "Accepts all permissions"},
+                ],
+            },
+            "configOptions": [
+                {"id": "mode", "name": "Mode", "description": "Session permission mode",
+                 "category": "mode", "type": "select", "currentValue": "default",
+                 "options": [{"value": "default", "name": "Manual"}, {"value": "plan", "name": "Plan"}]},
+                {"id": "model", "name": "Model", "description": "AI model to use",
+                 "category": "model", "type": "select", "currentValue": "opus",
+                 "options": [
+                    {"value": "default", "name": "Default (recommended)", "description": "Opus 5.5"},
+                    {"value": "opus", "name": "Opus 5.5", "description": "For complex work and everyday tasks"},
+                    {"value": "sonnet", "name": "Sonnet 5.5"},
+                 ]},
+                {"id": "effort", "name": "Effort", "description": "Available effort levels for this model",
+                 "category": "thought_level", "type": "select", "currentValue": "high",
+                 "options": [{"value": "default", "name": "Default"}, {"value": "high", "name": "High"}]},
+                {"id": "fast", "name": "Fast mode", "category": "model_config", "type": "select",
+                 "currentValue": "off",
+                 "options": [{"value": "on", "name": "On"}, {"value": "off", "name": "Off"}]},
+                {"id": "agent", "name": "Agent", "type": "select", "currentValue": "default",
+                 "options": [{"value": "default", "name": "Default", "description": "Standard Claude Code agent"}]},
+            ],
+        }));
+
+        let [ChatEvent::Modes(modes), ChatEvent::ConfigOptions(options)] = events.as_slice() else {
+            panic!("expected Modes then ConfigOptions, got {events:?}");
+        };
+        assert_eq!(modes.current, "default");
+        assert_eq!(modes.available.len(), 5);
+        assert_eq!(modes.available[2].id, "plan");
+        assert_eq!(modes.available[2].name, "Plan");
+        assert_eq!(
+            modes.available[2].description.as_deref(),
+            Some("Create a plan before making changes")
+        );
+
+        assert_eq!(
+            options.len(),
+            5,
+            "no synthetic option when a model option exists"
+        );
+        assert_eq!(option(options, "mode").category, ConfigCategory::Mode);
+        let model = option(options, "model");
+        assert_eq!(model.category, ConfigCategory::Model);
+        assert_eq!(model.current, "opus");
+        assert_eq!(model.current_name(), "Opus 5.5");
+        assert_eq!(model.values[0].description.as_deref(), Some("Opus 5.5"));
+        assert_eq!(
+            option(options, "effort").category,
+            ConfigCategory::ThoughtLevel
+        );
+        assert_eq!(option(options, "fast").category, ConfigCategory::Other);
+        assert_eq!(option(options, "agent").category, ConfigCategory::Other);
+        assert_eq!(
+            option(options, "agent").values[0].description.as_deref(),
+            Some("Standard Claude Code agent")
+        );
+    }
+
+    /// Trimmed from the real `session/new` of codex-acp 2.2.2 (codex-cli 0.162.1).
+    /// Codex sends `modes`, a `mode` option, and a `models` list that also has a
+    /// model option, so no synthetic option is added.
+    #[test]
+    fn real_codex_session_setup_keeps_its_model_option() {
+        let mut controls = Controls::default();
+        let events = controls.setup(&json!({
+            "sessionId": "01a130bb",
+            "models": {
+                "availableModels": [
+                    {"modelId": "gpt-6.1-sol[low]", "name": "6.1 Sol (low)", "description": "Fast responses"},
+                    {"modelId": "gpt-6.1-sol[xhigh]", "name": "6.1 Sol (xhigh)", "description": "Extra high"},
+                ],
+                "currentModelId": "gpt-6.1-sol[xhigh]",
+            },
+            "modes": {
+                "availableModes": [
+                    {"id": "read-only", "name": "Read-only", "description": "Requires approval to edit files."},
+                    {"id": "agent", "name": "Auto review", "description": "Only ask for unsafe actions"},
+                ],
+                "currentModeId": "agent",
+            },
+            "configOptions": [
+                {"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": "agent",
+                 "options": [{"value": "read-only", "name": "Read-only"}, {"value": "agent", "name": "Auto review"}]},
+                {"id": "collaboration_mode", "name": "Collaboration mode", "category": "collaboration_mode",
+                 "type": "select", "currentValue": "default",
+                 "options": [{"value": "default", "name": "Default"}, {"value": "plan", "name": "Plan"}]},
+                {"id": "model", "name": "Model", "category": "model", "type": "select",
+                 "currentValue": "gpt-6.1-sol",
+                 "options": [{"value": "gpt-6.1-sol", "name": "6.1 Sol", "description": "Latest workhorse model."}]},
+                {"id": "reasoning_effort", "name": "Reasoning effort", "category": "thought_level", "type": "select",
+                 "currentValue": "xhigh",
+                 "options": [{"value": "low", "name": "Low"}, {"value": "xhigh", "name": "Xhigh"}]},
+                {"id": "fast-mode", "name": "Fast mode", "category": "model_config", "type": "select",
+                 "currentValue": "off",
+                 "options": [{"value": "off", "name": "Off"}, {"value": "on", "name": "On"}]},
+            ],
+        }));
+
+        let [ChatEvent::Modes(modes), ChatEvent::ConfigOptions(options)] = events.as_slice() else {
+            panic!("expected Modes then ConfigOptions, got {events:?}");
+        };
+        assert_eq!(modes.current, "agent");
+        assert_eq!(modes.available[0].name, "Read-only");
+        assert_eq!(options.len(), 5);
+        assert!(options.iter().all(|option| option.id != MODEL_OPTION_ID));
+        assert_eq!(
+            option(options, "collaboration_mode").category,
+            ConfigCategory::Other
+        );
+        assert_eq!(option(options, "model").current_name(), "6.1 Sol");
+        assert_eq!(
+            option(options, "reasoning_effort").category,
+            ConfigCategory::ThoughtLevel
+        );
+        assert_eq!(option(options, "reasoning_effort").current_name(), "Xhigh");
+    }
+
+    /// Trimmed from the real `session/new` of grok 1.0.52. Grok sends no `modes`;
+    /// its model and reasoning options carry the whole picker.
+    #[test]
+    fn real_grok_session_setup_has_no_modes() {
+        let mut controls = Controls::default();
+        let events = controls.setup(&json!({
+            "sessionId": "01a130bb-a147",
+            "models": {
+                "currentModelId": "grok-4.7",
+                "availableModels": [
+                    {"modelId": "grok-4.7", "name": "Grok 4.7", "description": "SpaceXAI's latest frontier model",
+                     "_meta": {"reasoningEffort": "xhigh"}},
+                    {"modelId": "grok-4.7-build-fast", "name": "Grok 4.7 Fast", "description": "Fast variant. 2x the price."},
+                ],
+            },
+            "configOptions": [
+                {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "grok-4.7",
+                 "options": [{"value": "grok-4.7", "name": "Grok 4.7"}, {"value": "grok-4.7-build-fast", "name": "Grok 4.7 Fast"}]},
+                {"id": "reasoning_effort", "name": "Reasoning Effort", "category": "thought_level", "type": "select",
+                 "currentValue": "xhigh",
+                 "options": [{"value": "xhigh", "name": "Extra High", "description": "Maximum reasoning for the hardest tasks."}]},
+            ],
+            "_meta": {},
+        }));
+
+        let options = only_config_options(events);
+        assert_eq!(
+            options.len(),
+            2,
+            "the model list is not added a second time"
+        );
+        assert_eq!(option(&options, "model").values.len(), 2);
+        assert_eq!(
+            option(&options, "reasoning_effort").current_name(),
+            "Extra High"
+        );
+    }
+
+    #[test]
+    fn models_without_a_model_option_become_the_synthetic_option() {
+        let mut controls = Controls::default();
+        let events = controls.setup(&json!({
+            "sessionId": "s",
+            "models": {
+                "currentModelId": "m1",
+                "availableModels": [
+                    {"modelId": "m1", "name": "Model One"},
+                    {"modelId": "m2", "name": "Model Two", "description": "Larger"},
+                ],
+            },
+            "configOptions": [
+                {"id": "effort", "name": "Effort", "category": "thought_level", "type": "select",
+                 "currentValue": "high", "options": [{"value": "high", "name": "High"}]},
+            ],
+        }));
+        let options = only_config_options(events);
+        assert_eq!(options.len(), 2);
+        let model = option(&options, MODEL_OPTION_ID);
+        assert_eq!(model.name, "Model");
+        assert_eq!(model.category, ConfigCategory::Model);
+        assert_eq!(model.current_name(), "Model One");
+        assert_eq!(
+            model.values[1],
+            ConfigValue {
+                value: "m2".to_owned(),
+                name: "Model Two".to_owned(),
+                description: Some("Larger".to_owned()),
+            }
+        );
+
+        // A config_option_update that omits the model keeps the synthetic option.
+        let update = json!({
+            "sessionUpdate": "config_option_update",
+            "configOptions": [
+                {"id": "effort", "name": "Effort", "category": "thought_level", "type": "select",
+                 "currentValue": "low", "options": [{"value": "low", "name": "Low"}]},
+            ],
+        });
+        let options = only_config_options(session_update_events(&update, &mut controls));
+        assert_eq!(options.len(), 2);
+        assert_eq!(option(&options, "effort").current, "low");
+        assert_eq!(option(&options, MODEL_OPTION_ID).current, "m1");
+
+        // The answer to session/set_model moves the synthetic option's current value.
+        let ChatEvent::ConfigOptions(options) = controls.set_model("m2") else {
+            panic!("expected ConfigOptions");
+        };
+        assert_eq!(
+            option(&options, MODEL_OPTION_ID).current_name(),
+            "Model Two"
+        );
+    }
+
+    #[test]
+    fn grouped_options_are_flattened_and_boolean_options_skipped() {
+        let mut controls = Controls::default();
+        let events = controls.setup(&json!({
+            "sessionId": "s",
+            "configOptions": [
+                {"id": "sandbox", "name": "Sandbox", "category": "mode", "type": "select",
+                 "currentValue": "b",
+                 "options": [
+                    {"group": "g1", "name": "Group 1", "options": [
+                        {"value": "a", "name": "A"}, {"value": "b", "name": "B"},
+                    ]},
+                    {"value": "c", "name": "C"},
+                 ]},
+                {"id": "auto", "name": "Auto", "type": "boolean", "currentValue": true},
+            ],
+        }));
+        let options = only_config_options(events);
+        assert_eq!(options.len(), 1);
+        let sandbox = &options[0];
+        assert_eq!(sandbox.category, ConfigCategory::Mode);
+        assert_eq!(
+            sandbox
+                .values
+                .iter()
+                .map(|value| value.value.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
+        assert_eq!(sandbox.current_name(), "B");
+    }
+
+    #[test]
+    fn current_mode_update_keeps_the_available_modes() {
+        let mut controls = Controls::default();
+        controls.setup(&json!({
+            "modes": {
+                "currentModeId": "default",
+                "availableModes": [
+                    {"id": "default", "name": "Manual"},
+                    {"id": "plan", "name": "Plan"},
+                ],
+            },
+        }));
+        let events = session_update_events(
+            &json!({"sessionUpdate": "current_mode_update", "currentModeId": "plan"}),
+            &mut controls,
+        );
+        let [ChatEvent::Modes(modes)] = events.as_slice() else {
+            panic!("expected Modes, got {events:?}");
+        };
+        assert_eq!(modes.current, "plan");
+        assert_eq!(modes.available.len(), 2);
+        assert_eq!(modes.available[1].name, "Plan");
+    }
+
+    #[test]
+    fn answers_to_set_calls_update_the_controls() {
+        let mut controls = Controls::default();
+        controls.setup(&json!({
+            "modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Manual"}]},
+            "configOptions": [
+                {"id": "effort", "name": "Effort", "category": "thought_level", "type": "select",
+                 "currentValue": "high", "options": [{"value": "high", "name": "High"}, {"value": "low", "name": "Low"}]},
+            ],
+        }));
+
+        // A set_config_option answer without options: the value is applied locally.
+        let options = only_config_options(vec![controls.set_option_value("effort", "low")]);
+        assert_eq!(option(&options, "effort").current_name(), "Low");
+        assert_eq!(controls.option_label("effort"), "Effort");
+        assert_eq!(controls.option_label("unknown"), "unknown");
+
+        // A set_mode answer keeps the list and changes the current mode.
+        assert_eq!(
+            controls.set_current_mode("plan"),
+            ChatEvent::Modes(SessionModes {
+                current: "plan".to_owned(),
+                available: vec![SessionMode {
+                    id: "default".to_owned(),
+                    name: "Manual".to_owned(),
+                    description: None,
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn session_info_update_maps_titles_and_ignores_null() {
+        assert_eq!(
+            events(
+                json!({"sessionUpdate": "session_info_update", "title": "Fix the build", "updatedAt": "2026-10-12T03:23:20Z"})
+            ),
+            vec![ChatEvent::Title("Fix the build".to_owned())]
+        );
+        // Codex sends status-only updates with no title; a null title is also ignored.
+        assert!(
+            events(json!({"sessionUpdate": "session_info_update", "_meta": {"codex": {}}}))
+                .is_empty()
+        );
+        assert!(events(json!({"sessionUpdate": "session_info_update", "title": null})).is_empty());
+        assert!(events(json!({"sessionUpdate": "session_info_update", "title": "  "})).is_empty());
+    }
+
+    /// Real `usage_update` from the Claude and Codex spike logs. Extra fields are ignored.
+    #[test]
+    fn usage_update_maps_used_and_size() {
+        assert_eq!(
+            events(json!({
+                "sessionUpdate": "usage_update",
+                "used": 19821,
+                "size": 475000,
+                "_meta": {"_claude/model": "claude-opus-5-5"},
+            })),
+            vec![ChatEvent::Usage(ContextUsage {
+                used: 19821,
+                size: 475000,
+            })]
+        );
+        assert!(events(json!({"sessionUpdate": "usage_update", "used": 1})).is_empty());
+    }
+
+    /// Trimmed from the real `available_commands_update` of codex-acp 2.2.2.
+    #[test]
+    fn available_commands_map_input_hints() {
+        assert_eq!(
+            events(json!({
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [
+                    {"name": "plan", "description": "Turn plan mode on.", "input": null},
+                    {"name": "mcp", "description": "Show the status of the MCP servers, or reconnect them.",
+                     "input": {"hint": "[reconnect]"}},
+                ],
+            })),
+            vec![ChatEvent::Commands(vec![
+                SlashCommand {
+                    name: "plan".to_owned(),
+                    description: "Turn plan mode on.".to_owned(),
+                    input_hint: None,
+                },
+                SlashCommand {
+                    name: "mcp".to_owned(),
+                    description: "Show the status of the MCP servers, or reconnect them."
+                        .to_owned(),
+                    input_hint: Some("[reconnect]".to_owned()),
+                },
+            ])]
+        );
+        // An empty list replaces the old one; a missing list changes nothing.
+        assert_eq!(
+            events(json!({"sessionUpdate": "available_commands_update", "availableCommands": []})),
+            vec![ChatEvent::Commands(Vec::new())]
+        );
+        assert!(events(json!({"sessionUpdate": "available_commands_update"})).is_empty());
+    }
+
+    #[test]
+    fn prompt_blocks_add_percent_encoded_resource_links() {
+        let files = [
+            PromptFile {
+                path: "/Users/me/My Project/src/main.rs".to_owned(),
+                label: "src/main.rs".to_owned(),
+            },
+            PromptFile {
+                path: "/tmp/café.md".to_owned(),
+                label: "café.md".to_owned(),
+            },
+        ];
+        assert_eq!(
+            prompt_blocks("look", &files),
+            json!([
+                {"type": "text", "text": "look"},
+                {"type": "resource_link", "uri": "file:///Users/me/My%20Project/src/main.rs", "name": "src/main.rs"},
+                {"type": "resource_link", "uri": "file:///tmp/caf%C3%A9.md", "name": "café.md"},
+            ])
+        );
+        assert_eq!(
+            prompt_blocks("plain", &[]),
+            json!([{"type": "text", "text": "plain"}])
+        );
+        assert_eq!(file_uri("/a%b#c?d+e"), "file:///a%25b%23c%3Fd%2Be");
     }
 }

@@ -26,13 +26,14 @@ use serde_json::{Value, json};
 
 use crate::domain::agent_chat::{
     ChatAgent, ChatCapabilities, ChatCommand, ChatEvent, PermissionOption, PermissionResolution,
+    PromptFile,
 };
 
 use super::{AgentChatConnection, AgentLaunch, SessionTarget};
 use child::{ExitSlot, join_before, signal_group, signal_name};
 use mapping::{
-    Negotiated, SessionSupport, parse_initialize, permission_item, permission_outcome,
-    requires_sign_in, session_update_events,
+    Controls, MODEL_OPTION_ID, Negotiated, SessionSupport, parse_config_options, parse_initialize,
+    permission_item, permission_outcome, prompt_blocks, requires_sign_in, session_update_events,
 };
 use rpc::{INVALID_PARAMS, Incoming, Outbox, RpcError, StreamEnd, lock};
 use terminals::Terminals;
@@ -210,6 +211,18 @@ enum Pending {
         session_id: String,
     },
     Prompt,
+    SetMode {
+        mode_id: String,
+    },
+    /// `option_id` names the option in an error message.
+    SetConfigOption {
+        option_id: String,
+        value: String,
+    },
+    /// `session/set_model`, used for the synthetic model option.
+    SetModel {
+        model_id: String,
+    },
     /// `done` wakes the shutdown path once the agent has answered (or failed).
     CloseSession {
         done: mpsc::Sender<()>,
@@ -232,6 +245,7 @@ struct Session {
     closing: bool,
     next_permission_id: u64,
     permissions: HashMap<u64, PendingPermission>,
+    controls: Controls,
 }
 
 /// State shared by every thread of one connection.
@@ -282,7 +296,8 @@ impl Shared {
         if method == "session/update"
             && let Some(update) = params.get("update")
         {
-            for event in session_update_events(update) {
+            let events = session_update_events(update, &mut lock(&self.session).controls);
+            for event in events {
                 self.emitter.emit(event);
             }
         }
@@ -301,6 +316,11 @@ impl Shared {
                 self.on_resume_session(session_id, result)
             }
             Some(Pending::Prompt) => self.on_prompt_finished(result),
+            Some(Pending::SetMode { mode_id }) => self.on_set_mode(mode_id, result),
+            Some(Pending::SetConfigOption { option_id, value }) => {
+                self.on_set_config_option(option_id, value, result)
+            }
+            Some(Pending::SetModel { model_id }) => self.on_set_model(model_id, result),
             Some(Pending::CloseSession { done }) => {
                 let _ = done.send(());
             }
@@ -356,7 +376,7 @@ impl Shared {
     fn on_new_session(&self, result: Result<Value, RpcError>) {
         match result {
             Ok(value) => match value.get("sessionId").and_then(Value::as_str) {
-                Some(session_id) => self.session_started(session_id.to_owned(), false),
+                Some(session_id) => self.session_started(session_id.to_owned(), false, &value),
                 None => self.end(Some(format!(
                     "The {} agent did not return a session id.",
                     self.agent.label()
@@ -368,7 +388,7 @@ impl Shared {
 
     fn on_load_session(&self, session_id: String, result: Result<Value, RpcError>) {
         match result {
-            Ok(_) => self.session_started(session_id, true),
+            Ok(value) => self.session_started(session_id, true, &value),
             // Method not found: this agent cannot load, so try resume if it has it.
             Err(error)
                 if error.code == rpc::METHOD_NOT_FOUND && lock(&self.session).support.resume =>
@@ -381,7 +401,7 @@ impl Shared {
 
     fn on_resume_session(&self, session_id: String, result: Result<Value, RpcError>) {
         match result {
-            Ok(_) => self.session_started(session_id, true),
+            Ok(value) => self.session_started(session_id, true, &value),
             Err(error) => self.fail_setup(error),
         }
     }
@@ -400,10 +420,19 @@ impl Shared {
         );
     }
 
-    fn session_started(&self, session_id: String, loaded: bool) {
-        lock(&self.session).session_id = Some(session_id.clone());
+    /// `setup` is the `session/new`, `load` or `resume` result. Its modes and
+    /// config options go out right after `SessionStarted`.
+    fn session_started(&self, session_id: String, loaded: bool, setup: &Value) {
+        let controls = {
+            let mut session = lock(&self.session);
+            session.session_id = Some(session_id.clone());
+            session.controls.setup(setup)
+        };
         self.emitter
             .emit(ChatEvent::SessionStarted { session_id, loaded });
+        for event in controls {
+            self.emitter.emit(event);
+        }
     }
 
     fn on_prompt_finished(&self, result: Result<Value, RpcError>) {
@@ -502,8 +531,12 @@ impl Shared {
 
     fn handle_command(&self, command: ChatCommand) -> bool {
         match command {
-            ChatCommand::Prompt { text } => self.prompt(text),
+            ChatCommand::Prompt { text, files } => self.prompt(text, files),
             ChatCommand::Cancel => self.cancel(),
+            ChatCommand::SetMode { mode_id } => self.set_mode(mode_id),
+            ChatCommand::SetConfigOption { option_id, value } => {
+                self.set_config_option(option_id, value)
+            }
             ChatCommand::ResolvePermission {
                 request_id,
                 resolution,
@@ -516,7 +549,7 @@ impl Shared {
         true
     }
 
-    fn prompt(&self, text: String) {
+    fn prompt(&self, text: String, files: Vec<PromptFile>) {
         let session_id = {
             let mut session = lock(&self.session);
             if session.closing {
@@ -534,10 +567,117 @@ impl Shared {
             Ok(session_id) => self.send_request(
                 Pending::Prompt,
                 "session/prompt",
-                json!({"sessionId": session_id, "prompt": [{"type": "text", "text": text}]}),
+                json!({"sessionId": session_id, "prompt": prompt_blocks(&text, &files)}),
             ),
             Err(message) => self.emitter.emit(ChatEvent::Error {
                 message: message.to_owned(),
+            }),
+        }
+    }
+
+    /// The session id for a call that needs an open session.
+    fn ready_session_id(&self) -> Result<String, &'static str> {
+        lock(&self.session)
+            .session_id
+            .clone()
+            .ok_or("The chat session is not ready yet.")
+    }
+
+    /// `session/set_mode`. The view's mode changes when the agent answers.
+    fn set_mode(&self, mode_id: String) {
+        match self.ready_session_id() {
+            Ok(session_id) => self.send_request(
+                Pending::SetMode {
+                    mode_id: mode_id.clone(),
+                },
+                "session/set_mode",
+                json!({"sessionId": session_id, "modeId": mode_id}),
+            ),
+            Err(message) => self.emitter.emit(ChatEvent::Error {
+                message: message.to_owned(),
+            }),
+        }
+    }
+
+    /// `session/set_config_option`, or `session/set_model` for the synthetic
+    /// model option.
+    fn set_config_option(&self, option_id: String, value: String) {
+        let session_id = match self.ready_session_id() {
+            Ok(session_id) => session_id,
+            Err(message) => {
+                return self.emitter.emit(ChatEvent::Error {
+                    message: message.to_owned(),
+                });
+            }
+        };
+        if option_id == MODEL_OPTION_ID {
+            self.send_request(
+                Pending::SetModel {
+                    model_id: value.clone(),
+                },
+                "session/set_model",
+                json!({"sessionId": session_id, "modelId": value}),
+            );
+        } else {
+            self.send_request(
+                Pending::SetConfigOption {
+                    option_id: option_id.clone(),
+                    value: value.clone(),
+                },
+                "session/set_config_option",
+                json!({"sessionId": session_id, "configId": option_id, "value": value}),
+            );
+        }
+    }
+
+    fn on_set_mode(&self, mode_id: String, result: Result<Value, RpcError>) {
+        match result {
+            Ok(_) => {
+                let event = lock(&self.session).controls.set_current_mode(&mode_id);
+                self.emitter.emit(event);
+            }
+            Err(error) => self.emitter.emit(ChatEvent::Error {
+                message: format!("The agent could not change the mode: {}", error.message),
+            }),
+        }
+    }
+
+    /// Uses the options the agent sends back. Without them, the new value is
+    /// applied locally.
+    fn on_set_config_option(
+        &self,
+        option_id: String,
+        value: String,
+        result: Result<Value, RpcError>,
+    ) {
+        match result {
+            Ok(response) => {
+                let event = {
+                    let mut session = lock(&self.session);
+                    match parse_config_options(&response) {
+                        Some(options) => session.controls.replace_options(options),
+                        None => session.controls.set_option_value(&option_id, &value),
+                    }
+                };
+                self.emitter.emit(event);
+            }
+            Err(error) => {
+                let label = lock(&self.session).controls.option_label(&option_id);
+                self.emitter.emit(ChatEvent::Error {
+                    message: format!("The agent could not change {label}: {}", error.message),
+                });
+            }
+        }
+    }
+
+    fn on_set_model(&self, model_id: String, result: Result<Value, RpcError>) {
+        match result {
+            Ok(_) => {
+                let event = lock(&self.session).controls.set_model(&model_id);
+                self.emitter.emit(event);
+            }
+            Err(error) => self.emitter.emit(ChatEvent::Error {
+                message: format!("The agent could not change the model: {}", error.message),
             }),
         }
     }
@@ -722,8 +862,9 @@ mod tests {
     use std::fs;
 
     use crate::domain::agent_chat::{
-        PermissionItem, PermissionOptionKind, ToolCallItem, ToolCallUpdate, ToolContent, ToolKind,
-        ToolStatus,
+        ConfigCategory, ConfigOption, ConfigValue, ContextUsage, PermissionItem,
+        PermissionOptionKind, SessionMode, SessionModes, SlashCommand, ToolCallItem,
+        ToolCallUpdate, ToolContent, ToolKind, ToolStatus,
     };
 
     use super::*;
@@ -758,6 +899,21 @@ def update(session_id, payload):
           "params": {"sessionId": session_id, "update": payload}})
 
 
+# Mode `controls` keeps the session's mode and effort, as an agent would.
+state = {"mode": "default", "effort": "high"}
+
+
+def controls_options():
+    return [
+        {"id": "mode", "name": "Mode", "category": "mode", "type": "select",
+         "currentValue": state["mode"],
+         "options": [{"value": "default", "name": "Manual"}, {"value": "plan", "name": "Plan"}]},
+        {"id": "effort", "name": "Effort", "category": "thought_level", "type": "select",
+         "currentValue": state["effort"],
+         "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]},
+    ]
+
+
 while True:
     message = read()
     if message is None:
@@ -775,8 +931,56 @@ while True:
             "agentCapabilities": {"loadSession": False,
                                   "promptCapabilities": {"image": False},
                                   "sessionCapabilities": {"close": {}}}}})
+    elif method == "session/new" and mode == "controls":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {
+            "sessionId": "sess-1",
+            "modes": {"currentModeId": "default", "availableModes": [
+                {"id": "default", "name": "Manual", "description": "Ask before changes"},
+                {"id": "plan", "name": "Plan", "description": "Plan first"}]},
+            "configOptions": controls_options(),
+            "models": {"currentModelId": "m1", "availableModels": [
+                {"modelId": "m1", "name": "Model One"},
+                {"modelId": "m2", "name": "Model Two", "description": "Larger"}]}}})
+        update("sess-1", {"sessionUpdate": "available_commands_update", "availableCommands": [
+            {"name": "review", "description": "Review changes", "input": {"hint": "optional instructions"}},
+            {"name": "compact", "description": "Summarize", "input": None}]})
+        update("sess-1", {"sessionUpdate": "session_info_update", "title": "Fix the build",
+                          "updatedAt": "2026-10-12T00:00:00Z"})
+        update("sess-1", {"sessionUpdate": "usage_update", "used": 1200, "size": 200000})
     elif method == "session/new":
         send({"jsonrpc": "2.0", "id": request_id, "result": {"sessionId": "sess-1"}})
+    elif method == "session/prompt" and mode == "controls":
+        # Echo the prompt blocks so the test can check what went on the wire.
+        update(params["sessionId"], {"sessionUpdate": "agent_message_chunk",
+                                     "content": {"type": "text", "text": json.dumps(params["prompt"])}})
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"stopReason": "end_turn"}})
+    elif method == "session/set_mode" and mode == "controls":
+        if params["modeId"] == "bogus":
+            send({"jsonrpc": "2.0", "id": request_id,
+                  "error": {"code": -32602, "message": "Unknown mode bogus"}})
+        else:
+            state["mode"] = params["modeId"]
+            update(params["sessionId"], {"sessionUpdate": "current_mode_update",
+                                         "currentModeId": params["modeId"]})
+            update(params["sessionId"], {"sessionUpdate": "config_option_update",
+                                         "configOptions": controls_options()})
+            send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+    elif method == "session/set_config_option" and mode == "controls":
+        if params["configId"] == "nope":
+            send({"jsonrpc": "2.0", "id": request_id,
+                  "error": {"code": -32602, "message": "Unknown config option nope"}})
+        elif params["configId"] == "effort":
+            # No options in the answer: the client has to apply the value itself.
+            state["effort"] = params["value"]
+            send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+        else:
+            state["mode"] = params["value"]
+            send({"jsonrpc": "2.0", "id": request_id,
+                  "result": {"configOptions": controls_options()}})
+    elif method == "session/set_model" and mode == "controls":
+        update(params["sessionId"], {"sessionUpdate": "config_option_update",
+                                     "configOptions": controls_options()})
+        send({"jsonrpc": "2.0", "id": request_id, "result": {}})
     elif method == "session/prompt":
         session_id = params["sessionId"]
         update(session_id, {"sessionUpdate": "agent_message_chunk",
@@ -932,6 +1136,7 @@ while True:
         connection
             .commands
             .try_send(ChatCommand::Prompt {
+                files: Vec::new(),
                 text: "run echo".to_owned(),
             })
             .expect("send the prompt");
@@ -981,6 +1186,7 @@ while True:
         connection
             .commands
             .try_send(ChatCommand::Prompt {
+                files: Vec::new(),
                 text: "again".to_owned(),
             })
             .expect("send the second prompt");
@@ -1041,6 +1247,242 @@ while True:
             next_event(&connection.events),
             ChatEvent::Exited { message: None }
         );
+    }
+
+    fn config_value(value: &str, name: &str) -> ConfigValue {
+        ConfigValue {
+            value: value.to_owned(),
+            name: name.to_owned(),
+            description: None,
+        }
+    }
+
+    /// The `mode` and `effort` options the `controls` fake agent reports.
+    fn controls_options(mode: &str, effort: &str) -> Vec<ConfigOption> {
+        vec![
+            ConfigOption {
+                id: "mode".to_owned(),
+                name: "Mode".to_owned(),
+                category: ConfigCategory::Mode,
+                current: mode.to_owned(),
+                values: vec![
+                    config_value("default", "Manual"),
+                    config_value("plan", "Plan"),
+                ],
+            },
+            ConfigOption {
+                id: "effort".to_owned(),
+                name: "Effort".to_owned(),
+                category: ConfigCategory::ThoughtLevel,
+                current: effort.to_owned(),
+                values: vec![config_value("low", "Low"), config_value("high", "High")],
+            },
+        ]
+    }
+
+    /// The `ConfigOptions` event for the agent's options plus the synthetic model
+    /// option, which the fake agent reports through `models`.
+    fn with_model(mut options: Vec<ConfigOption>, model: &str) -> ChatEvent {
+        options.push(ConfigOption {
+            id: "__model".to_owned(),
+            name: "Model".to_owned(),
+            category: ConfigCategory::Model,
+            current: model.to_owned(),
+            values: vec![
+                config_value("m1", "Model One"),
+                ConfigValue {
+                    value: "m2".to_owned(),
+                    name: "Model Two".to_owned(),
+                    description: Some("Larger".to_owned()),
+                },
+            ],
+        });
+        ChatEvent::ConfigOptions(options)
+    }
+
+    fn next_error(events: &async_channel::Receiver<ChatEvent>) -> String {
+        let ChatEvent::Error { message } = next_event(events) else {
+            panic!("expected an error event");
+        };
+        message
+    }
+
+    #[test]
+    fn fake_agent_session_controls_round_trip() {
+        let Some(python) = python3() else {
+            eprintln!("skipping: python3 is not installed");
+            return;
+        };
+        let agent = FakeAgent::new("controls", "controls", python);
+        let connection = spawn(
+            ChatAgent::Codex,
+            agent.launch.clone(),
+            agent.dir.clone(),
+            SessionTarget::New,
+        )
+        .expect("spawn the fake agent");
+        let send = |command: ChatCommand| {
+            connection
+                .commands
+                .try_send(command)
+                .expect("send the command")
+        };
+        let events = &connection.events;
+
+        assert!(matches!(next_event(events), ChatEvent::Initialized { .. }));
+        assert_eq!(
+            next_event(events),
+            ChatEvent::SessionStarted {
+                session_id: "sess-1".to_owned(),
+                loaded: false,
+            }
+        );
+        let modes = SessionModes {
+            current: "default".to_owned(),
+            available: vec![
+                SessionMode {
+                    id: "default".to_owned(),
+                    name: "Manual".to_owned(),
+                    description: Some("Ask before changes".to_owned()),
+                },
+                SessionMode {
+                    id: "plan".to_owned(),
+                    name: "Plan".to_owned(),
+                    description: Some("Plan first".to_owned()),
+                },
+            ],
+        };
+        assert_eq!(next_event(events), ChatEvent::Modes(modes.clone()));
+        assert_eq!(
+            next_event(events),
+            with_model(controls_options("default", "high"), "m1")
+        );
+        // Notifications the agent sends right after the session is set up.
+        assert_eq!(
+            next_event(events),
+            ChatEvent::Commands(vec![
+                SlashCommand {
+                    name: "review".to_owned(),
+                    description: "Review changes".to_owned(),
+                    input_hint: Some("optional instructions".to_owned()),
+                },
+                SlashCommand {
+                    name: "compact".to_owned(),
+                    description: "Summarize".to_owned(),
+                    input_hint: None,
+                },
+            ])
+        );
+        assert_eq!(
+            next_event(events),
+            ChatEvent::Title("Fix the build".to_owned())
+        );
+        assert_eq!(
+            next_event(events),
+            ChatEvent::Usage(ContextUsage {
+                used: 1200,
+                size: 200_000,
+            })
+        );
+
+        // set_mode: the agent's notifications come first, then its answer.
+        send(ChatCommand::SetMode {
+            mode_id: "plan".to_owned(),
+        });
+        let planned = SessionModes {
+            current: "plan".to_owned(),
+            ..modes.clone()
+        };
+        assert_eq!(next_event(events), ChatEvent::Modes(planned.clone()));
+        assert_eq!(
+            next_event(events),
+            with_model(controls_options("plan", "high"), "m1")
+        );
+        assert_eq!(next_event(events), ChatEvent::Modes(planned));
+
+        send(ChatCommand::SetMode {
+            mode_id: "bogus".to_owned(),
+        });
+        assert_eq!(
+            next_error(events),
+            "The agent could not change the mode: Unknown mode bogus"
+        );
+
+        // An answer without options: the new value is applied locally.
+        send(ChatCommand::SetConfigOption {
+            option_id: "effort".to_owned(),
+            value: "low".to_owned(),
+        });
+        assert_eq!(
+            next_event(events),
+            with_model(controls_options("plan", "low"), "m1")
+        );
+
+        // An answer with the full option list replaces the options.
+        send(ChatCommand::SetConfigOption {
+            option_id: "mode".to_owned(),
+            value: "default".to_owned(),
+        });
+        assert_eq!(
+            next_event(events),
+            with_model(controls_options("default", "low"), "m1")
+        );
+
+        send(ChatCommand::SetConfigOption {
+            option_id: "nope".to_owned(),
+            value: "x".to_owned(),
+        });
+        assert_eq!(
+            next_error(events),
+            "The agent could not change nope: Unknown config option nope"
+        );
+
+        // The model goes through session/set_model. The agent's config_option_update
+        // leaves the model out, and the answer then sets it.
+        send(ChatCommand::SetConfigOption {
+            option_id: "__model".to_owned(),
+            value: "m2".to_owned(),
+        });
+        assert_eq!(
+            next_event(events),
+            with_model(controls_options("default", "low"), "m1")
+        );
+        assert_eq!(
+            next_event(events),
+            with_model(controls_options("default", "low"), "m2")
+        );
+
+        // The prompt goes out as text plus a percent-encoded resource link.
+        send(ChatCommand::Prompt {
+            text: "look".to_owned(),
+            files: vec![PromptFile {
+                path: "/Users/me/My Project/main.rs".to_owned(),
+                label: "main.rs".to_owned(),
+            }],
+        });
+        let ChatEvent::AgentMessageChunk { text } = next_event(events) else {
+            panic!("expected the echoed prompt");
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("the prompt is JSON"),
+            json!([
+                {"type": "text", "text": "look"},
+                {
+                    "type": "resource_link",
+                    "uri": "file:///Users/me/My%20Project/main.rs",
+                    "name": "main.rs",
+                },
+            ])
+        );
+        assert_eq!(
+            next_event(events),
+            ChatEvent::TurnFinished {
+                stop_reason: "end_turn".to_owned(),
+            }
+        );
+
+        send(ChatCommand::Shutdown);
+        assert_eq!(next_event(events), ChatEvent::Exited { message: None });
     }
 
     #[test]

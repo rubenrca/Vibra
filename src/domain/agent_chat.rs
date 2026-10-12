@@ -233,6 +233,8 @@ pub enum NoticeLevel {
 pub enum ChatItem {
     UserMessage {
         text: String,
+        /// Labels of the files attached with `@`.
+        files: Vec<String>,
     },
     /// Markdown, accumulated from streamed chunks.
     AssistantMessage {
@@ -262,6 +264,82 @@ pub enum ChatConnectionState {
     Closed {
         message: Option<String>,
     },
+}
+
+/// A session mode the agent offers (for example "Ask", "Code", "Auto").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionMode {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionModes {
+    pub current: String,
+    pub available: Vec<SessionMode>,
+}
+
+/// What a session config option controls. The composer shows `Model` and
+/// `ThoughtLevel` together as the model picker, and `Mode` as the mode picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigCategory {
+    Model,
+    ThoughtLevel,
+    Mode,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigValue {
+    pub value: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// A select-style session option (ACP `configOptions`, or the agent's model
+/// list normalized into one). Reply with `id` and a `ConfigValue::value`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigOption {
+    pub id: String,
+    pub name: String,
+    pub category: ConfigCategory,
+    pub current: String,
+    pub values: Vec<ConfigValue>,
+}
+
+impl ConfigOption {
+    pub fn current_name(&self) -> &str {
+        self.values
+            .iter()
+            .find(|value| value.value == self.current)
+            .map_or(self.current.as_str(), |value| value.name.as_str())
+    }
+}
+
+/// Context window use, from ACP `usage_update`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextUsage {
+    pub used: u64,
+    pub size: u64,
+}
+
+/// A command the agent accepts as `/name` in a prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    /// Hint for the text after the command, when it takes one.
+    pub input_hint: Option<String>,
+}
+
+/// A file attached to a prompt (`@` reference), sent as an ACP resource link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptFile {
+    /// Absolute path.
+    pub path: String,
+    /// Label shown in the chat, usually the path relative to the project.
+    pub label: String,
 }
 
 /// Backend → view.
@@ -299,6 +377,15 @@ pub enum ChatEvent {
     TurnFinished {
         stop_reason: String,
     },
+    /// Current and available session modes (session setup or `current_mode_update`).
+    Modes(SessionModes),
+    /// The full set of session config options; replaces the previous set.
+    ConfigOptions(Vec<ConfigOption>),
+    /// Session title from `session_info_update`.
+    Title(String),
+    Usage(ContextUsage),
+    /// Replaces the available slash commands.
+    Commands(Vec<SlashCommand>),
     /// A recoverable failure; the connection stays open.
     Error {
         message: String,
@@ -314,8 +401,18 @@ pub enum ChatEvent {
 pub enum ChatCommand {
     Prompt {
         text: String,
+        files: Vec<PromptFile>,
     },
     Cancel,
+    /// `session/set_mode`.
+    SetMode {
+        mode_id: String,
+    },
+    /// Changes a `ConfigOption` to one of its values.
+    SetConfigOption {
+        option_id: String,
+        value: String,
+    },
     ResolvePermission {
         request_id: u64,
         resolution: PermissionResolution,
@@ -342,6 +439,11 @@ pub struct ChatTimeline {
     pub state: Option<ChatConnectionState>,
     /// Terminal output by `terminal_id`, with its exit status once known.
     pub terminals: Vec<(String, String, Option<i32>)>,
+    pub title: Option<String>,
+    pub modes: Option<SessionModes>,
+    pub config_options: Vec<ConfigOption>,
+    pub usage: Option<ContextUsage>,
+    pub commands: Vec<SlashCommand>,
     /// Set while the agent may still echo the last local prompt.
     pending_echo: Option<PendingEcho>,
 }
@@ -404,6 +506,11 @@ impl ChatTimeline {
                     self.push_notice(NoticeLevel::Info, text);
                 }
             }
+            ChatEvent::Modes(modes) => self.modes = Some(modes),
+            ChatEvent::ConfigOptions(options) => self.config_options = options,
+            ChatEvent::Title(title) => self.title = Some(title),
+            ChatEvent::Usage(usage) => self.usage = Some(usage),
+            ChatEvent::Commands(commands) => self.commands = commands,
             ChatEvent::Error { message } => self.push_notice(NoticeLevel::Error, &message),
             ChatEvent::Exited { message } => {
                 self.state = Some(ChatConnectionState::Closed { message });
@@ -413,12 +520,12 @@ impl ChatTimeline {
     }
 
     /// Records a prompt the user sent before the agent echoes anything.
-    pub fn push_user_prompt(&mut self, text: String) {
+    pub fn push_user_prompt(&mut self, text: String, files: Vec<String>) {
         self.pending_echo = Some(PendingEcho {
             prompt: text.clone(),
             seen: String::new(),
         });
-        self.items.push(ChatItem::UserMessage { text });
+        self.items.push(ChatItem::UserMessage { text, files });
         self.state = Some(ChatConnectionState::Working);
     }
 
@@ -449,7 +556,10 @@ impl ChatTimeline {
             }
             // Not an echo of the local prompt, so it is a separate message.
             self.pending_echo = None;
-            self.items.push(ChatItem::UserMessage { text: candidate });
+            self.items.push(ChatItem::UserMessage {
+                text: candidate,
+                files: Vec::new(),
+            });
             return;
         }
         self.append_text(TextKind::User, text);
@@ -461,7 +571,7 @@ impl ChatTimeline {
             return;
         }
         let appended = match (self.items.last_mut(), kind) {
-            (Some(ChatItem::UserMessage { text: last }), TextKind::User)
+            (Some(ChatItem::UserMessage { text: last, .. }), TextKind::User)
             | (Some(ChatItem::AssistantMessage { text: last }), TextKind::Assistant)
             | (Some(ChatItem::Reasoning { text: last }), TextKind::Reasoning) => {
                 last.push_str(&text);
@@ -471,7 +581,10 @@ impl ChatTimeline {
         };
         if !appended {
             self.items.push(match kind {
-                TextKind::User => ChatItem::UserMessage { text },
+                TextKind::User => ChatItem::UserMessage {
+                    text,
+                    files: Vec::new(),
+                },
                 TextKind::Assistant => ChatItem::AssistantMessage { text },
                 TextKind::Reasoning => ChatItem::Reasoning { text },
             });
@@ -755,10 +868,11 @@ mod tests {
     #[test]
     fn user_prompt_starts_a_working_turn() {
         let mut timeline = replay(vec![ready()]);
-        timeline.push_user_prompt("hi".to_owned());
+        timeline.push_user_prompt("hi".to_owned(), Vec::new());
         assert_eq!(
             timeline.items,
             vec![ChatItem::UserMessage {
+                files: Vec::new(),
                 text: "hi".to_owned()
             }]
         );
@@ -768,12 +882,13 @@ mod tests {
     #[test]
     fn echo_of_local_prompt_is_not_duplicated() {
         let mut timeline = replay(vec![ready()]);
-        timeline.push_user_prompt("hello world".to_owned());
+        timeline.push_user_prompt("hello world".to_owned(), Vec::new());
         timeline.apply(user_chunk("hello"));
         timeline.apply(user_chunk(" world"));
         assert_eq!(
             timeline.items,
             vec![ChatItem::UserMessage {
+                files: Vec::new(),
                 text: "hello world".to_owned()
             }]
         );
@@ -791,15 +906,17 @@ mod tests {
     #[test]
     fn echo_that_differs_from_local_prompt_is_a_new_message() {
         let mut timeline = replay(vec![ready()]);
-        timeline.push_user_prompt("hi".to_owned());
+        timeline.push_user_prompt("hi".to_owned(), Vec::new());
         timeline.apply(user_chunk("other"));
         assert_eq!(
             timeline.items,
             vec![
                 ChatItem::UserMessage {
+                    files: Vec::new(),
                     text: "hi".to_owned()
                 },
                 ChatItem::UserMessage {
+                    files: Vec::new(),
                     text: "other".to_owned()
                 },
             ]
@@ -809,19 +926,21 @@ mod tests {
     #[test]
     fn echo_window_closes_on_any_other_event() {
         let mut timeline = replay(vec![ready()]);
-        timeline.push_user_prompt("hi".to_owned());
+        timeline.push_user_prompt("hi".to_owned(), Vec::new());
         timeline.apply(agent_chunk("ok"));
         timeline.apply(user_chunk("hi"));
         assert_eq!(
             timeline.items,
             vec![
                 ChatItem::UserMessage {
+                    files: Vec::new(),
                     text: "hi".to_owned()
                 },
                 ChatItem::AssistantMessage {
                     text: "ok".to_owned()
                 },
                 ChatItem::UserMessage {
+                    files: Vec::new(),
                     text: "hi".to_owned()
                 },
             ]
@@ -834,6 +953,7 @@ mod tests {
         assert_eq!(
             timeline.items,
             vec![ChatItem::UserMessage {
+                files: Vec::new(),
                 text: "ab".to_owned()
             }]
         );
@@ -947,7 +1067,7 @@ mod tests {
         let second = vec![plan_entry("a", PlanEntryStatus::Completed)];
         let third = vec![plan_entry("b", PlanEntryStatus::Pending)];
         let mut timeline = replay(vec![ready()]);
-        timeline.push_user_prompt("one".to_owned());
+        timeline.push_user_prompt("one".to_owned(), Vec::new());
         timeline.apply(ChatEvent::Plan(vec![plan_entry(
             "a",
             PlanEntryStatus::Pending,
@@ -957,13 +1077,14 @@ mod tests {
             timeline.items,
             vec![
                 ChatItem::UserMessage {
+                    files: Vec::new(),
                     text: "one".to_owned()
                 },
                 ChatItem::Plan(second.clone()),
             ]
         );
 
-        timeline.push_user_prompt("two".to_owned());
+        timeline.push_user_prompt("two".to_owned(), Vec::new());
         timeline.apply(ChatEvent::Plan(third.clone()));
         assert_eq!(timeline.items.len(), 4);
         assert_eq!(timeline.items[1], ChatItem::Plan(second));
@@ -1070,7 +1191,7 @@ mod tests {
             ChatEvent::ToolCall(running),
             ChatEvent::PermissionRequested(permission(3)),
         ]);
-        timeline.push_user_prompt("go".to_owned());
+        timeline.push_user_prompt("go".to_owned(), Vec::new());
         timeline.apply(ChatEvent::Exited {
             message: Some("boom".to_owned()),
         });

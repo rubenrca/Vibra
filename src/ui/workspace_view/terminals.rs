@@ -107,6 +107,7 @@ impl WorkspaceView {
             if let Some(chat) = self.agent_chats.remove(&session_id) {
                 chat.view.update(cx, |view, cx| view.shutdown(cx));
             }
+            self.pending_chat_panes.remove(&session_id);
             if let Some(terminal) = self.terminals.remove(&session_id) {
                 terminal.read(cx).shutdown();
             }
@@ -202,6 +203,7 @@ impl WorkspaceView {
         self.sync_terminal_surface_visibility(cx);
         self.sync_diff_root(cx);
         self.refresh_project_files(cx);
+        self.refresh_chat_contexts(cx);
         self.persist(cx);
     }
 
@@ -253,6 +255,7 @@ impl WorkspaceView {
                         self.refresh_project_files(cx);
                     }
                 }
+                self.refresh_chat_contexts(cx);
                 if changed {
                     self.persist(cx);
                 } else {

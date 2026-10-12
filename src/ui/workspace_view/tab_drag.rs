@@ -1,8 +1,8 @@
 //! Stable drop targets shared by terminal tabs, review tabs and split panes.
 
 use gpui::{
-    AnyElement, App, Bounds, Context, DragMoveEvent, MouseButton, Pixels, Point, SharedString,
-    Window, div, prelude::*, px, relative, svg,
+    AnyElement, App, Bounds, Context, DragMoveEvent, MouseButton, MouseDownEvent, Pixels, Point,
+    SharedString, Window, div, prelude::*, px, relative, svg,
 };
 use uuid::Uuid;
 
@@ -10,7 +10,10 @@ use crate::domain::workspace::{PaneSplitDirection, WorkspaceTabId};
 use crate::ui::theme::colors;
 
 use super::panes::{TAB_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS};
-use super::{PaneDrag, ReorderDrag, ReorderSlot, TabDrag, TabStripDrop, WorkspaceView};
+use super::{
+    ChatTarget, ContextMenuKind, PaneDrag, ReorderDrag, ReorderSlot, TabDrag, TabStripDrop,
+    WorkspaceView,
+};
 
 impl WorkspaceView {
     /// The strip as it will look after the drop. The dragged tab leaves a gap
@@ -427,8 +430,29 @@ impl WorkspaceView {
             .when(!dragging, |zone| {
                 zone.child(
                     super::titlebar::titlebar_button("tab-bar-new-tab", true)
-                        .tooltip(|_, cx| super::sidebar_tooltip("New tab · ⌘T", cx))
+                        .tooltip(|_, cx| {
+                            super::sidebar_tooltip("New tab · ⌘T · Right-click for chat", cx)
+                        })
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        // Right-click offers agent chats for the new tab.
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                if let Some(project_id) = this.snapshot.selected_project_id {
+                                    let x: f32 = event.position.x.into();
+                                    let y: f32 = event.position.y.into();
+                                    this.open_context_menu(
+                                        ContextMenuKind::ChatAgentPicker {
+                                            target: ChatTarget::NewTab(project_id),
+                                        },
+                                        x,
+                                        y,
+                                        cx,
+                                    );
+                                }
+                                cx.stop_propagation();
+                            }),
+                        )
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_terminal_tab_in_project(window, cx);
                         }))

@@ -9,6 +9,9 @@ mod tool_card;
 mod tooltip;
 
 use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender, TrySendError};
 use gpui::{
@@ -16,9 +19,10 @@ use gpui::{
 };
 
 use crate::domain::agent_chat::{
-    ChatAgent, ChatCommand, ChatConnectionState, ChatEvent, ChatItem, ChatTimeline,
+    ChatAgent, ChatCommand, ChatConnectionState, ChatEvent, ChatItem, ChatTimeline, PromptFile,
 };
 use crate::infrastructure::agent_chat::AgentChatConnection;
+use crate::ports::files::FileSystemPort;
 use timeline::dirty_indices;
 
 /// Events the workspace reacts to.
@@ -33,6 +37,35 @@ pub enum AgentChatViewEvent {
     SwitchToTerminal,
     /// The connection closed (process exit or failure).
     Closed,
+}
+
+/// Workspace facts the composer shows; the workspace refreshes them with
+/// `AgentChatView::set_context`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChatViewContext {
+    /// Branch checked out in the pane's working directory.
+    pub branch: Option<String>,
+    /// Whether the working directory is a linked Git worktree.
+    pub worktree: bool,
+    /// The agent provider's quota windows, shortest first (for example 5 h, then weekly).
+    pub quota: Vec<QuotaMeter>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuotaMeter {
+    /// Short window name, for example "5h" or "Week".
+    pub label: String,
+    /// 0.0 … 100.0.
+    pub used_percent: f32,
+    /// Human text such as "3h 52m"; `None` when unknown.
+    pub resets_in: Option<String>,
+}
+
+/// Where `@` references search for files.
+#[derive(Clone)]
+pub struct FileSearch {
+    pub port: Arc<dyn FileSystemPort>,
+    pub root: PathBuf,
 }
 
 pub struct AgentChatView {
@@ -50,6 +83,16 @@ pub struct AgentChatView {
     connection: Option<AgentChatConnection>,
     /// Forwards backend events into the timeline. Dropping it stops the forwarding.
     events_task: Option<gpui::Task<()>>,
+    /// When the running turn started; drives "working for …".
+    turn_started: Option<Instant>,
+    /// Redraws once a second while a turn runs.
+    tick_task: Option<gpui::Task<()>>,
+    context: ChatViewContext,
+    file_search: Option<FileSearch>,
+    /// Files referenced with `@` for the next prompt.
+    attachments: Vec<PromptFile>,
+    /// Popups and selection state owned by `composer.rs`.
+    composer: composer::ComposerState,
 }
 
 impl AgentChatView {
@@ -95,6 +138,19 @@ impl AgentChatView {
             .any(|item| matches!(item, ChatItem::UserMessage { .. }))
     }
 
+    /// Updates the branch, worktree and quota the composer shows.
+    pub fn set_context(&mut self, context: ChatViewContext, cx: &mut Context<Self>) {
+        if self.context != context {
+            self.context = context;
+            cx.notify();
+        }
+    }
+
+    /// Sets where `@` references look for files; `None` disables them.
+    pub fn set_file_search(&mut self, file_search: Option<FileSearch>) {
+        self.file_search = file_search;
+    }
+
     /// Sends `Shutdown` and drops the connection; used before a handoff.
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
         if let Some(commands) = self.commands.take() {
@@ -136,6 +192,12 @@ impl AgentChatView {
             commands: None,
             connection: None,
             events_task: None,
+            turn_started: None,
+            tick_task: None,
+            context: ChatViewContext::default(),
+            file_search: None,
+            attachments: Vec::new(),
+            composer: composer::ComposerState::default(),
         }
     }
 
@@ -166,6 +228,10 @@ impl AgentChatView {
         };
         let exited = matches!(event, ChatEvent::Exited { .. });
         self.timeline.apply(event);
+        if !self.is_working() {
+            self.turn_started = None;
+            self.tick_task = None;
+        }
         self.sync_list(count, &dirty);
         if let Some(session_id) = session_started {
             cx.emit(AgentChatViewEvent::SessionBound {
@@ -212,11 +278,32 @@ impl AgentChatView {
             return;
         }
         self.draft.clear();
-        self.timeline.push_user_prompt(text.clone());
+        let files = std::mem::take(&mut self.attachments);
+        let labels = files.iter().map(|file| file.label.clone()).collect();
+        self.timeline.push_user_prompt(text.clone(), labels);
         // A prompt means the reader wants the newest message, so pin to the bottom.
         self.list_state.reset(self.timeline.items.len());
-        self.send(ChatCommand::Prompt { text }, cx);
+        self.send(ChatCommand::Prompt { text, files }, cx);
+        self.start_turn_clock(cx);
         cx.notify();
+    }
+
+    fn start_turn_clock(&mut self, cx: &mut Context<Self>) {
+        self.turn_started = Some(Instant::now());
+        self.tick_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let working = this
+                    .update(cx, |view, cx| {
+                        cx.notify();
+                        view.is_working()
+                    })
+                    .unwrap_or(false);
+                if !working {
+                    return;
+                }
+            }
+        }));
     }
 
     fn cancel_turn(&mut self, cx: &mut Context<Self>) {
@@ -318,7 +405,7 @@ mod tests {
         });
         assert!(matches!(
             commands_rx.try_recv(),
-            Ok(ChatCommand::Prompt { text }) if text == "hi"
+            Ok(ChatCommand::Prompt { text, .. }) if text == "hi"
         ));
         view.read_with(cx, |view, _| {
             assert!(view.draft.is_empty());

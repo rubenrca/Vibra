@@ -4,12 +4,12 @@ use gpui::{
     AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px, relative, svg,
 };
 
-use crate::domain::agent_chat::ChatAgent;
 use crate::domain::workspace::PaneSplitDirection;
 use crate::ui::menu::{menu_border, menu_hover, menu_panel};
 use crate::ui::theme::{colors, surface_tint};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
+use super::pane_chat::available_chat_agents;
 use super::{PaletteAction, PaletteItem, PaletteMode, RightSidebarMode, WorkspaceSection};
 
 impl super::WorkspaceView {
@@ -174,16 +174,25 @@ impl super::WorkspaceView {
                 detail: project.root_path.clone(),
                 action: PaletteAction::SelectProject(project.id),
             }));
-            items.extend(
-                ChatAgent::ALL
-                    .into_iter()
-                    .filter(|agent| crate::infrastructure::agent_chat::launch::is_available(*agent))
-                    .map(|agent| PaletteItem {
-                        label: format!("Chat: Open with {}", agent.label()),
+            items.extend(available_chat_agents().into_iter().flat_map(|agent| {
+                [
+                    PaletteItem {
+                        label: format!("Chat: New pane with {}", agent.label()),
+                        detail: "Split right with a chat".into(),
+                        action: PaletteAction::NewChatPane(agent),
+                    },
+                    PaletteItem {
+                        label: format!("Chat: New tab with {}", agent.label()),
                         detail: "New agent chat in the current folder".into(),
-                        action: PaletteAction::OpenChat(agent),
-                    }),
-            );
+                        action: PaletteAction::NewChatTab(agent),
+                    },
+                    PaletteItem {
+                        label: format!("Chat: Show this pane as {}", agent.label()),
+                        detail: "Switch the selected pane to chat".into(),
+                        action: PaletteAction::ShowPaneAsChat(agent),
+                    },
+                ]
+            }));
         }
         if mode != PaletteMode::Files {
             let query = self.palette_query.to_lowercase();
@@ -227,10 +236,28 @@ impl super::WorkspaceView {
                 self.focus_selected_terminal(window, cx);
             }
             PaletteAction::ShowSection(section) => self.select_section(section, window, cx),
-            PaletteAction::OpenChat(agent) => {
+            PaletteAction::NewChatPane(agent) => {
+                if let Some(session_id) = self.snapshot.selected_session().map(|session| session.id)
+                {
+                    self.split_pane_with_chat(
+                        session_id,
+                        PaneSplitDirection::Right,
+                        agent,
+                        window,
+                        cx,
+                    );
+                }
+            }
+            PaletteAction::NewChatTab(agent) => {
                 if let Some(project_id) = self.snapshot.selected_project_id {
                     let cwd = self.selected_live_cwd(cx);
                     self.open_agent_chat_tab(project_id, agent, cwd, window, cx);
+                }
+            }
+            PaletteAction::ShowPaneAsChat(agent) => {
+                if let Some(session_id) = self.snapshot.selected_session().map(|session| session.id)
+                {
+                    self.show_pane_as_chat(session_id, agent, window, cx);
                 }
             }
             PaletteAction::ShowSettings => {

@@ -1,12 +1,12 @@
 //! Split pane layout, tab strip, and pane keyboard/mouse actions.
 
 use gpui::{
-    AnyElement, Context, Div, DragMoveEvent, MouseButton, MouseDownEvent, MouseUpEvent,
+    AnyElement, ClickEvent, Context, Div, DragMoveEvent, MouseButton, MouseDownEvent, MouseUpEvent,
     SharedString, Stateful, Window, WindowControlArea, div, prelude::*, px, relative, svg,
 };
 use uuid::Uuid;
 
-use crate::domain::agent_chat::{ChatAgent, PaneViewMode};
+use crate::domain::agent_chat::{AgentChatBinding, ChatAgent, PaneViewMode};
 use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
     WorkspaceSplitAxis, WorkspaceTabId,
@@ -100,6 +100,23 @@ fn pane_view_segment(
         })
         .tooltip(move |_, cx| super::sidebar_tooltip(tooltip, cx))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(label)
+}
+
+/// A bordered text button for the chat placeholder.
+fn chat_placeholder_button(id: String, label: &'static str) -> Stateful<Div> {
+    div()
+        .id(SharedString::from(id))
+        .px_3()
+        .py_1()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(colors().border_subtle)
+        .cursor_pointer()
+        .text_size(px(11.5))
+        .text_color(colors().foreground)
+        .hover(|button| button.bg(colors().hover))
+        .tooltip(move |_, cx| super::sidebar_tooltip(label, cx))
         .child(label)
 }
 
@@ -392,7 +409,7 @@ impl super::WorkspaceView {
         match layout {
             PaneLayoutSnapshot::Terminal { id } => {
                 let session_id = *id;
-                self.ensure_pane_chat(session_id, window, cx);
+                self.connect_waiting_pane_chat(session_id, window, cx);
                 let mode = self.pane_view_mode(session_id);
                 let terminal = self.terminals.get(&session_id).cloned();
                 let has_terminal = terminal.is_some();
@@ -426,9 +443,10 @@ impl super::WorkspaceView {
                         .unwrap_or_else(|| "Terminal".into()),
                     preview: drag_preview,
                 };
-                // Split panes get a header: grip to reorder, title, zoom, close. Panes
-                // with a chat agent also get one, for the Terminal | Chat switch.
-                let show_header = can_drag || self.pane_chat_agent(session_id).is_some();
+                // Split panes get a header: grip to reorder, title, zoom, close. A pane
+                // with a chat binding also gets one, for the Terminal | Chat switch.
+                let show_header =
+                    can_drag || self.snapshot.agent_chat_binding(session_id).is_some();
                 let zoomed = self
                     .snapshot
                     .selected_tab()
@@ -613,10 +631,7 @@ impl super::WorkspaceView {
             .as_ref()
             .map(|identity| identity.title.clone())
             .unwrap_or_else(|| "Terminal".to_owned());
-        let view_switch = self
-            .pane_chat_agent(session_id)
-            .is_some()
-            .then(|| self.pane_view_switch(session_id, cx));
+        let view_switch = self.pane_view_switch(session_id, cx);
         let button = |id: String, icon: &'static str, label: &'static str| {
             div()
                 .id(SharedString::from(id))
@@ -715,7 +730,7 @@ impl super::WorkspaceView {
                     })
                     .child(title),
             )
-            .when_some(view_switch, |header, switch| header.child(switch))
+            .child(view_switch)
             .child(
                 button(
                     format!("pane-zoom-{session_id}"),
@@ -766,9 +781,11 @@ impl super::WorkspaceView {
             "Show agent chat",
             mode == PaneViewMode::Chat,
         )
-        .on_click(cx.listener(move |this, _, window, cx| {
-            this.select_terminal(session_id, window, cx);
-            this.set_pane_view_mode(session_id, PaneViewMode::Chat, window, cx);
+        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+            let position = event.position();
+            let x: f32 = position.x.into();
+            let y: f32 = position.y.into();
+            this.click_pane_chat_control(session_id, x, y, window, cx);
         }));
         div()
             .id(SharedString::from(format!("pane-view-switch-{session_id}")))
@@ -786,24 +803,39 @@ impl super::WorkspaceView {
             .into_any_element()
     }
 
-    /// Chat content of a pane in chat view. While the same agent still runs in
-    /// the terminal, the pane waits instead of starting a second owner.
+    /// Chat content of a pane in chat view while no chat is connected. Nothing
+    /// connects here: the user presses Reconnect, or the pane waits for its
+    /// terminal agent to exit after the user asked for the chat.
     pub(super) fn pane_chat_body(&self, session_id: Uuid, cx: &mut Context<Self>) -> AnyElement {
         if let Some(chat) = self.agent_chats.get(&session_id) {
             return chat.view.clone().into_any_element();
         }
-        let agent = self
-            .pane_chat_agent(session_id)
-            .map_or("the agent", ChatAgent::label);
-        // Grok reports no session id, so its chat starts a new session.
-        let resumes = self
-            .snapshot
-            .agent_chat_binding(session_id)
-            .is_some_and(|binding| binding.session_id.is_some());
-        let message = if resumes {
-            format!("Quit {agent} in the terminal to continue this session here.")
+        let Some(binding) = self.snapshot.agent_chat_binding(session_id).cloned() else {
+            return div()
+                .size_full()
+                .bg(surface(colors().terminal))
+                .into_any_element();
+        };
+        let agent = binding.agent.label();
+        let (message, reconnect) = if self.pending_chat_panes.contains(&session_id) {
+            (
+                format!(
+                    "{agent} is still running in the terminal. The chat connects when it exits."
+                ),
+                false,
+            )
+        } else if self.agent_running_in_terminal(session_id, binding.agent) {
+            (format!("Quit {agent} in the terminal to chat here."), false)
+        } else if binding.session_id.is_some() {
+            (
+                "Not connected. Reconnect to continue this session.".to_owned(),
+                true,
+            )
         } else {
-            format!("Quit {agent} in the terminal to start a chat here.")
+            (
+                "Not connected. Reconnect to start a new session.".to_owned(),
+                true,
+            )
         };
         div()
             .size_full()
@@ -811,9 +843,16 @@ impl super::WorkspaceView {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap_3()
+            .gap_2()
             .px_4()
             .bg(surface(colors().terminal))
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(colors().foreground)
+                    .child(agent),
+            )
             .child(
                 div()
                     .max_w(px(360.0))
@@ -824,23 +863,44 @@ impl super::WorkspaceView {
             )
             .child(
                 div()
-                    .id(SharedString::from(format!(
-                        "pane-chat-show-terminal-{session_id}"
-                    )))
-                    .px_3()
-                    .py_1()
-                    .rounded(px(5.0))
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .cursor_pointer()
-                    .text_size(px(11.5))
-                    .text_color(colors().foreground)
-                    .hover(|button| button.bg(colors().hover))
-                    .tooltip(|_, cx| super::sidebar_tooltip("Show terminal", cx))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_pane_view_mode(session_id, PaneViewMode::Terminal, window, cx);
-                    }))
-                    .child("Show terminal"),
+                    .mt_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .when(reconnect, |row| {
+                        row.child(
+                            chat_placeholder_button(
+                                format!("pane-chat-reconnect-{session_id}"),
+                                "Reconnect",
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.set_pane_view_mode(
+                                        session_id,
+                                        PaneViewMode::Chat,
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            )),
+                        )
+                    })
+                    .child(
+                        chat_placeholder_button(
+                            format!("pane-chat-show-terminal-{session_id}"),
+                            "Show terminal",
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.set_pane_view_mode(
+                                    session_id,
+                                    PaneViewMode::Terminal,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )),
+                    ),
             )
             .into_any_element()
     }
@@ -937,15 +997,54 @@ impl super::WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.split_selected_pane(direction, None, window, cx);
+    }
+
+    /// Splits `session_id` and shows a new `agent` chat in the new pane.
+    pub(super) fn split_pane_with_chat(
+        &mut self,
+        session_id: Uuid,
+        direction: PaneSplitDirection,
+        agent: ChatAgent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.snapshot.select_terminal_global(session_id) {
+            self.split_selected_pane(direction, Some(agent), window, cx);
+        }
+    }
+
+    fn split_selected_pane(
+        &mut self,
+        direction: PaneSplitDirection,
+        chat: Option<ChatAgent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.select_section(WorkspaceSection::Workspace, window, cx);
         self.reveal_terminal(cx);
         self.capture_selected_working_directory(cx);
-        if let Some(session_id) = self.snapshot.split_selected_terminal(direction) {
-            self.reconcile_terminal_views(cx);
-            self.sync_diff_root(cx);
-            self.persist(cx);
-            self.focus_terminal(session_id, window, cx);
+        let Some(session_id) = self.snapshot.split_selected_terminal(direction) else {
+            return;
+        };
+        // The new pane starts a new chat session. Its shell still runs behind the chat.
+        if let Some(agent) = chat {
+            self.snapshot.set_agent_chat_binding(
+                session_id,
+                Some(AgentChatBinding {
+                    agent,
+                    session_id: None,
+                    mode: PaneViewMode::Chat,
+                }),
+            );
         }
+        self.reconcile_terminal_views(cx);
+        self.sync_diff_root(cx);
+        if chat.is_some() {
+            self.connect_pane_chat(session_id, window, cx);
+        }
+        self.persist(cx);
+        self.focus_terminal(session_id, window, cx);
     }
 
     pub(super) fn focus_pane(

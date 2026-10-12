@@ -120,6 +120,8 @@ impl WorkspaceView {
             self.branch_summary = summary;
             cx.notify();
         }
+        // Chats show the branch, so they follow every summary poll.
+        self.refresh_chat_contexts(cx);
     }
 
     pub(super) fn current_branch_summary(&self) -> Option<&GitBranchSummary> {

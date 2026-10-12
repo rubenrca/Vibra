@@ -55,8 +55,27 @@ pub(super) enum PaletteAction {
     ShowFiles,
     ShowSettings,
     ShowSection(WorkspaceSection),
-    OpenChat(ChatAgent),
+    /// A new pane split right of the selected pane, showing a chat.
+    NewChatPane(ChatAgent),
+    /// A new tab in the selected project, showing a chat.
+    NewChatTab(ChatAgent),
+    /// Switches the selected pane to a chat with this agent.
+    ShowPaneAsChat(ChatAgent),
     OpenFile(PathBuf),
+}
+
+/// Where a chat chosen from the agent picker goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChatTarget {
+    /// The pane's own view, from its Terminal | Chat control.
+    Pane(Uuid),
+    /// A new pane split from this one.
+    Split {
+        session_id: Uuid,
+        direction: PaneSplitDirection,
+    },
+    /// A new tab in this project.
+    NewTab(Uuid),
 }
 
 #[derive(Debug, Clone)]
@@ -68,9 +87,17 @@ pub(super) struct PaletteItem {
 
 #[derive(Debug, Clone)]
 pub(super) enum ContextMenuKind {
-    Pane { session_id: Uuid },
-    Project { project_id: Uuid },
+    Pane {
+        session_id: Uuid,
+    },
+    Project {
+        project_id: Uuid,
+    },
     SidebarBackground,
+    /// Chat agents to choose from, for a pane or a new tab.
+    ChatAgentPicker {
+        target: ChatTarget,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -107,5 +134,12 @@ pub(super) enum ContextMenuAction {
     SplitRight,
     SplitDown,
     ToggleZoom,
-    OpenChat(ChatAgent),
+    /// Switches the menu's pane to a chat with this agent.
+    ShowAsChat(ChatAgent),
+    /// Opens the agent picker for `ChatTarget` next to the menu.
+    OpenChatPicker(ChatTarget),
+    /// Starts a chat with this agent at the picker's target.
+    StartChat(ChatAgent),
+    /// Closes the menu without acting, for a picker with no agents.
+    Dismiss,
 }

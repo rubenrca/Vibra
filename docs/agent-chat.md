@@ -79,3 +79,44 @@ Recommendation: bind Grok panes by the directory-watch method, and always confir
 - Interactive TUI resume (`grok -r`, `claude --resume`, `codex resume`) was not launched interactively. Grok was verified headless with `-p`.
 - Codex out-of-sandbox approvals and Grok approvals were not triggered.
 - MCP servers were not exercised. No sign-in was performed; all three used existing logins.
+
+## Session controls
+
+Captured with `initialize` and `session/new` only (no prompts), then `session/set_mode`, `session/set_config_option` and `session/set_model` calls that re-sent each agent's current value, so nothing changed. Probe: `target/agent-chat-work/r2a/probe.py` and `probe_set.py`; raw messages in `target/agent-chat-work/r2a/out/`. `session/load` results carry the same fields for all three (spike logs).
+
+| Agent | Modes (`modes`) | Model | Thought level | Other options |
+|---|---|---|---|---|
+| Grok 1.0.52 | none | `configOptions` `model` (4 values), plus `models` | `reasoning_effort`, category `thought_level` (4 values) | none |
+| Claude 0.89.1 | 5: Manual, Accept edits, Plan, Auto, Bypass permissions | `configOptions` `model` (13 values, current `opus`); no `models` | `effort`, category `thought_level` (6 values) | `mode` (mirrors `modes`), `fast` (`model_config`), `agent` (no category; the user's plugin agents) |
+| Codex 2.2.2 | 4: Read-only, Workspace access, Auto review, Full access | `configOptions` `model` (7 values), plus `models` (40 ids such as `gpt-6.1-sol[xhigh]`) | `reasoning_effort`, category `thought_level` (6 values) | `mode` (mirrors `modes`), `collaboration_mode` (Default, Plan), `fast-mode` (`model_config`) |
+
+Shapes, trimmed from the real responses:
+
+```json
+{"sessionId": "…",
+ "modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Manual", "description": "Always ask before making changes"}]},
+ "configOptions": [{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "opus",
+   "options": [{"value": "opus", "name": "Opus 5.5", "description": "For complex work and everyday tasks"}]}]}
+```
+
+Grok's `models` has the same shape with `currentModelId` and `availableModels[{modelId, name, description, _meta}]`. Codex's `models` is the same shape and each id bundles the effort (`gpt-6.1-sol[xhigh]`), so Vibra uses the `model` and `reasoning_effort` options instead.
+
+Answers to the set calls:
+
+- `session/set_mode` returns `{}` (Claude, Codex). Grok has no modes.
+- `session/set_config_option` returns `{configOptions}` (all three).
+- `session/set_model` returns `{}` (Codex) or `{_meta: …}` (Grok). Neither returns options, so the value is applied locally. Claude has no `models` and changes the model with `set_config_option`.
+
+Notifications seen:
+
+- `available_commands_update` after setup (all three). Grok sent further copies about 3 s after setup.
+- `current_mode_update` and `config_option_update` after a Claude mode or config change. `config_option_update` also came after Grok's set calls. Codex sent neither on its no-op calls.
+- `session_info_update`: `title` appears after the first prompt (spike logs). Codex also sends updates with no title, only `_meta`.
+- `usage_update` `{used, size}` after turns (spike logs: Claude 22224 of 1000000, Codex 19821 of 475000).
+- Vendor notifications (`_x.ai/*`, `_auth/status_update`) are ignored.
+
+Mapping rules:
+
+- The synthetic model option (`__model`, from `models`) is added only when no option has category `model`. None of the three needs it.
+- `session/set_model` is used only for `__model`. Real options go through `session/set_config_option`.
+- Grouped options (`{group, name, options}`) are flattened. Boolean options are skipped.

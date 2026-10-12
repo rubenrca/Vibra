@@ -99,8 +99,15 @@ pub struct WorkspaceView {
     pending_focus_session: Option<Uuid>,
     terminals: HashMap<Uuid, Entity<TerminalView>>,
     terminal_subscriptions: HashMap<Uuid, Subscription>,
-    /// Chat view per pane, created the first time the pane shows it.
+    /// Chat view per pane, created when the user asks for the chat.
     agent_chats: HashMap<Uuid, pane_chat::PaneChat>,
+    /// Panes the user switched to chat while their terminal agent still ran.
+    /// They connect when that agent exits; restored panes never wait here.
+    pending_chat_panes: HashSet<Uuid>,
+    /// Whether each working directory is a linked Git worktree, once checked.
+    linked_worktrees: HashMap<PathBuf, bool>,
+    /// Working directories whose worktree check is still running.
+    worktree_checks: HashSet<PathBuf>,
     /// External paste token → destination pane. DiffView owns the comments.
     pending_review_pastes: HashMap<Uuid, Uuid>,
     automation_tokens: HashMap<Uuid, Uuid>,

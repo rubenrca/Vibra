@@ -1,17 +1,18 @@
 //! Chrome around the timeline: the header strip, the list or its empty and
-//! closed states, and the footer (composer or closed notice).
+//! closed states, the working line and the footer (composer or closed card).
+
+mod header;
+mod working;
 
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, Render, Rgba, Window, div, list, prelude::*, px,
-    svg,
+    AnyElement, Context, FontWeight, MouseButton, Render, Window, div, list, prelude::*, px,
 };
 
-use super::composer::closed_notice;
-use super::tooltip::tooltip;
-use super::{AgentChatView, AgentChatViewEvent};
+use super::AgentChatView;
 use crate::domain::agent_chat::ChatConnectionState;
 use crate::ui::agent_marks::agent_compact_badge;
 use crate::ui::theme::{MONO_FONT, colors, surface, surface_tint};
+use working::model_name;
 
 impl Render for AgentChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -35,126 +36,43 @@ impl Render for AgentChatView {
 }
 
 impl AgentChatView {
-    fn header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (label, color) = self.state_label();
-        div()
-            .h(px(30.0))
-            .w_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .border_b_1()
-            .border_color(colors().border_subtle)
-            .child(agent_compact_badge(
-                Some(self.agent.label()),
-                None,
-                None,
-                true,
-            ))
-            .child(
-                div()
-                    .text_size(px(12.5))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(self.agent.label()),
-            )
-            .child(div().text_size(px(11.5)).text_color(color).child(label))
-            .child(div().flex_1())
-            .child(self.continue_button(cx))
-            .into_any_element()
-    }
-
-    fn state_label(&self) -> (&'static str, Rgba) {
-        match &self.timeline.state {
-            None | Some(ChatConnectionState::Starting) => ("Starting…", colors().subtle),
-            Some(ChatConnectionState::Ready) => ("Ready", colors().subtle),
-            Some(ChatConnectionState::Working) => ("Working…", colors().accent),
-            Some(ChatConnectionState::Closed { .. }) => ("Closed", colors().subtle),
-        }
-    }
-
-    fn continue_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let enabled = self.session_id().is_some();
-        div()
-            .id("agent-chat-continue-terminal")
-            .h(px(22.0))
-            .px_2()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_1()
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(colors().border_subtle)
-            .text_size(px(12.0))
-            .text_color(if enabled {
-                colors().foreground
-            } else {
-                colors().subtle
-            })
-            .when(enabled, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(|button| button.bg(colors().hover))
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        cx.emit(AgentChatViewEvent::SwitchToTerminal);
-                    }))
-            })
-            .when(!enabled, |button| button.opacity(0.5))
-            .tooltip(|_, cx| tooltip("Resume this session in the terminal", cx))
-            .child(
-                svg()
-                    .path("chrome-icons/terminal.svg")
-                    .size(px(12.0))
-                    .flex_none()
-                    .text_color(colors().muted),
-            )
-            .child("Continue in Terminal")
-            .into_any_element()
-    }
-
     fn body(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.timeline.items.is_empty() {
             return self.empty_body();
         }
+        let status = self.working_line();
         div()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
-            .overflow_hidden()
-            .px_4()
-            .pt_3()
+            .flex()
+            .flex_col()
             .child(
-                list(
-                    self.list_state.clone(),
-                    cx.processor(|this, index: usize, _, cx| this.render_item(index, cx)),
-                )
-                .size_full(),
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .w_full()
+                    .overflow_hidden()
+                    .px_4()
+                    .pt_3()
+                    .child(
+                        list(
+                            self.list_state.clone(),
+                            cx.processor(|this, index: usize, _, cx| this.render_item(index, cx)),
+                        )
+                        .size_full(),
+                    ),
             )
+            .children(status)
             .into_any_element()
     }
 
-    /// Shown before the first item: connecting, ready for a prompt, or closed.
+    /// Shown before the first item: the agent's identity while it starts or
+    /// waits for a prompt, or the closed card.
     fn empty_body(&self) -> AnyElement {
-        let card = match &self.timeline.state {
+        let content = match &self.timeline.state {
             Some(ChatConnectionState::Closed { message }) => self.closed_card(message.as_deref()),
-            _ => {
-                let text = match self.timeline.state {
-                    Some(ChatConnectionState::Ready) => {
-                        format!(
-                            "Send a message to start working with {}.",
-                            self.agent.label()
-                        )
-                    }
-                    _ => format!("Connecting to {}…", self.agent.label()),
-                };
-                div()
-                    .text_size(px(12.5))
-                    .text_color(colors().subtle)
-                    .child(text)
-                    .into_any_element()
-            }
+            _ => self.identity(),
         };
         div()
             .flex_1()
@@ -164,7 +82,52 @@ impl AgentChatView {
             .items_center()
             .justify_center()
             .px_4()
-            .child(card)
+            .child(content)
+            .into_any_element()
+    }
+
+    /// Agent name, with its model when known, or "Starting…" while it connects.
+    fn identity(&self) -> AnyElement {
+        let label = self.agent.label();
+        let starting = matches!(
+            self.timeline.state,
+            None | Some(ChatConnectionState::Starting)
+        );
+        let detail = if starting {
+            Some("Starting…".to_owned())
+        } else {
+            model_name(&self.timeline.config_options).map(str::to_owned)
+        };
+        let ready = matches!(self.timeline.state, Some(ChatConnectionState::Ready));
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .child(agent_compact_badge(Some(label), None, None, true))
+            .child(
+                div()
+                    .text_size(px(17.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(label),
+            )
+            .when_some(detail, |column, detail| {
+                column.child(
+                    div()
+                        .text_size(px(12.5))
+                        .text_color(colors().muted)
+                        .child(detail),
+                )
+            })
+            .when(ready, |column| {
+                column.child(
+                    div()
+                        .mt_2()
+                        .text_size(px(12.0))
+                        .text_color(colors().subtle)
+                        .child(format!("Send a message to start working with {label}.")),
+                )
+            })
             .into_any_element()
     }
 
@@ -221,15 +184,26 @@ impl AgentChatView {
 
     fn footer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         match &self.timeline.state {
-            // With no items the closed card already shows the message.
-            Some(ChatConnectionState::Closed { message }) if !self.timeline.items.is_empty() => {
+            // With no items the centered closed card in the body already shows the message.
+            Some(ChatConnectionState::Closed { message }) => {
+                if self.timeline.items.is_empty() {
+                    return div().into_any_element();
+                }
                 div()
+                    .w_full()
                     .flex_none()
-                    .child(closed_notice(message.as_deref()))
+                    .flex()
+                    .justify_center()
+                    .px_4()
+                    .pb_3()
+                    .child(self.closed_card(message.as_deref()))
                     .into_any_element()
             }
-            Some(ChatConnectionState::Closed { .. }) => div().into_any_element(),
-            _ => self.composer(window, cx),
+            _ => div()
+                .w_full()
+                .flex_none()
+                .child(self.composer(window, cx))
+                .into_any_element(),
         }
     }
 }

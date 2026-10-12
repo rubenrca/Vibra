@@ -4,15 +4,15 @@ use std::path::Path;
 
 use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px};
 
-use crate::domain::agent_chat::ChatAgent;
 use crate::domain::workspace::PaneSplitDirection;
 use crate::ui::agent_marks::agent_compact_badge;
-use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
+use crate::ui::menu::{MENU_WIDTH, MenuRow, menu_panel, menu_separator};
 use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface_tint};
 
+use super::pane_chat::available_chat_agents;
 use super::{
-    ContextMenuAction, ContextMenuKind, ContextMenuState, RenamePrompt, RenamePromptKind,
-    WorkspaceView,
+    ChatTarget, ContextMenuAction, ContextMenuKind, ContextMenuState, RenamePrompt,
+    RenamePromptKind, WorkspaceView,
 };
 
 impl WorkspaceView {
@@ -126,6 +126,7 @@ impl WorkspaceView {
         let Some(menu) = self.context_menu.take() else {
             return;
         };
+        let (x, y) = (menu.x, menu.y);
         match (menu.kind, action) {
             (ContextMenuKind::SidebarBackground, ContextMenuAction::AddProject) => {
                 self.choose_project_folder(None, false, window, cx);
@@ -180,15 +181,20 @@ impl WorkspaceView {
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::ToggleZoom) => {
                 self.toggle_pane_zoom_for(session_id, window, cx);
             }
-            (ContextMenuKind::Pane { session_id }, ContextMenuAction::OpenChat(agent)) => {
-                if let Some(project_id) = self
-                    .snapshot
-                    .project_for_session(session_id)
-                    .map(|project| project.id)
-                {
-                    let cwd = self.pane_working_directory(session_id, cx);
-                    self.open_agent_chat_tab(project_id, agent, cwd, window, cx);
-                }
+            (ContextMenuKind::Pane { session_id }, ContextMenuAction::ShowAsChat(agent)) => {
+                self.show_pane_as_chat(session_id, agent, window, cx);
+            }
+            (_, ContextMenuAction::OpenChatPicker(target)) => {
+                // The picker opens beside the menu that offered it.
+                self.open_context_menu(
+                    ContextMenuKind::ChatAgentPicker { target },
+                    x + MENU_WIDTH,
+                    y,
+                    cx,
+                );
+            }
+            (ContextMenuKind::ChatAgentPicker { target }, ContextMenuAction::StartChat(agent)) => {
+                self.start_chat_at(target, agent, window, cx);
             }
             _ => cx.notify(),
         }
@@ -198,7 +204,9 @@ impl WorkspaceView {
         let menu = self.context_menu.clone()?;
         let pane_identity = match &menu.kind {
             ContextMenuKind::Pane { session_id } => self.pane_identity_by_id(*session_id, cx),
-            ContextMenuKind::Project { .. } | ContextMenuKind::SidebarBackground => None,
+            ContextMenuKind::Project { .. }
+            | ContextMenuKind::SidebarBackground
+            | ContextMenuKind::ChatAgentPicker { .. } => None,
         };
         let row = |label: &'static str, icon: &'static str, action| {
             Some((MenuRow::new(label).icon(icon), action))
@@ -206,7 +214,7 @@ impl WorkspaceView {
         let entries: Vec<Option<(MenuRow, ContextMenuAction)>> = match &menu.kind {
             ContextMenuKind::Project { project_id } => {
                 let pinned = self.settings.pinned_project_ids.contains(project_id);
-                vec![
+                let mut entries = vec![
                     row(
                         "New tab",
                         "chrome-icons/plus.svg",
@@ -249,7 +257,48 @@ impl WorkspaceView {
                         ContextMenuAction::RemoveProject,
                     )
                     .map(|(item, action)| (item.danger(), action)),
-                ]
+                ];
+                if !available_chat_agents().is_empty() {
+                    entries.insert(
+                        1,
+                        row(
+                            "New chat tab ›",
+                            "chrome-icons/sparkles.svg",
+                            ContextMenuAction::OpenChatPicker(ChatTarget::NewTab(*project_id)),
+                        ),
+                    );
+                }
+                entries
+            }
+            ContextMenuKind::ChatAgentPicker { target } => {
+                let detected = match target {
+                    ChatTarget::Pane(session_id) | ChatTarget::Split { session_id, .. } => {
+                        self.detected_chat_agent(*session_id)
+                    }
+                    ChatTarget::NewTab(_) => None,
+                };
+                let agents = available_chat_agents();
+                if agents.is_empty() {
+                    vec![row(
+                        "No chat agents installed",
+                        "chrome-icons/sparkles.svg",
+                        ContextMenuAction::Dismiss,
+                    )]
+                } else {
+                    agents
+                        .into_iter()
+                        .map(|agent| {
+                            let running = detected == Some(agent);
+                            let mut item = MenuRow::new(agent.label())
+                                .icon("chrome-icons/sparkles.svg")
+                                .checked(running);
+                            if running {
+                                item = item.shortcut("running");
+                            }
+                            Some((item, ContextMenuAction::StartChat(agent)))
+                        })
+                        .collect()
+                }
             }
             ContextMenuKind::SidebarBackground => vec![
                 row(
@@ -259,7 +308,8 @@ impl WorkspaceView {
                 )
                 .map(|(item, action)| (item.shortcut("⇧⌘O"), action)),
             ],
-            ContextMenuKind::Pane { .. } => {
+            ContextMenuKind::Pane { session_id } => {
+                let session_id = *session_id;
                 let mut entries = vec![
                     row(
                         "Rename",
@@ -286,19 +336,33 @@ impl WorkspaceView {
                     )
                     .map(|(item, action)| (item.shortcut("⇧⌘↩"), action)),
                 ];
-                let chat_rows: Vec<_> = ChatAgent::ALL
-                    .into_iter()
-                    .filter(|agent| crate::infrastructure::agent_chat::launch::is_available(*agent))
-                    .map(|agent| {
+                let agents = available_chat_agents();
+                if !agents.is_empty() {
+                    entries.push(None);
+                    entries.push(row(
+                        "Split right with chat ›",
+                        "chrome-icons/split-view.svg",
+                        ContextMenuAction::OpenChatPicker(ChatTarget::Split {
+                            session_id,
+                            direction: PaneSplitDirection::Right,
+                        }),
+                    ));
+                    entries.push(row(
+                        "Split down with chat ›",
+                        "chrome-icons/rows.svg",
+                        ContextMenuAction::OpenChatPicker(ChatTarget::Split {
+                            session_id,
+                            direction: PaneSplitDirection::Down,
+                        }),
+                    ));
+                    entries.extend(agents.into_iter().map(|agent| {
                         Some((
-                            MenuRow::new(format!("Open Chat with {}", agent.label()))
+                            MenuRow::new(format!("Show as Chat with {}", agent.label()))
                                 .icon("chrome-icons/sparkles.svg"),
-                            ContextMenuAction::OpenChat(agent),
+                            ContextMenuAction::ShowAsChat(agent),
                         ))
-                    })
-                    .collect();
-                entries.push(None);
-                entries.extend(chat_rows);
+                    }));
+                }
                 entries.push(None);
                 entries.push(
                     row(
