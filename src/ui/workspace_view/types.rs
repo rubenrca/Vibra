@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 
-use crate::domain::agent_chat::ChatAgent;
 use crate::domain::workspace::PaneSplitDirection;
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
 use crate::ports::files::FileEntry;
@@ -55,27 +54,11 @@ pub(super) enum PaletteAction {
     ShowFiles,
     ShowSettings,
     ShowSection(WorkspaceSection),
-    /// A new pane split right of the selected pane, showing a chat.
-    NewChatPane(ChatAgent),
-    /// A new tab in the selected project, showing a chat.
-    NewChatTab(ChatAgent),
-    /// Switches the selected pane to a chat with this agent.
-    ShowPaneAsChat(ChatAgent),
+    /// A new tab in the selected project, showing a chat with the default agent.
+    NewChat,
+    /// Switches the selected pane between its terminal and its chat.
+    ToggleChat,
     OpenFile(PathBuf),
-}
-
-/// Where a chat chosen from the agent picker goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ChatTarget {
-    /// The pane's own view, from its Terminal | Chat control.
-    Pane(Uuid),
-    /// A new pane split from this one.
-    Split {
-        session_id: Uuid,
-        direction: PaneSplitDirection,
-    },
-    /// A new tab in this project.
-    NewTab(Uuid),
 }
 
 #[derive(Debug, Clone)]
@@ -94,10 +77,8 @@ pub(super) enum ContextMenuKind {
         project_id: Uuid,
     },
     SidebarBackground,
-    /// Chat agents to choose from, for a pane or a new tab.
-    ChatAgentPicker {
-        target: ChatTarget,
-    },
+    /// The chevron next to the tab bar's "+".
+    NewTabMenu,
 }
 
 #[derive(Debug, Clone)]
@@ -134,12 +115,10 @@ pub(super) enum ContextMenuAction {
     SplitRight,
     SplitDown,
     ToggleZoom,
-    /// Switches the menu's pane to a chat with this agent.
-    ShowAsChat(ChatAgent),
-    /// Opens the agent picker for `ChatTarget` next to the menu.
-    OpenChatPicker(ChatTarget),
-    /// Starts a chat with this agent at the picker's target.
-    StartChat(ChatAgent),
-    /// Closes the menu without acting, for a picker with no agents.
-    Dismiss,
+    SplitRightWithChat,
+    SplitDownWithChat,
+    /// Switches the menu's pane between its terminal and its chat.
+    ToggleChat,
+    NewChatTab,
+    NewTerminalTab,
 }

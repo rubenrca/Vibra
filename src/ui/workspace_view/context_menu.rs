@@ -4,15 +4,15 @@ use std::path::Path;
 
 use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px};
 
+use crate::domain::agent_chat::PaneViewMode;
 use crate::domain::workspace::PaneSplitDirection;
 use crate::ui::agent_marks::agent_compact_badge;
-use crate::ui::menu::{MENU_WIDTH, MenuRow, menu_panel, menu_separator};
+use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
 use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface_tint};
 
-use super::pane_chat::available_chat_agents;
 use super::{
-    ChatTarget, ContextMenuAction, ContextMenuKind, ContextMenuState, RenamePrompt,
-    RenamePromptKind, WorkspaceView,
+    ContextMenuAction, ContextMenuKind, ContextMenuState, RenamePrompt, RenamePromptKind,
+    WorkspaceView,
 };
 
 impl WorkspaceView {
@@ -126,7 +126,6 @@ impl WorkspaceView {
         let Some(menu) = self.context_menu.take() else {
             return;
         };
-        let (x, y) = (menu.x, menu.y);
         match (menu.kind, action) {
             (ContextMenuKind::SidebarBackground, ContextMenuAction::AddProject) => {
                 self.choose_project_folder(None, false, window, cx);
@@ -178,23 +177,32 @@ impl WorkspaceView {
                     self.split_pane(PaneSplitDirection::Down, window, cx);
                 }
             }
-            (ContextMenuKind::Pane { session_id }, ContextMenuAction::ToggleZoom) => {
-                self.toggle_pane_zoom_for(session_id, window, cx);
-            }
-            (ContextMenuKind::Pane { session_id }, ContextMenuAction::ShowAsChat(agent)) => {
-                self.show_pane_as_chat(session_id, agent, window, cx);
-            }
-            (_, ContextMenuAction::OpenChatPicker(target)) => {
-                // The picker opens beside the menu that offered it.
-                self.open_context_menu(
-                    ContextMenuKind::ChatAgentPicker { target },
-                    x + MENU_WIDTH,
-                    y,
+            (ContextMenuKind::Pane { session_id }, ContextMenuAction::SplitRightWithChat) => {
+                self.split_pane_with_default_chat(
+                    session_id,
+                    PaneSplitDirection::Right,
+                    window,
                     cx,
                 );
             }
-            (ContextMenuKind::ChatAgentPicker { target }, ContextMenuAction::StartChat(agent)) => {
-                self.start_chat_at(target, agent, window, cx);
+            (ContextMenuKind::Pane { session_id }, ContextMenuAction::SplitDownWithChat) => {
+                self.split_pane_with_default_chat(session_id, PaneSplitDirection::Down, window, cx);
+            }
+            (ContextMenuKind::Pane { session_id }, ContextMenuAction::ToggleZoom) => {
+                self.toggle_pane_zoom_for(session_id, window, cx);
+            }
+            (ContextMenuKind::Pane { session_id }, ContextMenuAction::ToggleChat) => {
+                self.select_terminal(session_id, window, cx);
+                self.toggle_pane_chat_view(session_id, window, cx);
+            }
+            (ContextMenuKind::NewTabMenu, ContextMenuAction::NewChatTab) => {
+                self.new_chat_tab(window, cx);
+            }
+            (ContextMenuKind::NewTabMenu, ContextMenuAction::NewTerminalTab) => {
+                self.open_terminal_tab_in_project(window, cx);
+            }
+            (ContextMenuKind::Project { project_id }, ContextMenuAction::NewChatTab) => {
+                self.new_chat_tab_in_project(project_id, window, cx);
             }
             _ => cx.notify(),
         }
@@ -206,7 +214,7 @@ impl WorkspaceView {
             ContextMenuKind::Pane { session_id } => self.pane_identity_by_id(*session_id, cx),
             ContextMenuKind::Project { .. }
             | ContextMenuKind::SidebarBackground
-            | ContextMenuKind::ChatAgentPicker { .. } => None,
+            | ContextMenuKind::NewTabMenu => None,
         };
         let row = |label: &'static str, icon: &'static str, action| {
             Some((MenuRow::new(label).icon(icon), action))
@@ -258,48 +266,30 @@ impl WorkspaceView {
                     )
                     .map(|(item, action)| (item.danger(), action)),
                 ];
-                if !available_chat_agents().is_empty() {
-                    entries.insert(
-                        1,
-                        row(
-                            "New chat tab ›",
-                            "chrome-icons/sparkles.svg",
-                            ContextMenuAction::OpenChatPicker(ChatTarget::NewTab(*project_id)),
-                        ),
-                    );
-                }
+                entries.insert(
+                    1,
+                    row(
+                        "New chat tab",
+                        "chrome-icons/comment.svg",
+                        ContextMenuAction::NewChatTab,
+                    ),
+                );
                 entries
             }
-            ContextMenuKind::ChatAgentPicker { target } => {
-                let detected = match target {
-                    ChatTarget::Pane(session_id) | ChatTarget::Split { session_id, .. } => {
-                        self.detected_chat_agent(*session_id)
-                    }
-                    ChatTarget::NewTab(_) => None,
-                };
-                let agents = available_chat_agents();
-                if agents.is_empty() {
-                    vec![row(
-                        "No chat agents installed",
-                        "chrome-icons/sparkles.svg",
-                        ContextMenuAction::Dismiss,
-                    )]
-                } else {
-                    agents
-                        .into_iter()
-                        .map(|agent| {
-                            let running = detected == Some(agent);
-                            let mut item = MenuRow::new(agent.label())
-                                .icon("chrome-icons/sparkles.svg")
-                                .checked(running);
-                            if running {
-                                item = item.shortcut("running");
-                            }
-                            Some((item, ContextMenuAction::StartChat(agent)))
-                        })
-                        .collect()
-                }
-            }
+            ContextMenuKind::NewTabMenu => vec![
+                row(
+                    "New Chat",
+                    "chrome-icons/comment.svg",
+                    ContextMenuAction::NewChatTab,
+                )
+                .map(|(item, action)| (item.shortcut("⇧⌘T"), action)),
+                row(
+                    "New Terminal",
+                    "chrome-icons/terminal.svg",
+                    ContextMenuAction::NewTerminalTab,
+                )
+                .map(|(item, action)| (item.shortcut("⌘T"), action)),
+            ],
             ContextMenuKind::SidebarBackground => vec![
                 row(
                     "Add project…",
@@ -309,8 +299,13 @@ impl WorkspaceView {
                 .map(|(item, action)| (item.shortcut("⇧⌘O"), action)),
             ],
             ContextMenuKind::Pane { session_id } => {
-                let session_id = *session_id;
-                let mut entries = vec![
+                let in_chat = self.pane_view_mode(*session_id) == PaneViewMode::Chat;
+                let (chat_label, chat_icon) = if in_chat {
+                    ("Show as Terminal", "chrome-icons/terminal.svg")
+                } else {
+                    ("Show as Chat", "chrome-icons/comment.svg")
+                };
+                vec![
                     row(
                         "Rename",
                         "chrome-icons/pencil.svg",
@@ -330,49 +325,32 @@ impl WorkspaceView {
                     )
                     .map(|(item, action)| (item.shortcut("⇧⌘D"), action)),
                     row(
+                        "Split Right with Chat",
+                        "chrome-icons/comment.svg",
+                        ContextMenuAction::SplitRightWithChat,
+                    ),
+                    row(
+                        "Split Down with Chat",
+                        "chrome-icons/comment.svg",
+                        ContextMenuAction::SplitDownWithChat,
+                    ),
+                    row(
                         "Zoom or restore",
                         "chrome-icons/maximize.svg",
                         ContextMenuAction::ToggleZoom,
                     )
                     .map(|(item, action)| (item.shortcut("⇧⌘↩"), action)),
-                ];
-                let agents = available_chat_agents();
-                if !agents.is_empty() {
-                    entries.push(None);
-                    entries.push(row(
-                        "Split right with chat ›",
-                        "chrome-icons/split-view.svg",
-                        ContextMenuAction::OpenChatPicker(ChatTarget::Split {
-                            session_id,
-                            direction: PaneSplitDirection::Right,
-                        }),
-                    ));
-                    entries.push(row(
-                        "Split down with chat ›",
-                        "chrome-icons/rows.svg",
-                        ContextMenuAction::OpenChatPicker(ChatTarget::Split {
-                            session_id,
-                            direction: PaneSplitDirection::Down,
-                        }),
-                    ));
-                    entries.extend(agents.into_iter().map(|agent| {
-                        Some((
-                            MenuRow::new(format!("Show as Chat with {}", agent.label()))
-                                .icon("chrome-icons/sparkles.svg"),
-                            ContextMenuAction::ShowAsChat(agent),
-                        ))
-                    }));
-                }
-                entries.push(None);
-                entries.push(
+                    None,
+                    row(chat_label, chat_icon, ContextMenuAction::ToggleChat)
+                        .map(|(item, action)| (item.shortcut("⇧⌘A"), action)),
+                    None,
                     row(
                         "Close pane",
                         "chrome-icons/close.svg",
                         ContextMenuAction::ClosePane,
                     )
                     .map(|(item, action)| (item.danger(), action)),
-                );
-                entries
+                ]
             }
         };
         Some(

@@ -209,6 +209,10 @@ pub struct SessionSnapshot {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_task_title: Option<String>,
+    /// Title the chat agent gave this pane's session. Chat view shows it; the
+    /// terminal view keeps the folder or command name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_title: Option<String>,
     pub working_directory: String,
     /// Chat binding for this pane; absent for plain terminals and older files.
     #[serde(default, skip_serializing_if = "Option::is_none")]

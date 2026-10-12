@@ -421,6 +421,21 @@ impl super::WorkspaceSnapshot {
         true
     }
 
+    /// Stores the title a chat agent gave the session; `None` forgets it, as when
+    /// the pane starts a new session. Chat titles share the task title limit.
+    pub fn set_chat_title(&mut self, session_id: Uuid, title: Option<&str>) -> bool {
+        let title =
+            title.and_then(|title| super::clipped_title(title, super::MAX_AGENT_TASK_TITLE_CHARS));
+        let Some(session) = self.session_mut(session_id) else {
+            return false;
+        };
+        if session.chat_title == title {
+            return false;
+        }
+        session.chat_title = title;
+        true
+    }
+
     pub fn update_session_title(&mut self, session_id: Uuid, title: &str) -> bool {
         let Some(title) = super::clipped_title(title, super::MAX_SESSION_TITLE_CHARS) else {
             return false;
@@ -525,6 +540,7 @@ impl SessionSnapshot {
             id: Uuid::new_v4(),
             title: super::DEFAULT_CONTAINER_NAME.to_owned(),
             agent_task_title: None,
+            chat_title: None,
             working_directory,
             agent_chat: None,
         }

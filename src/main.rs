@@ -27,6 +27,7 @@ actions!(
     [
         AddProject,
         NewTerminalTab,
+        NewChat,
         CloseTerminal,
         ToggleLeftSidebar,
         ToggleRightSidebar,
@@ -59,6 +60,7 @@ actions!(
         ResizePaneDown,
         EqualizePanes,
         TogglePaneZoom,
+        ToggleChat,
         ToggleCommandPalette,
         QuickOpen,
         OpenIde,
@@ -145,6 +147,8 @@ fn run() -> Result<()> {
                 KeyBinding::new("shift-cmd-o", AddProject, None),
                 KeyBinding::new("cmd-n", NewTerminalTab, None),
                 KeyBinding::new("cmd-t", NewTerminalTab, None),
+                KeyBinding::new("shift-cmd-t", NewChat, None),
+                KeyBinding::new("shift-cmd-a", ToggleChat, None),
                 KeyBinding::new("cmd-w", CloseTerminal, None),
                 KeyBinding::new("cmd-b", ToggleLeftSidebar, None),
                 KeyBinding::new("alt-cmd-b", ToggleRightSidebar, None),
@@ -215,6 +219,7 @@ fn run() -> Result<()> {
                     items: vec![
                         MenuItem::action("Add Project…", AddProject),
                         MenuItem::action("New Terminal Tab", NewTerminalTab),
+                        MenuItem::action("New Chat", NewChat),
                         MenuItem::separator(),
                         MenuItem::action("Open Current Folder in…", OpenIde),
                         MenuItem::separator(),
@@ -233,6 +238,7 @@ fn run() -> Result<()> {
                     items: vec![
                         MenuItem::action("Toggle Navigation Sidebar", ToggleLeftSidebar),
                         MenuItem::action("Toggle Workspace Sidebar", ToggleRightSidebar),
+                        MenuItem::action("Toggle Chat", ToggleChat),
                         MenuItem::separator(),
                         MenuItem::action("Command Palette", ToggleCommandPalette),
                         MenuItem::action("Quick Open", QuickOpen),

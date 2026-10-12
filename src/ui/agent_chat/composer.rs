@@ -1,19 +1,22 @@
-//! The composer at the bottom of the chat: a card with the draft, attachments,
-//! `/` command and `@` file popups, model and mode pickers, and the context
-//! meter, with the quota line below it. Enter sends, Shift+Enter adds a line,
-//! and Escape closes a popup or stops a running turn.
+//! The composer at the bottom of the chat: a quiet card with the draft,
+//! attachments, the `/` command and `@` file popups, the model and mode menus,
+//! and the context meter, with a footer line below it (see `footer.rs`).
+//! Enter sends, Shift+Enter adds a line, and Escape closes a menu or popup, or
+//! stops a running turn.
 
 mod files;
+mod footer;
 mod meter;
 mod picker;
+mod picker_view;
 mod popups;
 
 use std::path::PathBuf;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, Context, KeyDownEvent, Modifiers, MouseButton, SharedString, Window, div,
-    prelude::*, px, svg,
+    AnyElement, Context, KeyDownEvent, Modifiers, MouseButton, Rgba, ScrollHandle, SharedString,
+    Window, div, prelude::*, px, svg,
 };
 
 use super::AgentChatView;
@@ -21,11 +24,11 @@ use super::tooltip::tooltip;
 use crate::domain::agent_chat::ChatConnectionState;
 use crate::ui::text_edit::{TextKeyOutcome, apply_text_key};
 use crate::ui::theme::{colors, surface_tint};
-use meter::{context_meter, quota_line, working_spinner};
-use picker::{PickerMenu, mode_label, model_label};
+use meter::context_meter;
+use picker::{MenuKey, OpenMenu, mode_label};
 
 /// Shown in the draft field while it is empty.
-const PLACEHOLDER: &str = "Ask, build, / for commands, @ for references…";
+const PLACEHOLDER: &str = "Ask, build, / for commands, @ for files…";
 
 /// Popup, menu and file-index state for the composer.
 #[derive(Debug, Default)]
@@ -35,7 +38,9 @@ pub(super) struct ComposerState {
     /// Set by Escape or a press outside the popup; the next edit reopens it.
     popup_dismissed: bool,
     /// The model or mode menu that is open.
-    menu: Option<PickerMenu>,
+    menu: Option<OpenMenu>,
+    /// Scroll position of the open menu's list, so its highlight stays in view.
+    menu_scroll: ScrollHandle,
     /// Project files relative to `files_root`, from the last completed scan.
     files: Vec<String>,
     files_root: Option<PathBuf>,
@@ -82,6 +87,19 @@ pub(super) fn handle_key(
     }
 }
 
+/// The keys an open model or mode menu uses. Other keys keep editing the draft.
+fn menu_key(key: &str) -> Option<MenuKey> {
+    Some(match key {
+        "up" => MenuKey::Up,
+        "down" => MenuKey::Down,
+        "left" => MenuKey::Left,
+        "right" => MenuKey::Right,
+        "enter" | "return" => MenuKey::Accept,
+        "escape" | "esc" => MenuKey::Close,
+        _ => return None,
+    })
+}
+
 impl AgentChatView {
     pub(super) fn on_key_down(
         &mut self,
@@ -98,11 +116,10 @@ impl AgentChatView {
             }
             return;
         }
-        // Escape closes the innermost open thing first: a menu, then a popup.
-        if self.composer.menu.is_some() && matches!(key, "escape" | "esc") {
-            self.composer.menu = None;
+        // An open menu takes its keys first, so Escape closes it before a popup.
+        if let Some(menu_key) = menu_key(key).filter(|_| self.composer.menu.is_some()) {
+            self.handle_menu_key(menu_key, cx);
             cx.stop_propagation();
-            cx.notify();
             return;
         }
         if self.handle_popup_key(key, &event.keystroke.modifiers, cx) {
@@ -150,13 +167,9 @@ impl AgentChatView {
             .relative()
             .flex()
             .flex_col()
-            .rounded(px(12.0))
+            .rounded(px(14.0))
             .border_1()
-            .border_color(if focused && enabled {
-                colors().accent
-            } else {
-                colors().border_subtle
-            })
+            .border_color(card_border(focused && enabled))
             .bg(surface_tint(colors().elevated, colors().terminal));
         if let Some(header) = self.composer_header() {
             card = card.child(header);
@@ -164,11 +177,9 @@ impl AgentChatView {
         if let Some(chips) = self.attachment_chips(cx) {
             card = card.child(chips);
         }
-        card = card.child(self.composer_input(enabled, focused));
-        if let Some(meter) = context_meter(self.timeline.usage) {
-            card = card.child(meter);
-        }
-        card = card.child(self.composer_toolbar(enabled, cx));
+        card = card
+            .child(self.composer_input(enabled, focused))
+            .child(self.composer_toolbar(enabled, cx));
         if let Some(popup) = &popup {
             card = card.child(self.popup_panel(popup, cx));
         }
@@ -178,14 +189,12 @@ impl AgentChatView {
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(6.0))
-            .px(px(12.0))
+            .gap(px(4.0))
+            .px(px(16.0))
             .pt(px(8.0))
-            .pb(px(12.0))
-            .child(card);
-        if let Some(line) = quota_line(&self.context.quota) {
-            outer = outer.child(line);
-        }
+            .pb(px(10.0))
+            .child(card)
+            .child(self.composer_footer(cx));
         if menu_open {
             // A press outside the open menu closes it. The menu is deferred above this layer.
             outer = outer.child(div().absolute().inset_0().occlude().on_mouse_down(
@@ -199,56 +208,41 @@ impl AgentChatView {
         outer.into_any_element()
     }
 
-    /// Worktree or branch on the left and the working spinner on the right.
-    /// `None` when there is nothing to show.
+    /// The branch the pane's directory is on, quiet, above the draft. Hidden
+    /// when there is no branch.
     fn composer_header(&self) -> Option<AnyElement> {
-        let context = &self.context;
-        let working = self.is_working();
-        if !context.worktree && context.branch.is_none() && !working {
-            return None;
-        }
+        let branch = self.context.branch.clone()?;
         Some(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.0))
-                .px(px(12.0))
-                .pt(px(8.0))
+                .gap(px(6.0))
                 .min_w(px(0.0))
-                .text_size(px(11.5))
+                .px(px(14.0))
+                .pt(px(10.0))
+                .text_size(px(11.0))
                 .text_color(colors().subtle)
-                .when(context.worktree, |row| {
+                .child(
+                    svg()
+                        .path("chrome-icons/git-branch.svg")
+                        .size(px(11.0))
+                        .flex_none()
+                        .text_color(colors().subtle),
+                )
+                .child(div().min_w(px(0.0)).truncate().child(branch))
+                .when(self.context.worktree, |row| {
                     row.child(
                         div()
                             .flex_none()
-                            .h(px(18.0))
-                            .px(px(6.0))
+                            .h(px(16.0))
+                            .px(px(5.0))
                             .flex()
                             .items_center()
-                            .rounded(px(5.0))
+                            .rounded(px(4.0))
                             .bg(colors().hover)
-                            .child("⎇ Worktree"),
+                            .child("Worktree"),
                     )
                 })
-                .when_some(context.branch.clone(), |row, branch| {
-                    row.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .min_w(px(0.0))
-                            .child(
-                                svg()
-                                    .path("chrome-icons/git-branch.svg")
-                                    .size(px(11.0))
-                                    .flex_none()
-                                    .text_color(colors().subtle),
-                            )
-                            .child(div().min_w(px(0.0)).truncate().child(branch)),
-                    )
-                })
-                .child(div().flex_1())
-                .when(working, |row| row.child(working_spinner()))
                 .into_any_element(),
         )
     }
@@ -263,8 +257,8 @@ impl AgentChatView {
                 .flex()
                 .flex_wrap()
                 .gap(px(6.0))
-                .px(px(12.0))
-                .pt(px(8.0))
+                .px(px(14.0))
+                .pt(px(10.0))
                 .children(self.attachments.iter().enumerate().map(|(index, file)| {
                     div()
                         .flex()
@@ -321,11 +315,12 @@ impl AgentChatView {
         let line_count = lines.len();
         div()
             .flex_none()
-            .min_h(px(40.0))
+            .min_h(px(44.0))
             .max_h(px(160.0))
             .overflow_hidden()
-            .px(px(12.0))
-            .py(px(8.0))
+            .px(px(14.0))
+            .pt(px(10.0))
+            .pb(px(4.0))
             .text_size(px(13.0))
             .line_height(px(20.0))
             .text_color(if enabled {
@@ -350,31 +345,26 @@ impl AgentChatView {
             .into_any_element()
     }
 
-    /// The row under the draft: "+", the pickers, and the send or stop button.
+    /// The row under the draft: "+", the model and mode triggers, the context
+    /// meter, and the send or stop button.
     fn composer_toolbar(&self, enabled: bool, cx: &mut Context<Self>) -> AnyElement {
         let mut toolbar = div()
             .flex()
             .items_center()
-            .gap(px(4.0))
+            .gap(px(2.0))
             .px(px(8.0))
             .pb(px(8.0))
-            .child(self.mention_button(enabled, cx));
-        if let Some(label) = model_label(&self.timeline.config_options) {
-            toolbar =
-                toolbar.child(self.picker_button(PickerMenu::Model, label, None, enabled, cx));
-        }
+            .child(self.mention_button(enabled, cx))
+            .child(self.model_trigger(enabled, cx));
         if let Some(label) = mode_label(self.timeline.modes.as_ref(), &self.timeline.config_options)
         {
-            toolbar = toolbar.child(self.picker_button(
-                PickerMenu::Mode,
-                label,
-                Some("chrome-icons/sparkles.svg"),
-                enabled,
-                cx,
-            ));
+            toolbar = toolbar.child(self.mode_trigger(label, enabled, cx));
         }
         toolbar
             .child(div().flex_1())
+            .when_some(context_meter(self.timeline.usage), |row, meter| {
+                row.child(meter)
+            })
             .child(self.action_button(enabled, cx))
             .into_any_element()
     }
@@ -388,7 +378,7 @@ impl AgentChatView {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(7.0))
+            .rounded(px(13.0))
             .when(enabled, |button| {
                 button
                     .cursor_pointer()
@@ -408,40 +398,35 @@ impl AgentChatView {
             .into_any_element()
     }
 
-    /// Stop while a turn runs; otherwise the send button.
+    /// A round stop button while a turn runs; otherwise the round send button.
     fn action_button(&self, enabled: bool, cx: &mut Context<Self>) -> AnyElement {
         if self.is_working() {
             return div()
                 .id("agent-chat-stop")
                 .flex_none()
-                .size(px(28.0))
+                .size(px(26.0))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(8.0))
+                .rounded(px(13.0))
                 .bg(colors().foreground)
                 .cursor_pointer()
                 .hover(|button| button.opacity(0.85))
                 .tooltip(|_, cx| tooltip("Stop · esc", cx))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _, _, cx| this.cancel_turn(cx)))
-                .child(
-                    div()
-                        .size(px(10.0))
-                        .rounded(px(2.0))
-                        .bg(colors().background),
-                )
+                .child(div().size(px(9.0)).rounded(px(2.0)).bg(colors().background))
                 .into_any_element();
         }
         let can_send = enabled && !self.draft.trim().is_empty();
         div()
             .id("agent-chat-send")
             .flex_none()
-            .size(px(28.0))
+            .size(px(26.0))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(8.0))
+            .rounded(px(13.0))
             .bg(if can_send {
                 colors().foreground
             } else {
@@ -459,7 +444,7 @@ impl AgentChatView {
             .child(
                 svg()
                     .path("chrome-icons/send.svg")
-                    .size(px(14.0))
+                    .size(px(13.0))
                     .flex_none()
                     .text_color(if can_send {
                         colors().background
@@ -476,13 +461,32 @@ impl AgentChatView {
     }
 }
 
+/// The card's edge is very soft; it turns to the accent while the draft has focus.
+fn card_border(focused: bool) -> Rgba {
+    if focused {
+        Rgba {
+            a: 0.45,
+            ..colors().accent
+        }
+    } else {
+        let border = colors().border_subtle;
+        Rgba {
+            a: border.a * 0.6,
+            ..border
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
+    use super::picker::PickerMenu;
     use super::*;
-    use crate::domain::agent_chat::{ChatAgent, PromptFile, SlashCommand};
+    use crate::domain::agent_chat::{
+        ChatAgent, ChatCommand, ConfigCategory, ConfigOption, ConfigValue, PromptFile, SlashCommand,
+    };
     use crate::ports::files::{FileEntry, FileSystemPort};
     use crate::ui::agent_chat::FileSearch;
     use gpui::{Keystroke, TestAppContext};
@@ -555,6 +559,28 @@ mod tests {
         }
     }
 
+    /// A running Claude with a Model option of two values.
+    fn model_option(current: &str) -> ConfigOption {
+        ConfigOption {
+            id: "model".into(),
+            name: "Model".into(),
+            category: ConfigCategory::Model,
+            current: current.into(),
+            values: vec![
+                ConfigValue {
+                    value: "opus".into(),
+                    name: "Opus 5.5".into(),
+                    description: None,
+                },
+                ConfigValue {
+                    value: "sonnet".into(),
+                    name: "Sonnet".into(),
+                    description: None,
+                },
+            ],
+        }
+    }
+
     #[test]
     fn enter_sends_and_shift_enter_adds_a_line() {
         let mut draft = "hola".to_owned();
@@ -601,6 +627,17 @@ mod tests {
             ComposerKey::Ignored
         );
         assert_eq!(draft, "borrador");
+    }
+
+    #[test]
+    fn menu_keys_are_the_arrows_enter_and_escape() {
+        assert_eq!(menu_key("up"), Some(MenuKey::Up));
+        assert_eq!(menu_key("down"), Some(MenuKey::Down));
+        assert_eq!(menu_key("left"), Some(MenuKey::Left));
+        assert_eq!(menu_key("right"), Some(MenuKey::Right));
+        assert_eq!(menu_key("return"), Some(MenuKey::Accept));
+        assert_eq!(menu_key("esc"), Some(MenuKey::Close));
+        assert_eq!(menu_key("h"), None);
     }
 
     #[gpui::test]
@@ -667,5 +704,54 @@ mod tests {
                 }]
             );
         });
+    }
+
+    #[gpui::test]
+    fn model_menu_keys_pick_a_model_of_the_running_agent(cx: &mut TestAppContext) {
+        let (commands_tx, commands_rx) = async_channel::unbounded();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut view = AgentChatView::empty(ChatAgent::Claude, cx);
+            view.timeline.state = Some(ChatConnectionState::Ready);
+            view.timeline.config_options = vec![model_option("opus")];
+            view.commands = Some(commands_tx);
+            view
+        });
+        view.update_in(cx, |view, window, cx| {
+            view.toggle_menu(PickerMenu::Model, cx);
+            view.on_key_down(&key_event("down", None), window, cx);
+            view.on_key_down(&key_event("enter", None), window, cx);
+        });
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Ok(ChatCommand::SetConfigOption { option_id, value })
+                if option_id == "model" && value == "sonnet"
+        ));
+        view.read_with(cx, |view, _| assert!(view.composer.menu.is_none()));
+    }
+
+    #[gpui::test]
+    fn locked_chat_keeps_the_arrow_keys_on_its_own_provider(cx: &mut TestAppContext) {
+        let (commands_tx, commands_rx) = async_channel::unbounded();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut view = AgentChatView::empty(ChatAgent::Claude, cx);
+            view.timeline.state = Some(ChatConnectionState::Ready);
+            view.timeline.config_options = vec![model_option("opus")];
+            view.available_agents = vec![ChatAgent::Claude, ChatAgent::Codex];
+            // A sent message locks the provider; the turn it starts is not what this test checks.
+            view.timeline.push_user_prompt("hola".into(), Vec::new());
+            view.timeline.state = Some(ChatConnectionState::Ready);
+            view.commands = Some(commands_tx);
+            view
+        });
+        view.update_in(cx, |view, window, cx| {
+            view.toggle_menu(PickerMenu::Model, cx);
+            view.on_key_down(&key_event("right", None), window, cx);
+            view.on_key_down(&key_event("enter", None), window, cx);
+        });
+        // Codex is disabled once the chat has a message, so Enter picks Claude's own row.
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Ok(ChatCommand::SetConfigOption { value, .. }) if value == "opus"
+        ));
     }
 }

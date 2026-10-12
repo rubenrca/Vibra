@@ -35,7 +35,7 @@ impl AgentChatView {
             .flex_col()
             .gap_2()
             .p_3()
-            .rounded(px(8.0))
+            .rounded(px(12.0))
             .border_1()
             .border_color(surface_tint(colors().warning, colors().terminal))
             .bg(surface_tint(colors().elevated, colors().terminal))
@@ -84,27 +84,28 @@ impl AgentChatView {
                                 .px_3()
                                 .py(px(4.0))
                                 .rounded(px(6.0))
-                                .border_1()
+                                .cursor_pointer()
+                                .text_size(px(12.0))
                                 .when(primary, |button| {
                                     button
                                         .bg(Rgba {
                                             a: 0.16,
                                             ..colors().accent
                                         })
-                                        .border_color(Rgba {
-                                            a: 0.5,
-                                            ..colors().accent
-                                        })
                                         .text_color(colors().accent)
+                                        .hover(|button| {
+                                            button.bg(Rgba {
+                                                a: 0.24,
+                                                ..colors().accent
+                                            })
+                                        })
                                 })
                                 .when(!primary, |button| {
                                     button
-                                        .border_color(colors().border_subtle)
+                                        .bg(colors().hover)
                                         .text_color(colors().foreground)
+                                        .hover(|button| button.bg(colors().selection))
                                 })
-                                .cursor_pointer()
-                                .text_size(px(12.0))
-                                .hover(|button| button.bg(colors().hover))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.answer_permission(
                                         request_id,
@@ -184,9 +185,8 @@ pub(super) fn plan(entries: &[PlanEntry]) -> AnyElement {
         .flex_col()
         .gap(px(6.0))
         .p_3()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(colors().border_subtle)
+        .rounded(px(12.0))
+        .bg(surface_tint(colors().elevated, colors().terminal))
         .child(
             div()
                 .flex()
@@ -250,7 +250,8 @@ fn plan_marker(icon_path: Option<&'static str>, color: Rgba) -> AnyElement {
     }
 }
 
-/// Info notices are quiet text; errors are a tinted block.
+/// Info notices are quiet muted text. Errors are danger-tinted text with a
+/// small icon, not a box.
 pub(super) fn notice(level: NoticeLevel, text: &str) -> AnyElement {
     match level {
         NoticeLevel::Info => div()
@@ -263,14 +264,22 @@ pub(super) fn notice(level: NoticeLevel, text: &str) -> AnyElement {
             .into_any_element(),
         NoticeLevel::Error => div()
             .w_full()
-            .px_3()
-            .py_2()
-            .rounded(px(6.0))
-            .bg(surface_tint(colors().danger, colors().terminal))
+            .px_1()
+            .flex()
+            .items_start()
+            .gap_2()
             .text_size(px(12.0))
             .line_height(px(18.0))
-            .text_color(colors().foreground)
-            .child(text.to_owned())
+            .text_color(colors().danger)
+            .child(
+                div()
+                    .h(px(18.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .child(icon("chrome-icons/issue-canceled.svg", colors().danger)),
+            )
+            .child(div().min_w(px(0.0)).child(text.to_owned()))
             .into_any_element(),
     }
 }

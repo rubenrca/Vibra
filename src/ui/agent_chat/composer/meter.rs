@@ -1,14 +1,10 @@
-//! The context meter inside the card, the quota line below it, and the spinner
-//! shown while a turn runs.
+//! The context meter in the composer toolbar and the quota text the footer
+//! shows, with the pure formatting helpers behind both.
 
-use std::time::Duration;
-
-use gpui::{
-    Animation, AnimationExt, AnyElement, Div, IntoElement, Radians, Rgba, Transformation, div,
-    prelude::*, px, relative, svg,
-};
+use gpui::{AnyElement, Div, Rgba, div, prelude::*, px, relative};
 
 use super::super::QuotaMeter;
+use super::super::tooltip::tooltip;
 use crate::domain::agent_chat::ContextUsage;
 use crate::ui::theme::colors;
 
@@ -44,7 +40,7 @@ pub(super) fn quota_percent(used: f32) -> u32 {
 }
 
 /// "19% 3h 52m", or just "19%" when the reset time is unknown.
-fn quota_text(meter: &QuotaMeter) -> String {
+pub(super) fn quota_text(meter: &QuotaMeter) -> String {
     let percent = quota_percent(meter.used_percent);
     match &meter.resets_in {
         Some(resets_in) => format!("{percent}% {resets_in}"),
@@ -77,88 +73,28 @@ fn fill_for(percent: u32) -> Rgba {
     }
 }
 
-/// "5%  [bar]  262K": the context used so far against the window size. Only
-/// shown once the agent has reported usage.
+/// A thin bar for the share of the context window in use. Shown once the agent
+/// has reported usage; its tooltip gives the percentage and the token counts.
 pub(super) fn context_meter(usage: Option<ContextUsage>) -> Option<AnyElement> {
     let usage = usage?;
     let percent = context_percent(usage)?;
+    let label = format!(
+        "{percent}% · {}/{} tokens",
+        format_token_count(usage.used),
+        format_token_count(usage.size)
+    );
     Some(
         div()
+            .id("agent-chat-context-meter")
+            .w(px(40.0))
+            .h(px(20.0))
+            .flex_none()
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .h(px(16.0))
-            .px(px(12.0))
-            .pb(px(4.0))
-            .text_size(px(10.5))
-            .text_color(colors().subtle)
-            .child(
-                div()
-                    .flex_none()
-                    .min_w(px(30.0))
-                    .child(format!("{percent}%")),
-            )
-            .child(
-                progress_track(percent as f32 / 100.0, fill_for(percent))
-                    .flex_1()
-                    .min_w(px(40.0)),
-            )
-            .child(div().flex_none().child(format_token_count(usage.size)))
+            .tooltip(move |_, cx| tooltip(label.clone(), cx))
+            .child(progress_track(percent as f32 / 100.0, fill_for(percent)).w_full())
             .into_any_element(),
     )
-}
-
-/// Each quota window as a small bar and its text, separated by dots. Empty
-/// when the provider reports no quota.
-pub(super) fn quota_line(meters: &[QuotaMeter]) -> Option<AnyElement> {
-    if meters.is_empty() {
-        return None;
-    }
-    let mut line = div()
-        .flex()
-        .items_center()
-        .gap(px(8.0))
-        .px(px(12.0))
-        .h(px(16.0))
-        .text_size(px(11.0))
-        .text_color(colors().subtle);
-    for (index, meter) in meters.iter().enumerate() {
-        if index > 0 {
-            line = line.child("·");
-        }
-        let percent = quota_percent(meter.used_percent);
-        line = line.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(
-                    progress_track(percent as f32 / 100.0, fill_for(percent))
-                        .w(px(28.0))
-                        .flex_none(),
-                )
-                .child(quota_text(meter)),
-        );
-    }
-    Some(line.into_any_element())
-}
-
-/// A refresh glyph turning in place, shown while the agent works.
-pub(super) fn working_spinner() -> impl IntoElement {
-    svg()
-        .path("chrome-icons/refresh.svg")
-        .size(px(11.0))
-        .flex_none()
-        .text_color(colors().subtle)
-        .with_animation(
-            "agent-chat-composer-spinner",
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |icon, delta| {
-                icon.with_transformation(Transformation::rotate(Radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
-        )
 }
 
 #[cfg(test)]

@@ -84,7 +84,7 @@ fn code_frame(id: String) -> Stateful<Div> {
         .max_h(px(240.0))
         .overflow_y_scroll()
         .py_1()
-        .rounded(px(6.0))
+        .rounded(px(8.0))
         .bg(surface_tint(colors().terminal, colors().elevated))
         .font_family(MONO_FONT)
         .text_size(px(11.5))

@@ -1,21 +1,31 @@
-//! Terminal and chat views of one pane (issue #36). The user picks the view and
-//! the agent; the pane's terminal keeps running while its chat is shown. A chat
-//! connects only when no terminal agent owns the same session, so each session
-//! has one owner at a time. Detection never changes the view or the agent.
+//! Terminal and chat views of one pane (issue #36). A pane keeps its terminal
+//! running while its chat is shown. A chat connects only when no terminal agent
+//! owns the same session, so each session has one owner at a time. Detection
+//! never changes the view or the agent; a new chat starts with the last agent
+//! the user chose, else the agent in the pane, else the first installed one.
 
 use std::path::{Path, PathBuf};
 
 use gpui::{App, AppContext, Context, Entity, FocusHandle, Focusable, Subscription, Window};
 use uuid::Uuid;
 
-use crate::domain::agent_chat::{AgentChatBinding, ChatAgent, PaneViewMode};
+use crate::domain::agent_chat::{
+    AgentChatBinding, AgentModelCatalog, CatalogModel, ChatAgent, PaneViewMode,
+};
 use crate::domain::usage::{UsageSnapshot, now_timestamp, resource_label, timestamp};
+use crate::domain::workspace::PaneSplitDirection;
 use crate::infrastructure::agent_chat::{AgentChatConnection, SessionTarget};
 use crate::ui::agent_chat::{
     AgentChatView, AgentChatViewEvent, ChatViewContext, FileSearch, QuotaMeter,
 };
 
-use super::{ChatTarget, ContextMenuKind, WorkspaceView};
+use super::{WorkspaceSection, WorkspaceView};
+
+/// Why a chat cannot start when no supported agent is installed.
+const NO_CHAT_AGENT_MESSAGE: &str =
+    "No supported agent is installed. Install Claude Code, Codex or Grok.";
+/// The name of a chat until its agent titles the session.
+const NEW_CHAT_TITLE: &str = "New chat";
 
 /// A pane's chat. `closed` keeps the view on screen after its connection ends,
 /// so the error stays readable until the user toggles the pane again.
@@ -37,6 +47,40 @@ pub(super) fn available_chat_agents() -> Vec<ChatAgent> {
         .into_iter()
         .filter(|agent| crate::infrastructure::agent_chat::launch::is_available(*agent))
         .collect()
+}
+
+/// The agent a new chat starts with: the one the user chose last, else the one
+/// running in the pane's terminal, else the first installed agent. Only installed
+/// agents qualify, so `None` means that no agent is installed.
+pub(super) fn choose_chat_agent(
+    installed: &[ChatAgent],
+    last: Option<ChatAgent>,
+    detected: Option<ChatAgent>,
+) -> Option<ChatAgent> {
+    let usable = |agent: Option<ChatAgent>| agent.filter(|agent| installed.contains(agent));
+    usable(last)
+        .or_else(|| usable(detected))
+        .or_else(|| installed.first().copied())
+}
+
+/// The name of a pane in chat view: the manual name, then the chat's title.
+pub(super) fn chat_pane_title(alias: Option<&str>, chat_title: Option<&str>) -> String {
+    [alias, chat_title]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|title| !title.is_empty())
+        .unwrap_or(NEW_CHAT_TITLE)
+        .to_owned()
+}
+
+/// The bundled brand mark of an agent.
+pub(super) fn agent_mark_asset(agent: ChatAgent) -> &'static str {
+    match agent {
+        ChatAgent::Claude => "agent-marks/claude.svg",
+        ChatAgent::Codex => "agent-marks/codex.svg",
+        ChatAgent::Grok => "agent-marks/grok.svg",
+    }
 }
 
 /// The provider id the usage monitor files an agent's quotas under.
@@ -164,10 +208,25 @@ impl WorkspaceView {
     }
 
     /// The chat-capable agent running in the pane's terminal, if any. It only
-    /// pre-selects the agent picker and decides when a waiting chat connects.
+    /// picks the default agent of a new chat and decides when a waiting chat connects.
     pub(super) fn detected_chat_agent(&self, session_id: Uuid) -> Option<ChatAgent> {
         self.resolved_agent_presence(session_id)
             .and_then(|presence| presence.chat_agent())
+    }
+
+    /// The agent a new chat in `session_id` starts with, or `None` when no agent
+    /// is installed. `None` names no pane: a new tab has no terminal to detect in.
+    pub(super) fn default_chat_agent(&self, session_id: Option<Uuid>) -> Option<ChatAgent> {
+        self.default_chat_agent_among(&available_chat_agents(), session_id)
+    }
+
+    pub(super) fn default_chat_agent_among(
+        &self,
+        installed: &[ChatAgent],
+        session_id: Option<Uuid>,
+    ) -> Option<ChatAgent> {
+        let detected = session_id.and_then(|session_id| self.detected_chat_agent(session_id));
+        choose_chat_agent(installed, self.settings.chat_last_agent, detected)
     }
 
     /// The element that receives keys for a pane in its current view.
@@ -268,12 +327,28 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A new session has no title until its agent names it.
+        if resume.is_none() && self.snapshot.set_chat_title(session_id, None) {
+            self.persist(cx);
+        }
         let cwd = self.pane_working_directory(session_id, cx);
         let target = resume.map_or(SessionTarget::New, SessionTarget::Load);
-        let connection = connect_agent_chat(agent, cwd, target);
+        let installed = available_chat_agents();
+        let connection = if installed.is_empty() {
+            Err(NO_CHAT_AGENT_MESSAGE.to_owned())
+        } else {
+            if installed.contains(&agent) {
+                self.remember_chat_agent(agent, cx);
+            }
+            connect_agent_chat(agent, cwd, target)
+        };
         // A chat that failed to start is closed too, so the next toggle retries it.
         let closed = connection.is_err();
         let view = cx.new(|cx| AgentChatView::new(agent, connection, window, cx));
+        let catalog = self.settings.chat_model_catalog.clone();
+        view.update(cx, |view, cx| {
+            view.set_model_catalog(catalog, installed, cx)
+        });
         let subscription = cx.subscribe_in(&view, window, move |this, _, event, window, cx| {
             this.handle_pane_chat_event(session_id, event, window, cx);
         });
@@ -309,6 +384,110 @@ impl WorkspaceView {
                 }
                 cx.notify();
             }
+            AgentChatViewEvent::TitleChanged(title) => {
+                if self
+                    .snapshot
+                    .set_chat_title(session_id, Some(title.as_str()))
+                {
+                    self.persist(cx);
+                }
+                cx.notify();
+            }
+            AgentChatViewEvent::SwitchAgent { agent, model } => {
+                self.switch_pane_chat_agent(session_id, *agent, model.clone(), window, cx);
+            }
+            AgentChatViewEvent::ModelsKnown { agent, models } => {
+                self.remember_chat_models(*agent, models, cx);
+            }
+        }
+    }
+
+    /// Restarts a chat that has no message with `agent`, as the model picker asks.
+    /// The pane keeps its terminal; the new chat connects now, or once the agent
+    /// in the terminal exits. `model` is selected once the agent reports its models.
+    fn switch_pane_chat_agent(
+        &mut self,
+        session_id: Uuid,
+        agent: ChatAgent,
+        model: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(current) = self
+            .agent_chats
+            .get(&session_id)
+            .map(|chat| chat.view.clone())
+        else {
+            return;
+        };
+        if self.snapshot.agent_chat_binding(session_id).is_none() || current.read(cx).agent_locked()
+        {
+            return;
+        }
+        if let Some(chat) = self.agent_chats.remove(&session_id) {
+            chat.view.update(cx, |view, cx| view.shutdown(cx));
+        }
+        self.pending_chat_panes.remove(&session_id);
+        self.remember_chat_agent(agent, cx);
+        self.write_pane_binding(
+            session_id,
+            AgentChatBinding {
+                agent,
+                session_id: None,
+                mode: PaneViewMode::Chat,
+            },
+            cx,
+        );
+        self.connect_pane_chat(session_id, window, cx);
+        if let (Some(model), Some(chat)) = (model, self.agent_chats.get(&session_id)) {
+            chat.view
+                .update(cx, |view, _| view.apply_model_on_start(model));
+        }
+        self.pending_focus_session = Some(session_id);
+        cx.notify();
+    }
+
+    /// Remembers the agent that the user's chat started with, for the next new chat.
+    fn remember_chat_agent(&mut self, agent: ChatAgent, cx: &mut Context<Self>) {
+        if self.settings.chat_last_agent != Some(agent) {
+            self.settings.chat_last_agent = Some(agent);
+            self.persist_settings(cx);
+        }
+    }
+
+    /// Keeps the models an agent reported for the model picker. An empty list
+    /// does not replace what was remembered, and only a changed list is saved.
+    fn remember_chat_models(
+        &mut self,
+        agent: ChatAgent,
+        models: &[CatalogModel],
+        cx: &mut Context<Self>,
+    ) {
+        if models.is_empty() {
+            return;
+        }
+        let catalog = &mut self.settings.chat_model_catalog;
+        match catalog.iter_mut().find(|entry| entry.agent == agent) {
+            Some(entry) if entry.models == models => return,
+            Some(entry) => entry.models = models.to_vec(),
+            None => catalog.push(AgentModelCatalog {
+                agent,
+                models: models.to_vec(),
+            }),
+        }
+        self.persist_settings(cx);
+        self.refresh_model_catalogs(cx);
+    }
+
+    /// Pushes the remembered models and the installed agents to every open chat.
+    fn refresh_model_catalogs(&self, cx: &mut Context<Self>) {
+        let catalog = self.settings.chat_model_catalog.clone();
+        let installed = available_chat_agents();
+        for chat in self.agent_chats.values() {
+            let (catalog, installed) = (catalog.clone(), installed.clone());
+            chat.view.update(cx, |view, cx| {
+                view.set_model_catalog(catalog, installed, cx)
+            });
         }
     }
 
@@ -369,30 +548,60 @@ impl WorkspaceView {
         }
     }
 
-    /// Shows a pane's chat with `agent`, chosen by the user. The pane keeps its
-    /// terminal; the chat connects now or once the agent in the terminal exits.
-    pub(super) fn show_pane_as_chat(
+    /// Shows a pane's chat. A pane without one starts a chat with the default
+    /// agent. The pane keeps its terminal; the chat connects now or once the
+    /// agent in the terminal exits.
+    pub(super) fn show_pane_chat(
         &mut self,
         session_id: Uuid,
-        agent: ChatAgent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let bound_session = self
-            .snapshot
-            .agent_chat_binding(session_id)
-            .filter(|binding| binding.agent == agent)
-            .and_then(|binding| binding.session_id.clone());
-        self.write_pane_binding(
-            session_id,
-            AgentChatBinding {
-                agent,
-                session_id: bound_session,
-                mode: PaneViewMode::Chat,
-            },
-            cx,
-        );
+        if self.snapshot.agent_chat_binding(session_id).is_none() {
+            // Without an installed agent the chat still needs one to show its
+            // closed state, which says that none is installed.
+            let agent = self
+                .default_chat_agent(Some(session_id))
+                .unwrap_or(ChatAgent::ALL[0]);
+            self.write_pane_binding(
+                session_id,
+                AgentChatBinding {
+                    agent,
+                    session_id: None,
+                    mode: PaneViewMode::Chat,
+                },
+                cx,
+            );
+        }
         self.set_pane_view_mode(session_id, PaneViewMode::Chat, window, cx);
+    }
+
+    /// Switches a pane between its terminal and its chat.
+    pub(super) fn toggle_pane_chat_view(
+        &mut self,
+        session_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.pane_view_mode(session_id) {
+            PaneViewMode::Chat => {
+                self.set_pane_view_mode(session_id, PaneViewMode::Terminal, window, cx);
+            }
+            PaneViewMode::Terminal => self.show_pane_chat(session_id, window, cx),
+        }
+    }
+
+    /// The Toggle Chat shortcut and palette command: the selected pane switches.
+    pub(super) fn toggle_selected_pane_chat(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_section(WorkspaceSection::Workspace, window, cx);
+        self.reveal_terminal(cx);
+        if let Some(session_id) = self.snapshot.selected_session().map(|session| session.id) {
+            self.toggle_pane_chat_view(session_id, window, cx);
+        }
     }
 
     fn switch_to_pane_chat(
@@ -474,56 +683,19 @@ impl WorkspaceView {
         }
     }
 
-    /// The Chat half of a pane's Terminal | Chat control. A pane with a binding
-    /// switches to its agent; an unbound pane opens the agent picker at `(x, y)`.
-    pub(super) fn click_pane_chat_control(
+    /// Splits `session_id` and shows a new chat with the default agent in the new pane.
+    pub(super) fn split_pane_with_default_chat(
         &mut self,
         session_id: Uuid,
-        x: f32,
-        y: f32,
+        direction: PaneSplitDirection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_terminal(session_id, window, cx);
-        if self.snapshot.agent_chat_binding(session_id).is_some() {
-            self.set_pane_view_mode(session_id, PaneViewMode::Chat, window, cx);
-        } else {
-            // Detection never picks the agent; the user does.
-            self.open_context_menu(
-                ContextMenuKind::ChatAgentPicker {
-                    target: ChatTarget::Pane(session_id),
-                },
-                x,
-                y,
-                cx,
-            );
-        }
-    }
-
-    /// Starts the chat chosen in an agent picker at its target.
-    pub(super) fn start_chat_at(
-        &mut self,
-        target: ChatTarget,
-        agent: ChatAgent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match target {
-            ChatTarget::Pane(session_id) => self.show_pane_as_chat(session_id, agent, window, cx),
-            ChatTarget::Split {
-                session_id,
-                direction,
-            } => self.split_pane_with_chat(session_id, direction, agent, window, cx),
-            ChatTarget::NewTab(project_id) => {
-                let cwd = self
-                    .snapshot
-                    .project(project_id)
-                    .and_then(|project| project.directory())
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| self.selected_live_cwd(cx));
-                self.open_agent_chat_tab(project_id, agent, cwd, window, cx);
-            }
-        }
+        // The agent comes from the pane being split, which is where detection looks.
+        let agent = self
+            .default_chat_agent(Some(session_id))
+            .unwrap_or(ChatAgent::ALL[0]);
+        self.split_pane_with_chat(session_id, direction, agent, window, cx);
     }
 
     /// Opens a new tab in `project_id` whose chat starts a new `agent` session in `cwd`.
@@ -557,6 +729,32 @@ impl WorkspaceView {
         // The chat is created while the pane is drawn, so focus it on the next frame.
         self.pending_focus_session = Some(session_id);
         cx.notify();
+    }
+
+    /// A new tab in `project_id` with a chat that starts with the default agent.
+    pub(super) fn new_chat_tab_in_project(
+        &mut self,
+        project_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let agent = self.default_chat_agent(None).unwrap_or(ChatAgent::ALL[0]);
+        let cwd = self
+            .snapshot
+            .project(project_id)
+            .and_then(|project| project.directory())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.selected_live_cwd(cx));
+        self.open_agent_chat_tab(project_id, agent, cwd, window, cx);
+    }
+
+    /// The New Chat shortcut and the tab bar menu: a chat tab in the selected
+    /// project, or a folder picker when no project is selected.
+    pub(super) fn new_chat_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.snapshot.selected_project_id {
+            Some(project_id) => self.new_chat_tab_in_project(project_id, window, cx),
+            None => self.choose_project_folder(None, true, window, cx),
+        }
     }
 
     /// Pushes what each open chat shows (branch, worktree, quota, file search

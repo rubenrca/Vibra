@@ -734,6 +734,37 @@ fn terminal_title_updates_without_reintroducing_legacy_copies() {
 }
 
 #[test]
+fn chat_titles_are_trimmed_bounded_saved_once_and_forgotten_per_session() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    snapshot.create_workspace(Path::new("/tmp/vibra-chat-title"));
+    let session_id = snapshot.selected_session().unwrap().id;
+
+    assert!(!snapshot.set_chat_title(session_id, Some("   ")));
+    assert!(snapshot.set_chat_title(session_id, Some("  Fix login  ")));
+    assert_eq!(
+        snapshot.selected_session().unwrap().chat_title.as_deref(),
+        Some("Fix login")
+    );
+    assert!(!snapshot.set_chat_title(session_id, Some("Fix login")));
+
+    let long = "é".repeat(MAX_AGENT_TASK_TITLE_CHARS + 20);
+    assert!(snapshot.set_chat_title(session_id, Some(&long)));
+    assert_eq!(
+        snapshot
+            .selected_session()
+            .unwrap()
+            .chat_title
+            .as_ref()
+            .map(|title| title.chars().count()),
+        Some(MAX_AGENT_TASK_TITLE_CHARS)
+    );
+
+    assert!(snapshot.set_chat_title(session_id, None));
+    assert!(!snapshot.set_chat_title(session_id, None));
+    assert_eq!(snapshot.selected_session().unwrap().chat_title, None);
+}
+
+#[test]
 fn oversized_terminal_titles_are_bounded_and_repeat_updates_are_idempotent() {
     let mut snapshot = WorkspaceSnapshot::default();
     snapshot.create_workspace(Path::new("/tmp/vibra-title-limit"));

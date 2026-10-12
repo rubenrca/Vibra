@@ -1,14 +1,16 @@
-//! The status line under the timeline while a turn runs, and the pure helpers
+//! The status line above the composer while a turn runs, and the pure helpers
 //! behind it.
 
 use gpui::{AnyElement, div, prelude::*, px};
 
 use super::super::AgentChatView;
+use super::COLUMN_WIDTH;
 use crate::domain::agent_chat::{ConfigCategory, ConfigOption};
 use crate::ui::theme::colors;
 
 impl AgentChatView {
-    /// "✳ Opus 5.5 working for 1m 53s" while a turn runs.
+    /// "✳ Opus 5.5 working for 1m 53s" while a turn runs. One muted line:
+    /// only the glyph carries the accent.
     pub(super) fn working_line(&self) -> Option<AnyElement> {
         let started = self.turn_started?;
         let subject = model_name(&self.timeline.config_options).unwrap_or(self.agent.label());
@@ -17,21 +19,22 @@ impl AgentChatView {
             div()
                 .w_full()
                 .flex_none()
-                .px_4()
-                .pb_3()
                 .flex()
-                .items_center()
-                .gap(px(6.0))
-                .text_size(px(12.5))
-                .text_color(colors().muted)
-                .child(div().flex_none().text_color(colors().accent).child("✳"))
-                .child(div().flex_none().child(subject.to_owned()))
-                .child("working for")
+                .justify_center()
+                .px_4()
+                .pb_2()
                 .child(
                     div()
-                        .flex_none()
-                        .text_color(colors().foreground)
-                        .child(elapsed),
+                        .w_full()
+                        .max_w(px(COLUMN_WIDTH))
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(px(12.5))
+                        .text_color(colors().muted)
+                        .child(div().flex_none().text_color(colors().accent).child("✳"))
+                        .child(format!("{subject} working for {elapsed}")),
                 )
                 .into_any_element(),
         )

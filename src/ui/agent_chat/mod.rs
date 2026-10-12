@@ -19,7 +19,8 @@ use gpui::{
 };
 
 use crate::domain::agent_chat::{
-    ChatAgent, ChatCommand, ChatConnectionState, ChatEvent, ChatItem, ChatTimeline, PromptFile,
+    AgentModelCatalog, CatalogModel, ChatAgent, ChatCommand, ChatConnectionState, ChatEvent,
+    ChatItem, ChatTimeline, ConfigCategory, ConfigOption, PromptFile,
 };
 use crate::infrastructure::agent_chat::AgentChatConnection;
 use crate::ports::files::FileSystemPort;
@@ -37,6 +38,19 @@ pub enum AgentChatViewEvent {
     SwitchToTerminal,
     /// The connection closed (process exit or failure).
     Closed,
+    /// The agent named the session; the pane's tab shows it.
+    TitleChanged(String),
+    /// Before the first message the user picked another agent's model; the
+    /// workspace restarts the chat with `agent` and applies `model` if given.
+    SwitchAgent {
+        agent: ChatAgent,
+        model: Option<String>,
+    },
+    /// The running agent's model list, for the workspace to remember.
+    ModelsKnown {
+        agent: ChatAgent,
+        models: Vec<CatalogModel>,
+    },
 }
 
 /// Workspace facts the composer shows; the workspace refreshes them with
@@ -93,6 +107,12 @@ pub struct AgentChatView {
     attachments: Vec<PromptFile>,
     /// Popups and selection state owned by `composer.rs`.
     composer: composer::ComposerState,
+    /// Remembered models of every agent, for the picker's provider tabs.
+    model_catalog: Vec<AgentModelCatalog>,
+    /// Agents the user can switch to before the first message.
+    available_agents: Vec<ChatAgent>,
+    /// Model to select once the agent reports its options.
+    pending_model: Option<String>,
 }
 
 impl AgentChatView {
@@ -143,6 +163,50 @@ impl AgentChatView {
         if self.context != context {
             self.context = context;
             cx.notify();
+        }
+    }
+
+    /// Sets the remembered models and the agents the picker may offer.
+    pub fn set_model_catalog(
+        &mut self,
+        catalog: Vec<AgentModelCatalog>,
+        available_agents: Vec<ChatAgent>,
+        cx: &mut Context<Self>,
+    ) {
+        self.model_catalog = catalog;
+        self.available_agents = available_agents;
+        cx.notify();
+    }
+
+    /// Selects `model` as soon as the agent reports its model option.
+    pub fn apply_model_on_start(&mut self, model: String) {
+        self.pending_model = Some(model);
+    }
+
+    /// The agent is fixed once the conversation has a message.
+    pub fn agent_locked(&self) -> bool {
+        self.has_conversation()
+    }
+
+    /// The model picker chose `model` of `agent`. The running agent changes
+    /// its option; another agent restarts the chat, before the first message only.
+    fn choose_model(&mut self, agent: ChatAgent, model: String, cx: &mut Context<Self>) {
+        if agent == self.agent {
+            if let Some(option) = model_option(&self.timeline.config_options) {
+                let option_id = option.id.clone();
+                self.send(
+                    ChatCommand::SetConfigOption {
+                        option_id,
+                        value: model,
+                    },
+                    cx,
+                );
+            }
+        } else if !self.agent_locked() {
+            cx.emit(AgentChatViewEvent::SwitchAgent {
+                agent,
+                model: Some(model),
+            });
         }
     }
 
@@ -198,6 +262,9 @@ impl AgentChatView {
             file_search: None,
             attachments: Vec::new(),
             composer: composer::ComposerState::default(),
+            model_catalog: Vec::new(),
+            available_agents: Vec::new(),
+            pending_model: None,
         }
     }
 
@@ -227,7 +294,18 @@ impl AgentChatView {
             _ => None,
         };
         let exited = matches!(event, ChatEvent::Exited { .. });
+        let title = match &event {
+            ChatEvent::Title(title) => Some(title.clone()),
+            _ => None,
+        };
+        let options_changed = matches!(event, ChatEvent::ConfigOptions(_));
         self.timeline.apply(event);
+        if let Some(title) = title {
+            cx.emit(AgentChatViewEvent::TitleChanged(title));
+        }
+        if options_changed {
+            self.on_config_options(cx);
+        }
         if !self.is_working() {
             self.turn_started = None;
             self.tick_task = None;
@@ -244,6 +322,38 @@ impl AgentChatView {
             cx.emit(AgentChatViewEvent::Closed);
         }
         cx.notify();
+    }
+
+    /// Remembers the agent's models and applies a model chosen before it started.
+    fn on_config_options(&mut self, cx: &mut Context<Self>) {
+        let Some(option) = model_option(&self.timeline.config_options) else {
+            return;
+        };
+        let models = option
+            .values
+            .iter()
+            .map(|value| CatalogModel {
+                value: value.value.clone(),
+                name: value.name.clone(),
+            })
+            .collect();
+        let option_id = option.id.clone();
+        let current = option.current.clone();
+        cx.emit(AgentChatViewEvent::ModelsKnown {
+            agent: self.agent,
+            models,
+        });
+        if let Some(model) = self.pending_model.take()
+            && model != current
+        {
+            self.send(
+                ChatCommand::SetConfigOption {
+                    option_id,
+                    value: model,
+                },
+                cx,
+            );
+        }
     }
 
     /// The backend stopped without saying why; treat it as an exit.
@@ -322,6 +432,13 @@ impl AgentChatView {
             Some(ChatConnectionState::Closed { .. })
         )
     }
+}
+
+/// The option that picks the agent's model, if it has one.
+fn model_option(options: &[ConfigOption]) -> Option<&ConfigOption> {
+    options
+        .iter()
+        .find(|option| option.category == ConfigCategory::Model)
 }
 
 impl EventEmitter<AgentChatViewEvent> for AgentChatView {}

@@ -3,10 +3,10 @@ use uuid::Uuid;
 
 use crate::domain::workspace::{PaneFocusDirection, PaneResizeDirection, PaneSplitDirection};
 use crate::{
-    CloseTerminal, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NewTerminalTab,
-    NextPane, NextProject, PreviousPane, PreviousProject, ResizePaneDown, ResizePaneLeft,
-    ResizePaneRight, ResizePaneUp, ShowSettings, SplitPaneDown, SplitPaneLeft, SplitPaneRight,
-    SplitPaneUp, ToggleLeftSidebar, ToggleRightSidebar,
+    CloseTerminal, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NewChat,
+    NewTerminalTab, NextPane, NextProject, PreviousPane, PreviousProject, ResizePaneDown,
+    ResizePaneLeft, ResizePaneRight, ResizePaneUp, ShowSettings, SplitPaneDown, SplitPaneLeft,
+    SplitPaneRight, SplitPaneUp, ToggleChat, ToggleLeftSidebar, ToggleRightSidebar,
 };
 
 use super::*;
@@ -19,6 +19,21 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         self.open_terminal_tab_in_project(window, cx);
+    }
+
+    /// `⇧⌘T`: a new tab in the selected project with a chat.
+    pub(super) fn new_chat(&mut self, _: &NewChat, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_chat_tab(window, cx);
+    }
+
+    /// `⇧⌘A`: the selected pane switches between its terminal and its chat.
+    pub(super) fn toggle_chat(
+        &mut self,
+        _: &ToggleChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_selected_pane_chat(window, cx);
     }
 
     /// `⌘T` / `⌘N`: a new tab in the selected project, or a folder picker
@@ -134,6 +149,8 @@ impl WorkspaceView {
     ) -> gpui::Stateful<Div> {
         body.on_action(cx.listener(Self::add_project))
             .on_action(cx.listener(Self::new_terminal_tab))
+            .on_action(cx.listener(Self::new_chat))
+            .on_action(cx.listener(Self::toggle_chat))
             .on_action(cx.listener(Self::close_terminal))
             .on_action(cx.listener(Self::toggle_left_sidebar))
             .on_action(cx.listener(Self::toggle_right_sidebar))

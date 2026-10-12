@@ -12,6 +12,7 @@ use crate::ports::terminal::TerminalAgentKindSource;
 use crate::ui::terminal::{TerminalInsertStatus, TerminalView, TerminalViewEvent};
 
 use super::chrome::{pane_detail_title, tab_display_title};
+use super::pane_chat::chat_pane_title;
 use super::{ContextMenuKind, PaneIdentity, WorkspaceSection, WorkspaceView};
 
 impl WorkspaceView {
@@ -22,6 +23,26 @@ impl WorkspaceView {
         working_directory: &str,
     ) -> PaneIdentity {
         let alias = self.pane_names.get(&session.id).map(String::as_str);
+        let detail = pane_detail_title(
+            alias,
+            Some(session.title.as_str()),
+            Some(working_directory),
+            self.home_directory.as_deref(),
+        );
+        // A pane in chat view is named by its chat and marked with its agent.
+        if let Some(binding) = self
+            .snapshot
+            .agent_chat_binding(session.id)
+            .filter(|binding| binding.mode == PaneViewMode::Chat)
+        {
+            return PaneIdentity {
+                title: chat_pane_title(alias, session.chat_title.as_deref()),
+                detail,
+                agent_kind: Some(binding.agent.label().to_owned()),
+                agent_state: None,
+                agent_attention: None,
+            };
+        }
         let presence = self.resolved_agent_presence(session.id);
         PaneIdentity {
             title: tab_display_title(
@@ -30,12 +51,7 @@ impl WorkspaceView {
                 Some(working_directory),
                 index,
             ),
-            detail: pane_detail_title(
-                alias,
-                Some(session.title.as_str()),
-                Some(working_directory),
-                self.home_directory.as_deref(),
-            ),
+            detail,
             agent_kind: presence.as_ref().map(|presence| presence.kind.clone()),
             agent_state: presence.as_ref().map(|presence| presence.state),
             agent_attention: presence.as_ref().and_then(|presence| presence.attention),

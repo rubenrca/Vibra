@@ -1,7 +1,7 @@
 //! Stable drop targets shared by terminal tabs, review tabs and split panes.
 
 use gpui::{
-    AnyElement, App, Bounds, Context, DragMoveEvent, MouseButton, MouseDownEvent, Pixels, Point,
+    AnyElement, App, Bounds, ClickEvent, Context, DragMoveEvent, MouseButton, Pixels, Point,
     SharedString, Window, div, prelude::*, px, relative, svg,
 };
 use uuid::Uuid;
@@ -11,8 +11,7 @@ use crate::ui::theme::colors;
 
 use super::panes::{TAB_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS};
 use super::{
-    ChatTarget, ContextMenuKind, PaneDrag, ReorderDrag, ReorderSlot, TabDrag, TabStripDrop,
-    WorkspaceView,
+    ContextMenuKind, PaneDrag, ReorderDrag, ReorderSlot, TabDrag, TabStripDrop, WorkspaceView,
 };
 
 impl WorkspaceView {
@@ -427,38 +426,7 @@ impl WorkspaceView {
             .flex()
             .items_center()
             .pl(px(4.0))
-            .when(!dragging, |zone| {
-                zone.child(
-                    super::titlebar::titlebar_button("tab-bar-new-tab", true)
-                        .tooltip(|_, cx| {
-                            super::sidebar_tooltip("New tab · ⌘T · Right-click for chat", cx)
-                        })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        // Right-click offers agent chats for the new tab.
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                if let Some(project_id) = this.snapshot.selected_project_id {
-                                    let x: f32 = event.position.x.into();
-                                    let y: f32 = event.position.y.into();
-                                    this.open_context_menu(
-                                        ContextMenuKind::ChatAgentPicker {
-                                            target: ChatTarget::NewTab(project_id),
-                                        },
-                                        x,
-                                        y,
-                                        cx,
-                                    );
-                                }
-                                cx.stop_propagation();
-                            }),
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_terminal_tab_in_project(window, cx);
-                        }))
-                        .child(super::titlebar::titlebar_icon("chrome-icons/plus.svg")),
-                )
-            })
+            .when(!dragging, |zone| zone.child(new_tab_split_button(cx)))
             .when(dragging, |zone| {
                 zone.on_drag_move(cx.listener(|this, event: &DragMoveEvent<TabDrag>, _, cx| {
                     this.hover_tab_strip_end(event.bounds, event.event.position, cx);
@@ -488,6 +456,46 @@ impl WorkspaceView {
             );
         }
     }
+}
+
+/// "+ ▾": the plus opens a terminal tab; the chevron offers new chat or terminal tabs.
+fn new_tab_split_button(cx: &mut Context<WorkspaceView>) -> AnyElement {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .child(
+            super::titlebar::titlebar_button("tab-bar-new-tab", true)
+                .tooltip(|_, cx| super::sidebar_tooltip("New tab · ⌘T", cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_terminal_tab_in_project(window, cx);
+                }))
+                .child(super::titlebar::titlebar_icon("chrome-icons/plus.svg")),
+        )
+        .child(
+            super::titlebar::titlebar_button("tab-bar-new-menu", true)
+                .w(px(16.0))
+                .tooltip(|_, cx| super::sidebar_tooltip("New tab options", cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                    let position = event.position();
+                    let x: f32 = position.x.into();
+                    let y: f32 = position.y.into();
+                    this.open_context_menu(ContextMenuKind::NewTabMenu, x, y, cx);
+                }))
+                .child(
+                    svg()
+                        .path("chrome-icons/chevron-down.svg")
+                        .size(px(10.0))
+                        .flex_none()
+                        .text_color(colors().muted)
+                        .group_hover("titlebar-action", |icon| {
+                            icon.text_color(colors().foreground)
+                        }),
+                ),
+        )
+        .into_any_element()
 }
 
 /// Covers a tab that the dragged one will dock into as a split.

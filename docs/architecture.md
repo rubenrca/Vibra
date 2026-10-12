@@ -51,15 +51,24 @@ independiente del workspace.
   Un fallo nativo o mutex poisoned invalida el motor Ghostty; el snapshot Rust sigue
   disponible y el proceso se recolecta. TerminalView conserva `Failed` tras `Exit`
   y cancela entrada, búsquedas y pegados pendientes.
-- `pane_chat.rs`: vista Terminal | Chat de cada pane (issue #36). El usuario elige el tipo de
-  pane al crearlo (terminal, o chat con Claude, Codex o Grok al dividir o en una pestaña nueva) y
-  cambia la vista con el control Terminal | Chat del header; en un pane sin vínculo, ese control
-  abre un selector de agente. La detección de agentes nunca cambia la vista ni el agente. El PTY
-  sigue vivo bajo el chat y una terminal oculta nunca recibe foco. Un pane restaurado en Chat no se
-  conecta al abrirse: muestra su agente con «Reconnect» y «Show terminal». Sin pedirlo, Vibra solo
-  decide qué sesión cargar (los hooks dan el ID; `session/load`) y conecta el chat que el usuario
-  pidió cuando su agente sale de la terminal. Una sesión tiene un solo dueño: mientras el mismo
-  agente sigue en la terminal, ese chat espera.
+- `pane_chat.rs`: vista Terminal | Chat de cada pane (issue #36). Un pane conserva su
+  terminal mientras muestra su chat y ningún control elige agente. Se cambia con el botón
+  de icono del header (solo en panes divididos o con zoom), con «Toggle Chat» (⇧⌘A), con
+  «Show as Chat» o «Show as Terminal» del menú del pane y con la paleta. Un chat nuevo
+  (⇧⌘T, el menú «+ ▾» de la barra de tabs, «Split Right with Chat» o «Chat: New chat») usa
+  el último agente elegido (`chat_last_agent`); si no hay, el agente que corre en la
+  terminal del pane; si tampoco, el primer agente instalado. Sin agentes instalados, el chat
+  muestra su estado cerrado. Antes del primer mensaje, elegir un modelo de otro agente en el
+  composer reinicia el chat con ese agente (`SwitchAgent`), y los modelos vistos se guardan
+  en `chat_model_catalog` solo cuando cambian. La pestaña muestra la marca del agente y el
+  título que el agente dio a la sesión (`chat_title`, en la sesión y visible solo en vista
+  Chat). El nombre manual del pane gana siempre; sin título aparece «New chat». En vista
+  Terminal la pestaña conserva el nombre de carpeta o de comando. La detección de agentes
+  nunca cambia la vista ni el agente. El PTY sigue vivo bajo el chat y una terminal oculta
+  nunca recibe foco. Un pane restaurado en Chat no se conecta al abrirse: muestra «Reconnect»
+  y «Show terminal». Sin pedirlo, Vibra solo decide qué sesión cargar (los hooks dan el ID;
+  `session/load`) y conecta el chat que el usuario pidió cuando su agente sale de la terminal.
+  Una sesión tiene un solo dueño: mientras el mismo agente sigue en la terminal, ese chat espera.
   Al volver a Terminal, un chat con conversación se cierra y el comando de reanudación solo se
   escribe con el shell libre; un chat vacío sigue vivo. El proceso ACP no hereda
   `VIBRA_PANE_ID`, así que los hooks no lo atan a un pane.

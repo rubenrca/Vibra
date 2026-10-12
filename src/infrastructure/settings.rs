@@ -43,6 +43,12 @@ pub struct AppSettings {
     /// `light`, `dark`, or `system`.
     #[serde(default)]
     pub appearance_mode: AppearanceMode,
+    /// Agent a new chat starts with; the last one the user picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_last_agent: Option<crate::domain::agent_chat::ChatAgent>,
+    /// Model lists seen per agent, for the chat model picker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chat_model_catalog: Vec<crate::domain::agent_chat::AgentModelCatalog>,
     /// Notify when an agent finishes or needs attention off-screen.
     #[serde(default = "default_true")]
     pub agent_notifications: bool,
@@ -136,6 +142,8 @@ impl Default for AppSettings {
             pinned_project_ids: Vec::new(),
             theme_id: default_theme_id(),
             appearance_mode: AppearanceMode::System,
+            chat_last_agent: None,
+            chat_model_catalog: Vec::new(),
             agent_notifications: true,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,

@@ -11,11 +11,12 @@ mod cards;
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px, relative, svg};
 
 use super::AgentChatView;
+use super::layout::COLUMN_WIDTH;
 use super::tool_card::is_running;
 use crate::domain::agent_chat::{
     ChatCommand, ChatEvent, ChatItem, ChatTimeline, PermissionResolution, ToolContent,
 };
-use crate::ui::markdown::markdown;
+use crate::ui::markdown::markdown_prose;
 use crate::ui::theme::{colors, surface_tint};
 
 /// Rows that `event` may change when applied, sorted and without repeats.
@@ -192,8 +193,9 @@ impl AgentChatView {
         cx.notify();
     }
 
-    /// One list row. The row wrapper owns the spacing between items; a group
-    /// member draws nothing because its leader draws the group.
+    /// One list row. The row owns the vertical rhythm and centers its content
+    /// in the transcript column, so the list still scrolls across the full
+    /// width. A group member draws nothing because its leader draws the group.
     pub(super) fn render_item(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let items = &self.timeline.items;
         let Some(item) = items.get(index) else {
@@ -203,7 +205,7 @@ impl AgentChatView {
             ChatItem::UserMessage { text, files } => user_message(text, files),
             ChatItem::AssistantMessage { text } => div()
                 .w_full()
-                .child(markdown(&format!("chat-assistant-{index}"), text))
+                .child(markdown_prose(&format!("chat-assistant-{index}"), text))
                 .into_any_element(),
             ChatItem::Reasoning { text } => self.reasoning(index, text, cx),
             ChatItem::ToolCall(_) => {
@@ -216,7 +218,13 @@ impl AgentChatView {
             ChatItem::Permission(permission) => self.permission_card(index, permission, cx),
             ChatItem::Notice { level, text } => cards::notice(*level, text),
         };
-        div().w_full().pb_3().child(content).into_any_element()
+        div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .pb_4()
+            .child(div().w_full().max_w(px(COLUMN_WIDTH)).px_3().child(content))
+            .into_any_element()
     }
 
     fn reasoning(&self, index: usize, text: &str, cx: &mut Context<Self>) -> AnyElement {
@@ -256,8 +264,6 @@ impl AgentChatView {
                 column.child(
                     div()
                         .pl_5()
-                        .border_l_1()
-                        .border_color(colors().border_subtle)
                         .text_size(px(12.5))
                         .line_height(px(18.0))
                         .text_color(colors().muted)
@@ -277,7 +283,7 @@ fn user_message(text: &str, files: &[String]) -> AnyElement {
         .flex()
         .flex_col()
         .items_end()
-        .gap_1()
+        .gap_1p5()
         .when(!files.is_empty(), |row| {
             row.child(
                 div()
@@ -300,18 +306,19 @@ fn user_message(text: &str, files: &[String]) -> AnyElement {
             )
         })
         .child(
+            // A quiet fill and no border: the bubble is text first, not a card.
             div()
                 .max_w(relative(0.8))
                 .px_3()
                 .py_2()
-                .rounded(px(10.0))
-                .bg(surface_tint(colors().selection, colors().terminal))
-                .text_size(px(13.0))
-                .line_height(px(20.0))
+                .rounded(px(12.0))
+                .bg(surface_tint(colors().elevated, colors().terminal))
+                .text_size(px(14.0))
+                .line_height(px(22.0))
                 .text_color(colors().foreground)
                 .children(
                     text.lines()
-                        .map(|line| div().min_h(px(20.0)).child(line.to_owned())),
+                        .map(|line| div().min_h(px(22.0)).child(line.to_owned())),
                 ),
         )
         .into_any_element()

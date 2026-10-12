@@ -107,10 +107,8 @@ impl AgentChatView {
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
-                .ml(px(6.0))
-                .pl_3()
-                .border_l_1()
-                .border_color(colors().border_subtle)
+                // Aligned with the group's icon; the indent alone groups the rows.
+                .pl(px(21.0))
                 .children(
                     calls
                         .iter()
@@ -149,11 +147,8 @@ impl AgentChatView {
             .min_w(px(0.0))
             .px_2()
             .py(px(3.0))
-            .rounded(px(5.0))
+            .rounded(px(6.0))
             .text_size(px(12.0))
-            .when(call.status == ToolStatus::Failed, |row| {
-                row.bg(surface_tint(colors().danger, colors().terminal))
-            })
             .when(has_content, |row| {
                 row.cursor_pointer()
                     .hover(|row| row.bg(colors().hover))
@@ -405,7 +400,7 @@ fn file_chip(id: String, path: &str) -> AnyElement {
         .gap_1()
         .px(px(5.0))
         .py(px(1.0))
-        .rounded(px(5.0))
+        .rounded(px(6.0))
         .bg(surface_tint(colors().elevated, colors().terminal))
         .font_family(MONO_FONT)
         .text_size(px(11.5))

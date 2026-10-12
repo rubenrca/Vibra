@@ -6,7 +6,9 @@ use crate::{CloseTerminal, NextProject, ShowSettings, ToggleRightSidebar};
 use gpui::Focusable;
 use std::path::Path;
 
-use crate::domain::agent_chat::{AgentChatBinding, ChatAgent, PaneViewMode};
+use crate::domain::agent_chat::{
+    AgentChatBinding, AgentModelCatalog, CatalogModel, ChatAgent, PaneViewMode,
+};
 use crate::domain::workspace::WorkspaceSnapshot;
 use crate::ui::agent_chat::AgentChatViewEvent;
 use uuid::Uuid;
@@ -2204,35 +2206,31 @@ fn showing_the_terminal_of_a_restored_pane_launches_no_agent(cx: &mut gpui::Test
 }
 
 #[gpui::test]
-fn chat_control_on_an_unbound_pane_opens_the_picker_without_switching(
-    cx: &mut gpui::TestAppContext,
-) {
-    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-picker");
+fn toggle_chat_switches_the_selected_pane_without_a_picker(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-toggle-action");
     let pane = snapshot.selected_session().unwrap().id;
     window
         .update(cx, |view, window, cx| {
-            // Claude runs in the pane: detection is recorded but changes nothing.
-            view.handle_terminal_view_event(
-                &TerminalViewEvent::AgentPresenceChanged {
-                    session_id: pane,
-                    presence: Some(agent_presence("Claude")),
-                },
-                cx,
-            );
-            view.click_pane_chat_control(pane, 120.0, 80.0, window, cx);
+            let default = view
+                .default_chat_agent(Some(pane))
+                .unwrap_or(ChatAgent::ALL[0]);
 
-            let menu = view.context_menu.as_ref().expect("the picker opens");
-            assert!(matches!(
-                menu.kind,
-                ContextMenuKind::ChatAgentPicker {
-                    target: ChatTarget::Pane(target)
-                } if target == pane
-            ));
-            assert_eq!((menu.x, menu.y), (120.0, 80.0));
-            assert_eq!(view.snapshot.agent_chat_binding(pane), None);
+            view.toggle_selected_pane_chat(window, cx);
+            assert!(view.context_menu.is_none(), "no agent picker opens");
+            assert_eq!(view.pane_view_mode(pane), PaneViewMode::Chat);
+            assert_eq!(
+                view.snapshot.agent_chat_binding(pane),
+                Some(&chat_binding(default, None, PaneViewMode::Chat))
+            );
+            assert!(view.agent_chats.contains_key(&pane));
+
+            view.toggle_selected_pane_chat(window, cx);
             assert_eq!(view.pane_view_mode(pane), PaneViewMode::Terminal);
-            assert!(!view.agent_chats.contains_key(&pane));
-            assert_eq!(view.detected_chat_agent(pane), Some(ChatAgent::Claude));
+            assert!(view.terminals[&pane].read(cx).is_surface_visible());
+
+            view.toggle_selected_pane_chat(window, cx);
+            assert_eq!(view.pane_view_mode(pane), PaneViewMode::Chat);
+            assert!(view.context_menu.is_none());
             window.remove_window();
         })
         .unwrap();
@@ -2240,31 +2238,249 @@ fn chat_control_on_an_unbound_pane_opens_the_picker_without_switching(
 }
 
 #[gpui::test]
-fn choosing_an_agent_switches_the_pane_to_its_chat(cx: &mut gpui::TestAppContext) {
-    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-choose");
+fn new_chats_use_the_remembered_agent_then_the_pane_agent(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-default");
     let pane = snapshot.selected_session().unwrap().id;
     window
         .update(cx, |view, window, cx| {
-            view.click_pane_chat_control(pane, 0.0, 0.0, window, cx);
-            view.run_context_menu_action(ContextMenuAction::StartChat(ChatAgent::Grok), window, cx);
-
-            assert!(view.context_menu.is_none());
+            let installed = [ChatAgent::Claude, ChatAgent::Codex, ChatAgent::Grok];
+            view.settings.chat_last_agent = Some(ChatAgent::Grok);
             assert_eq!(
-                view.snapshot.agent_chat_binding(pane),
-                Some(&chat_binding(ChatAgent::Grok, None, PaneViewMode::Chat))
+                view.default_chat_agent_among(&installed, Some(pane)),
+                Some(ChatAgent::Grok)
             );
-            assert_eq!(view.pane_view_mode(pane), PaneViewMode::Chat);
-            assert!(view.agent_chats.contains_key(&pane));
 
-            // A bound pane's Chat control switches straight to its agent, with no picker.
-            view.set_pane_view_mode(pane, PaneViewMode::Terminal, window, cx);
-            view.click_pane_chat_control(pane, 0.0, 0.0, window, cx);
-            assert!(view.context_menu.is_none());
-            assert_eq!(view.pane_view_mode(pane), PaneViewMode::Chat);
+            view.settings.chat_last_agent = None;
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: pane,
+                    presence: Some(agent_presence("Codex")),
+                },
+                cx,
+            );
+            assert_eq!(
+                view.default_chat_agent_among(&installed, Some(pane)),
+                Some(ChatAgent::Codex)
+            );
+            // A new tab has no pane to detect in, so it takes the first installed agent.
+            assert_eq!(
+                view.default_chat_agent_among(&installed, None),
+                Some(ChatAgent::Claude)
+            );
+            assert_eq!(view.default_chat_agent_among(&[], Some(pane)), None);
+
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: pane,
+                    presence: None,
+                },
+                cx,
+            );
+            view.settings.chat_last_agent = Some(ChatAgent::Grok);
+            let expected = view.default_chat_agent(None).unwrap_or(ChatAgent::ALL[0]);
+            view.new_chat_tab(window, cx);
+            let new_pane = view.snapshot.selected_session().unwrap().id;
+            assert_ne!(new_pane, pane);
+            assert_eq!(
+                view.snapshot.agent_chat_binding(new_pane),
+                Some(&chat_binding(expected, None, PaneViewMode::Chat))
+            );
             window.remove_window();
         })
         .unwrap();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn switching_agent_before_a_message_rebinds_the_pane_and_is_remembered(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-switch");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(
+                    ChatAgent::Claude,
+                    None,
+                    PaneViewMode::Terminal,
+                )),
+            );
+            view.set_pane_view_mode(pane, PaneViewMode::Chat, window, cx);
+            let first = view.agent_chats[&pane].view.entity_id();
+            let generation = view.settings_generation;
+
+            view.handle_pane_chat_event(
+                pane,
+                &AgentChatViewEvent::SwitchAgent {
+                    agent: ChatAgent::Grok,
+                    model: Some("grok-4".into()),
+                },
+                window,
+                cx,
+            );
+
+            assert_eq!(
+                view.snapshot.agent_chat_binding(pane),
+                Some(&chat_binding(ChatAgent::Grok, None, PaneViewMode::Chat))
+            );
+            assert_eq!(
+                view.agent_chats[&pane].view.read(cx).agent(),
+                ChatAgent::Grok
+            );
+            assert_ne!(view.agent_chats[&pane].view.entity_id(), first);
+            assert_eq!(view.settings.chat_last_agent, Some(ChatAgent::Grok));
+            assert_ne!(view.settings_generation, generation, "the choice is saved");
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn models_known_upserts_the_catalog_and_saves_only_changes(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-models");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            let gpt = vec![CatalogModel {
+                value: "gpt-5".into(),
+                name: "GPT-5".into(),
+            }];
+            let known = |agent, models: Vec<CatalogModel>| AgentChatViewEvent::ModelsKnown {
+                agent,
+                models,
+            };
+
+            view.handle_pane_chat_event(pane, &known(ChatAgent::Codex, gpt.clone()), window, cx);
+            assert_eq!(
+                view.settings.chat_model_catalog,
+                vec![AgentModelCatalog {
+                    agent: ChatAgent::Codex,
+                    models: gpt.clone(),
+                }]
+            );
+            let generation = view.settings_generation;
+
+            view.handle_pane_chat_event(pane, &known(ChatAgent::Codex, gpt.clone()), window, cx);
+            assert_eq!(
+                view.settings_generation, generation,
+                "an unchanged list is not saved"
+            );
+
+            let renamed = vec![CatalogModel {
+                value: "gpt-5".into(),
+                name: "GPT-5 (renamed)".into(),
+            }];
+            view.handle_pane_chat_event(
+                pane,
+                &known(ChatAgent::Codex, renamed.clone()),
+                window,
+                cx,
+            );
+            assert_eq!(view.settings.chat_model_catalog.len(), 1);
+            assert_eq!(view.settings.chat_model_catalog[0].models, renamed);
+            assert_ne!(view.settings_generation, generation);
+
+            view.handle_pane_chat_event(pane, &known(ChatAgent::Grok, gpt.clone()), window, cx);
+            assert_eq!(view.settings.chat_model_catalog.len(), 2);
+            // An empty report leaves the remembered list alone.
+            view.handle_pane_chat_event(pane, &known(ChatAgent::Grok, Vec::new()), window, cx);
+            assert_eq!(view.settings.chat_model_catalog.len(), 2);
+            assert_eq!(
+                view.settings.chat_model_catalog[1].models, gpt,
+                "Grok keeps its models"
+            );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn chat_panes_are_named_by_their_chat_and_marked_with_its_agent(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "chat-title-tab");
+    let pane = snapshot.selected_session().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.snapshot.set_agent_chat_binding(
+                pane,
+                Some(chat_binding(ChatAgent::Codex, None, PaneViewMode::Terminal)),
+            );
+            view.set_pane_view_mode(pane, PaneViewMode::Chat, window, cx);
+            let identity = view.pane_identity_by_id(pane, cx).unwrap();
+            assert_eq!(identity.title, "New chat");
+            assert_eq!(identity.agent_kind.as_deref(), Some("Codex"));
+
+            view.handle_pane_chat_event(
+                pane,
+                &AgentChatViewEvent::TitleChanged("Fix login".into()),
+                window,
+                cx,
+            );
+            assert_eq!(
+                view.pane_identity_by_id(pane, cx).unwrap().title,
+                "Fix login"
+            );
+
+            view.pane_names.insert(pane, "Auth".into());
+            assert_eq!(view.pane_identity_by_id(pane, cx).unwrap().title, "Auth");
+            view.pane_names.remove(&pane);
+
+            // The terminal view keeps the folder name, not the chat's title.
+            view.set_pane_view_mode(pane, PaneViewMode::Terminal, window, cx);
+            let identity = view.pane_identity_by_id(pane, cx).unwrap();
+            assert_ne!(identity.title, "Fix login");
+            assert_eq!(identity.agent_kind, None);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_lone_pane_has_no_header_but_split_and_zoomed_panes_do() {
+    use super::panes::pane_header_visible;
+
+    assert!(!pane_header_visible(false, false));
+    assert!(pane_header_visible(true, false));
+    assert!(pane_header_visible(false, true));
+}
+
+#[test]
+fn new_chats_start_with_the_last_agent_then_the_pane_agent_then_the_first_installed() {
+    use super::pane_chat::choose_chat_agent;
+
+    let installed = [ChatAgent::Claude, ChatAgent::Codex];
+    assert_eq!(
+        choose_chat_agent(&installed, Some(ChatAgent::Claude), Some(ChatAgent::Codex)),
+        Some(ChatAgent::Claude)
+    );
+    // An uninstalled last agent falls through to the pane's agent.
+    assert_eq!(
+        choose_chat_agent(&installed, Some(ChatAgent::Grok), Some(ChatAgent::Codex)),
+        Some(ChatAgent::Codex)
+    );
+    assert_eq!(
+        choose_chat_agent(&installed, None, None),
+        Some(ChatAgent::Claude)
+    );
+    assert_eq!(
+        choose_chat_agent(&[ChatAgent::Grok], Some(ChatAgent::Claude), None),
+        Some(ChatAgent::Grok)
+    );
+    assert_eq!(choose_chat_agent(&[], Some(ChatAgent::Claude), None), None);
+}
+
+#[test]
+fn chat_panes_are_named_by_the_manual_name_then_the_chat_title() {
+    use super::pane_chat::chat_pane_title;
+
+    assert_eq!(chat_pane_title(Some("Auth"), Some("Fix login")), "Auth");
+    assert_eq!(chat_pane_title(Some("  "), Some("Fix login")), "Fix login");
+    assert_eq!(chat_pane_title(None, Some(" ")), "New chat");
+    assert_eq!(chat_pane_title(None, None), "New chat");
 }
 
 #[gpui::test]
