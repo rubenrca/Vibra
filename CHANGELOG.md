@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.35 — 2026-10-11
+
+- Add Keep Awake to the status bar: a coffee toggle that prevents display and idle system sleep, on battery or plugged in. It turns off when clicked again or when Vibra quits, and starts off every session. While on, it shows as a lit "Awake" pill.
+- Remove unread counters and dots from Review and Activity; events stay in the history and still open their terminal.
+
 ## 0.3.34 — 2026-10-03
 
 - Rename Inbox to Review across navigation, the status bar, settings, and the command palette.
