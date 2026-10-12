@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::{AnyElement, Context, Timer, div, prelude::*, px, svg};
+use gpui::{AnyElement, Context, Rgba, Timer, div, prelude::*, px, svg};
 
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 use crate::ports::git::GitBranchSummary;
@@ -150,7 +150,8 @@ impl WorkspaceView {
     pub(super) fn status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let counts = self.agent_counts();
         let keep_awake = self.keep_awake.is_enabled();
-        let item = |id: &'static str| {
+        // GPUI allows a single hover style per element, so styled items start from `base`.
+        let base = |id: &'static str| {
             div()
                 .id(id)
                 .h(px(22.0))
@@ -160,10 +161,12 @@ impl WorkspaceView {
                 .items_center()
                 .gap(px(6.0))
                 .cursor_pointer()
-                .hover(|item| {
-                    item.bg(surface_tint(colors().hover, colors().titlebar))
-                        .text_color(colors().foreground)
-                })
+        };
+        let item = move |id: &'static str| {
+            base(id).hover(|item| {
+                item.bg(surface_tint(colors().hover, colors().titlebar))
+                    .text_color(colors().foreground)
+            })
         };
         let icon = |path: &'static str| {
             svg()
@@ -240,28 +243,54 @@ impl WorkspaceView {
             .child(div().flex_1())
             .child(self.usage_status(cx))
             .child(
-                item("status-keep-awake")
-                    .when(keep_awake, |item| {
-                        item.bg(surface_tint(colors().accent, colors().titlebar))
-                            .text_color(colors().accent)
+                div()
+                    .w(px(1.0))
+                    .h(px(14.0))
+                    .mx(px(4.0))
+                    .flex_none()
+                    .bg(colors().border_subtle),
+            )
+            .child(
+                base("status-keep-awake")
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .map(|item| {
+                        if keep_awake {
+                            // Lit pill reads as a running state rather than a plain link.
+                            let accent = colors().accent;
+                            item.bg(Rgba { a: 0.14, ..accent })
+                                .border_color(Rgba { a: 0.35, ..accent })
+                                .text_color(accent)
+                                .hover(move |item| {
+                                    item.bg(Rgba { a: 0.22, ..accent }).text_color(accent)
+                                })
+                                .child(icon("chrome-icons/coffee-steam.svg").text_color(accent))
+                                .child("Awake")
+                        } else {
+                            item.px(px(5.0))
+                                .group("keep-awake")
+                                .hover(|item| {
+                                    item.bg(surface_tint(colors().hover, colors().titlebar))
+                                })
+                                .child(
+                                    icon("chrome-icons/coffee.svg")
+                                        .group_hover("keep-awake", |icon| {
+                                            icon.text_color(colors().foreground)
+                                        }),
+                                )
+                        }
                     })
                     .tooltip(move |_, cx| {
                         sidebar_tooltip(
                             if keep_awake {
-                                "Keep Awake is on. Click to allow display and system sleep."
+                                "Keep Awake is on · Click to allow sleep"
                             } else {
-                                "Keep Awake is off. Click to prevent display and system sleep."
+                                "Keep Awake · Prevent your Mac from sleeping"
                             },
                             cx,
                         )
                     })
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_awake(cx)))
-                    .child(icon("chrome-icons/coffee.svg").text_color(if keep_awake {
-                        colors().accent
-                    } else {
-                        colors().muted
-                    }))
-                    .child("Keep Awake"),
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_awake(cx))),
             )
             .child(
                 item("status-inbox")

@@ -43,6 +43,7 @@ pub struct VibraAssets;
 bundled_assets! {
     ("chrome-icons/copy.svg", "ChromeIcons/copy.svg"),
     ("chrome-icons/coffee.svg", "ChromeIcons/coffee.svg"),
+    ("chrome-icons/coffee-steam.svg", "ChromeIcons/coffee-steam.svg"),
     ("chrome-icons/check-all.svg", "ChromeIcons/check-all.svg"),
     ("chrome-icons/git-merge.svg", "ChromeIcons/git-merge.svg"),
     ("chrome-icons/issue-canceled.svg", "ChromeIcons/issue-canceled.svg"),
