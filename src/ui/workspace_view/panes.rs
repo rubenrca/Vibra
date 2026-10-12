@@ -384,6 +384,7 @@ impl super::WorkspaceView {
                 cx.stop_propagation();
             })
             .child(tab_list)
+            .children(self.pane_mode_toggle(cx))
     }
 
     pub(super) fn render_pane_layout(
