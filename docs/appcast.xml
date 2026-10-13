@@ -3,18 +3,19 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.35</title>
-            <pubDate>Sun, 11 Oct 2026 21:14:13 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.35</link>
-            <sparkle:version>264</sparkle:version>
-            <sparkle:shortVersionString>0.3.35</sparkle:shortVersionString>
+            <title>0.3.36</title>
+            <pubDate>Tue, 13 Oct 2026 17:28:01 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.36</link>
+            <sparkle:version>268</sparkle:version>
+            <sparkle:shortVersionString>0.3.36</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Add Keep Awake to the status bar: a coffee toggle that prevents display and idle system sleep, on battery or plugged in. It turns off when clicked again or when Vibra quits, and starts off every session. While on, it shows as a lit "Awake" pill.</li>
-  <li>Remove unread counters and dots from Review and Activity; events stay in the history and still open their terminal.</li>
+  <li>Show agents in the sidebar as cards with the agent and its status (Working, Waiting, Permission, Idle), the task title, and the branch the project has checked out.</li>
+  <li>Reorder the status bar: agents and Review sit on the left; the branch, subscription usage, and Keep Awake sit on the right.</li>
+  <li>Even out status bar icon sizes: redraw the Keep Awake cup, shrink provider marks, and drop the sparkles placeholder while usage loads.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.35/Vibra-0.3.35.dmg" length="15267961" type="application/octet-stream" sparkle:edSignature="4UEDnaFSw4rYdoxcxTzfCS6mwJ3tqpKYcL1LRylrUNglwsyPIRvU3UIzTxjiBA2w9ZYpgfCpaPJEGVzbqYCpCQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.36/Vibra-0.3.36.dmg" length="15268085" type="application/octet-stream" sparkle:edSignature="K5geOdvrA96QEUnwiWNK9HzTZ0bHXoUjeUF5NzqsSFFkeLV7s1vqQ/kIvpmbZeRCAekPzOMitXANNIckDADQCw=="/>
         </item>
     </channel>
 </rss>
