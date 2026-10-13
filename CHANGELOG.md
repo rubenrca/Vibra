@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.37 — 2026-10-13
+
+- Add Scratch, a terminal outside every project. Open it from the sidebar under Review or with ⌥⌘T, and press ⌥⌘T again to return. It has the usual tabs, panes, and shortcuts; new tabs start in the current tab's folder, and Explorer, Changes, and the branch follow the selected terminal.
+- Recognize agents that run as interpreter scripts, such as Gemini CLI under Node.
+- Steadier agent status: prompts and spinners count only in the agent's footer, Idle and Waiting wait a moment before showing, and an agent keeps its identity when other agents' names scroll past.
+- Agents show as Working again after a tool finishes, including answered permission prompts. Hooks installed by an older Vibra are updated at launch.
+- Explorer ignores `~/Library` and hidden folders when watching the home folder.
+
 ## 0.3.36 — 2026-10-13
 
 - Show agents in the sidebar as cards with the agent and its status (Working, Waiting, Permission, Idle), the task title, and the branch the project has checked out.
