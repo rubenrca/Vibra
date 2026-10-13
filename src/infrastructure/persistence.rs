@@ -450,6 +450,7 @@ mod tests {
                 name: "Legacy".into(),
                 root_path: "/tmp/legacy".into(),
                 collapsed: false,
+                scratch: false,
                 selected_session_id: Some(session.id),
                 visible_session_ids: Some(vec![session.id]),
                 sessions: vec![session],

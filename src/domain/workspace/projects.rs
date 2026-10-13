@@ -11,6 +11,7 @@ impl ProjectSnapshot {
             name,
             root_path,
             collapsed: false,
+            scratch: false,
             sessions: Vec::new(),
             selected_session_id: None,
             visible_session_ids: None,
@@ -36,10 +37,35 @@ impl ProjectSnapshot {
 }
 
 impl WorkspaceSnapshot {
+    /// Projects the user added, in sidebar order; Scratch is not one.
+    pub fn listed_projects(&self) -> impl Iterator<Item = &ProjectSnapshot> {
+        self.projects.iter().filter(|project| !project.scratch)
+    }
+
+    pub fn scratch_id(&self) -> Option<Uuid> {
+        self.projects
+            .iter()
+            .find(|project| project.scratch)
+            .map(|project| project.id)
+    }
+
+    /// Created on first use, so workspaces that never open it stay unchanged.
+    pub fn ensure_scratch(&mut self) -> Uuid {
+        if let Some(id) = self.scratch_id() {
+            return id;
+        }
+        let id = Uuid::new_v4();
+        let mut project = ProjectSnapshot::new(id, "Scratch".into(), String::new());
+        project.scratch = true;
+        self.projects.push(project);
+        self.normalize();
+        id
+    }
+
     /// Register a folder independently of its sessions. Reopening it selects it.
     pub fn add_project(&mut self, root: &Path) -> Uuid {
         let root_path = root.to_string_lossy().into_owned();
-        let id = if let Some(project) = self.projects.iter().find(|p| p.root_path == root_path) {
+        let id = if let Some(project) = self.listed_projects().find(|p| p.root_path == root_path) {
             project.id
         } else {
             let id = Uuid::new_v4();
@@ -71,9 +97,20 @@ impl WorkspaceSnapshot {
     /// just their container; it is created once and reused until its last tab
     /// closes. Background opens preserve the user's selected project and tab.
     pub fn open_tab_in_project(&mut self, project_id: Uuid, focus: bool) -> Option<(Uuid, Uuid)> {
+        let root = self.project(project_id)?.directory()?.to_owned();
+        self.open_tab_in_directory(project_id, root, focus)
+    }
+
+    /// Like `open_tab_in_project`, for the folderless Scratch terminal: its
+    /// tabs start wherever the caller says, usually the current tab's cwd.
+    pub fn open_tab_in_directory(
+        &mut self,
+        project_id: Uuid,
+        directory: String,
+        focus: bool,
+    ) -> Option<(Uuid, Uuid)> {
         let project = self.project_mut(project_id)?;
-        let root = project.directory()?.to_owned();
-        let tab = TabSnapshot::with_session(SessionSnapshot::new(root));
+        let tab = TabSnapshot::with_session(SessionSnapshot::new(directory));
         let ids = (tab.id, tab.selected_session_id?);
         let workspaces = project.workspaces.get_or_insert_default();
         if workspaces.is_empty() {

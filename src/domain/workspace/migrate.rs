@@ -25,7 +25,12 @@ impl super::WorkspaceSnapshot {
             .iter()
             .any(|p| Some(p.id) == self.selected_project_id)
         {
-            self.selected_project_id = self.projects.first().map(|p| p.id);
+            let fallback = self
+                .listed_projects()
+                .next()
+                .or(self.projects.first())
+                .map(|p| p.id);
+            self.selected_project_id = fallback;
         }
         self.workspace_order.clear();
         self.sidebar_items.clear();

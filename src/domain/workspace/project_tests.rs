@@ -403,3 +403,41 @@ fn tabs_open_in_the_project_session_without_stealing_focus() {
         1
     );
 }
+
+#[test]
+fn scratch_is_created_once_and_hidden_from_the_project_list() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    let project = snapshot.add_project(Path::new("/tmp/project"));
+    let quick = snapshot.ensure_scratch();
+    assert_eq!(snapshot.ensure_scratch(), quick);
+    assert_eq!(snapshot.selected_project_id, Some(project));
+    assert_eq!(
+        snapshot.listed_projects().map(|p| p.id).collect::<Vec<_>>(),
+        vec![project]
+    );
+    assert!(snapshot.project(quick).unwrap().directory().is_none());
+
+    // Adding the home folder as a project creates a real one.
+    let home = snapshot.add_project(Path::new("/Users/demo"));
+    assert_ne!(home, quick);
+
+    let (_, session) = snapshot
+        .open_tab_in_directory(quick, "/Users/demo/Desktop".into(), true)
+        .unwrap();
+    assert_eq!(
+        snapshot.selected_session().unwrap().working_directory,
+        "/Users/demo/Desktop"
+    );
+    assert_eq!(snapshot.selected_session().unwrap().id, session);
+
+    // Removing the selected project never falls back to the hidden one.
+    snapshot.select_project(project);
+    snapshot.remove_project(project);
+    assert_eq!(snapshot.selected_project_id, Some(home));
+
+    let restored: WorkspaceSnapshot =
+        serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+    assert_eq!(restored.scratch_id(), Some(quick));
+    let plain = serde_json::to_value(restored.project(home).unwrap()).unwrap();
+    assert!(plain.get("scratch").is_none());
+}

@@ -559,6 +559,7 @@ fn legacy_sessions_migrate_without_data_loss() {
             name: "Legacy".into(),
             root_path: "/tmp/vibra-legacy".into(),
             collapsed: false,
+            scratch: false,
             sessions: vec![session],
             selected_session_id: Some(session_id),
             visible_session_ids: Some(vec![session_id]),
