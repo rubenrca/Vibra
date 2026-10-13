@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.36 — 2026-10-13
+
+- Show agents in the sidebar as cards with the agent and its status (Working, Waiting, Permission, Idle), the task title, and the branch the project has checked out.
+- Reorder the status bar: agents and Review sit on the left; the branch, subscription usage, and Keep Awake sit on the right.
+- Even out status bar icon sizes: redraw the Keep Awake cup, shrink provider marks, and drop the sparkles placeholder while usage loads.
+
 ## 0.3.35 — 2026-10-11
 
 - Add Keep Awake to the status bar: a coffee toggle that prevents display and idle system sleep, on battery or plugged in. It turns off when clicked again or when Vibra quits, and starts off every session. While on, it shows as a lit "Awake" pill.
