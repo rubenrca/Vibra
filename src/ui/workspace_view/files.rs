@@ -256,7 +256,9 @@ impl Drop for FilesWatch {
     }
 }
 
-fn event_should_refresh(root: &Path, event: &notify::Event) -> bool {
+/// `home` marks a watch on the home folder (Scratch's usual cwd),
+/// where `Library` and dot folders change constantly without being browsed.
+fn event_should_refresh(root: &Path, home: bool, event: &notify::Event) -> bool {
     if matches!(event.kind, EventKind::Access(_) | EventKind::Other) {
         return false;
     }
@@ -271,15 +273,20 @@ fn event_should_refresh(root: &Path, event: &notify::Event) -> bool {
             return false;
         }
         !relative.components().next().is_some_and(|component| {
-            component
-                .as_os_str()
-                .to_str()
-                .is_some_and(|name| SKIPPED_DIRECTORY_NAMES.contains(&name))
+            component.as_os_str().to_str().is_some_and(|name| {
+                SKIPPED_DIRECTORY_NAMES.contains(&name)
+                    || (home && (name == "Library" || name.starts_with('.')))
+            })
         })
     })
 }
 
-fn run_files_watcher(root: PathBuf, events: async_channel::Sender<()>, stop: mpsc::Receiver<()>) {
+fn run_files_watcher(
+    root: PathBuf,
+    home: bool,
+    events: async_channel::Sender<()>,
+    stop: mpsc::Receiver<()>,
+) {
     let (tx, rx) = mpsc::channel();
     let mut watcher = match notify::recommended_watcher(tx) {
         Ok(watcher) => watcher,
@@ -296,7 +303,7 @@ fn run_files_watcher(root: PathBuf, events: async_channel::Sender<()>, stop: mps
         }
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(Ok(event)) => {
-                if event_should_refresh(&root, &event) {
+                if event_should_refresh(&root, home, &event) {
                     let _ = events.try_send(());
                 }
             }
@@ -341,9 +348,10 @@ impl super::WorkspaceView {
         let (stop_tx, stop_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::bounded::<()>(8);
         let watch_root = root.clone();
+        let home = self.home_directory.as_deref() == Some(root.as_path());
         let thread = match thread::Builder::new()
             .name("vibra-files-watch".into())
-            .spawn(move || run_files_watcher(watch_root, event_tx, stop_rx))
+            .spawn(move || run_files_watcher(watch_root, home, event_tx, stop_rx))
         {
             Ok(thread) => thread,
             Err(_) => {
@@ -416,23 +424,38 @@ mod tests {
         };
         assert!(!event_should_refresh(
             Path::new("/repo"),
+            false,
             &event("/repo/target/debug/file")
         ));
         assert!(!event_should_refresh(
             Path::new("/repo"),
+            false,
             &event("/repo/node_modules/pkg/file")
         ));
         assert!(event_should_refresh(
             Path::new("/repo"),
+            false,
             &event("/repo/src/main.rs")
         ));
         assert!(event_should_refresh(
             Path::new("/repo/build"),
+            false,
             &event("/repo/build/src/main.rs")
         ));
         assert!(event_should_refresh(
             Path::new("/repo"),
+            false,
             &event("/repo/src/build/main.rs")
+        ));
+        let home = Path::new("/Users/demo");
+        for noisy in ["/Users/demo/Library/Caches/x", "/Users/demo/.cache/x"] {
+            assert!(!event_should_refresh(home, true, &event(noisy)));
+            assert!(event_should_refresh(home, false, &event(noisy)));
+        }
+        assert!(event_should_refresh(
+            home,
+            true,
+            &event("/Users/demo/Desktop/notes.txt")
         ));
     }
 }
