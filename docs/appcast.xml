@@ -3,19 +3,21 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.36</title>
-            <pubDate>Tue, 13 Oct 2026 17:28:01 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.36</link>
-            <sparkle:version>268</sparkle:version>
-            <sparkle:shortVersionString>0.3.36</sparkle:shortVersionString>
+            <title>0.3.37</title>
+            <pubDate>Tue, 13 Oct 2026 18:21:53 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.37</link>
+            <sparkle:version>276</sparkle:version>
+            <sparkle:shortVersionString>0.3.37</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Show agents in the sidebar as cards with the agent and its status (Working, Waiting, Permission, Idle), the task title, and the branch the project has checked out.</li>
-  <li>Reorder the status bar: agents and Review sit on the left; the branch, subscription usage, and Keep Awake sit on the right.</li>
-  <li>Even out status bar icon sizes: redraw the Keep Awake cup, shrink provider marks, and drop the sparkles placeholder while usage loads.</li>
+  <li>Add Scratch, a terminal outside every project. Open it from the sidebar under Review or with ⌥⌘T, and press ⌥⌘T again to return. It has the usual tabs, panes, and shortcuts; new tabs start in the current tab's folder, and Explorer, Changes, and the branch follow the selected terminal.</li>
+  <li>Recognize agents that run as interpreter scripts, such as Gemini CLI under Node.</li>
+  <li>Steadier agent status: prompts and spinners count only in the agent's footer, Idle and Waiting wait a moment before showing, and an agent keeps its identity when other agents' names scroll past.</li>
+  <li>Agents show as Working again after a tool finishes, including answered permission prompts. Hooks installed by an older Vibra are updated at launch.</li>
+  <li>Explorer ignores `~/Library` and hidden folders when watching the home folder.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.36/Vibra-0.3.36.dmg" length="15268085" type="application/octet-stream" sparkle:edSignature="K5geOdvrA96QEUnwiWNK9HzTZ0bHXoUjeUF5NzqsSFFkeLV7s1vqQ/kIvpmbZeRCAekPzOMitXANNIckDADQCw=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.37/Vibra-0.3.37.dmg" length="15304021" type="application/octet-stream" sparkle:edSignature="EzhAzb07xOKluGh9DWxvgLTyaUdV3hoWIk0fOt728cRBOP6z6qdRpB0WTAOose52+DcOkihXycch18gB8oPUAg=="/>
         </item>
     </channel>
 </rss>
