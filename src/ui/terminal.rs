@@ -9,7 +9,7 @@ use gpui::{
 };
 use uuid::Uuid;
 
-use crate::domain::agents::AgentKind;
+use crate::domain::agents::{AgentKind, AgentRuntimeState};
 use crate::infrastructure::settings::{MAX_TERMINAL_FONT_SIZE, MIN_TERMINAL_FONT_SIZE};
 use crate::ports::terminal::{
     TerminalAgentPresence, TerminalCell, TerminalCellSide, TerminalCursor, TerminalCursorShape,
@@ -53,6 +53,11 @@ const WORKING_DIRECTORY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const BELL_FLASH_DURATION: Duration = Duration::from_millis(140);
 const INPUT_ERROR_VISIBLE_DURATION: Duration = Duration::from_secs(4);
 const PROCESS_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+/// How long a heuristic state change must hold before it is reported. A
+/// spinner missing for a frame between tool calls is not a finished turn, and
+/// a marker scrolling past the footer is not a prompt.
+const AGENT_IDLE_SETTLE: Duration = Duration::from_secs(2);
+const AGENT_WAITING_SETTLE: Duration = Duration::from_secs(1);
 const SEARCH_STEP_DELAY: Duration = Duration::from_millis(1);
 const MAX_CLIPBOARD_CONFIRMATIONS: usize = 4;
 const MAX_CLIPBOARD_READ_BYTES: usize = 1024 * 1024;
@@ -191,6 +196,9 @@ pub struct TerminalView {
     terminal_focused: bool,
     bell_active: bool,
     agent_presence: Option<TerminalAgentPresence>,
+    /// Foreground process the current presence was detected for.
+    agent_presence_process_id: Option<u32>,
+    pending_agent_state: Option<(AgentRuntimeState, Instant)>,
     render_cache: Arc<Mutex<TerminalRenderCache>>,
     last_requested_size: Arc<Mutex<Option<TerminalSize>>>,
     surface_visible: bool,
@@ -201,6 +209,7 @@ pub struct TerminalView {
     _bell_task: Option<Task<()>>,
     _search_task: Option<Task<()>>,
     _input_error_task: Option<Task<()>>,
+    _agent_settle_task: Option<Task<()>>,
 }
 
 /// A non-interactive, frozen rendering of a terminal used while its pane is
@@ -328,6 +337,8 @@ impl TerminalView {
             terminal_focused: false,
             bell_active: false,
             agent_presence: None,
+            agent_presence_process_id: None,
+            pending_agent_state: None,
             render_cache: Arc::new(Mutex::new(TerminalRenderCache::default())),
             last_requested_size: Arc::new(Mutex::new(None)),
             surface_visible: true,
@@ -338,6 +349,7 @@ impl TerminalView {
             _bell_task: None,
             _search_task: None,
             _input_error_task: None,
+            _agent_settle_task: None,
         }
     }
 
@@ -418,13 +430,20 @@ impl TerminalView {
         }
         let snapshot = handle.snapshot();
         let recent_text = handle.recent_text(14);
-        let presence = detect_agent_presence(
+        let pinned = self
+            .agent_presence
+            .as_ref()
+            .filter(|_| process_id.is_some() && process_id == self.agent_presence_process_id);
+        let mut presence = detect_agent_presence(
             &self.title,
             &snapshot,
             recent_text.as_deref(),
             process_name.as_deref(),
             process_id,
+            pinned,
         );
+        self.agent_presence_process_id = process_id;
+        self.settle_agent_state(presence.as_mut(), cx);
         if presence != self.agent_presence {
             self.agent_presence.clone_from(&presence);
             cx.emit(TerminalViewEvent::AgentPresenceChanged {
@@ -432,6 +451,55 @@ impl TerminalView {
                 presence,
             });
         }
+    }
+
+    /// Holds the previous state while a heuristic transition is unconfirmed,
+    /// and re-checks once it is due so hidden panes still settle.
+    fn settle_agent_state(
+        &mut self,
+        presence: Option<&mut TerminalAgentPresence>,
+        cx: &mut Context<Self>,
+    ) {
+        let transition =
+            presence
+                .zip(self.agent_presence.as_ref())
+                .and_then(|(current, previous)| {
+                    let same_agent = current.kind == previous.kind
+                        && current.kind_source == previous.kind_source
+                        && current.process_id == previous.process_id;
+                    let delay = match (previous.state, current.state) {
+                        (AgentRuntimeState::Working, AgentRuntimeState::Idle) => AGENT_IDLE_SETTLE,
+                        (
+                            AgentRuntimeState::Working | AgentRuntimeState::Idle,
+                            AgentRuntimeState::Waiting,
+                        ) => AGENT_WAITING_SETTLE,
+                        _ => return None,
+                    };
+                    same_agent.then_some((current, previous.state, delay))
+                });
+        let Some((current, previous_state, delay)) = transition else {
+            self.pending_agent_state = None;
+            return;
+        };
+        let now = Instant::now();
+        let since = match self.pending_agent_state {
+            Some((state, since)) if state == current.state => since,
+            _ => {
+                self.pending_agent_state = Some((current.state, now));
+                now
+            }
+        };
+        let remaining = delay.saturating_sub(now.duration_since(since));
+        if remaining.is_zero() {
+            self.pending_agent_state = None;
+            return;
+        }
+        current.state = previous_state;
+        let timer = cx.background_executor().timer(remaining);
+        self._agent_settle_task = Some(cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |this, cx| this.refresh_agent_presence(cx));
+        }));
     }
 
     fn refresh_working_directory(&mut self, cx: &mut Context<Self>) {

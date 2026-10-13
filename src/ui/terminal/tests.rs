@@ -688,13 +688,13 @@ fn screen_fallback_detects_supported_agents_and_waiting_state() {
         history_size: 0,
     };
 
-    let presence = detect_agent_presence("Terminal", &snapshot, None, None, None).unwrap();
+    let presence = detect_agent_presence("Terminal", &snapshot, None, None, None, None).unwrap();
 
     assert_eq!(presence.kind, "Claude");
     assert_eq!(presence.state, AgentRuntimeState::Waiting);
 
     let title_presence =
-        detect_agent_presence("OpenAI Codex", &snapshot, None, None, None).unwrap();
+        detect_agent_presence("OpenAI Codex", &snapshot, None, None, None, None).unwrap();
     assert_eq!(title_presence.kind, "Codex");
     assert_eq!(title_presence.state, AgentRuntimeState::Waiting);
 }
@@ -708,6 +708,7 @@ fn grok_permission_mode_badge_is_not_a_waiting_prompt() {
         Some("❯\nalways-approve   42%"),
         Some("grok"),
         Some(7),
+        None,
     )
     .unwrap();
     assert_eq!(working.kind, "Grok");
@@ -719,6 +720,7 @@ fn grok_permission_mode_badge_is_not_a_waiting_prompt() {
         Some("always-approve"),
         Some("grok"),
         Some(7),
+        None,
     )
     .unwrap();
     assert_eq!(responding.state, AgentRuntimeState::Working);
@@ -729,6 +731,7 @@ fn grok_permission_mode_badge_is_not_a_waiting_prompt() {
         Some("❯\nalways-approve   12%"),
         Some("grok"),
         Some(7),
+        None,
     )
     .unwrap();
     assert_eq!(idle.state, AgentRuntimeState::Idle);
@@ -739,6 +742,7 @@ fn grok_permission_mode_badge_is_not_a_waiting_prompt() {
             Some("corresponding change\nalways-approve"),
             Some("grok"),
             Some(7),
+            None,
         )
         .unwrap()
         .state,
@@ -751,6 +755,7 @@ fn grok_permission_mode_badge_is_not_a_waiting_prompt() {
         Some("Yes, allow once\nNo, reject\nalways-approve"),
         Some("grok"),
         Some(7),
+        None,
     )
     .unwrap();
     assert_eq!(permission.state, AgentRuntimeState::Waiting);
@@ -761,11 +766,94 @@ fn grok_permission_mode_badge_is_not_a_waiting_prompt() {
             Some("approve this command?"),
             Some("grok"),
             Some(7),
+            None,
         )
         .unwrap()
         .state,
         AgentRuntimeState::Waiting
     );
+}
+
+#[test]
+fn pinned_identity_ignores_other_agent_names_on_screen() {
+    let snapshot = blank_agent_snapshot();
+    let first = detect_agent_presence(
+        "Terminal",
+        &snapshot,
+        Some("Gemini CLI\n> "),
+        Some("node"),
+        Some(9),
+        None,
+    )
+    .unwrap();
+    assert_eq!(first.kind, "Gemini");
+    assert_eq!(first.kind_source, TerminalAgentKindSource::Screen);
+
+    let quoted = detect_agent_presence(
+        "Terminal",
+        &snapshot,
+        Some("Compared with Claude Code and Codex...\n> "),
+        Some("node"),
+        Some(9),
+        Some(&first),
+    )
+    .unwrap();
+    assert_eq!(quoted.kind, "Gemini", "screen text must not re-identify");
+
+    let scrolled = detect_agent_presence(
+        "Terminal",
+        &snapshot,
+        Some("plain output\n> "),
+        Some("node"),
+        Some(9),
+        Some(&first),
+    )
+    .unwrap();
+    assert_eq!(
+        scrolled.kind, "Gemini",
+        "a banner scrolling away is not an exit"
+    );
+
+    let process = detect_agent_presence(
+        "Terminal",
+        &snapshot,
+        Some("Gemini CLI"),
+        Some("codex"),
+        Some(9),
+        Some(&first),
+    )
+    .unwrap();
+    assert_eq!(process.kind, "Codex", "process evidence always wins");
+}
+
+#[test]
+fn state_markers_in_conversation_text_are_ignored() {
+    let snapshot = blank_agent_snapshot();
+    let conversation = "The hook reports permission required when\n\
+        a tool runs. Press Enter to confirm is shown by Codex.\n\
+        I was thinking about it.\n\
+        line 4\nline 5\nline 6\nline 7\nline 8\nline 9\n> \n? for shortcuts";
+    let idle = detect_agent_presence(
+        "Terminal",
+        &snapshot,
+        Some(conversation),
+        Some("codex"),
+        Some(3),
+        None,
+    )
+    .unwrap();
+    assert_eq!(idle.state, AgentRuntimeState::Idle);
+
+    let busy = detect_agent_presence(
+        "Terminal",
+        &snapshot,
+        Some("• Working (3s • esc to interrupt)\n1\n2\n3\n4\n5\n6\n7\n8\n> "),
+        Some("codex"),
+        Some(3),
+        None,
+    )
+    .unwrap();
+    assert_eq!(busy.state, AgentRuntimeState::Working);
 }
 
 fn blank_agent_snapshot() -> TerminalSnapshot {
@@ -808,6 +896,7 @@ fn process_name_detects_codex_before_screen_banner() {
         None,
         Some("codex-code-mode-host"),
         Some(42),
+        None,
     )
     .unwrap();
     assert_eq!(presence.kind, "Codex");
@@ -821,12 +910,13 @@ fn process_name_detects_codex_before_screen_banner() {
         None,
         Some("/usr/local/bin/codex"),
         Some(43),
+        None,
     )
     .unwrap();
     assert_eq!(bare.kind, "Codex");
     assert_eq!(bare.kind_source, TerminalAgentKindSource::Process);
     assert_eq!(
-        detect_agent_presence("Terminal", &snapshot, None, Some("goose"), Some(46))
+        detect_agent_presence("Terminal", &snapshot, None, Some("goose"), Some(46), None)
             .unwrap()
             .kind,
         "Goose"
@@ -838,15 +928,22 @@ fn process_name_detects_codex_before_screen_banner() {
             None,
             Some("/usr/local/bin/cursor-agent"),
             Some(47),
+            None,
         )
         .unwrap()
         .kind,
         "Cursor"
     );
 
-    let process_with_state_word =
-        detect_agent_presence("Terminal", &snapshot, None, Some("codex-working"), Some(44))
-            .unwrap();
+    let process_with_state_word = detect_agent_presence(
+        "Terminal",
+        &snapshot,
+        None,
+        Some("codex-working"),
+        Some(44),
+        None,
+    )
+    .unwrap();
     assert_eq!(process_with_state_word.state, AgentRuntimeState::Idle);
     assert!(AgentKind::from_process_name("codexical").is_none());
     assert!(
@@ -856,6 +953,7 @@ fn process_name_detects_codex_before_screen_banner() {
             Some("old Claude Code output"),
             Some("/bin/zsh"),
             Some(45),
+            None,
         )
         .is_none(),
         "a shell must win over stale title and scrollback evidence"
