@@ -7,6 +7,7 @@ use gpui::{Context, FocusHandle, SharedString, px};
 
 use crate::domain::inbox::Inbox;
 use crate::domain::workspace::{PaneSplitDirection, WorkspaceSnapshot};
+use crate::infrastructure::automation::upgrade_outdated_agent_hooks;
 use crate::infrastructure::automation::{AutomationServer, agent_hook_status};
 use crate::infrastructure::persistence::{FinishError, PersistenceQueue};
 use crate::infrastructure::settings::AppSettings;
@@ -189,6 +190,9 @@ impl WorkspaceView {
                 }
             },
         );
+        if let Err(error) = upgrade_outdated_agent_hooks() {
+            eprintln!("Vibra could not update agent hooks: {error:#}");
+        }
         let (agent_hook_status, agent_hook_error) = match agent_hook_status() {
             Ok(status) => (Some(status), None),
             Err(error) => (

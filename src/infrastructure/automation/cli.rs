@@ -243,7 +243,10 @@ pub(super) fn agent_hook_command(
         (AgentKind::Claude | AgentKind::Codex, "session-end") => {
             Ok(AutomationCommand::ClearAgentPresence { session_id })
         }
-        (AgentKind::Claude | AgentKind::Codex, "prompt") => {
+        // A finished tool call means any permission prompt was answered and
+        // the turn is still running (also after a blocked stop or a resumed
+        // background task, which emit no prompt event).
+        (AgentKind::Claude | AgentKind::Codex, "prompt" | "tool") => {
             Ok(presence(AgentRuntimeState::Working, None))
         }
         (AgentKind::Claude | AgentKind::Codex, "stop" | "session-start") => {

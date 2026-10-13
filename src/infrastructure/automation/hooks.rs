@@ -50,6 +50,7 @@ const CLAUDE_HOOKS: &[HookEntry] = &[
     HookEntry::new("UserPromptSubmit", None, "prompt"),
     HookEntry::new("Stop", None, "stop"),
     HookEntry::new("PermissionRequest", None, "permission"),
+    HookEntry::new("PostToolUse", None, "tool"),
     HookEntry::new("SessionEnd", Some(""), "session-end"),
     HookEntry::new(
         "Notification",
@@ -67,6 +68,7 @@ const CODEX_HOOKS: &[HookEntry] = &[
     HookEntry::new("UserPromptSubmit", None, "prompt"),
     HookEntry::new("Stop", None, "stop"),
     HookEntry::new("PermissionRequest", None, "permission"),
+    HookEntry::new("PostToolUse", None, "tool"),
     HookEntry::new("SessionEnd", None, "session-end"),
 ];
 
@@ -117,6 +119,36 @@ fn manage_current_user_agent_hooks(operation: AgentHookOperation) -> Result<Agen
         manage_agent_hooks(&home, &selected, AgentHookOperation::Status, false)?
     };
     Ok(agent_hook_status_from_report(&report))
+}
+
+/// Brings integrations an older Vibra installed up to the current hook set,
+/// without touching agents the user never set up.
+pub fn upgrade_outdated_agent_hooks() -> Result<()> {
+    // Tests construct workspaces too; they must never rewrite user config.
+    if cfg!(test) {
+        return Ok(());
+    }
+    let home = BaseDirs::new()
+        .map(|directories| directories.home_dir().to_path_buf())
+        .context("could not resolve the user directory")?;
+    let all = [AgentKind::Claude, AgentKind::Codex].into_iter().collect();
+    let report = manage_agent_hooks(&home, &all, AgentHookOperation::Status, false)?;
+    let outdated: HashSet<_> = [AgentKind::Claude, AgentKind::Codex]
+        .into_iter()
+        .filter(|kind| {
+            report["agents"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|entry| {
+                    entry["agent"] == kind.display_name() && entry["outdated"] == Value::Bool(true)
+                })
+        })
+        .collect();
+    if !outdated.is_empty() {
+        manage_agent_hooks(&home, &outdated, AgentHookOperation::Install, false)?;
+    }
+    Ok(())
 }
 
 pub(super) fn agent_hook_status_from_report(report: &Value) -> AgentHookStatus {
@@ -274,9 +306,14 @@ fn manage_one_agent_hooks(
     let installed = directory_secure
         && hooks_installed(&config_path, entries, &commands, &script_path, script)?;
     if operation == AgentHookOperation::Status {
+        // Set up by an older Vibra that registered fewer hook events.
+        let outdated = !installed
+            && directory_secure
+            && remove_hook_entries(&mut read_hook_config(&config_path)?, &script_path);
         return Ok(serde_json::json!({
             "agent": kind.display_name(),
             "installed": installed,
+            "outdated": outdated,
             "config": config_path,
             "script": script_path,
         }));

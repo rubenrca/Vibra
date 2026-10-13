@@ -52,13 +52,19 @@ fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
 }
 
 /// Process identity wins over hooks; matching, unexpired hooks supply activity.
+/// A hook anchored to a live agent process never expires: long turns and idle
+/// sessions emit no hook events, and screen heuristics must not take over.
 fn resolve_agent_presence(
     detected: Option<&TerminalAgentPresence>,
     hook: Option<&HookAgentPresence>,
     now: Instant,
 ) -> Option<ResolvedAgentPresence> {
+    let process_anchored =
+        detected.is_some_and(|detected| detected.kind_source == TerminalAgentKindSource::Process);
     let hook = hook
-        .filter(|presence| now.duration_since(presence.observed_at) <= HOOK_OBSERVATION_TTL)
+        .filter(|presence| {
+            process_anchored || now.duration_since(presence.observed_at) <= HOOK_OBSERVATION_TTL
+        })
         .filter(|hook| {
             detected.is_none_or(|detected| {
                 detected.kind_source != TerminalAgentKindSource::Process
@@ -412,6 +418,17 @@ mod tests {
         assert_eq!(presence.kind_source, "screen");
         assert_eq!(presence.state_source, "heuristic");
         assert_eq!(presence.model, None);
+    }
+
+    #[test]
+    fn hooks_on_a_live_agent_process_never_expire() {
+        let observed_at = Instant::now();
+        let hook = hook(observed_at);
+        let later = observed_at + HOOK_OBSERVATION_TTL * 4;
+        let detected = detected("Codex", TerminalAgentKindSource::Process);
+        let presence = resolve_agent_presence(Some(&detected), Some(&hook), later).unwrap();
+        assert_eq!(presence.state, AgentRuntimeState::Waiting);
+        assert_eq!(presence.state_source, "hook");
     }
 
     #[test]

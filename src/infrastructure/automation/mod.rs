@@ -4,7 +4,10 @@ mod server;
 mod types;
 
 pub use cli::run_cli;
-pub use hooks::{AgentHookStatus, agent_hook_status, install_agent_hooks, uninstall_agent_hooks};
+pub use hooks::{
+    AgentHookStatus, agent_hook_status, install_agent_hooks, uninstall_agent_hooks,
+    upgrade_outdated_agent_hooks,
+};
 pub use server::AutomationServer;
 pub use types::{
     AgentAttention, AgentKind, AgentRuntimeState, AutomationCommand, AutomationIncoming,
