@@ -1,3 +1,4 @@
+use crate::domain::agents::AgentKind;
 use crate::ports::terminal::{TerminalPalette, TerminalRgb};
 use std::sync::{OnceLock, RwLock};
 use std::{
@@ -5,6 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
+
+/// Interpreter flags rarely exceed a few entries before the script path.
+const MAX_PROCESS_ARGUMENTS: usize = 8;
 
 /// Host tools (CI, agent shells, cargo wrappers) often export these to force
 /// monochrome output. Interactive agent CLIs inside Vibra panes should not
@@ -58,20 +62,82 @@ pub(super) fn process_working_directory(_: u32) -> Option<PathBuf> {
 
 /// Name used to invoke a process. This preserves wrapper identities such as
 /// Cursor's `cursor-agent`, whose script replaces itself with a `node` binary
-/// while retaining the original argv[0].
+/// while retaining the original argv[0]. Agents shipped as scripts (`gemini`
+/// is `#!/usr/bin/env node`) run as their interpreter, so a script argument
+/// that names a known agent identifies the process instead.
 pub(super) fn process_invoked_name(process_id: u32) -> Option<String> {
-    process_argv0(process_id)
+    let arguments = process_arguments(process_id).unwrap_or_default();
+    let invoked = arguments
+        .first()
+        .cloned()
         .or_else(|| process_executable_name(process_id))
-        .and_then(|name| {
-            Path::new(&name)
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
+        .and_then(|name| path_basename(&name))?;
+    Some(
+        interpreted_agent_name(&invoked, arguments.get(1..).unwrap_or_default()).unwrap_or(invoked),
+    )
+}
+
+fn path_basename(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
 }
 
+/// The agent an interpreter is running, judged by its script path: either the
+/// script's own name or, inside `node_modules`, the package it belongs to.
+fn interpreted_agent_name(interpreter: &str, arguments: &[String]) -> Option<String> {
+    let interpreter = interpreter.trim_start_matches('-').to_ascii_lowercase();
+    let is_shell = matches!(
+        interpreter.as_str(),
+        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh"
+    );
+    let is_runtime = matches!(
+        interpreter.as_str(),
+        "node" | "nodejs" | "bun" | "deno" | "ruby"
+    ) || interpreter.starts_with("python");
+    if !is_shell && !is_runtime {
+        return None;
+    }
+    // Shell flags such as `-c` take the script text as an argument, so only a
+    // shell whose first argument is a path is running a script file.
+    let script = if is_shell {
+        arguments
+            .first()
+            .filter(|argument| !argument.starts_with('-'))?
+    } else {
+        arguments
+            .iter()
+            .find(|argument| !argument.starts_with('-') && argument.as_str() != "run")?
+    };
+    let path = Path::new(script);
+    let components: Vec<_> = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let package = components
+        .iter()
+        .rposition(|component| component == "node_modules")
+        .and_then(|index| {
+            let scope_or_name = components.get(index + 1)?;
+            if scope_or_name.starts_with('@') {
+                components.get(index + 2)
+            } else {
+                Some(scope_or_name)
+            }
+        })
+        .cloned();
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned());
+    [stem, package]
+        .into_iter()
+        .flatten()
+        .find(|name| AgentKind::from_process_name(name).is_some())
+}
+
 #[cfg(target_os = "macos")]
-fn process_argv0(process_id: u32) -> Option<String> {
+fn process_arguments(process_id: u32) -> Option<Vec<String>> {
     use std::mem::size_of;
 
     let mut mib = [
@@ -109,33 +175,49 @@ fn process_argv0(process_id: u32) -> Option<String> {
         return None;
     }
     buffer.truncate(size);
-    argv0_from_macos_procargs(&buffer)
+    arguments_from_macos_procargs(&buffer)
 }
 
+/// `KERN_PROCARGS2` is `argc`, the executable path, NUL padding, then argv.
+/// Only the first few arguments are needed to name the process.
 #[cfg(target_os = "macos")]
-fn argv0_from_macos_procargs(buffer: &[u8]) -> Option<String> {
+fn arguments_from_macos_procargs(buffer: &[u8]) -> Option<Vec<String>> {
     use std::mem::size_of;
 
+    let argc = i32::from_ne_bytes(buffer.get(..size_of::<libc::c_int>())?.try_into().ok()?);
     let mut offset = size_of::<libc::c_int>();
     offset += buffer.get(offset..)?.iter().position(|byte| *byte == 0)?;
     while buffer.get(offset) == Some(&0) {
         offset += 1;
     }
-    let end = offset + buffer.get(offset..)?.iter().position(|byte| *byte == 0)?;
-    (!buffer[offset..end].is_empty())
-        .then(|| String::from_utf8_lossy(&buffer[offset..end]).into_owned())
+    let arguments: Vec<_> = buffer
+        .get(offset..)?
+        .split(|byte| *byte == 0)
+        .take(argc.clamp(0, MAX_PROCESS_ARGUMENTS as i32) as usize)
+        .map(|argument| String::from_utf8_lossy(argument).into_owned())
+        .collect();
+    arguments
+        .first()
+        .is_some_and(|argv0| !argv0.is_empty())
+        .then_some(arguments)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn process_argv0(process_id: u32) -> Option<String> {
+fn process_arguments(process_id: u32) -> Option<Vec<String>> {
     let command_line = std::fs::read(format!("/proc/{process_id}/cmdline")).ok()?;
-    let end = command_line.iter().position(|byte| *byte == 0)?;
-    (!command_line[..end].is_empty())
-        .then(|| String::from_utf8_lossy(&command_line[..end]).into_owned())
+    let arguments: Vec<_> = command_line
+        .split(|byte| *byte == 0)
+        .take(MAX_PROCESS_ARGUMENTS)
+        .map(|argument| String::from_utf8_lossy(argument).into_owned())
+        .collect();
+    arguments
+        .first()
+        .is_some_and(|argv0| !argv0.is_empty())
+        .then_some(arguments)
 }
 
 #[cfg(not(unix))]
-fn process_argv0(_: u32) -> Option<String> {
+fn process_arguments(_: u32) -> Option<Vec<String>> {
     None
 }
 
@@ -264,13 +346,55 @@ mod tests {
 
     #[test]
     fn macos_procargs_preserves_a_wrapper_argv0() {
-        let mut procargs = 3i32.to_ne_bytes().to_vec();
-        procargs
-            .extend_from_slice(b"/private/cursor/node\0\0/usr/local/bin/cursor-agent\0index.js\0");
-        assert_eq!(
-            argv0_from_macos_procargs(&procargs).as_deref(),
-            Some("/usr/local/bin/cursor-agent")
+        let mut procargs = 2i32.to_ne_bytes().to_vec();
+        procargs.extend_from_slice(
+            b"/private/cursor/node\0\0/usr/local/bin/cursor-agent\0index.js\0HOME=/x\0",
         );
+        assert_eq!(
+            arguments_from_macos_procargs(&procargs).unwrap(),
+            ["/usr/local/bin/cursor-agent", "index.js"]
+        );
+    }
+
+    #[test]
+    fn interpreters_are_named_after_the_agent_script_they_run() {
+        let args = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            interpreted_agent_name("node", &args(&["/opt/homebrew/bin/gemini", "-y"])).as_deref(),
+            Some("gemini")
+        );
+        assert_eq!(
+            interpreted_agent_name(
+                "node",
+                &args(&[
+                    "--max-old-space-size=8192",
+                    "/opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js",
+                ])
+            )
+            .as_deref(),
+            Some("gemini-cli")
+        );
+        assert_eq!(
+            interpreted_agent_name(
+                "bun",
+                &args(&["/x/node_modules/opencode-ai/bin/opencode.js"])
+            )
+            .as_deref(),
+            Some("opencode")
+        );
+        assert_eq!(
+            interpreted_agent_name("python3", &args(&["/Users/me/.local/bin/aider"])).as_deref(),
+            Some("aider")
+        );
+        assert!(interpreted_agent_name("node", &args(&["server.js"])).is_none());
+        assert!(interpreted_agent_name("zsh", &args(&["-c", "codex"])).is_none());
+        assert!(interpreted_agent_name("-zsh", &[]).is_none());
+        assert!(interpreted_agent_name("codex", &args(&["/x/claude"])).is_none());
     }
 
     #[test]
