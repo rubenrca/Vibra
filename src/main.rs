@@ -61,6 +61,7 @@ actions!(
         TogglePaneZoom,
         ToggleCommandPalette,
         QuickOpen,
+        ToggleScratch,
         OpenIde,
         ShowSettings,
         CheckForUpdates,
@@ -181,6 +182,7 @@ fn run() -> Result<()> {
                 KeyBinding::new("shift-cmd-enter", TogglePaneZoom, None),
                 KeyBinding::new("shift-cmd-p", ToggleCommandPalette, None),
                 KeyBinding::new("cmd-p", QuickOpen, None),
+                KeyBinding::new("alt-cmd-t", ToggleScratch, None),
                 KeyBinding::new("shift-cmd-e", OpenIde, None),
                 KeyBinding::new("cmd-,", ShowSettings, None),
                 KeyBinding::new("cmd-u", CheckForUpdates, None),
@@ -236,6 +238,7 @@ fn run() -> Result<()> {
                         MenuItem::separator(),
                         MenuItem::action("Command Palette", ToggleCommandPalette),
                         MenuItem::action("Quick Open", QuickOpen),
+                        MenuItem::action("Scratch Terminal", ToggleScratch),
                     ],
                 },
                 Menu {

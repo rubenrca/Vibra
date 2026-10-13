@@ -16,6 +16,7 @@ mod navigation;
 mod palette;
 mod panes;
 mod projects;
+mod scratch;
 mod settings;
 mod status_bar;
 mod storage;
@@ -495,7 +496,9 @@ impl WorkspaceView {
                 .p_3()
                 .text_size(px(12.0))
                 .text_color(colors().muted)
-                .child(if self.snapshot.selected_project().is_some() {
+                .child(if self.scratch_selected() {
+                    "Open a terminal to browse its folder"
+                } else if self.snapshot.selected_project().is_some() {
                     "Link a folder to this project"
                 } else {
                     "Select a project"

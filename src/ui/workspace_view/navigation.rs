@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::ui::theme::{colors, surface, surface_tint};
 
 use super::chrome::SIDEBAR_ROW_INSET;
+use super::scratch::SCRATCH_SHORTCUT;
 
 use super::{
     ContextMenuKind, PaletteMode, RightSidebarMode, WorkspaceSection, WorkspaceView,
@@ -154,12 +155,13 @@ impl WorkspaceView {
     pub(super) fn global_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let (pinned, projects): (Vec<_>, Vec<_>) = self
             .snapshot
-            .projects
-            .iter()
+            .listed_projects()
             .map(|project| (project.id, project.name.clone()))
             .partition(|(id, _)| self.settings.pinned_project_ids.contains(id));
         let nav_items = [(WorkspaceSection::Inbox, "Review", "chrome-icons/inbox.svg")];
-        let has_projects = !self.snapshot.projects.is_empty();
+        let scratch_selected = self.scratch_selected();
+        let listed_projects = self.snapshot.listed_projects().count();
+        let has_projects = listed_projects > 0;
         let settings_selected = self.workspace_section == WorkspaceSection::Settings;
         div()
             .size_full()
@@ -231,7 +233,33 @@ impl WorkspaceView {
                                 },
                             ))
                             .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
-                    })),
+                    }))
+                    .child(
+                        rail_row("nav-scratch")
+                            .when(scratch_selected, |row| {
+                                row.bg(surface_tint(colors().selection, colors().sidebar))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(colors().foreground)
+                            })
+                            .tooltip(|_, cx| {
+                                sidebar_tooltip(format!("Scratch · {SCRATCH_SHORTCUT}"), cx)
+                            })
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_scratch(window, cx)),
+                            )
+                            .child(
+                                svg()
+                                    .path("chrome-icons/terminal.svg")
+                                    .size(px(15.0))
+                                    .flex_none()
+                                    .text_color(if scratch_selected {
+                                        colors().foreground
+                                    } else {
+                                        colors().subtle
+                                    }),
+                            )
+                            .child(div().flex_1().min_w(px(0.0)).truncate().child("Scratch")),
+                    ),
             )
             .child(
                 div()
@@ -290,7 +318,7 @@ impl WorkspaceView {
                         ),
                     )
                     .children(self.project_rows(projects, cx))
-                    .when(self.snapshot.projects.len() > 1, |list| {
+                    .when(listed_projects > 1, |list| {
                         list.child(self.project_list_end_target(cx))
                     })
                     .when(!has_projects, |list| {

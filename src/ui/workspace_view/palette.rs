@@ -9,6 +9,7 @@ use crate::ui::menu::{menu_border, menu_hover, menu_panel};
 use crate::ui::theme::{colors, surface_tint};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
+use super::scratch::SCRATCH_SHORTCUT;
 use super::{PaletteAction, PaletteItem, PaletteMode, RightSidebarMode, WorkspaceSection};
 
 impl super::WorkspaceView {
@@ -89,6 +90,11 @@ impl super::WorkspaceView {
             PaletteMode::Commands => [
                 ("Terminal: New tab", "⌘T", PaletteAction::NewTerminalTab),
                 (
+                    "Terminal: Open scratch",
+                    SCRATCH_SHORTCUT,
+                    PaletteAction::ToggleScratch,
+                ),
+                (
                     "Pane: Split right",
                     "⌘D",
                     PaletteAction::Split(PaneSplitDirection::Right),
@@ -168,7 +174,7 @@ impl super::WorkspaceView {
             }
         };
         if mode == PaletteMode::Commands {
-            items.extend(self.snapshot.projects.iter().map(|project| PaletteItem {
+            items.extend(self.snapshot.listed_projects().map(|project| PaletteItem {
                 label: format!("Project: {}", project.name),
                 detail: project.root_path.clone(),
                 action: PaletteAction::SelectProject(project.id),
@@ -201,6 +207,7 @@ impl super::WorkspaceView {
             PaletteAction::NewTerminalTab => {
                 self.open_terminal_tab_in_project(window, cx);
             }
+            PaletteAction::ToggleScratch => self.open_scratch(window, cx),
             PaletteAction::OpenIde => self.open_ide(&OpenIde, window, cx),
             PaletteAction::Split(direction) => self.split_pane(direction, window, cx),
             PaletteAction::EqualizePanes => {

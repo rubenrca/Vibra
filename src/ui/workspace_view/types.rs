@@ -46,6 +46,7 @@ pub(super) enum PaletteAction {
     AddProject,
     SelectProject(Uuid),
     NewTerminalTab,
+    ToggleScratch,
     OpenIde,
     Split(PaneSplitDirection),
     EqualizePanes,

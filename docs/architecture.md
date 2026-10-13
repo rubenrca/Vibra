@@ -51,6 +51,11 @@ independiente del workspace.
   Un fallo nativo o mutex poisoned invalida el motor Ghostty; el snapshot Rust sigue
   disponible y el proceso se recolecta. TerminalView conserva `Failed` tras `Exit`
   y cancela entrada, búsquedas y pegados pendientes.
+- `scratch.rs`: Scratch, una terminal libre en un proyecto oculto (`scratch`) sin
+  carpeta, con su fila bajo Review y ⌥⌘T. `listed_projects` lo excluye del
+  sidebar, atajos, paleta y filtros. Sus tabs nuevos parten del cwd del tab
+  actual (o del home) y, sin raíz, Explorer, Changes y la rama siguen a la
+  terminal seleccionada. Vigilar el home ignora `Library` y carpetas ocultas.
 - `explorer.rs`: carga y selección de archivos, filas del árbol y creación de entradas.
   `files.rs` reúne las filas visibles, el watcher y los iconos/estados de Git.
   Quick Open pide `FileSystemPort::search_files`; el adaptador local aplica ignores,

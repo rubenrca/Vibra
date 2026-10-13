@@ -207,6 +207,18 @@ impl WorkspaceView {
         let Some(project) = self.snapshot.project(id) else {
             return;
         };
+        if project.scratch {
+            let directory = self.scratch_tab_directory(cx);
+            if self
+                .snapshot
+                .open_tab_in_directory(id, directory, true)
+                .is_some()
+            {
+                self.reconcile_terminal_views(cx);
+                self.show_terminal_tab(window, cx);
+            }
+            return;
+        }
         if project
             .directory()
             .is_none_or(|root| !Path::new(root).is_dir())
@@ -231,8 +243,7 @@ impl WorkspaceView {
     pub(super) fn visible_project_order(&self) -> Vec<Uuid> {
         let (pinned, others): (Vec<Uuid>, Vec<Uuid>) = self
             .snapshot
-            .projects
-            .iter()
+            .listed_projects()
             .map(|project| project.id)
             .partition(|id| self.settings.pinned_project_ids.contains(id));
         pinned.into_iter().chain(others).collect()
@@ -928,12 +939,13 @@ impl WorkspaceView {
                         .child(path.display().to_string()),
                 )
             })
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .text_color(colors().muted)
-                    .child("Open a terminal in this folder to get started"),
-            )
+            .child(div().text_size(px(12.0)).text_color(colors().muted).child(
+                if project.is_some_and(|p| p.scratch) {
+                    "Open a terminal anywhere on this Mac"
+                } else {
+                    "Open a terminal in this folder to get started"
+                },
+            ))
             .child(
                 div()
                     .id("empty-project-new-tab")

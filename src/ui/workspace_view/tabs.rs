@@ -76,6 +76,8 @@ pub(super) struct Navigation {
     back: Vec<NavLocation>,
     forward: Vec<NavLocation>,
     current: Option<NavLocation>,
+    /// Where Scratch was opened from, for its shortcut to return.
+    pub(super) scratch_origin: Option<NavLocation>,
 }
 
 impl Navigation {
@@ -294,7 +296,7 @@ impl WorkspaceView {
         Ok((session_id, started))
     }
 
-    fn apply_location(
+    pub(super) fn apply_location(
         &mut self,
         location: NavLocation,
         window: &mut Window,
@@ -340,7 +342,7 @@ impl WorkspaceView {
         }
     }
 
-    fn navigate(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn navigate(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.record_navigation(cx);
         let mut navigation = std::mem::take(&mut self.navigation);
         navigation.step(back, |target| self.apply_location(target, window, cx));

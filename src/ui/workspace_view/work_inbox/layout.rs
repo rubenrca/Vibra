@@ -565,7 +565,7 @@ impl WorkspaceView {
                                 this.inbox_filters_changed(cx);
                             })),
                     );
-                    for project in &self.snapshot.projects {
+                    for project in self.snapshot.listed_projects() {
                         let id = project.id;
                         content = content.child(
                             MenuRow::new(project.name.clone())

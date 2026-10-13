@@ -14,8 +14,7 @@ impl WorkspaceView {
         self.work_inbox.filter.project = if self.settings.inbox.source == WorkSource::GitHub {
             self.snapshot.selected_project_id.filter(|id| {
                 self.snapshot
-                    .projects
-                    .iter()
+                    .listed_projects()
                     .any(|project| project.id == *id)
             })
         } else {

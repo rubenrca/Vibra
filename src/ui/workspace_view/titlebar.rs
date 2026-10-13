@@ -97,7 +97,14 @@ impl super::WorkspaceView {
             WorkspaceSection::Workspace => self
                 .snapshot
                 .selected_project()
-                .map(|project| project.name.as_str())
+                // Scratch is not a project; it has no title of its own.
+                .map(|project| {
+                    if project.scratch {
+                        ""
+                    } else {
+                        project.name.as_str()
+                    }
+                })
                 .unwrap_or("Vibra"),
             WorkspaceSection::Inbox => "Review",
             WorkspaceSection::Settings => "Settings",

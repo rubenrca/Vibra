@@ -189,6 +189,7 @@ impl WorkspaceView {
             .on_action(cx.listener(Self::toggle_pane_zoom))
             .on_action(cx.listener(Self::toggle_command_palette))
             .on_action(cx.listener(Self::quick_open))
+            .on_action(cx.listener(Self::toggle_scratch_action))
             .on_action(cx.listener(Self::open_ide))
             .on_action(cx.listener(Self::show_settings))
     }

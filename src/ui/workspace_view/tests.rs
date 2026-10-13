@@ -1795,3 +1795,63 @@ fn dismissing_quick_open_cancels_pending_results(cx: &mut gpui::TestAppContext) 
         .unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[gpui::test]
+fn scratch_is_a_hidden_project_whose_tabs_follow_their_terminal(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "scratch");
+    let project = snapshot.selected_project_id.unwrap();
+    let home = root.join("home");
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.home_directory = Some(home.clone());
+            view.open_scratch(window, cx);
+            let quick = view.snapshot.scratch_id().unwrap();
+            assert_eq!(view.snapshot.selected_project_id, Some(quick));
+            assert!(view.scratch_selected());
+            assert_eq!(view.visible_project_order(), vec![project]);
+            let first = view.snapshot.selected_session().unwrap().clone();
+            assert_eq!(Path::new(&first.working_directory), home);
+            assert!(
+                view.terminals[&first.id]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+
+            // Explorer and Changes follow the terminal, not a fixed folder.
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::WorkingDirectoryChanged {
+                    session_id: first.id,
+                    path: elsewhere.clone(),
+                },
+                cx,
+            );
+            assert_eq!(view.project_root(), elsewhere);
+
+            // ⌘T stays in Scratch instead of asking for a folder.
+            view.open_terminal_tab_in_project(window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(quick));
+            assert_eq!(
+                view.snapshot
+                    .project(quick)
+                    .unwrap()
+                    .terminal_sessions()
+                    .count(),
+                2
+            );
+
+            // The shortcut returns to the project it was opened from, and
+            // reopening keeps the existing tabs.
+            view.toggle_scratch(window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(project));
+            view.toggle_scratch(window, cx);
+            assert_eq!(view.snapshot.selected_project_id, Some(quick));
+            assert_eq!(view.snapshot.terminal_sessions().count(), 4);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
