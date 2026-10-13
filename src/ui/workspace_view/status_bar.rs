@@ -185,6 +185,14 @@ impl WorkspaceView {
         };
         let dot = |color| div().size(px(6.0)).flex_none().rounded_full().bg(color);
         let separator = || div().text_color(colors().subtle).child("·");
+        let divider = || {
+            div()
+                .w(px(1.0))
+                .h(px(14.0))
+                .mx(px(4.0))
+                .flex_none()
+                .bg(colors().border_subtle)
+        };
 
         div()
             .h(px(STATUS_BAR_HEIGHT))
@@ -199,25 +207,6 @@ impl WorkspaceView {
             .border_color(colors().border_subtle)
             .text_size(px(11.0))
             .text_color(colors().muted)
-            .when_some(self.current_branch_summary(), |bar, summary| {
-                bar.child(
-                    item("status-branch")
-                        .tooltip(|_, cx| sidebar_tooltip("Open Changes", cx))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.set_workspace_mode(RightSidebarMode::Diff, cx);
-                            this.focus_selected_terminal(window, cx);
-                        }))
-                        .child(icon("chrome-icons/git-branch.svg"))
-                        .child(summary.branch.clone())
-                        .when(summary.dirty, |item| item.child(dot(colors().warning)))
-                        .when(summary.ahead > 0, |item| {
-                            item.child(format!("↑{}", summary.ahead))
-                        })
-                        .when(summary.behind > 0, |item| {
-                            item.child(format!("↓{}", summary.behind))
-                        }),
-                )
-            })
             .child(
                 item("status-agents")
                     .tooltip(|_, cx| sidebar_tooltip("View agents in Review", cx))
@@ -248,16 +237,37 @@ impl WorkspaceView {
                         }
                     }),
             )
-            .child(div().flex_1())
-            .child(self.usage_status(cx))
             .child(
-                div()
-                    .w(px(1.0))
-                    .h(px(14.0))
-                    .mx(px(4.0))
-                    .flex_none()
-                    .bg(colors().border_subtle),
+                item("status-inbox")
+                    .tooltip(|_, cx| sidebar_tooltip("Review", cx))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.select_section(WorkspaceSection::Inbox, window, cx)
+                    }))
+                    .child(icon("chrome-icons/inbox.svg"))
+                    .child("Review"),
             )
+            .child(div().flex_1())
+            .when_some(self.current_branch_summary(), |bar, summary| {
+                bar.child(
+                    item("status-branch")
+                        .tooltip(|_, cx| sidebar_tooltip("Open Changes", cx))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_workspace_mode(RightSidebarMode::Diff, cx);
+                            this.focus_selected_terminal(window, cx);
+                        }))
+                        .child(icon("chrome-icons/git-branch.svg"))
+                        .child(summary.branch.clone())
+                        .when(summary.dirty, |item| item.child(dot(colors().warning)))
+                        .when(summary.ahead > 0, |item| {
+                            item.child(format!("↑{}", summary.ahead))
+                        })
+                        .when(summary.behind > 0, |item| {
+                            item.child(format!("↓{}", summary.behind))
+                        }),
+                )
+                .child(divider())
+            })
+            .child(self.usage_status(cx))
             .child(
                 base("status-keep-awake")
                     .border_1()
@@ -299,15 +309,6 @@ impl WorkspaceView {
                         )
                     })
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_awake(cx))),
-            )
-            .child(
-                item("status-inbox")
-                    .tooltip(|_, cx| sidebar_tooltip("Review", cx))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.select_section(WorkspaceSection::Inbox, window, cx)
-                    }))
-                    .child(icon("chrome-icons/inbox.svg"))
-                    .child("Review"),
             )
             .into_any_element()
     }

@@ -141,11 +141,7 @@ impl WorkspaceView {
             .when(self.usage.snapshot.providers.is_empty(), |item| {
                 item.child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
                         .text_color(colors().subtle)
-                        .child(provider_icon("", 16.0, colors().subtle))
                         .child(if self.usage.loading { "…" } else { "—" }),
                 )
             })
@@ -188,7 +184,7 @@ impl WorkspaceView {
                             .font_weight(gpui::FontWeight::NORMAL)
                             .text_color(color)
                             .tooltip(move |_, cx| sidebar_tooltip(tooltip.clone(), cx))
-                            .child(provider_icon(id, 16.0, color))
+                            .child(provider_icon(id, 14.0, color))
                             .child(
                                 percentage.map_or_else(
                                     || "—".to_owned(),
