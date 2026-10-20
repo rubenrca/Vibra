@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.38 — 2026-10-20
+
+- Move subscription usage into the sidebar footer: one line of providers, each a pair of concentric rings (session outside, week inside). Hover for the quota windows and reset times; click for a modal with every subscription and the manual refresh. The status bar no longer shows usage.
+- Open context menus on projects, agent cards, and the empty sidebar list beside the sidebar, level with the clicked row. The usage modal rises from the footer chip that was clicked and no longer dims the window.
+- Remove the back and forward arrows from the titlebar. ⌃⌘← and ⌃⌘→ and the Back and Forward menu items still work.
+
 ## 0.3.37 — 2026-10-13
 
 - Add Scratch, a terminal outside every project. Open it from the sidebar under Review or with ⌥⌘T, and press ⌥⌘T again to return. It has the usual tabs, panes, and shortcuts; new tabs start in the current tab's folder, and Explorer, Changes, and the branch follow the selected terminal.

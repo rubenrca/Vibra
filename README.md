@@ -252,11 +252,11 @@ misma versión, más Sparkle descargado con `./Scripts/fetch_sparkle.sh`
 del certificado Developer ID de Vibra:
 
 ```bash
-./Scripts/release.sh 0.3.37 --dry-run
-./Scripts/release.sh 0.3.37
-./Scripts/release.sh 0.3.37-beta.1 --prerelease
-./Scripts/release.sh 0.3.37 --dry-run --no-notarize  # empaquetado local sin notarizar
-./Scripts/release.sh 0.3.37 --resume-dmg    # valida y publica el DMG tras una espera interrumpida
+./Scripts/release.sh 0.3.38 --dry-run
+./Scripts/release.sh 0.3.38
+./Scripts/release.sh 0.3.38-beta.1 --prerelease
+./Scripts/release.sh 0.3.38 --dry-run --no-notarize  # empaquetado local sin notarizar
+./Scripts/release.sh 0.3.38 --resume-dmg    # valida y publica el DMG tras una espera interrumpida
 ```
 
 Un release **estable** crea el DMG universal, firma con Developer ID, notariza
