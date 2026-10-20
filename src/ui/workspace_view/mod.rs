@@ -68,7 +68,7 @@ use crate::ui::terminal::TerminalView;
 use crate::ui::theme::{colors, surface, window_surface};
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
-const TITLEBAR_CHROME_COLLAPSED: f32 = 184.0;
+const TITLEBAR_CHROME_COLLAPSED: f32 = 124.0;
 /// Titlebar chrome width when the right sidebar is fully collapsed (toggle only).
 const TITLEBAR_RIGHT_CHROME_COLLAPSED: f32 = 44.0;
 const TITLEBAR_HEIGHT: f32 = 40.0;

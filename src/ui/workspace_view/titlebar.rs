@@ -74,7 +74,7 @@ impl super::WorkspaceView {
 
     pub(super) fn titlebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.workspace_section == WorkspaceSection::Settings {
-            return self.settings_titlebar(cx);
+            return self.settings_titlebar();
         }
         let left_progress = self.left_sidebar_progress;
         let right_progress = if self.workspace_section == WorkspaceSection::Workspace {
@@ -158,7 +158,6 @@ impl super::WorkspaceView {
                             );
                         }),
                     )
-                    .child(self.navigation_buttons(cx))
                     .child(
                         div()
                             .h_full()
@@ -224,7 +223,7 @@ impl super::WorkspaceView {
             .into_any_element()
     }
 
-    fn settings_titlebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn settings_titlebar(&self) -> AnyElement {
         div()
             .h(px(TITLEBAR_HEIGHT))
             .w_full()
@@ -237,15 +236,9 @@ impl super::WorkspaceView {
                     .w(px(self.left_sidebar_width()))
                     .h_full()
                     .flex_none()
-                    .pl(px(TRAFFIC_LIGHTS_INSET))
-                    .pr_2()
-                    .flex()
-                    .items_center()
                     .border_r_1()
                     .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().sidebar, colors().titlebar))
-                    .child(div().flex_1())
-                    .child(self.navigation_buttons(cx)),
+                    .bg(surface_tint(colors().sidebar, colors().titlebar)),
             )
             .child(
                 div()

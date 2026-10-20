@@ -14,7 +14,7 @@ use crate::{GoToTab, NavigateBack, NavigateForward};
 use super::panes::{
     TAB_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS, TAB_TEXT_SIZE, tab_drag_ghost, tab_shortcut,
 };
-use super::titlebar::{TITLEBAR_BUTTON_GAP, titlebar_button, titlebar_icon};
+use super::titlebar::{titlebar_button, titlebar_icon};
 use super::{DragGhost, ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const MAX_NAVIGATION_HISTORY: usize = 50;
@@ -127,10 +127,6 @@ impl Navigation {
 
     pub(super) fn can_go_back(&self) -> bool {
         !self.back.is_empty()
-    }
-
-    pub(super) fn can_go_forward(&self) -> bool {
-        !self.forward.is_empty()
     }
 }
 
@@ -386,40 +382,6 @@ impl WorkspaceView {
             WorkspaceTabId::Review => self.activate_review_tab(window, cx),
             WorkspaceTabId::Terminal(tab_id) => self.select_tab(tab_id, window, cx),
         }
-    }
-
-    /// Navigation arrows for the titlebar.
-    pub(super) fn navigation_buttons(&self, cx: &mut Context<Self>) -> AnyElement {
-        let button = |id: &'static str, icon: &'static str, label: &'static str, enabled: bool| {
-            titlebar_button(id, enabled)
-                .tooltip(move |_, cx| sidebar_tooltip(label, cx))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(titlebar_icon(icon))
-        };
-        div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(TITLEBAR_BUTTON_GAP))
-            .child(
-                button(
-                    "navigate-back",
-                    "chrome-icons/chevron-left.svg",
-                    "Back · ⌃⌘←",
-                    self.navigation.can_go_back(),
-                )
-                .on_click(cx.listener(|this, _, window, cx| this.navigate(true, window, cx))),
-            )
-            .child(
-                button(
-                    "navigate-forward",
-                    "chrome-icons/chevron-right.svg",
-                    "Forward · ⌃⌘→",
-                    self.navigation.can_go_forward(),
-                )
-                .on_click(cx.listener(|this, _, window, cx| this.navigate(false, window, cx))),
-            )
-            .into_any_element()
     }
 
     /// The review, drawn like the terminal tabs so switching is one click.
@@ -777,19 +739,19 @@ mod tests {
         navigation.observe(Some(terminal(2)));
         navigation.observe(Some(terminal(3)));
         assert!(navigation.can_go_back());
-        assert!(!navigation.can_go_forward());
+        assert!(navigation.forward.is_empty());
 
         // Tab 2 was closed: going back lands on tab 1.
         assert!(navigation.step(true, |target| target != terminal(2)));
         assert_eq!(navigation.current, Some(terminal(1)));
-        assert!(navigation.can_go_forward());
+        assert!(!navigation.forward.is_empty());
         assert!(navigation.step(false, |_| true));
         assert_eq!(navigation.current, Some(terminal(3)));
 
         // A new move drops the forward stack.
         navigation.step(true, |_| true);
         navigation.observe(Some(terminal(4)));
-        assert!(!navigation.can_go_forward());
+        assert!(navigation.forward.is_empty());
         assert!(!navigation.step(false, |_| true));
     }
 }
