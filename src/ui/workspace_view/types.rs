@@ -72,11 +72,21 @@ pub(super) enum ContextMenuKind {
     SidebarBackground,
 }
 
+/// Where a context menu sits in the window.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ContextMenuAnchor {
+    /// Top-left corner at the pointer.
+    Pointer { x: f32, y: f32 },
+    /// Beside the left sidebar, level with the row that was clicked: the menu's
+    /// top meets the row's top when it fits below, otherwise its bottom meets
+    /// the row's bottom.
+    Sidebar { left: f32, top: f32, bottom: f32 },
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ContextMenuState {
     pub(super) kind: ContextMenuKind,
-    pub(super) x: f32,
-    pub(super) y: f32,
+    pub(super) anchor: ContextMenuAnchor,
 }
 
 #[derive(Debug, Clone)]

@@ -149,6 +149,15 @@ impl MenuRow {
     }
 }
 
+/// Height of a `menu_panel` holding `rows` rows and `separators` separators,
+/// for placing a menu before it has been laid out.
+pub fn menu_panel_height(rows: usize, separators: usize) -> f32 {
+    // Each side has 4 px of padding and a 1 px border; a separator is 1 px
+    // with 4 px above and below.
+    let chrome = 2.0 * (4.0 + 1.0);
+    chrome + rows as f32 * ROW_HEIGHT + separators as f32 * 9.0
+}
+
 pub fn menu_separator() -> Div {
     div()
         .h(px(1.0))

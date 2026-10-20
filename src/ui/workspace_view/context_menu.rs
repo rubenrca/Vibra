@@ -2,19 +2,49 @@
 
 use std::path::Path;
 
-use gpui::{AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, Context, Corner, MouseButton, SharedString, Window, div, point, prelude::*, px,
+};
 
 use crate::domain::workspace::PaneSplitDirection;
 use crate::ui::agent_marks::agent_compact_badge;
-use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
+use crate::ui::menu::{MenuRow, menu_panel, menu_panel_height, menu_separator};
 use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface_tint};
 
 use super::{
-    ContextMenuAction, ContextMenuKind, ContextMenuState, RenamePrompt, RenamePromptKind,
-    WorkspaceView,
+    ContextMenuAction, ContextMenuAnchor, ContextMenuKind, ContextMenuState, RenamePrompt,
+    RenamePromptKind, WorkspaceView,
 };
 
+/// Space between the sidebar's edge and a menu opened beside it.
+const SIDEBAR_MENU_GAP: f32 = 4.0;
+/// Keep menus this far from the window edges.
+pub(super) const MENU_EDGE_MARGIN: f32 = 8.0;
+/// A pane menu's identity header (agent and title) and its separator.
+const PANE_MENU_HEADER_HEIGHT: f32 = 55.0;
+
+/// Where a menu of `height` goes: the point to anchor and which of its corners
+/// sits there. Beside the sidebar it hangs from the row's top edge, or rises
+/// from the row's bottom edge when it would not fit below.
+fn menu_placement(
+    anchor: ContextMenuAnchor,
+    height: f32,
+    window_height: f32,
+) -> (gpui::Point<gpui::Pixels>, Corner) {
+    match anchor {
+        ContextMenuAnchor::Pointer { x, y } => (point(px(x + 2.0), px(y + 2.0)), Corner::TopLeft),
+        ContextMenuAnchor::Sidebar { left, top, bottom } => {
+            if top + height + MENU_EDGE_MARGIN <= window_height {
+                (point(px(left), px(top)), Corner::TopLeft)
+            } else {
+                (point(px(left), px(bottom)), Corner::BottomLeft)
+            }
+        }
+    }
+}
+
 impl WorkspaceView {
+    /// Opens a menu with its corner at the pointer.
     pub(super) fn open_context_menu(
         &mut self,
         kind: ContextMenuKind,
@@ -22,8 +52,35 @@ impl WorkspaceView {
         y: f32,
         cx: &mut Context<Self>,
     ) {
+        self.show_context_menu(kind, ContextMenuAnchor::Pointer { x, y }, cx);
+    }
+
+    /// Opens a menu beside the sidebar, level with the row spanning `top` to
+    /// `bottom` (window coordinates).
+    pub(super) fn open_sidebar_context_menu(
+        &mut self,
+        kind: ContextMenuKind,
+        top: f32,
+        bottom: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let left = self.sidebar_popover_left();
+        self.show_context_menu(kind, ContextMenuAnchor::Sidebar { left, top, bottom }, cx);
+    }
+
+    /// Window x where a menu or popover opened beside the left sidebar starts.
+    pub(super) fn sidebar_popover_left(&self) -> f32 {
+        self.left_sidebar_width() * self.left_sidebar_progress + SIDEBAR_MENU_GAP
+    }
+
+    fn show_context_menu(
+        &mut self,
+        kind: ContextMenuKind,
+        anchor: ContextMenuAnchor,
+        cx: &mut Context<Self>,
+    ) {
         self.usage.open = false;
-        self.context_menu = Some(ContextMenuState { kind, x, y });
+        self.context_menu = Some(ContextMenuState { kind, anchor });
         self.rename_prompt = None;
         cx.notify();
     }
@@ -183,7 +240,11 @@ impl WorkspaceView {
         }
     }
 
-    pub(super) fn context_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn context_menu_overlay(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let menu = self.context_menu.clone()?;
         let pane_identity = match &menu.kind {
             ContextMenuKind::Pane { session_id } => self.pane_identity_by_id(*session_id, cx),
@@ -282,6 +343,16 @@ impl WorkspaceView {
                 .map(|(item, action)| (item.danger(), action)),
             ],
         };
+        let rows = entries.iter().flatten().count();
+        let separators = entries.len() - rows;
+        let height = menu_panel_height(rows, separators)
+            + if pane_identity.is_some() {
+                PANE_MENU_HEADER_HEIGHT
+            } else {
+                0.0
+            };
+        let window_height: f32 = window.bounds().size.height.into();
+        let (position, corner) = menu_placement(menu.anchor, height, window_height);
         Some(
             div()
                 .absolute()
@@ -300,8 +371,9 @@ impl WorkspaceView {
                 )
                 .child(
                     gpui::anchored()
-                        .position(gpui::point(px(menu.x + 2.0), px(menu.y + 2.0)))
-                        .snap_to_window_with_margin(px(8.0))
+                        .anchor(corner)
+                        .position(position)
+                        .snap_to_window_with_margin(px(MENU_EDGE_MARGIN))
                         .child(
                             menu_panel()
                                 .id("context-menu")
@@ -483,5 +555,83 @@ impl WorkspaceView {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_menus_hang_from_the_row_or_rise_from_its_bottom_edge() {
+        let anchor = ContextMenuAnchor::Sidebar {
+            left: 224.0,
+            top: 180.0,
+            bottom: 212.0,
+        };
+        // Room below: the menu's top edge meets the row's top edge.
+        assert_eq!(
+            menu_placement(anchor, 200.0, 700.0),
+            (point(px(224.0), px(180.0)), Corner::TopLeft)
+        );
+        // Exactly enough room, edge margin included, still hangs.
+        assert_eq!(
+            menu_placement(anchor, 200.0, 180.0 + 200.0 + MENU_EDGE_MARGIN).1,
+            Corner::TopLeft
+        );
+        // Not enough room: the menu's bottom edge meets the row's bottom edge.
+        assert_eq!(
+            menu_placement(anchor, 200.0, 380.0),
+            (point(px(224.0), px(212.0)), Corner::BottomLeft)
+        );
+    }
+
+    #[test]
+    fn pointer_menus_keep_their_corner_just_off_the_pointer() {
+        assert_eq!(
+            menu_placement(
+                ContextMenuAnchor::Pointer { x: 10.0, y: 20.0 },
+                400.0,
+                100.0
+            ),
+            (point(px(12.0), px(22.0)), Corner::TopLeft)
+        );
+    }
+
+    #[gpui::test]
+    fn sidebar_menus_open_beside_the_sidebar_and_pointer_menus_at_the_pointer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (root, _, _, window) =
+            super::super::tests::open_recording_workspace(cx, "sidebar-menu");
+        window
+            .update(cx, |view, window, cx| {
+                let edge = view.left_sidebar_width() * view.left_sidebar_progress;
+                let session_id = view.snapshot.selected_session().unwrap().id;
+                for kind in [
+                    ContextMenuKind::SidebarBackground,
+                    ContextMenuKind::Pane { session_id },
+                ] {
+                    view.open_sidebar_context_menu(kind.clone(), 300.0, 332.0, cx);
+                    match view.context_menu.as_ref().unwrap().anchor {
+                        ContextMenuAnchor::Sidebar { left, top, bottom } => {
+                            assert_eq!(left, edge + SIDEBAR_MENU_GAP);
+                            assert_eq!((top, bottom), (300.0, 332.0));
+                        }
+                        other => panic!("expected a sidebar anchor, got {other:?}"),
+                    }
+                    assert!(view.context_menu_overlay(window, cx).is_some());
+
+                    view.open_context_menu(kind, 10.0, 20.0, cx);
+                    assert!(matches!(
+                        view.context_menu.as_ref().unwrap().anchor,
+                        ContextMenuAnchor::Pointer { x: 10.0, y: 20.0 }
+                    ));
+                    assert!(view.context_menu_overlay(window, cx).is_some());
+                }
+                window.remove_window();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

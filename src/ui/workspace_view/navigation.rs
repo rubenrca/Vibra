@@ -272,10 +272,11 @@ impl WorkspaceView {
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                            this.open_context_menu(
+                            let y = event.position.y.into();
+                            this.open_sidebar_context_menu(
                                 ContextMenuKind::SidebarBackground,
-                                event.position.x.into(),
-                                event.position.y.into(),
+                                y,
+                                y,
                                 cx,
                             );
                             cx.stop_propagation();

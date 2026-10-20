@@ -715,7 +715,7 @@ impl Render for WorkspaceView {
         if let Some(popover) = self.inbox_popover(window, cx) {
             body = body.child(popover);
         }
-        if let Some(modal) = self.usage_modal(window, cx) {
+        if let Some(modal) = self.usage_modal(cx) {
             body = body.child(modal);
         }
         if let Some(modal) = self.palette_modal(cx) {
@@ -723,7 +723,7 @@ impl Render for WorkspaceView {
         } else if let Some(modal) = self.rename_modal(cx) {
             body = body.child(modal);
         }
-        if let Some(menu) = self.context_menu_overlay(cx) {
+        if let Some(menu) = self.context_menu_overlay(window, cx) {
             body = body.child(menu);
         }
         if let Some(menu) = self.ide_menu_overlay(cx) {

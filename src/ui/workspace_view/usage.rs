@@ -1,13 +1,15 @@
 //! Subscription usage: a one-line sidebar footer with a pair of concentric
-//! progress rings per provider (session outside, week inside), a hover card per
-//! provider, and a modal listing every subscription.
+//! progress rings per provider (session outside, week inside) that open a modal
+//! listing every subscription.
 
+use std::cell::Cell;
 use std::f32::consts::TAU;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, Context, Div, Hsla, MouseButton, PathBuilder, Pixels, Point, Render, Rgba,
+    AnyElement, Bounds, Context, Corner, Div, Hsla, MouseButton, PathBuilder, Pixels, Point, Rgba,
     SharedString, Stateful, Task, Timer, Window, canvas, div, point, prelude::*, px, relative, svg,
 };
 
@@ -16,10 +18,11 @@ use crate::domain::usage::{
 };
 use crate::infrastructure::clock::local_utc_offset;
 use crate::infrastructure::usage::UsageMonitor;
-use crate::ui::menu::{menu_border, menu_hover, menu_panel, menu_surface};
+use crate::ui::menu::{menu_hover, menu_panel};
 use crate::ui::theme::{colors, surface_tint};
 
 use super::chrome::SIDEBAR_ROW_INSET;
+use super::context_menu::MENU_EDGE_MARGIN;
 use super::{WorkspaceView, sidebar_tooltip};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -37,6 +40,8 @@ pub(super) struct UsageState {
     /// Whether a first reading has finished; until then there is nothing to say.
     loaded: bool,
     pub open: bool,
+    /// Bottom-left corner of the modal, level with the footer chip that opened it.
+    anchor: Point<Pixels>,
     _poll_task: Option<Task<()>>,
     _refresh_task: Option<Task<()>>,
 }
@@ -160,7 +165,10 @@ impl WorkspaceView {
         }));
     }
 
-    fn open_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the modal beside the sidebar, rising from `bottom`, the bottom
+    /// edge of the chip that was clicked.
+    fn open_usage(&mut self, bottom: f32, window: &mut Window, cx: &mut Context<Self>) {
+        self.usage.anchor = point(px(self.sidebar_popover_left()), px(bottom));
         self.usage.open = true;
         self.context_menu = None;
         self.ide_menu_open = false;
@@ -176,10 +184,9 @@ impl WorkspaceView {
     }
 
     /// Sidebar footer on a single line. Each provider shows its quota windows as
-    /// concentric rings; hovering lists them and clicking opens every subscription.
+    /// concentric rings; clicking any of them opens every subscription.
     pub(super) fn usage_tracker(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = now_timestamp();
-        let utc_offset = local_utc_offset(now);
         let snapshot = &self.usage.snapshot;
         div()
             .id("sidebar-usage")
@@ -195,24 +202,21 @@ impl WorkspaceView {
             .when(
                 snapshot.providers.is_empty() && self.usage.loaded,
                 |footer| {
-                    let tooltip = self.usage.error.clone().unwrap_or_else(|| {
-                        "Sign in with Claude Code, Codex, or Grok Build to see your usage"
-                            .to_owned()
-                    });
+                    let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
                     footer.child(
                         usage_chip("sidebar-usage-empty".into())
                             .child(usage_ring(vec![(None, colors().subtle)]))
                             .child(div().min_w(px(0.0)).truncate().child("No usage data"))
-                            .tooltip(move |_, cx| sidebar_tooltip(tooltip.clone(), cx))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_usage(window, cx)),
-                            ),
+                            .child(super::measure_bounds(bounds.clone()))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_usage(bounds.get().bottom().into(), window, cx)
+                            })),
                     )
                 },
             )
             .children(snapshot.providers.iter().map(|(id, provider)| {
                 let stale = self.usage.provider_stale(id, provider, now);
-                let card = self.usage.card(id, provider, now, utc_offset);
+                let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
                 let rings = ring_percents(provider)
                     .into_iter()
                     .map(|percent| {
@@ -232,23 +236,22 @@ impl WorkspaceView {
                             .truncate()
                             .child(provider.display_name.clone()),
                     )
-                    .tooltip(move |_, cx| cx.new(|_| card.clone()).into())
-                    .on_click(cx.listener(|this, _, window, cx| this.open_usage(window, cx)))
+                    .child(super::measure_bounds(bounds.clone()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_usage(bounds.get().bottom().into(), window, cx)
+                    }))
             }))
             .into_any_element()
     }
 
-    pub(super) fn usage_modal(
-        &self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    pub(super) fn usage_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.usage.open || self.palette_mode.is_some() || self.rename_prompt.is_some() {
             return None;
         }
         let now = now_timestamp();
         let utc_offset = local_utc_offset(now);
-        let height: f32 = window.bounds().size.height.into();
+        // It rises from its anchor, so only the room above limits its height.
+        let available: f32 = self.usage.anchor.y.into();
         let snapshot = &self.usage.snapshot;
         let refresh_tooltip = if self.usage.loading {
             "Checking quotas…"
@@ -307,10 +310,6 @@ impl WorkspaceView {
             div()
                 .absolute()
                 .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(colors().overlay())
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| this.close_usage(window, cx)),
@@ -320,13 +319,16 @@ impl WorkspaceView {
                     cx.listener(|this, _, window, cx| this.close_usage(window, cx)),
                 )
                 .child(
+                    gpui::anchored()
+                        .anchor(Corner::BottomLeft)
+                        .position(self.usage.anchor)
+                        .snap_to_window_with_margin(px(MENU_EDGE_MARGIN))
+                        .child(
                     menu_panel()
                         .id("usage-modal")
                         .p(px(0.0))
                         .w(px(380.0))
-                        .max_w_full()
-                        .mx_4()
-                        .max_h(px((height - 120.0).max(100.0)))
+                        .max_h(px((available - MENU_EDGE_MARGIN).max(100.0)))
                         .text_size(px(11.0))
                         .text_color(colors().foreground)
                         .overflow_hidden()
@@ -386,6 +388,7 @@ impl WorkspaceView {
                                 ),
                         )
                         .child(content),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -398,6 +401,7 @@ impl WorkspaceView {
 fn usage_chip(id: SharedString) -> Stateful<Div> {
     div()
         .id(id)
+        .relative()
         .h(px(32.0))
         .min_w(px(0.0))
         .px(px(4.0))
@@ -525,7 +529,7 @@ struct UsageCardRow {
     reset: Option<String>,
 }
 
-/// Everything shown about one provider, in the hover card and in the modal.
+/// Everything the modal shows about one provider.
 #[derive(Clone, Debug, PartialEq)]
 struct UsageCard {
     id: String,
@@ -535,113 +539,6 @@ struct UsageCard {
     rows: Vec<UsageCardRow>,
     warnings: Vec<String>,
     status: Option<String>,
-}
-
-impl Render for UsageCard {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let hint = "Click for all subscriptions";
-        let footer = self
-            .status
-            .as_ref()
-            .map_or_else(|| hint.to_owned(), |status| format!("{status} · {hint}"));
-        div()
-            .min_w(px(220.0))
-            .max_w(px(380.0))
-            .px(px(12.0))
-            .py(px(10.0))
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .rounded(px(10.0))
-            .bg(menu_surface())
-            .border_1()
-            .border_color(menu_border())
-            .shadow_md()
-            .text_size(px(12.0))
-            .text_color(colors().foreground)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .whitespace_nowrap()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(self.name.clone()),
-                    )
-                    .when_some(self.plan.clone(), |header, plan| {
-                        header.child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(colors().subtle)
-                                .child(plan),
-                        )
-                    })
-                    .when(self.stale, |header| {
-                        header.child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(colors().warning)
-                                .child("Outdated"),
-                        )
-                    }),
-            )
-            .when(self.rows.is_empty(), |card| {
-                card.child(
-                    div()
-                        .text_color(colors().muted)
-                        .child("No quotas available"),
-                )
-            })
-            .children(self.rows.iter().map(|row| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(16.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .whitespace_nowrap()
-                            .text_color(colors().muted)
-                            .child(row.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .gap(px(5.0))
-                            .whitespace_nowrap()
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(
-                                        quota_alert(row.percent).unwrap_or(colors().foreground),
-                                    )
-                                    .child(row.value.clone()),
-                            )
-                            .when_some(row.reset.clone(), |value, reset| {
-                                value.child(
-                                    div().text_color(colors().muted).child(format!("· {reset}")),
-                                )
-                            }),
-                    )
-            }))
-            .children(self.warnings.iter().map(|warning| {
-                div()
-                    .max_w(px(340.0))
-                    .text_color(colors().warning)
-                    .child(warning.clone())
-            }))
-            .child(
-                div()
-                    .pt(px(2.0))
-                    .text_size(px(11.0))
-                    .text_color(colors().subtle)
-                    .child(footer),
-            )
-    }
 }
 
 /// One provider's block in the modal: header, then each quota with its bar.
@@ -912,19 +809,40 @@ mod tests {
             super::super::tests::open_recording_workspace(cx, "usage-refresh");
         window
             .update(cx, |view, window, cx| {
-                assert!(view.usage_modal(window, cx).is_none());
+                assert!(view.usage_modal(cx).is_none());
                 view.usage.open = true;
                 for loading in [false, true, false] {
                     view.usage.loading = loading;
-                    assert!(view.usage_modal(window, cx).is_some());
+                    assert!(view.usage_modal(cx).is_some());
                 }
                 view.usage.snapshot = snapshot(
                     r#"{"providers":{"codex":{"displayName":"Codex","resources":{}}},
                         "errors":[{"providerId":"grok","message":"Signed out"}]}"#,
                 );
-                assert!(view.usage_modal(window, cx).is_some());
+                assert!(view.usage_modal(cx).is_some());
                 view.close_usage(window, cx);
-                assert!(view.usage_modal(window, cx).is_none());
+                assert!(view.usage_modal(cx).is_none());
+                window.remove_window();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn usage_modal_rises_from_the_chip_beside_the_sidebar(cx: &mut gpui::TestAppContext) {
+        let (root, _, _, window) =
+            super::super::tests::open_recording_workspace(cx, "usage-anchor");
+        window
+            .update(cx, |view, window, cx| {
+                // A refresh in flight keeps the test away from the user's real logins.
+                view.usage.loading = true;
+                view.open_usage(1480.0, window, cx);
+                assert!(view.usage.open);
+                assert_eq!(
+                    view.usage.anchor,
+                    point(px(view.sidebar_popover_left()), px(1480.0))
+                );
+                assert!(view.usage_modal(cx).is_some());
                 window.remove_window();
             })
             .unwrap();

@@ -1,7 +1,7 @@
 //! Drag payloads and floating previews for tabs, panes, and projects.
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, AppContext, Context, Entity, IntoElement,
+    Animation, AnimationExt, AnyElement, App, AppContext, Bounds, Context, Entity, IntoElement,
     ParentElement, Pixels, Point, Render, Styled, Window, canvas, div, prelude::*, px, svg,
 };
 use std::cell::Cell;
@@ -337,6 +337,14 @@ pub(super) fn measure_width(width: Rc<Cell<Pixels>>) -> impl IntoElement {
     )
     .absolute()
     .inset_0()
+}
+
+/// Stores the window-relative bounds of the parent element, which must be
+/// positioned, so a handler can anchor something to it.
+pub(super) fn measure_bounds(bounds: Rc<Cell<Bounds<Pixels>>>) -> impl IntoElement {
+    canvas(move |laid_out, _, _| bounds.set(laid_out), |_, _, _, _| {})
+        .absolute()
+        .inset_0()
 }
 
 const SLIDE_DURATION: Duration = Duration::from_millis(160);

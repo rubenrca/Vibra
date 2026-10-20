@@ -1,6 +1,8 @@
 //! Folder selection and project navigation. Existing terminals keep their cwd.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui::{
     AnyElement, Bounds, Context, DragMoveEvent, MouseButton, MouseDownEvent, PathPromptOptions,
@@ -348,6 +350,7 @@ impl WorkspaceView {
         let color = colors().muted;
         let activity = self.project_agent_activity(id);
         let drag = ProjectDrag { project_id: id };
+        let row_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
         let ghost = {
             let name = name.clone();
             DragGhost::new(7.0, colors().sidebar, move || {
@@ -388,18 +391,20 @@ impl WorkspaceView {
                 this.select_project(id, window, cx);
                 cx.stop_propagation();
             }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    this.open_context_menu(
+            .on_mouse_down(MouseButton::Right, {
+                let row_bounds = row_bounds.clone();
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    let row = row_bounds.get();
+                    this.open_sidebar_context_menu(
                         ContextMenuKind::Project { project_id: id },
-                        event.position.x.into(),
-                        event.position.y.into(),
+                        row.top().into(),
+                        row.bottom().into(),
                         cx,
                     );
                     cx.stop_propagation();
-                }),
-            )
+                })
+            })
+            .child(super::measure_bounds(row_bounds))
             .child(ghost.measure())
             .on_drag(drag, move |_, _, _, cx| ghost.preview(cx))
             .on_drag_move(
@@ -638,8 +643,10 @@ impl WorkspaceView {
                 .text_color(colors().subtle)
                 .child(child)
         };
+        let card_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
         div()
             .id(SharedString::from(format!("project-agent-{session_id}")))
+            .relative()
             .w(px(sidebar_row_width(self.left_sidebar_width())))
             .h(px(project_agent_card_pitch(branch.is_some()) - 2.0))
             .mb(px(2.0))
@@ -665,18 +672,20 @@ impl WorkspaceView {
                 this.open_pane(session_id, window, cx);
                 cx.stop_propagation();
             }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    this.open_context_menu(
+            .on_mouse_down(MouseButton::Right, {
+                let card_bounds = card_bounds.clone();
+                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                    let card = card_bounds.get();
+                    this.open_sidebar_context_menu(
                         ContextMenuKind::Pane { session_id },
-                        event.position.x.into(),
-                        event.position.y.into(),
+                        card.top().into(),
+                        card.bottom().into(),
                         cx,
                     );
                     cx.stop_propagation();
-                }),
-            )
+                })
+            })
+            .child(super::measure_bounds(card_bounds))
             .child(
                 div()
                     .h(px(16.0))
