@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(usage.resources["weekly"].percent_used(), Some(71.0));
         assert_eq!(usage.resources["credits"].available, Some(0.0));
         assert_eq!(usage.resources["rateLimitResets"].available, Some(2.0));
-        assert_eq!(usage.resources["Spark · Session"].percent_used(), Some(5.0));
+        assert_eq!(usage.resources["Spark · 5 hours"].percent_used(), Some(5.0));
     }
 
     #[test]

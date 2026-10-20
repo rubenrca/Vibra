@@ -101,6 +101,18 @@ impl UsageResource {
         )
     }
 
+    /// `value_label` without the words that only matter in a sentence:
+    /// "84%" rather than "84% used", "1000 credits" rather than "… available".
+    pub fn compact_value_label(&self) -> String {
+        let value = self.value_label();
+        value
+            .strip_suffix(" used")
+            .filter(|_| self.percent_used().is_some())
+            .or_else(|| value.strip_suffix(" available"))
+            .unwrap_or(&value)
+            .to_owned()
+    }
+
     fn format_value(&self, value: f64) -> String {
         match self.unit.as_str() {
             "usd" => format!("US${value:.2}"),
@@ -115,7 +127,8 @@ impl UsageResource {
 
 pub fn resource_label(key: &str) -> &str {
     match key {
-        "session" => "Session",
+        // Claude and Codex both meter their session in five-hour windows.
+        "session" => "5 hours",
         "weekly" => "Week",
         "monthly" => "Month",
         "daily" => "Day",
@@ -149,25 +162,31 @@ pub fn timestamp(value: &str) -> Option<i64> {
         .map(|date| date.timestamp())
 }
 
-pub fn reset_label(value: &str, now: i64) -> String {
-    let Some(reset) = timestamp(value) else {
-        return "Reset date unavailable".to_owned();
+/// When a quota resets, in the viewer's time zone (`utc_offset` seconds east
+/// of UTC): the time of day when it is today, the weekday within the next
+/// week, and the date after that.
+pub fn reset_label(value: &str, now: i64, utc_offset: i32) -> String {
+    let local = |seconds: i64| {
+        let offset = chrono::FixedOffset::east_opt(utc_offset)?;
+        Some(chrono::DateTime::from_timestamp(seconds, 0)?.with_timezone(&offset))
     };
-    let seconds = reset.saturating_sub(now);
-    if seconds <= 0 {
-        return "Reset pending refresh".to_owned();
+    let reset = timestamp(value);
+    let (Some(reset), Some(reset_local), Some(now_local)) =
+        (reset, reset.and_then(local), local(now))
+    else {
+        return "reset date unavailable".to_owned();
+    };
+    if reset <= now {
+        return "reset pending refresh".to_owned();
     }
-    let minutes = (seconds + 59) / 60;
-    if minutes < 60 {
-        format!("Resets in {minutes} min")
-    } else if minutes < 24 * 60 {
-        format!("Resets in {} h {} min", minutes / 60, minutes % 60)
-    } else {
-        format!(
-            "Resets in {} d {} h",
-            minutes / (24 * 60),
-            minutes / 60 % 24
-        )
+    let days = reset_local
+        .date_naive()
+        .signed_duration_since(now_local.date_naive())
+        .num_days();
+    match days {
+        0 => format!("resets {}", reset_local.format("%-I:%M %p")),
+        1..=6 => format!("resets {}", reset_local.format("%a")),
+        _ => format!("resets {}", reset_local.format("%b %-d")),
     }
 }
 
@@ -233,13 +252,56 @@ mod tests {
         let now = timestamp("2026-09-26T12:00:00Z").unwrap();
         assert!(!provider.is_stale(now));
         assert!(provider.is_stale(now + 300));
+    }
+
+    #[test]
+    fn reset_reads_as_a_time_today_a_weekday_this_week_or_a_date() {
+        // Saturday 2026-09-26, 09:00 in UTC-3.
+        let now = timestamp("2026-09-26T12:00:00Z").unwrap();
+        let west = -3 * 3600;
         assert_eq!(
-            reset_label("2026-09-26T10:30:00-03:00", now),
-            "Resets in 1 h 30 min"
+            reset_label("2026-09-26T10:30:00-03:00", now, west),
+            "resets 10:30 AM"
+        );
+        // Already tomorrow in UTC, still today at the viewer's wall clock.
+        assert_eq!(
+            reset_label("2026-09-27T02:00:00Z", now, west),
+            "resets 11:00 PM"
+        );
+        assert_eq!(reset_label("2026-09-27T12:00:00Z", now, west), "resets Sun");
+        assert_eq!(reset_label("2026-09-29T15:00:00Z", now, west), "resets Tue");
+        assert_eq!(
+            reset_label("2026-10-03T15:00:00Z", now, west),
+            "resets Oct 3"
         );
         assert_eq!(
-            reset_label("2026-09-26T12:00:00Z", now),
-            "Reset pending refresh"
+            reset_label("2026-09-26T12:00:00Z", now, west),
+            "reset pending refresh"
+        );
+        assert_eq!(
+            reset_label("not a date", now, west),
+            "reset date unavailable"
+        );
+    }
+
+    #[test]
+    fn compact_values_drop_sentence_words_only() {
+        let value =
+            |json: serde_json::Value| -> UsageResource { serde_json::from_value(json).unwrap() };
+        assert_eq!(
+            value(json!({"kind": "consumption", "unit": "percent", "used": 84, "limit": 100}))
+                .compact_value_label(),
+            "84%"
+        );
+        assert_eq!(
+            value(json!({"kind": "consumption", "unit": "usd", "used": 12, "limit": 100}))
+                .compact_value_label(),
+            "US$12.00 / US$100.00"
+        );
+        assert_eq!(
+            value(json!({"kind": "balance", "unit": "credits", "available": 40}))
+                .compact_value_label(),
+            "40 credits"
         );
     }
 }

@@ -715,8 +715,8 @@ impl Render for WorkspaceView {
         if let Some(popover) = self.inbox_popover(window, cx) {
             body = body.child(popover);
         }
-        if let Some(popover) = self.usage_popover(window, cx) {
-            body = body.child(popover);
+        if let Some(modal) = self.usage_modal(window, cx) {
+            body = body.child(modal);
         }
         if let Some(modal) = self.palette_modal(cx) {
             body = body.child(modal);

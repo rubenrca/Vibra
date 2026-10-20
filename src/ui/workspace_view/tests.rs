@@ -1760,7 +1760,7 @@ fn settings_search_routes_keys_to_the_frontmost_overlay(cx: &mut gpui::TestAppCo
                 assert_eq!(view.workspace_section, WorkspaceSection::Settings);
             }
             view.usage.open = true;
-            assert!(view.usage_popover(window, cx).is_some());
+            assert!(view.usage_modal(window, cx).is_some());
             window.remove_window();
         })
         .unwrap();

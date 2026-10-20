@@ -1,4 +1,4 @@
-//! Bottom status bar: project branch, running agents, usage, Keep Awake, and Review.
+//! Bottom status bar: project branch, running agents, Keep Awake, and Review.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -267,7 +267,6 @@ impl WorkspaceView {
                 )
                 .child(divider())
             })
-            .child(self.usage_status(cx))
             .child(
                 base("status-keep-awake")
                     .border_1()

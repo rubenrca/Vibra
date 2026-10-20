@@ -162,7 +162,6 @@ impl WorkspaceView {
         let scratch_selected = self.scratch_selected();
         let listed_projects = self.snapshot.listed_projects().count();
         let has_projects = listed_projects > 0;
-        let settings_selected = self.workspace_section == WorkspaceSection::Settings;
         div()
             .size_full()
             .flex()
@@ -361,30 +360,7 @@ impl WorkspaceView {
                         )
                     }),
             )
-            .child(
-                div().px(px(SIDEBAR_ROW_INSET)).py(px(8.0)).child(
-                    rail_row("global-settings")
-                        .when(settings_selected, |row| {
-                            row.bg(surface_tint(colors().selection, colors().sidebar))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(colors().foreground)
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
-                        .child(
-                            svg()
-                                .path("chrome-icons/settings.svg")
-                                .size(px(15.0))
-                                .flex_none()
-                                .text_color(if settings_selected {
-                                    colors().foreground
-                                } else {
-                                    colors().subtle
-                                }),
-                        )
-                        .child(div().flex_1().child("Settings"))
-                        .child(keycap("⌘,")),
-                ),
-            )
+            .child(self.usage_tracker(cx))
             .into_any_element()
     }
 
