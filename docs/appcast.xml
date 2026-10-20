@@ -3,21 +3,19 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.37</title>
-            <pubDate>Tue, 13 Oct 2026 18:21:53 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.37</link>
-            <sparkle:version>276</sparkle:version>
-            <sparkle:shortVersionString>0.3.37</sparkle:shortVersionString>
+            <title>0.3.38</title>
+            <pubDate>Tue, 20 Oct 2026 14:55:51 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.38</link>
+            <sparkle:version>281</sparkle:version>
+            <sparkle:shortVersionString>0.3.38</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Add Scratch, a terminal outside every project. Open it from the sidebar under Review or with ⌥⌘T, and press ⌥⌘T again to return. It has the usual tabs, panes, and shortcuts; new tabs start in the current tab's folder, and Explorer, Changes, and the branch follow the selected terminal.</li>
-  <li>Recognize agents that run as interpreter scripts, such as Gemini CLI under Node.</li>
-  <li>Steadier agent status: prompts and spinners count only in the agent's footer, Idle and Waiting wait a moment before showing, and an agent keeps its identity when other agents' names scroll past.</li>
-  <li>Agents show as Working again after a tool finishes, including answered permission prompts. Hooks installed by an older Vibra are updated at launch.</li>
-  <li>Explorer ignores `~/Library` and hidden folders when watching the home folder.</li>
+  <li>Move subscription usage into the sidebar footer: one line of providers, each a pair of concentric rings (session outside, week inside). Hover for the quota windows and reset times; click for a modal with every subscription and the manual refresh. The status bar no longer shows usage.</li>
+  <li>Open context menus on projects, agent cards, and the empty sidebar list beside the sidebar, level with the clicked row. The usage modal rises from the footer chip that was clicked and no longer dims the window.</li>
+  <li>Remove the back and forward arrows from the titlebar. ⌃⌘← and ⌃⌘→ and the Back and Forward menu items still work.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.37/Vibra-0.3.37.dmg" length="15304021" type="application/octet-stream" sparkle:edSignature="EzhAzb07xOKluGh9DWxvgLTyaUdV3hoWIk0fOt728cRBOP6z6qdRpB0WTAOose52+DcOkihXycch18gB8oPUAg=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.38/Vibra-0.3.38.dmg" length="15324673" type="application/octet-stream" sparkle:edSignature="VFD0wUbsEsQibKYB+49TMzhqFbxqkUlEW+w+peF3Vc+Tj7y+HeO6LIGm+gXXjs2D2ruEw1HYNZacRAYk0uq4DA=="/>
         </item>
     </channel>
 </rss>
