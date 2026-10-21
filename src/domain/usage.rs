@@ -174,19 +174,19 @@ pub fn reset_label(value: &str, now: i64, utc_offset: i32) -> String {
     let (Some(reset), Some(reset_local), Some(now_local)) =
         (reset, reset.and_then(local), local(now))
     else {
-        return "reset date unavailable".to_owned();
+        return "Reset date unavailable".to_owned();
     };
     if reset <= now {
-        return "reset pending refresh".to_owned();
+        return "Reset pending refresh".to_owned();
     }
     let days = reset_local
         .date_naive()
         .signed_duration_since(now_local.date_naive())
         .num_days();
     match days {
-        0 => format!("resets {}", reset_local.format("%-I:%M %p")),
-        1..=6 => format!("resets {}", reset_local.format("%a")),
-        _ => format!("resets {}", reset_local.format("%b %-d")),
+        0 => format!("Resets {}", reset_local.format("%-I:%M %p")),
+        1..=6 => format!("Resets {}", reset_local.format("%A")),
+        _ => format!("Resets {}", reset_local.format("%b %-d")),
     }
 }
 
@@ -261,26 +261,32 @@ mod tests {
         let west = -3 * 3600;
         assert_eq!(
             reset_label("2026-09-26T10:30:00-03:00", now, west),
-            "resets 10:30 AM"
+            "Resets 10:30 AM"
         );
         // Already tomorrow in UTC, still today at the viewer's wall clock.
         assert_eq!(
             reset_label("2026-09-27T02:00:00Z", now, west),
-            "resets 11:00 PM"
+            "Resets 11:00 PM"
         );
-        assert_eq!(reset_label("2026-09-27T12:00:00Z", now, west), "resets Sun");
-        assert_eq!(reset_label("2026-09-29T15:00:00Z", now, west), "resets Tue");
+        assert_eq!(
+            reset_label("2026-09-27T12:00:00Z", now, west),
+            "Resets Sunday"
+        );
+        assert_eq!(
+            reset_label("2026-09-29T15:00:00Z", now, west),
+            "Resets Tuesday"
+        );
         assert_eq!(
             reset_label("2026-10-03T15:00:00Z", now, west),
-            "resets Oct 3"
+            "Resets Oct 3"
         );
         assert_eq!(
             reset_label("2026-09-26T12:00:00Z", now, west),
-            "reset pending refresh"
+            "Reset pending refresh"
         );
         assert_eq!(
             reset_label("not a date", now, west),
-            "reset date unavailable"
+            "Reset date unavailable"
         );
     }
 

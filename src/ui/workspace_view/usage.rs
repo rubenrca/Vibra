@@ -1,6 +1,7 @@
 //! Subscription usage: a one-line sidebar footer with a pair of concentric
-//! progress rings per provider (session outside, week inside) that open a modal
-//! listing every subscription.
+//! progress rings per provider (session outside, week inside). Hovering one
+//! lists its quotas in a card above the footer; clicking opens a modal listing
+//! every subscription.
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
@@ -30,6 +31,11 @@ const RING_SIZE: f32 = 18.0;
 const RING_STROKE: f32 = 1.75;
 /// Space between concentric rings.
 const RING_GAP: f32 = 1.5;
+const CHIP_HEIGHT: f32 = 32.0;
+const FOOTER_PAD_Y: f32 = 8.0;
+/// Space between the hover card and the chips it describes.
+const HOVER_CARD_GAP: f32 = 4.0;
+const HOVER_CARD_MAX_WIDTH: f32 = 232.0;
 
 #[derive(Default)]
 pub(super) struct UsageState {
@@ -42,6 +48,10 @@ pub(super) struct UsageState {
     pub open: bool,
     /// Bottom-left corner of the modal, level with the footer chip that opened it.
     anchor: Point<Pixels>,
+    /// Provider whose chip the pointer is over.
+    hovered: Option<String>,
+    /// Where the footer sits in the window, to hang the hover card above it.
+    footer_bounds: Rc<Cell<Bounds<Pixels>>>,
     _poll_task: Option<Task<()>>,
     _refresh_task: Option<Task<()>>,
 }
@@ -57,6 +67,19 @@ impl UsageState {
             }
             Err(error) => self.error = Some(error.to_string()),
         }
+    }
+
+    fn set_hovered(&mut self, id: &str, hovered: bool) -> bool {
+        let current = self.hovered.as_deref();
+        // Leaving one chip can be reported after entering the next.
+        if hovered && current != Some(id) {
+            self.hovered = Some(id.to_owned());
+        } else if !hovered && current == Some(id) {
+            self.hovered = None;
+        } else {
+            return false;
+        }
+        true
     }
 
     fn provider_stale(&self, id: &str, provider: &ProviderUsage, now: i64) -> bool {
@@ -170,6 +193,7 @@ impl WorkspaceView {
     fn open_usage(&mut self, bottom: f32, window: &mut Window, cx: &mut Context<Self>) {
         self.usage.anchor = point(px(self.sidebar_popover_left()), px(bottom));
         self.usage.open = true;
+        self.usage.hovered = None;
         self.context_menu = None;
         self.ide_menu_open = false;
         self.focus_handle.focus(window);
@@ -184,21 +208,24 @@ impl WorkspaceView {
     }
 
     /// Sidebar footer on a single line. Each provider shows its quota windows as
-    /// concentric rings; clicking any of them opens every subscription.
+    /// concentric rings; hovering one lists them and clicking any of them opens
+    /// every subscription.
     pub(super) fn usage_tracker(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = now_timestamp();
         let snapshot = &self.usage.snapshot;
         div()
             .id("sidebar-usage")
+            .relative()
             .flex_none()
             // Keep the footer's height while the first reading is in flight so
             // the providers appear without moving the project list.
-            .min_h(px(32.0 + 2.0 * 8.0))
+            .min_h(px(CHIP_HEIGHT + 2.0 * FOOTER_PAD_Y))
             .px(px(SIDEBAR_ROW_INSET))
-            .py(px(8.0))
+            .py(px(FOOTER_PAD_Y))
             .flex()
             .items_center()
             .overflow_hidden()
+            .child(super::measure_bounds(self.usage.footer_bounds.clone()))
             .when(
                 snapshot.providers.is_empty() && self.usage.loaded,
                 |footer| {
@@ -217,7 +244,13 @@ impl WorkspaceView {
             .children(snapshot.providers.iter().map(|(id, provider)| {
                 let stale = self.usage.provider_stale(id, provider, now);
                 let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
-                let rings = ring_percents(provider)
+                let percents = ring_percents(provider);
+                // A quota close to blocking work also sets its provider's name apart.
+                let alerting = !stale
+                    && percents
+                        .iter()
+                        .any(|&percent| quota_alert(percent).is_some());
+                let rings = percents
                     .into_iter()
                     .map(|percent| {
                         let color = if stale {
@@ -228,7 +261,17 @@ impl WorkspaceView {
                         (percent, color)
                     })
                     .collect();
+                let hover_id = id.clone();
                 usage_chip(SharedString::from(format!("sidebar-usage-{id}")))
+                    .when(alerting, |chip| {
+                        chip.font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors().foreground)
+                    })
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if this.usage.set_hovered(&hover_id, *hovered) {
+                            cx.notify();
+                        }
+                    }))
                     .child(usage_ring(rings))
                     .child(
                         div()
@@ -242,6 +285,48 @@ impl WorkspaceView {
                     }))
             }))
             .into_any_element()
+    }
+
+    /// Quotas of the provider under the pointer, in a card hanging above the
+    /// footer, level with the sidebar rows.
+    pub(super) fn usage_hover_card(&self) -> Option<AnyElement> {
+        if self.usage.open
+            || self.context_menu.is_some()
+            || self.palette_mode.is_some()
+            || self.rename_prompt.is_some()
+        {
+            return None;
+        }
+        let id = self.usage.hovered.as_deref()?;
+        let provider = self.usage.snapshot.providers.get(id)?;
+        let footer = self.usage.footer_bounds.get();
+        let row_width = f32::from(footer.size.width) - 2.0 * SIDEBAR_ROW_INSET;
+        // Not measured yet, or a sidebar too narrow for any card.
+        if row_width <= 0.0 {
+            return None;
+        }
+        let now = now_timestamp();
+        let card = self.usage.card(id, provider, now, local_utc_offset(now));
+        let position = point(
+            footer.left() + px(SIDEBAR_ROW_INSET),
+            footer.top() + px(FOOTER_PAD_Y - HOVER_CARD_GAP),
+        );
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    gpui::anchored()
+                        .anchor(Corner::BottomLeft)
+                        .position(position)
+                        .snap_to_window_with_margin(px(MENU_EDGE_MARGIN))
+                        .child(usage_hover_content(
+                            &card,
+                            row_width.min(HOVER_CARD_MAX_WIDTH),
+                        )),
+                )
+                .into_any_element(),
+        )
     }
 
     pub(super) fn usage_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -402,7 +487,7 @@ fn usage_chip(id: SharedString) -> Stateful<Div> {
     div()
         .id(id)
         .relative()
-        .h(px(32.0))
+        .h(px(CHIP_HEIGHT))
         .min_w(px(0.0))
         .px(px(4.0))
         .rounded(px(7.0))
@@ -541,6 +626,124 @@ struct UsageCard {
     status: Option<String>,
 }
 
+impl UsageCard {
+    /// Quotas close to blocking work stand out; an outdated reading fades.
+    fn bar_color(&self, percent: f64) -> Rgba {
+        if self.stale {
+            colors().subtle
+        } else {
+            quota_alert(Some(percent)).unwrap_or(colors().muted)
+        }
+    }
+}
+
+/// A quota's consumed share over a faint track.
+fn quota_bar(percent: f64, color: Rgba, height: f32) -> impl IntoElement {
+    div()
+        .h(px(height))
+        .w_full()
+        .rounded_full()
+        .overflow_hidden()
+        .bg(colors().border_subtle)
+        .child(
+            div()
+                .h_full()
+                .rounded_full()
+                .w(relative((percent / 100.0).clamp(0.0, 1.0) as f32))
+                .bg(color),
+        )
+}
+
+/// The hover card: provider name, then each quota as label and value over its
+/// bar and reset time.
+fn usage_hover_content(card: &UsageCard, width: f32) -> impl IntoElement + use<> {
+    menu_panel()
+        .id("usage-hover-card")
+        .min_w(px(0.0))
+        .w(px(width))
+        .p(px(14.0))
+        .gap(px(14.0))
+        .rounded(px(12.0))
+        .text_size(px(13.0))
+        .text_color(colors().foreground)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .truncate()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(card.name.clone()),
+                )
+                .when(card.stale, |title| {
+                    title.child(
+                        div()
+                            .flex_none()
+                            .text_size(px(11.0))
+                            .text_color(colors().warning)
+                            .child("Outdated"),
+                    )
+                }),
+        )
+        .when(card.rows.is_empty(), |panel| {
+            panel.child(
+                div()
+                    .text_color(colors().muted)
+                    .child("No quotas available"),
+            )
+        })
+        .children(card.rows.iter().map(|row| {
+            let alerting = !card.stale && quota_alert(row.percent).is_some();
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .truncate()
+                                .text_color(colors().muted)
+                                .child(row.label.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .when(alerting, |value| {
+                                    value.font_weight(gpui::FontWeight::SEMIBOLD)
+                                })
+                                .child(row.value.clone()),
+                        ),
+                )
+                .when_some(row.percent, |row, percent| {
+                    row.child(quota_bar(percent, card.bar_color(percent), 4.0))
+                })
+                .when_some(row.reset.clone(), |row, reset| {
+                    row.child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(colors().subtle)
+                            .child(reset),
+                    )
+                })
+        }))
+        .children(card.warnings.iter().map(|warning| {
+            div()
+                .text_size(px(12.0))
+                .text_color(colors().warning)
+                .child(warning.clone())
+        }))
+}
+
 /// One provider's block in the modal: header, then each quota with its bar.
 fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
     let header_tooltip = [card.plan.clone(), card.status.clone()]
@@ -548,13 +751,6 @@ fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ");
-    let bar_color = |percent| {
-        if card.stale {
-            colors().subtle
-        } else {
-            quota_alert(Some(percent)).unwrap_or(colors().muted)
-        }
-    };
     div()
         .flex_none()
         .flex()
@@ -646,21 +842,7 @@ fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
                         .child(div().flex_none().child(row.value.clone())),
                 )
                 .when_some(row.percent, |row, percent| {
-                    row.child(
-                        div()
-                            .h(px(3.0))
-                            .w_full()
-                            .rounded_full()
-                            .overflow_hidden()
-                            .bg(colors().border_subtle)
-                            .child(
-                                div()
-                                    .h_full()
-                                    .rounded_full()
-                                    .w(relative((percent / 100.0).clamp(0.0, 1.0) as f32))
-                                    .bg(bar_color(percent)),
-                            ),
-                    )
+                    row.child(quota_bar(percent, card.bar_color(percent), 3.0))
                 })
         }))
         .children(
@@ -706,8 +888,8 @@ mod tests {
         assert_eq!(
             card.rows,
             [
-                row("5 hours", "84%", Some(84.0), Some("resets 6:12 PM")),
-                row("Week", "27%", Some(27.0), Some("resets Wed")),
+                row("5 hours", "84%", Some(84.0), Some("Resets 6:12 PM")),
+                row("Week", "27%", Some(27.0), Some("Resets Wednesday")),
                 // Balances follow the bounded quotas, whatever their key sorts as.
                 row("Credits", "40 credits", None, None),
             ]
@@ -797,6 +979,60 @@ mod tests {
                                      "codex":{"displayName":"Codex","resources":{}}}}"#,
                 );
                 view.usage_tracker(cx);
+                window.remove_window();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hover_follows_the_pointer_between_chips() {
+        let mut state = UsageState::default();
+        assert!(state.set_hovered("claude", true));
+        assert!(!state.set_hovered("claude", true));
+        // Entering the next chip before the previous one reports leaving.
+        assert!(state.set_hovered("codex", true));
+        assert!(!state.set_hovered("claude", false));
+        assert_eq!(state.hovered.as_deref(), Some("codex"));
+        assert!(state.set_hovered("codex", false));
+        assert_eq!(state.hovered, None);
+    }
+
+    #[gpui::test]
+    fn usage_hover_card_hangs_above_the_footer_for_the_hovered_provider(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (root, _, _, window) = super::super::tests::open_recording_workspace(cx, "usage-hover");
+        window
+            .update(cx, |view, window, cx| {
+                view.usage.snapshot = snapshot(
+                    r#"{"providers":{"codex":{"displayName":"Codex","resources":{
+                        "session":{"kind":"consumption","unit":"percent","used":84,"limit":100}
+                    }}}}"#,
+                );
+                view.usage.footer_bounds.set(Bounds::new(
+                    point(px(0.0), px(900.0)),
+                    gpui::size(px(250.0), px(48.0)),
+                ));
+                // Nothing hovered, a provider the snapshot lacks, then the real one.
+                assert!(view.usage_hover_card().is_none());
+                view.usage.hovered = Some("grok".into());
+                assert!(view.usage_hover_card().is_none());
+                view.usage.hovered = Some("codex".into());
+                assert!(view.usage_hover_card().is_some());
+                // The footer is not measured until it has been laid out.
+                view.usage.footer_bounds.set(Bounds::default());
+                assert!(view.usage_hover_card().is_none());
+                view.usage.footer_bounds.set(Bounds::new(
+                    point(px(0.0), px(900.0)),
+                    gpui::size(px(250.0), px(48.0)),
+                ));
+                // The modal takes over from the card, and opening it clears the hover.
+                view.usage.open = true;
+                assert!(view.usage_hover_card().is_none());
+                view.usage.loading = true;
+                view.open_usage(940.0, window, cx);
+                assert_eq!(view.usage.hovered, None);
                 window.remove_window();
             })
             .unwrap();

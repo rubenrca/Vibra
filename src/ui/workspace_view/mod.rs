@@ -718,6 +718,9 @@ impl Render for WorkspaceView {
         if let Some(modal) = self.usage_modal(cx) {
             body = body.child(modal);
         }
+        if let Some(card) = self.usage_hover_card() {
+            body = body.child(card);
+        }
         if let Some(modal) = self.palette_modal(cx) {
             body = body.child(modal);
         } else if let Some(modal) = self.rename_modal(cx) {
