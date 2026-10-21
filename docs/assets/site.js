@@ -130,36 +130,6 @@
     });
   });
 
-  /* ---------- Hero agents ---------- */
-
-  // The agents in the hero move through Vibra's states; each change sends a
-  // pulse through the field from its chip, the way the app flags it for you.
-  (function () {
-    var strip = document.querySelector('[data-live-agents]');
-    var chips = all('.live', strip);
-    var LABELS = { working: 'Working', waiting: 'Waiting', permission: 'Permission', idle: 'Idle' };
-    var SCENES = [
-      ['working', 'working', 'waiting'],
-      ['working', 'permission', 'waiting'],
-      ['idle', 'permission', 'waiting'],
-      ['idle', 'working', 'working'],
-      ['working', 'working', 'idle']
-    ];
-    cycle(strip, 2600, function (n) {
-      SCENES[n % SCENES.length].forEach(function (state, i) {
-        var chip = chips[i];
-        if (chip.dataset.state === state) return;
-        chip.dataset.state = state;
-        chip.querySelector('.live-state').textContent = LABELS[state];
-        chip.classList.remove('changed');
-        void chip.offsetWidth; // restart the ping
-        chip.classList.add('changed');
-        var r = chip.getBoundingClientRect();
-        pulse(r.left + r.width / 2, r.top + r.height / 2, state === 'permission' ? 0.5 : 0.32);
-      });
-    });
-  })();
-
   function pulse(x, y, amp) {
     document.dispatchEvent(new CustomEvent('vibra:pulse', { detail: { x: x, y: y, amp: amp } }));
   }
@@ -632,7 +602,6 @@
   (function () {
     var log = document.querySelector('[data-log]');
     var more = document.querySelector('[data-log-more]');
-    var cadence = document.querySelector('[data-cadence]');
     var FIRST = 4, PAGE = 8;
     var dateFormat = new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 
@@ -701,14 +670,6 @@
         shown = next;
         more.hidden = shown >= releases.length;
       };
-
-      // How often a release ships, over the two months before the latest one.
-      var since = releases[0].date - 60 * 86400000;
-      var recent = releases.filter(function (release) { return release.date > since; }).length;
-      if (recent > 2) {
-        cadence.innerHTML = '<b>' + recent + '</b>releases in the last 60 days';
-        cadence.hidden = false;
-      }
     }
   })();
 })();
