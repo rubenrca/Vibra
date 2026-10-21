@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'CHANGELOG.md'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
@@ -41,6 +42,11 @@ jobs:
             exit 1
           fi
           python3 -c 'import xml.etree.ElementTree as ET; ET.parse("docs/appcast.xml")'
+
+      # The download page renders its release notes from the changelog, so it
+      # ships beside the page instead of being copied into docs/ by hand.
+      - name: Add changelog
+        run: cp CHANGELOG.md docs/changelog.md
 
       # upload-pages-artifact invokes upload-artifact through a mutable v4 tag,
       # which violates this repository's full-SHA policy. Keep the official
