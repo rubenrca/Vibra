@@ -3,19 +3,23 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.38</title>
-            <pubDate>Tue, 20 Oct 2026 14:55:51 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.38</link>
-            <sparkle:version>281</sparkle:version>
-            <sparkle:shortVersionString>0.3.38</sparkle:shortVersionString>
+            <title>0.3.39</title>
+            <pubDate>Wed, 21 Oct 2026 20:08:04 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.39</link>
+            <sparkle:version>289</sparkle:version>
+            <sparkle:shortVersionString>0.3.39</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Move subscription usage into the sidebar footer: one line of providers, each a pair of concentric rings (session outside, week inside). Hover for the quota windows and reset times; click for a modal with every subscription and the manual refresh. The status bar no longer shows usage.</li>
-  <li>Open context menus on projects, agent cards, and the empty sidebar list beside the sidebar, level with the clicked row. The usage modal rises from the footer chip that was clicked and no longer dims the window.</li>
-  <li>Remove the back and forward arrows from the titlebar. ⌃⌘← and ⌃⌘→ and the Back and Forward menu items still work.</li>
+  <li>Add Repository as the first tab in Review: a Git client for one project with local changes and Stash changes, branches with their tracking, pull request and the commits the base lacks (Switch, Pull, Push, Create pull request, Delete), remote branches, worktrees, stashes (Apply, Pop, Drop), tags, and the project's open pull requests. Fetch and Refresh sit in the bar, and destructive actions ask first.</li>
+  <li>Group GitHub pull requests into Needs your review, Created by you, Assigned to you, and the rest, each collapsible. Every pull request shows its line counts, CI, review decision, conflicts, and where it lives locally (Checked out, Local, or Worktree).</li>
+  <li>Open pull requests on their merge status, with Update branch and active auto-merge in Summary. Add a Commits tab with CI per commit, and bring GitHub's Viewed checkbox, published review threads, and Since last review to Code. Line comments go to the agent or post as a GitHub review: Comment, Approve, or Request changes.</li>
+  <li>Check out a pull request in the project folder, or open it in a worktree under `~/.vibra/worktrees` without touching the current branch. Push, pull, switch back to the base, or clean up the branch and worktree after the merge. Merge confirmations warn about failing checks, requested changes, conflicts, or a branch that fell behind.</li>
+  <li>Drive Review from the keyboard: J and K move through the list, 1–4 switch tabs, ] and [ jump between files, V marks a file viewed, and ? lists every shortcut.</li>
+  <li>Hover a provider's rings in the sidebar footer for a card with its quotas, bars, and reset times. It animates in, glides between providers, and stays open while the pointer is over the footer; clicking still opens the full usage modal.</li>
+  <li>Keep every theme legible: built-in, product, and user themes lift text, status, Git, and diff colors to a minimum contrast by changing only their lightness, and authentic ANSI colors stay untouched. Moss gets a jade accent and Bloom a coral danger color.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.38/Vibra-0.3.38.dmg" length="15324673" type="application/octet-stream" sparkle:edSignature="VFD0wUbsEsQibKYB+49TMzhqFbxqkUlEW+w+peF3Vc+Tj7y+HeO6LIGm+gXXjs2D2ruEw1HYNZacRAYk0uq4DA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.39/Vibra-0.3.39.dmg" length="15961206" type="application/octet-stream" sparkle:edSignature="KABvbKRWTaVD9UyAZYEE2NkYMc+UsgwN+2OfX6Kf64c65UgbTuhM/+oNNc5dmR2qEJQ8pJ5G2WcrvEEtgw/WBA=="/>
         </item>
     </channel>
 </rss>
