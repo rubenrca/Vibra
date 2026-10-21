@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.39 — 2026-10-21
+
+- Add Repository as the first tab in Review: a Git client for one project with local changes and Stash changes, branches with their tracking, pull request and the commits the base lacks (Switch, Pull, Push, Create pull request, Delete), remote branches, worktrees, stashes (Apply, Pop, Drop), tags, and the project's open pull requests. Fetch and Refresh sit in the bar, and destructive actions ask first.
+- Group GitHub pull requests into Needs your review, Created by you, Assigned to you, and the rest, each collapsible. Every pull request shows its line counts, CI, review decision, conflicts, and where it lives locally (Checked out, Local, or Worktree).
+- Open pull requests on their merge status, with Update branch and active auto-merge in Summary. Add a Commits tab with CI per commit, and bring GitHub's Viewed checkbox, published review threads, and Since last review to Code. Line comments go to the agent or post as a GitHub review: Comment, Approve, or Request changes.
+- Check out a pull request in the project folder, or open it in a worktree under `~/.vibra/worktrees` without touching the current branch. Push, pull, switch back to the base, or clean up the branch and worktree after the merge. Merge confirmations warn about failing checks, requested changes, conflicts, or a branch that fell behind.
+- Drive Review from the keyboard: J and K move through the list, 1–4 switch tabs, ] and [ jump between files, V marks a file viewed, and ? lists every shortcut.
+- Hover a provider's rings in the sidebar footer for a card with its quotas, bars, and reset times. It animates in, glides between providers, and stays open while the pointer is over the footer; clicking still opens the full usage modal.
+- Keep every theme legible: built-in, product, and user themes lift text, status, Git, and diff colors to a minimum contrast by changing only their lightness, and authentic ANSI colors stay untouched. Moss gets a jade accent and Bloom a coral danger color.
+
 ## 0.3.38 — 2026-10-20
 
 - Move subscription usage into the sidebar footer: one line of providers, each a pair of concentric rings (session outside, week inside). Hover for the quota windows and reset times; click for a modal with every subscription and the manual refresh. The status bar no longer shows usage.
