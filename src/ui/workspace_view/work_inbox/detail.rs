@@ -445,7 +445,7 @@ impl WorkspaceView {
                         for (view, id) in sent {
                             view.update(cx, |view, cx| view.remove_comments(&[id], cx));
                         }
-                        this.refresh_work_source(WorkSource::GitHub, true, cx);
+                        this.refresh_work_items(true, cx);
                         if this.work_inbox.selected.as_ref() == Some(&url) {
                             this.load_inbox_detail(true, cx);
                         }
@@ -685,7 +685,7 @@ impl WorkspaceView {
                             {
                                 this.work_inbox.confirmation = None;
                             }
-                            this.refresh_work_source(WorkSource::GitHub, true, cx);
+                            this.refresh_work_items(true, cx);
                             if this.work_inbox.selected.as_ref() == Some(&url) {
                                 this.load_inbox_detail(true, cx);
                             }

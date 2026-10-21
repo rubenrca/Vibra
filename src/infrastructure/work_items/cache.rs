@@ -6,8 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{WorkItemsPage, WorkQuery, github, linear};
-use crate::domain::work_items::WorkSource;
+use super::{WorkItemsPage, WorkQuery, github};
 use crate::infrastructure::clock::unix_now;
 use crate::infrastructure::paths::{atomic_write, read_file_limited};
 
@@ -23,6 +22,14 @@ struct Snapshot<T> {
     page: T,
 }
 
+pub(super) fn cache_root() -> Option<PathBuf> {
+    Some(
+        directories::BaseDirs::new()?
+            .cache_dir()
+            .join("Vibra/inbox"),
+    )
+}
+
 pub struct ListCache {
     path: PathBuf,
     key: String,
@@ -32,33 +39,24 @@ impl ListCache {
     /// Run off the UI thread. `gh auth token` only reads local credentials;
     /// no network request is needed to identify the cache's account. Only its
     /// digest is persisted, never the token itself.
-    pub fn new(source: WorkSource, query: &WorkQuery) -> Option<Self> {
-        let credential = match source {
-            WorkSource::GitHub => {
-                github::gh_output(&["auth", "token", "--hostname", "github.com"], None).ok()?
-            }
-            WorkSource::Linear => {
-                read_file_limited(&linear::token_path().ok()?, 4096, "4 KiB").ok()?
-            }
-        };
+    pub fn new(query: &WorkQuery) -> Option<Self> {
+        let credential =
+            github::gh_output(&["auth", "token", "--hostname", "github.com"], None).ok()?;
         let credential = credential.trim_ascii();
         if credential.is_empty() {
             return None;
         }
-        let root = directories::BaseDirs::new()?
-            .cache_dir()
-            .join("Vibra/inbox");
-        Self::at(root, source, query, credential)
+        Self::at(cache_root()?, query, credential)
     }
 
-    fn at(root: PathBuf, source: WorkSource, query: &WorkQuery, credential: &[u8]) -> Option<Self> {
+    fn at(root: PathBuf, query: &WorkQuery, credential: &[u8]) -> Option<Self> {
         let mut digest = Sha256::new();
         digest.update(Sha256::digest(credential));
-        digest.update(serde_json::to_vec(&(source, query)).ok()?);
+        digest.update(serde_json::to_vec(query).ok()?);
         Some(Self {
-            // One bounded snapshot per provider; changing filters/accounts
-            // replaces it instead of accumulating private task history.
-            path: root.join(format!("{}.json", source.label().to_ascii_lowercase())),
+            // One bounded snapshot; changing filters/accounts replaces it
+            // instead of accumulating private task history.
+            path: root.join("github.json"),
             key: format!("{:x}", digest.finalize()),
         })
     }
@@ -113,7 +111,7 @@ mod tests {
             assigned_to_me: false,
             status: None,
         };
-        let cache = ListCache::at(root.clone(), WorkSource::GitHub, &query, b"account-a").unwrap();
+        let cache = ListCache::at(root.clone(), &query, b"account-a").unwrap();
         assert!(cache.load().is_none());
         cache.save(&WorkItemsPage {
             items: vec![fixture()],
@@ -130,7 +128,7 @@ mod tests {
                 .unwrap()
                 .contains("account-a")
         );
-        let other = ListCache::at(root.clone(), WorkSource::GitHub, &query, b"account-b").unwrap();
+        let other = ListCache::at(root.clone(), &query, b"account-b").unwrap();
         assert!(other.load().is_none());
         for changed in [
             WorkQuery {
@@ -147,18 +145,12 @@ mod tests {
             },
         ] {
             assert!(
-                ListCache::at(root.clone(), WorkSource::GitHub, &changed, b"account-a")
+                ListCache::at(root.clone(), &changed, b"account-a")
                     .unwrap()
                     .load()
                     .is_none()
             );
         }
-        assert!(
-            ListCache::at(root.clone(), WorkSource::Linear, &query, b"account-a")
-                .unwrap()
-                .load()
-                .is_none()
-        );
         // A partial error or disconnected provider cannot erase useful data.
         cache.save(&WorkItemsPage {
             connected: true,
@@ -184,7 +176,7 @@ mod tests {
             assigned_to_me: false,
             status: None,
         };
-        let cache = ListCache::at(root.clone(), WorkSource::GitHub, &query, b"account").unwrap();
+        let cache = ListCache::at(root.clone(), &query, b"account").unwrap();
         cache.save(&WorkItemsPage {
             connected: true,
             ..Default::default()

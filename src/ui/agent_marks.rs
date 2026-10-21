@@ -51,7 +51,6 @@ bundled_assets! {
     ("chrome-icons/issue-open.svg", "ChromeIcons/issue-open.svg"),
     ("chrome-icons/filter.svg", "ChromeIcons/filter.svg"),
     ("chrome-icons/github.svg", "ChromeIcons/github.svg"),
-    ("chrome-icons/linear.svg", "ChromeIcons/linear.svg"),
     ("agent-marks/aider.svg", "AgentMarks/aider.svg"),
     ("agent-marks/amp.svg", "AgentMarks/amp.svg"),
     ("agent-marks/claude.svg", "AgentMarks/claude.svg"),

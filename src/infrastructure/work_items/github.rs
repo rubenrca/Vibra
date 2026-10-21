@@ -8,7 +8,7 @@ use super::{
     WorkItemsPage, WorkQuery, array, bounded_output, graphql_data, names, string, timestamp,
 };
 use crate::domain::work_items::{
-    CheckRollup, PullSummary, WorkItem, WorkKind, WorkRelation, WorkSource, WorkStatus,
+    CheckRollup, PullSummary, WorkItem, WorkKind, WorkRelation, WorkStatus,
 };
 
 const QUERY: &str = r#"query($search: String!) {
@@ -339,8 +339,6 @@ fn parse_page(data: &Value, repositories: &BTreeMap<String, uuid::Uuid>) -> Resu
             remote_id: string(node, "id"),
             created_at: timestamp(&node["createdAt"]),
             completed: node["stateReason"].as_str() == Some("COMPLETED"),
-            group: String::new(),
-            source: WorkSource::GitHub,
             kind,
             reference: format!("#{}", node["number"]),
             title: string(node, "title"),

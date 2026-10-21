@@ -254,10 +254,6 @@ fn entering_inbox_scopes_the_active_project_and_reselects_visible_open_work(
                 Some(second.url.as_str())
             );
 
-            view.select_work_source(WorkSource::Linear, cx);
-            assert!(view.work_inbox.filter.project.is_none());
-            view.select_work_source(WorkSource::GitHub, cx);
-            assert_eq!(view.work_inbox.filter.project, Some(second_project));
             window.remove_window();
         })
         .unwrap();
@@ -277,17 +273,17 @@ fn work_inbox_prefetch_does_not_select_or_mark_tasks_read_until_visible(
                 connected: true,
                 ..Default::default()
             }));
-            view.inbox_source_updated(WorkSource::GitHub, true, cx);
+            view.inbox_items_updated(true, cx);
             assert!(view.work_inbox.selected.is_none());
             assert!(item.unread(&view.settings.inbox.seen));
             assert!(view.work_inbox.details.is_empty());
             view.workspace_section = WorkspaceSection::Inbox;
             view.work_inbox.activity = true;
-            view.inbox_source_updated(WorkSource::GitHub, false, cx);
+            view.inbox_items_updated(false, cx);
             assert!(view.work_inbox.selected.is_none());
             assert!(item.unread(&view.settings.inbox.seen));
             view.work_inbox.activity = false;
-            view.inbox_source_updated(WorkSource::GitHub, false, cx);
+            view.inbox_items_updated(false, cx);
             assert_eq!(view.work_inbox.selected.as_deref(), Some(item.url.as_str()));
             assert!(!item.unread(&view.settings.inbox.seen));
             window.remove_window();
@@ -297,16 +293,13 @@ fn work_inbox_prefetch_does_not_select_or_mark_tasks_read_until_visible(
 }
 
 #[test]
-fn work_inbox_sources_fail_independently_and_ignore_stale_results() {
+fn work_inbox_feed_keeps_its_items_through_errors_and_ignores_stale_results() {
     let mut inbox = WorkInbox::default();
     inbox.github.apply(Ok(WorkItemsPage {
         items: vec![fixture()],
         connected: true,
         ..Default::default()
     }));
-    inbox
-        .linear
-        .apply(Err(anyhow::anyhow!("Linear unavailable")));
     assert_eq!(inbox.github.items.len(), 1);
     assert!(inbox.github.error.is_none());
     inbox

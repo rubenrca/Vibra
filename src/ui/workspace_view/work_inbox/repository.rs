@@ -408,9 +408,6 @@ impl WorkspaceView {
     /// Open the pull request of a branch in the GitHub list.
     pub(super) fn open_branch_pull(&mut self, url: String, cx: &mut Context<Self>) {
         self.settings.inbox.repository_view = false;
-        if self.settings.inbox.source != WorkSource::GitHub {
-            self.select_work_source(WorkSource::GitHub, cx);
-        }
         self.work_inbox.filter.project = None;
         self.select_work_item(&url, cx);
         self.sync_repository_polling(cx);

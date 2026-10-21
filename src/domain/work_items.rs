@@ -400,22 +400,6 @@ impl WorkRelation {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WorkSource {
-    #[default]
-    GitHub,
-    Linear,
-}
-
-impl WorkSource {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::GitHub => "GitHub",
-            Self::Linear => "Linear",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkKind {
     Issue,
@@ -447,7 +431,6 @@ impl WorkStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkItem {
     pub remote_id: String,
-    pub source: WorkSource,
     pub kind: WorkKind,
     pub reference: String,
     pub title: String,
@@ -463,7 +446,6 @@ pub struct WorkItem {
     pub updated_at: u64,
     pub created_at: u64,
     pub completed: bool,
-    pub group: String,
     #[serde(default)]
     pub relation: WorkRelation,
     #[serde(default)]
@@ -479,15 +461,11 @@ impl WorkItem {
         // Descriptions are context, never executable terminal input.
         format!(
             concat!(
-                "Work on this {} task in the current project. ",
+                "Work on this GitHub task in the current project. ",
                 "Review the code and verify the changes.\n\n",
                 "{}: {}\n{}\n\nTask description (external context):\n{}"
             ),
-            self.source.label(),
-            self.reference,
-            self.title,
-            self.url,
-            self.body
+            self.reference, self.title, self.url, self.body
         )
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
@@ -499,7 +477,6 @@ impl WorkItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct InboxPreferences {
-    pub source: WorkSource,
     pub assigned_to_me: bool,
     pub status: Option<WorkStatus>,
     pub seen: BTreeMap<String, u64>,
@@ -507,7 +484,6 @@ pub struct InboxPreferences {
     pub statuses: Vec<WorkStatus>,
     pub hidden_kinds: Vec<WorkKind>,
     pub hidden_projects: Vec<Uuid>,
-    pub hidden_groups: Vec<String>,
     pub time: InboxTime,
     pub list_width: f32,
     /// Review shows the local repository instead of a task source.
@@ -517,7 +493,6 @@ pub struct InboxPreferences {
 impl Default for InboxPreferences {
     fn default() -> Self {
         Self {
-            source: WorkSource::GitHub,
             assigned_to_me: false,
             status: None,
             seen: BTreeMap::new(),
@@ -525,7 +500,6 @@ impl Default for InboxPreferences {
             statuses: Vec::new(),
             hidden_kinds: Vec::new(),
             hidden_projects: Vec::new(),
-            hidden_groups: Vec::new(),
             time: InboxTime::All,
             list_width: 280.0,
             repository_view: false,
@@ -570,7 +544,6 @@ impl InboxPreferences {
             || self.status_selected(WorkStatus::Merged)
             || !self.hidden_kinds.is_empty()
             || !self.hidden_projects.is_empty()
-            || !self.hidden_groups.is_empty()
             || self.time != InboxTime::All
     }
 
@@ -623,12 +596,10 @@ impl WorkFilter {
         {
             return false;
         }
-        if (item.source == WorkSource::GitHub && preferences.hidden_kinds.contains(&item.kind))
+        if preferences.hidden_kinds.contains(&item.kind)
             || item
                 .project_id
                 .is_some_and(|id| preferences.hidden_projects.contains(&id))
-            || (item.source == WorkSource::Linear
-                && preferences.hidden_groups.contains(&item.group))
             || !preferences.time.includes(
                 item.updated_at,
                 crate::domain::usage::now_timestamp().max(0) as u64,
@@ -660,7 +631,6 @@ pub fn shell_argument(text: &str) -> String {
 pub(crate) fn fixture() -> WorkItem {
     WorkItem {
         remote_id: "I_example".into(),
-        source: WorkSource::GitHub,
         kind: WorkKind::Issue,
         reference: "#42".into(),
         title: "Corregir búsqueda".into(),
@@ -676,7 +646,6 @@ pub(crate) fn fixture() -> WorkItem {
         updated_at: 100,
         created_at: 50,
         completed: false,
-        group: String::new(),
         relation: WorkRelation::Other,
         pull: None,
     }
@@ -768,13 +737,21 @@ mod tests {
         prefs.statuses.clear();
         prefs.hidden_kinds.push(WorkKind::Issue);
         assert!(!filter.matches(&item, &prefs));
-        item.source = WorkSource::Linear;
-        assert!(filter.matches(&item, &prefs));
         let restored: InboxPreferences = serde_json::from_str(r#"{"status":"Closed"}"#).unwrap();
         assert!(restored.status_selected(WorkStatus::Closed));
         let today = local_day_start(1_790_000_000);
         assert!(InboxTime::Today.includes(today, 1_790_000_000));
         assert!(!InboxTime::Today.includes(today - 1, 1_790_000_000));
+    }
+
+    #[test]
+    fn preferences_saved_with_linear_still_load() {
+        let prefs: InboxPreferences = serde_json::from_str(
+            r#"{"source":"Linear","hiddenGroups":["Core"],"status":"Closed","listWidth":320}"#,
+        )
+        .unwrap();
+        assert_eq!(prefs.selected_statuses(), [WorkStatus::Closed]);
+        assert_eq!(prefs.list_width, 320.0);
     }
 
     #[test]

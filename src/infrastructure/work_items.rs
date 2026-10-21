@@ -3,7 +3,6 @@
 mod cache;
 mod detail;
 mod github;
-mod linear;
 mod review;
 pub use cache::ListCache;
 pub use detail::{
@@ -22,10 +21,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::domain::work_items::{WorkItem, WorkKind, WorkSource, WorkStatus};
+use crate::domain::work_items::{WorkItem, WorkKind, WorkStatus};
 use crate::infrastructure::process::{CommandLimits, command_output};
-
-pub use linear::{connect_linear, disconnect_linear, linear_connected};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxProject {
@@ -49,10 +46,18 @@ pub struct WorkItemsPage {
     pub failed_scopes: Vec<(String, WorkKind)>,
 }
 
-pub fn list(source: WorkSource, query: &WorkQuery) -> Result<WorkItemsPage> {
-    match source {
-        WorkSource::GitHub => github::list(query),
-        WorkSource::Linear => linear::list(query),
+pub fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
+    github::list(query)
+}
+
+/// Vibra no longer connects to Linear. Delete the API key and the list
+/// snapshot an earlier version saved, so no unused credential stays on disk.
+pub fn remove_legacy_linear_data() {
+    if let Some(folder) = crate::infrastructure::paths::application_support_directory() {
+        let _ = std::fs::remove_file(folder.join("linear-token"));
+    }
+    if let Some(root) = cache::cache_root() {
+        let _ = std::fs::remove_file(root.join("linear.json"));
     }
 }
 

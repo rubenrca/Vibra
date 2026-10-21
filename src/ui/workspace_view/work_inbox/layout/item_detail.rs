@@ -45,7 +45,7 @@ impl WorkspaceView {
                     .gap(px(8.0))
                     .text_size(px(13.0))
                     .text_color(colors().subtle)
-                    .child(provider_icon(item.source, 16.0))
+                    .child(github_icon(16.0))
                     .child(if item.kind == WorkKind::PullRequest {
                         "Pull request"
                     } else {
@@ -226,7 +226,7 @@ impl WorkspaceView {
                         if item.kind == WorkKind::PullRequest {
                             "Review on GitHub".to_owned()
                         } else {
-                            format!("Open in {}", item.source.label())
+                            "Open in GitHub".to_owned()
                         },
                         false,
                     )
@@ -757,7 +757,7 @@ impl WorkspaceView {
                                     .items_center()
                                     .gap_2()
                                     .text_size(px(12.0))
-                                    .child(provider_icon(item.source, 16.0))
+                                    .child(github_icon(16.0))
                                     .child(item.reference.clone()),
                             )
                             .child(

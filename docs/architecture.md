@@ -8,7 +8,7 @@ independiente del workspace.
 
 - `src/domain/workspace`: proyectos, tabs, panes, selección, geometría y migraciones.
 - `src/domain/work_items.rs`: tareas externas, filtros, detalle remoto y marcas de
-  lectura. `src/infrastructure/work_items` contiene los conectores GitHub/Linear,
+  lectura. `src/infrastructure/work_items` contiene el conector de GitHub,
   consultas acotadas, comentarios, acciones de PR y preparación del contexto para
   terminales; las credenciales no pasan por los argumentos del proceso.
   `work_inbox.rs` coordina las fuentes; `work_inbox/detail.rs` las cargas y acciones

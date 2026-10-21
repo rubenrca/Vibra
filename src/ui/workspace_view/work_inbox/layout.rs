@@ -181,10 +181,9 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    /// Repository · GitHub · Linear, plus the connection menu.
+    /// Repository · GitHub.
     fn inbox_source_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let repository = self.settings.inbox.repository_view;
-        let source = self.settings.inbox.source;
         let tab = |id: SharedString, icon: AnyElement, label: &'static str, selected: bool| {
             div()
                 .id(id)
@@ -234,43 +233,19 @@ impl WorkspaceView {
                 .tooltip(|_, cx| sidebar_tooltip("Branches, stashes, and worktrees (G)", cx))
                 .on_click(cx.listener(|this, _, _, cx| this.show_repository_view(true, cx))),
             )
-            .children(
-                [WorkSource::GitHub, WorkSource::Linear]
-                    .into_iter()
-                    .filter(|provider| {
-                        *provider == WorkSource::GitHub
-                            || self.work_inbox.feed(*provider).connected == Some(true)
-                    })
-                    .map(|provider| {
-                        tab(
-                            SharedString::from(format!("inbox-tab-{provider:?}")),
-                            provider_icon(provider, 14.0).into_any_element(),
-                            provider.label(),
-                            !repository && source == provider,
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.show_repository_view(false, cx);
-                            if this.settings.inbox.source != provider {
-                                this.select_work_source(provider, cx);
-                            }
-                        }))
-                    }),
-            )
             .child(
-                icon_button(
-                    "inbox-connections",
-                    "chrome-icons/plus.svg",
-                    "Add connection",
+                tab(
+                    "inbox-tab-github".into(),
+                    github_icon(14.0).into_any_element(),
+                    "GitHub",
+                    !repository,
                 )
-                .on_click(cx.listener(|this, event, _, cx| {
-                    this.open_inbox_menu(InboxMenu::Connections, event, cx)
-                })),
+                .on_click(cx.listener(|this, _, _, cx| this.show_repository_view(false, cx))),
             )
     }
 
     fn inbox_filter_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let source = self.settings.inbox.source;
-        let feed = self.work_inbox.feed(source);
+        let feed = &self.work_inbox.github;
         div()
             .h(px(36.0))
             .flex_none()
@@ -336,7 +311,7 @@ impl WorkspaceView {
                     "Mark all as read",
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    for item in &this.work_inbox.feed(source).items {
+                    for item in &this.work_inbox.github.items {
                         this.settings.inbox.mark_seen(item);
                     }
                     this.persist_settings(cx);
@@ -358,7 +333,7 @@ impl WorkspaceView {
     }
 
     fn inbox_task_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let feed = self.work_inbox.feed(self.settings.inbox.source);
+        let feed = &self.work_inbox.github;
         let groups = self.grouped_inbox_items();
         let mut list = div()
             .id("inbox-list-scroll")
@@ -464,8 +439,7 @@ impl WorkspaceView {
             self.refresh_diff_views(cx);
             return;
         }
-        let source = self.settings.inbox.source;
-        self.refresh_work_source(source, true, cx);
+        self.refresh_work_items(true, cx);
         self.load_inbox_detail(true, cx);
         self.refresh_inbox_repos(true, cx);
     }
@@ -523,7 +497,7 @@ impl WorkspaceView {
                     .gap(px(5.0))
                     .text_size(px(11.0))
                     .text_color(colors().subtle)
-                    .child(provider_icon(item.source, 14.0))
+                    .child(github_icon(14.0))
                     .child(
                         svg()
                             .path(status_icon)
@@ -653,12 +627,7 @@ impl WorkspaceView {
                     WorkStatus::Draft,
                     WorkStatus::Closed,
                     WorkStatus::Merged,
-                ]
-                .into_iter()
-                .filter(|status| {
-                    self.settings.inbox.source == WorkSource::GitHub
-                        || matches!(status, WorkStatus::Open | WorkStatus::Closed)
-                }) {
+                ] {
                     content = content.child(
                         MenuRow::new(status.label())
                             .checked(preferences.status_selected(status))
@@ -686,82 +655,55 @@ impl WorkspaceView {
                             })),
                     );
                 }
-                if self.settings.inbox.source == WorkSource::GitHub {
-                    content = content.child(menu_heading("TYPE"));
-                    for (kind, label) in [
-                        (WorkKind::Issue, "Issues"),
-                        (WorkKind::PullRequest, "Pull requests"),
-                    ] {
-                        content = content.child(
-                            MenuRow::new(label)
-                                .checked(!preferences.hidden_kinds.contains(&kind))
-                                .render(SharedString::from(format!("filter-kind-{kind:?}")))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    toggle_value(&mut this.settings.inbox.hidden_kinds, kind);
-                                    this.inbox_filters_changed(cx);
-                                })),
-                        );
-                    }
-                    content = content.child(menu_heading("PROJECTS")).child(
-                        MenuRow::new("All projects")
-                            .checked(
-                                self.work_inbox.filter.project.is_none()
-                                    && preferences.hidden_projects.is_empty(),
-                            )
-                            .render("inbox-all-projects")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.work_inbox.filter.project = None;
-                                this.settings.inbox.hidden_projects.clear();
+                content = content.child(menu_heading("TYPE"));
+                for (kind, label) in [
+                    (WorkKind::Issue, "Issues"),
+                    (WorkKind::PullRequest, "Pull requests"),
+                ] {
+                    content = content.child(
+                        MenuRow::new(label)
+                            .checked(!preferences.hidden_kinds.contains(&kind))
+                            .render(SharedString::from(format!("filter-kind-{kind:?}")))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                toggle_value(&mut this.settings.inbox.hidden_kinds, kind);
                                 this.inbox_filters_changed(cx);
                             })),
                     );
-                    for project in self.snapshot.listed_projects() {
-                        let id = project.id;
-                        content = content.child(
-                            MenuRow::new(project.name.clone())
-                                .checked(self.inbox_project_selected(id))
-                                .render(SharedString::from(format!("filter-project-{id}")))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.toggle_inbox_project(id, cx);
-                                })),
-                        );
-                    }
-                } else {
-                    content = content.child(menu_heading("TEAMS / PROJECTS"));
-                    let groups: std::collections::BTreeSet<_> = self
-                        .work_inbox
-                        .linear
-                        .items
-                        .iter()
-                        .map(|item| item.group.clone())
-                        .collect();
-                    for group in groups {
-                        content = content.child(
-                            MenuRow::new(group.clone())
-                                .checked(!preferences.hidden_groups.contains(&group))
-                                .render(SharedString::from(format!("filter-group-{group}")))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    toggle_value(
-                                        &mut this.settings.inbox.hidden_groups,
-                                        group.clone(),
-                                    );
-                                    this.inbox_filters_changed(cx);
-                                })),
-                        );
-                    }
+                }
+                content = content.child(menu_heading("PROJECTS")).child(
+                    MenuRow::new("All projects")
+                        .checked(
+                            self.work_inbox.filter.project.is_none()
+                                && preferences.hidden_projects.is_empty(),
+                        )
+                        .render("inbox-all-projects")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.work_inbox.filter.project = None;
+                            this.settings.inbox.hidden_projects.clear();
+                            this.inbox_filters_changed(cx);
+                        })),
+                );
+                for project in self.snapshot.listed_projects() {
+                    let id = project.id;
+                    content = content.child(
+                        MenuRow::new(project.name.clone())
+                            .checked(self.inbox_project_selected(id))
+                            .render(SharedString::from(format!("filter-project-{id}")))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_inbox_project(id, cx);
+                            })),
+                    );
                 }
                 content = content.child(menu_separator()).child(
                     MenuRow::new("Reset filters")
                         .render("inbox-clear-filters")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            let source = this.settings.inbox.source;
                             let width = this.settings.inbox.list_width;
                             let seen = std::mem::take(&mut this.settings.inbox.seen);
                             let linked_sessions =
                                 std::mem::take(&mut this.settings.inbox.linked_sessions);
                             let repository_view = this.settings.inbox.repository_view;
                             this.settings.inbox = InboxPreferences {
-                                source,
                                 seen,
                                 linked_sessions,
                                 list_width: width,
@@ -809,30 +751,6 @@ impl WorkspaceView {
                             })),
                     );
                 }
-            }
-            InboxMenu::Connections => {
-                content = content
-                    .child(menu_heading("CONNECTIONS"))
-                    .child(
-                        MenuRow::new("GitHub · use gh session")
-                            .icon("chrome-icons/github.svg")
-                            .render("connect-github")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.select_work_source(WorkSource::GitHub, cx);
-                                this.refresh_work_source(WorkSource::GitHub, true, cx);
-                            })),
-                    )
-                    .child(
-                        MenuRow::new("Linear · API key")
-                            .icon("chrome-icons/linear.svg")
-                            .render("connect-linear")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.work_inbox.menu = None;
-                                this.open_settings(window, cx);
-                                this.settings_page = crate::ui::workspace_view::SettingsPage::Inbox;
-                                cx.notify();
-                            })),
-                    );
             }
             InboxMenu::Shortcuts => {
                 content = content.child(menu_heading("KEYBOARD"));
@@ -961,12 +879,9 @@ fn quiet_button(
         .child(label.into())
 }
 
-fn provider_icon(source: WorkSource, size: f32) -> impl IntoElement {
+fn github_icon(size: f32) -> impl IntoElement {
     svg()
-        .path(match source {
-            WorkSource::GitHub => "chrome-icons/github.svg",
-            WorkSource::Linear => "chrome-icons/linear.svg",
-        })
+        .path("chrome-icons/github.svg")
         .size(px(size))
         .flex_none()
         .text_color(colors().muted)

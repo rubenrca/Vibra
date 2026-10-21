@@ -8,7 +8,6 @@ use uuid::Uuid;
 
 use crate::domain::work_items::{
     PrAction, ReviewVerdict, WorkCheck, WorkCommits, WorkDetail, WorkDiff, WorkFilter, WorkItem,
-    WorkSource,
 };
 use crate::infrastructure::work_items::{WorkItemsPage, WorkQuery};
 use crate::ports::git::{GitCommit, GitRefAction, GitRepositoryRefs};
@@ -16,7 +15,6 @@ use crate::ports::git::{GitCommit, GitRefAction, GitRepositoryRefs};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum InboxMenu {
     Filters,
-    Connections,
     Projects,
     Agents,
     PrActions,
@@ -290,7 +288,6 @@ impl SourceFeed {
 pub(crate) struct WorkInbox {
     pub activity: bool,
     pub(super) github: SourceFeed,
-    pub(super) linear: SourceFeed,
     pub(super) filter: WorkFilter,
     pub(super) search_editing: bool,
     pub(super) selected: Option<String>,
@@ -319,9 +316,6 @@ pub(crate) struct WorkInbox {
     pub(super) repository: RepositoryState,
     pub(super) collapsed_groups: HashSet<crate::domain::work_items::WorkRelation>,
     pub(super) list_scroll: gpui::ScrollHandle,
-    pub(super) connecting: bool,
-    pub(super) connection_error: Option<String>,
-    pub(super) _connection_task: Option<Task<()>>,
     pub(super) _poll_task: Option<Task<()>>,
 }
 
@@ -332,20 +326,6 @@ impl WorkInbox {
     ) {
         self.discussion_panes
             .retain(|_, pane| live_ids.contains(pane));
-    }
-
-    pub(super) fn feed(&self, source: WorkSource) -> &SourceFeed {
-        match source {
-            WorkSource::GitHub => &self.github,
-            WorkSource::Linear => &self.linear,
-        }
-    }
-
-    pub(super) fn feed_mut(&mut self, source: WorkSource) -> &mut SourceFeed {
-        match source {
-            WorkSource::GitHub => &mut self.github,
-            WorkSource::Linear => &mut self.linear,
-        }
     }
 }
 

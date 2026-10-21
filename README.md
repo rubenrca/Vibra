@@ -67,8 +67,8 @@ Vibra muestra un error si no reconoce el formato, sin inventar porcentajes.
 Vibra adopta la organización de una GUI de agentes, pero la superficie de trabajo
 sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
 
-- **Review** reúne issues y pull requests de **GitHub** y tareas de **Linear** en
-  una lista redimensionable, con conexiones por pestaña y un menú de filtros por
+- **Review** reúne issues y pull requests de **GitHub** en una lista
+  redimensionable, con un menú de filtros por
   asignación, estados múltiples, tiempo, tipo y proyecto. En GitHub la lista se
   agrupa en **Needs your review**, **Created by you**, **Assigned to you** y el
   resto (cada grupo se pliega), y cada PR muestra sus líneas +/−, el estado de
@@ -134,14 +134,10 @@ tareas; **All projects** permite ampliar la selección. Por defecto incluye
 **Open** y **Draft**, sin restringir la asignación. **Closed** y **Merged** se
 activan desde los filtros; **All statuses** muestra todos los estados.
 **Reset filters** vuelve al proyecto activo y a los estados predeterminados.
-Para **Linear**, copia una API key personal y pulsa **Conectar Linear desde
-portapapeles** en Settings → General; también puedes llegar desde **+** en Review. La clave se verifica antes
-de guardarla en `~/Library/Application Support/Vibra/linear-token`, con permisos
-`0600`. Solo se envía a la API de Linear y se elimina con **Desconectar**.
 
-Las fuentes se actualizan de forma independiente cada minuto mientras Review
-está abierto, además del botón **Actualizar**. GitHub consulta hasta 100 issues
-**y** 100 PRs por repositorio; Linear, hasta 100 tareas. Se avisa al alcanzar esos
+La lista se actualiza cada minuto mientras Review está abierto, además del
+botón **Actualizar**. GitHub consulta hasta 100 issues **y** 100 PRs por
+repositorio. Se avisa al alcanzar esos
 límites y cuando un repositorio falla. Descripción, comentarios, diffs y checks se
 cargan por tarea sin bloquear la ventana. Los errores de actualización conservan
 los datos disponibles. Los filtros, el ancho de lista, las marcas de lectura y

@@ -4,15 +4,14 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use serde_json::{Value, json};
 
-use super::{array, github, linear, string, timestamp};
+use super::{array, github, string, timestamp};
 use crate::domain::work_items::{
     CheckRollup, DraftThread, FileViewed, MergeState, PrAction, ReviewVerdict, WorkCheck,
     WorkComment, WorkCommit, WorkCommits, WorkDetail, WorkDiff, WorkDiffFile, WorkItem, WorkKind,
-    WorkSource, WorkThread,
+    WorkThread,
 };
 
 const DETAIL_QUERY: &str = include_str!("github_detail.graphql");
-const LINEAR_DETAIL_QUERY: &str = include_str!("linear_detail.graphql");
 const GITHUB_THREAD_REPLY: &str = concat!(
     "mutation($id:ID!,$body:String!){",
     "addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body})",
@@ -21,10 +20,6 @@ const GITHUB_THREAD_REPLY: &str = concat!(
 const GITHUB_ADD_COMMENT: &str = concat!(
     "mutation($id:ID!,$body:String!){",
     "addComment(input:{subjectId:$id,body:$body}){commentEdge{node{id}}}}",
-);
-const LINEAR_CREATE_COMMENT: &str = concat!(
-    "mutation($input:CommentCreateInput!){",
-    "commentCreate(input:$input){success}}",
 );
 const GITHUB_MERGE: &str = concat!(
     "mutation($id:ID!,$head:GitObjectID!,$method:PullRequestMergeMethod!){",
@@ -87,54 +82,12 @@ pub fn load_detail(item: &WorkItem) -> Result<WorkDetail> {
     if item.remote_id.is_empty() {
         bail!("The task has no remote ID. Refresh Review.");
     }
-    match item.source {
-        WorkSource::GitHub => {
-            let data = github::graphql(DETAIL_QUERY, json!({ "id": item.remote_id }))?;
-            let node = data
-                .get("node")
-                .filter(|node| node.is_object())
-                .context("The task is no longer available on GitHub.")?;
-            Ok(parse_github_detail(node))
-        }
-        WorkSource::Linear => {
-            let data = linear::authenticated_graphql(
-                LINEAR_DETAIL_QUERY,
-                json!({ "id": item.remote_id }),
-            )?;
-            let issue = data
-                .get("issue")
-                .filter(|issue| issue.is_object())
-                .context("The task is no longer available on Linear.")?;
-            let nodes = array(&issue["comments"]["nodes"]);
-            let mut comments: Vec<_> = nodes
-                .iter()
-                .filter(|node| node["parent"]["id"].as_str().is_none())
-                .map(linear_comment)
-                .collect();
-            for node in nodes
-                .iter()
-                .filter(|node| node["parent"]["id"].as_str().is_some())
-            {
-                let reply = linear_comment(node);
-                if let Some(parent) = comments
-                    .iter_mut()
-                    .find(|comment| Some(comment.id.as_str()) == node["parent"]["id"].as_str())
-                {
-                    parent.replies.push(reply);
-                } else {
-                    comments.push(reply);
-                }
-            }
-            Ok(WorkDetail {
-                body: string(issue, "description"),
-                comments,
-                truncated: issue["comments"]["pageInfo"]["hasPreviousPage"]
-                    .as_bool()
-                    .unwrap_or(false),
-                ..Default::default()
-            })
-        }
-    }
+    let data = github::graphql(DETAIL_QUERY, json!({ "id": item.remote_id }))?;
+    let node = data
+        .get("node")
+        .filter(|node| node.is_object())
+        .context("The task is no longer available on GitHub.")?;
+    Ok(parse_github_detail(node))
 }
 
 fn github_comment(node: &Value) -> WorkComment {
@@ -145,18 +98,6 @@ fn github_comment(node: &Value) -> WorkComment {
         at: timestamp(node.get("createdAt").unwrap_or(&node["submittedAt"])),
         url: string(node, "url"),
         context: string(node, "state"),
-        ..Default::default()
-    }
-}
-
-fn linear_comment(node: &Value) -> WorkComment {
-    WorkComment {
-        id: string(node, "id"),
-        reply_id: Some(string(node, "id")),
-        author: string(&node["user"], "name"),
-        body: string(node, "body"),
-        at: timestamp(&node["createdAt"]),
-        url: string(node, "url"),
         ..Default::default()
     }
 }
@@ -324,7 +265,7 @@ fn object_id(oid: &str) -> Result<&str> {
 
 /// The pull request's commits, oldest first, with their CI state.
 pub fn load_commits(item: &WorkItem) -> Result<WorkCommits> {
-    if item.kind != WorkKind::PullRequest || item.source != WorkSource::GitHub {
+    if item.kind != WorkKind::PullRequest {
         bail!("Only pull requests have commits.");
     }
     let data = github::graphql(GITHUB_COMMITS, json!({ "id": item.remote_id }))?;
@@ -402,7 +343,7 @@ pub fn load_compare_diff(item: &WorkItem, base: &str, head: &str) -> Result<Work
 
 /// Sync a file's "Viewed" mark with GitHub, where it is per user.
 pub fn set_file_viewed(item: &WorkItem, path: &str, viewed: bool) -> Result<()> {
-    if item.kind != WorkKind::PullRequest || item.source != WorkSource::GitHub {
+    if item.kind != WorkKind::PullRequest {
         bail!("Only pull requests track viewed files.");
     }
     github::graphql(
@@ -424,7 +365,7 @@ pub fn submit_review(
     body: &str,
     threads: &[DraftThread],
 ) -> Result<()> {
-    if item.kind != WorkKind::PullRequest || item.source != WorkSource::GitHub {
+    if item.kind != WorkKind::PullRequest {
         bail!("Only pull requests take reviews.");
     }
     if body.len() > 65_536 || threads.iter().any(|thread| thread.body.len() > 65_536) {
@@ -471,7 +412,7 @@ fn review_variables(
 /// `gh pr checkout` in a local repository. It creates or updates the PR
 /// branch with its upstream, including pull requests from forks.
 pub fn checkout_pull_request(item: &WorkItem, directory: &std::path::Path) -> Result<()> {
-    if item.kind != WorkKind::PullRequest || item.source != WorkSource::GitHub {
+    if item.kind != WorkKind::PullRequest {
         bail!("Only pull requests can be checked out.");
     }
     let (repo, number) = github_target(item)?;
@@ -616,30 +557,15 @@ pub fn post_comment(item: &WorkItem, body: &str, reply: Option<&str>) -> Result<
     if body.trim().is_empty() || body.len() > 65_536 {
         bail!("The comment must be between 1 and 65,536 bytes.");
     }
-    match item.source {
-        WorkSource::GitHub => {
-            let (query, variables) = if let Some(reply) = reply {
-                (GITHUB_THREAD_REPLY, json!({ "id": reply, "body": body }))
-            } else {
-                (
-                    GITHUB_ADD_COMMENT,
-                    json!({ "id": item.remote_id, "body": body }),
-                )
-            };
-            github::graphql(query, variables)?;
-        }
-        WorkSource::Linear => {
-            let mut input = json!({ "issueId": item.remote_id, "body": body });
-            if let Some(reply) = reply {
-                input["parentId"] = json!(reply);
-            }
-            let data =
-                linear::authenticated_graphql(LINEAR_CREATE_COMMENT, json!({ "input": input }))?;
-            if data["commentCreate"]["success"].as_bool() != Some(true) {
-                bail!("Linear could not post the comment.");
-            }
-        }
-    }
+    let (query, variables) = if let Some(reply) = reply {
+        (GITHUB_THREAD_REPLY, json!({ "id": reply, "body": body }))
+    } else {
+        (
+            GITHUB_ADD_COMMENT,
+            json!({ "id": item.remote_id, "body": body }),
+        )
+    };
+    github::graphql(query, variables)?;
     Ok(())
 }
 
@@ -649,7 +575,7 @@ pub fn run_pr_action(
     head_oid: &str,
     head_ref_id: &str,
 ) -> Result<()> {
-    if item.source != WorkSource::GitHub || item.kind != WorkKind::PullRequest {
+    if item.kind != WorkKind::PullRequest {
         bail!("This action requires a GitHub pull request.");
     }
     let (query, variables) = pr_action_request(item, action, head_oid, head_ref_id)?;

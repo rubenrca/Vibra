@@ -1,6 +1,5 @@
 //! Native Inbox coordination. Layout and detail actions follow MonoCode’s Inbox.
 
-mod connection;
 mod detail;
 mod feed;
 mod launch;
@@ -11,11 +10,10 @@ mod review;
 mod state;
 
 pub(crate) use crate::domain::work_items::{
-    PrAction, WorkCheck, WorkDiff, WorkFilter, WorkItem, WorkKind, WorkSource, WorkStatus,
+    PrAction, WorkCheck, WorkDiff, WorkFilter, WorkItem, WorkKind, WorkStatus,
 };
 pub(crate) use crate::infrastructure::work_items;
 pub(crate) use crate::ui::theme::colors;
-pub(crate) use connection::message;
 pub(crate) use gpui::{
     AnyElement, ClipboardItem, Context, SharedString, Window, div, prelude::*, px,
 };
@@ -208,10 +206,9 @@ impl WorkspaceView {
     /// Position of a task card among the list's children (messages, group
     /// headings, and cards), as `inbox_task_list` lays them out.
     fn inbox_card_child_index(&self, url: &str) -> Option<usize> {
-        let feed = self.work_inbox.feed(self.settings.inbox.source);
         let groups = self.grouped_inbox_items();
         let grouped = groups.len() > 1;
-        let mut index = usize::from(feed.error.is_some());
+        let mut index = usize::from(self.work_inbox.github.error.is_some());
         for (relation, items) in groups {
             index += usize::from(grouped);
             if grouped && self.work_inbox.collapsed_groups.contains(&relation) {
@@ -228,3 +225,16 @@ impl WorkspaceView {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn message(text: &str, error: bool) -> gpui::Div {
+    div()
+        .px_2()
+        .py_1()
+        .text_size(px(12.0))
+        .text_color(if error {
+            colors().warning
+        } else {
+            colors().muted
+        })
+        .child(text.to_owned())
+}

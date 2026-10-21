@@ -18,7 +18,6 @@ pub(super) enum SettingsPage {
     Appearance,
     Agents,
     Security,
-    Inbox,
 }
 
 impl SettingsPage {
@@ -28,7 +27,6 @@ impl SettingsPage {
             Self::Appearance => "Appearance",
             Self::Agents => "Agents",
             Self::Security => "Privacy",
-            Self::Inbox => "Review",
         }
     }
 
@@ -38,7 +36,6 @@ impl SettingsPage {
             Self::Appearance => "settings-appearance",
             Self::Agents => "settings-agents",
             Self::Security => "settings-privacy",
-            Self::Inbox => "settings-inbox",
         }
     }
 
@@ -48,7 +45,6 @@ impl SettingsPage {
             Self::Appearance => "Make Vibra your own, from colors to terminal text.",
             Self::Agents => "Connect the assistants working in your terminals.",
             Self::Security => "Control how terminal integrations access your Mac.",
-            Self::Inbox => "Connect the services that bring your work into Vibra.",
         }
     }
 
@@ -58,7 +54,6 @@ impl SettingsPage {
             Self::Appearance => "chrome-icons/palette.svg",
             Self::Agents => "chrome-icons/sparkles.svg",
             Self::Security => "chrome-icons/shield.svg",
-            Self::Inbox => "chrome-icons/inbox.svg",
         }
     }
 }
@@ -306,7 +301,6 @@ impl WorkspaceView {
                 ],
             ),
             ("Agents", &[SettingsPage::Agents]),
-            ("Workspace", &[SettingsPage::Inbox]),
         ];
         let mut navigation = div()
             .id("settings-navigation")
@@ -458,19 +452,6 @@ impl WorkspaceView {
             SettingsPage::General => self.general_settings(panel, cx),
             SettingsPage::Agents => self.agent_settings(panel, cx),
             SettingsPage::Security => self.security_settings(panel),
-            SettingsPage::Inbox => panel
-                .child(self.settings_section_heading(
-                    "Connections",
-                    concat!(
-                        "GitHub uses your gh session. Connect Linear with a personal API key ",
-                        "stored only on this Mac.",
-                    ),
-                ))
-                .child(
-                    settings_card()
-                        .py_3()
-                        .child(self.inbox_connection_controls(cx)),
-                ),
         };
         div()
             .id(SharedString::from(format!(

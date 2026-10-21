@@ -4,23 +4,18 @@ use std::time::Duration;
 use gpui::{Context, Timer, prelude::*};
 use uuid::Uuid;
 
-use crate::domain::work_items::{WorkFilter, WorkItem, WorkRelation, WorkSource};
+use crate::domain::work_items::{WorkItem, WorkRelation};
 use crate::infrastructure::work_items::{self, InboxProject, WorkQuery};
 
 use super::{DetailTab, WorkspaceSection, WorkspaceView};
 
 impl WorkspaceView {
     pub(crate) fn scope_inbox_to_active_project(&mut self) {
-        self.work_inbox.filter.project = if self.settings.inbox.source == WorkSource::GitHub {
-            self.snapshot.selected_project_id.filter(|id| {
-                self.snapshot
-                    .listed_projects()
-                    .any(|project| project.id == *id)
-            })
-        } else {
-            // Linear teams/projects are remote groups, not local repository IDs.
-            None
-        };
+        self.work_inbox.filter.project = self.snapshot.selected_project_id.filter(|id| {
+            self.snapshot
+                .listed_projects()
+                .any(|project| project.id == *id)
+        });
         self.settings.inbox.hidden_projects.clear();
     }
 
@@ -54,7 +49,7 @@ impl WorkspaceView {
             .collect();
         for item in self
             .work_inbox
-            .feed(self.settings.inbox.source)
+            .github
             .items
             .iter()
             .filter(|item| self.work_inbox.filter.matches(item, &self.settings.inbox))
@@ -127,9 +122,8 @@ impl WorkspaceView {
         if cfg!(test) {
             return;
         }
-        self.refresh_work_source(WorkSource::GitHub, false, cx);
-        self.refresh_work_source(WorkSource::Linear, false, cx);
-        self.inbox_source_updated(self.settings.inbox.source, false, cx);
+        self.refresh_work_items(false, cx);
+        self.inbox_items_updated(false, cx);
     }
 
     pub(crate) fn prune_inbox_details(&mut self) {
@@ -138,7 +132,6 @@ impl WorkspaceView {
             .github
             .items
             .iter()
-            .chain(self.work_inbox.linear.items.iter())
             .map(|item| item.url.as_str())
             .collect();
         if let Some(selected) = self.work_inbox.selected.as_deref() {
@@ -150,20 +143,10 @@ impl WorkspaceView {
         });
     }
 
-    pub(crate) fn inbox_source_updated(
-        &mut self,
-        source: WorkSource,
-        refresh_detail: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn inbox_items_updated(&mut self, refresh_detail: bool, cx: &mut Context<Self>) {
         self.prune_inbox_details();
-        if source == WorkSource::GitHub {
-            self.refresh_inbox_repos(false, cx);
-        }
-        if self.workspace_section == WorkspaceSection::Inbox
-            && !self.work_inbox.activity
-            && source == self.settings.inbox.source
-        {
+        self.refresh_inbox_repos(false, cx);
+        if self.workspace_section == WorkspaceSection::Inbox && !self.work_inbox.activity {
             self.sync_inbox_selection(cx);
             self.load_inbox_detail(refresh_detail, cx);
         }
@@ -174,6 +157,8 @@ impl WorkspaceView {
         if cfg!(test) {
             return;
         }
+        cx.background_spawn(async { work_items::remove_legacy_linear_data() })
+            .detach();
         // Start while the workspace opens, before the user visits Inbox.
         self.ensure_inbox_loaded(cx);
         self.work_inbox._poll_task = Some(cx.spawn(async move |this, cx| {
@@ -193,14 +178,9 @@ impl WorkspaceView {
         }));
     }
 
-    pub(crate) fn refresh_work_source(
-        &mut self,
-        source: WorkSource,
-        force: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn refresh_work_items(&mut self, force: bool, cx: &mut Context<Self>) {
         let query = self.inbox_query();
-        let feed = self.work_inbox.feed_mut(source);
+        let feed = &mut self.work_inbox.github;
         if feed.query.as_ref() == Some(&query)
             && (feed.loading
                 || (!force
@@ -225,7 +205,7 @@ impl WorkspaceView {
             let cache_query = query.clone();
             let (cache, cached) = cx
                 .background_spawn(async move {
-                    let cache = work_items::ListCache::new(source, &cache_query);
+                    let cache = work_items::ListCache::new(&cache_query);
                     let cached = if restore_cache {
                         cache.as_ref().and_then(work_items::ListCache::load)
                     } else {
@@ -236,14 +216,14 @@ impl WorkspaceView {
                 .await;
             if let Some(page) = cached {
                 let _ = this.update(cx, |this, cx| {
-                    if this.work_inbox.feed_mut(source).restore(generation, page) {
-                        this.inbox_source_updated(source, false, cx);
+                    if this.work_inbox.github.restore(generation, page) {
+                        this.inbox_items_updated(false, cx);
                     }
                 });
             }
             let result = cx
                 .background_spawn(async move {
-                    let result = work_items::list(source, &query);
+                    let result = work_items::list(&query);
                     if let (Some(cache), Ok(page)) = (cache, &result) {
                         cache.save(page);
                     }
@@ -251,35 +231,18 @@ impl WorkspaceView {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                let feed = this.work_inbox.feed_mut(source);
-                if feed.accept(generation, result) {
-                    this.inbox_source_updated(source, true, cx);
+                if this.work_inbox.github.accept(generation, result) {
+                    this.inbox_items_updated(true, cx);
                 }
             });
         }));
         cx.notify();
     }
 
-    pub(crate) fn select_work_source(&mut self, source: WorkSource, cx: &mut Context<Self>) {
-        self.work_inbox.activity = false;
-        self.settings.inbox.source = source;
-        self.work_inbox.filter = WorkFilter::default();
-        self.scope_inbox_to_active_project();
-        self.work_inbox.selected = None;
-        self.work_inbox.search_editing = false;
-        self.work_inbox.action_error = None;
-        self.work_inbox.menu = None;
-        self.work_inbox.composer_open = false;
-        self.work_inbox.confirmation = None;
-        self.ensure_inbox_loaded(cx);
-        self.sync_inbox_selection(cx);
-        self.persist_settings(cx);
-    }
-
     pub(crate) fn select_work_item(&mut self, url: &str, cx: &mut Context<Self>) {
         let Some(item) = self
             .work_inbox
-            .feed(self.settings.inbox.source)
+            .github
             .items
             .iter()
             .find(|item| item.url == url)
@@ -323,7 +286,7 @@ impl WorkspaceView {
 
     pub(crate) fn selected_work_item(&self) -> Option<&WorkItem> {
         self.work_inbox
-            .feed(self.settings.inbox.source)
+            .github
             .items
             .iter()
             .find(|item| Some(&item.url) == self.work_inbox.selected.as_ref())
