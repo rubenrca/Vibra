@@ -20,6 +20,20 @@ query($id: ID!) {
       headRefName
       headRefOid
       reviewDecision
+      mergeable
+      mergeStateStatus
+      isCrossRepository
+      viewerCanUpdateBranch
+      viewerCanEnableAutoMerge
+      viewerCanDisableAutoMerge
+      viewerCanDeleteHeadRef
+      autoMergeRequest { mergeMethod }
+      headRef { id }
+      headRepository { nameWithOwner }
+      viewerLatestReview { commit { oid } }
+      files(first: 100) {
+        nodes { path viewerViewedState }
+      }
       comments(last: 40) {
         totalCount
         nodes {
@@ -47,7 +61,10 @@ query($id: ID!) {
         nodes {
           id
           isResolved
+          isOutdated
           path
+          line
+          diffSide
           comments(first: 20) {
             totalCount
             nodes {

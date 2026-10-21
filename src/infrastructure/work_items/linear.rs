@@ -177,6 +177,8 @@ fn parse_page(data: &Value) -> Result<WorkItemsPage> {
                 .collect(),
             labels: names(&node["labels"]["nodes"], "name"),
             updated_at: timestamp(&node["updatedAt"]),
+            relation: Default::default(),
+            pull: None,
         });
     }
     Ok(WorkItemsPage {

@@ -1,13 +1,17 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::Task;
 use uuid::Uuid;
 
 use crate::domain::work_items::{
-    PrAction, WorkCheck, WorkDetail, WorkDiff, WorkFilter, WorkItem, WorkSource,
+    PrAction, ReviewVerdict, WorkCheck, WorkCommits, WorkDetail, WorkDiff, WorkFilter, WorkItem,
+    WorkSource,
 };
 use crate::infrastructure::work_items::{WorkItemsPage, WorkQuery};
+use crate::ports::git::{GitCommit, GitRefAction, GitRepositoryRefs};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum InboxMenu {
@@ -16,6 +20,8 @@ pub(super) enum InboxMenu {
     Projects,
     Agents,
     PrActions,
+    Shortcuts,
+    RepositoryProjects,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -23,7 +29,97 @@ pub(super) enum DetailTab {
     #[default]
     Summary,
     Code,
+    Commits,
     Checks,
+}
+
+impl DetailTab {
+    pub(super) const ALL: [Self; 4] = [Self::Summary, Self::Code, Self::Commits, Self::Checks];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Summary => "Summary",
+            Self::Code => "Code",
+            Self::Commits => "Commits",
+            Self::Checks => "Checks",
+        }
+    }
+}
+
+/// Which changes the Code tab reviews.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum CodeScope {
+    #[default]
+    All,
+    /// Only what changed since the head the user last reviewed.
+    SinceReview,
+}
+
+/// A GitHub review being written in the Code tab.
+#[derive(Default)]
+pub(super) struct ReviewDraft {
+    pub(super) open: bool,
+    pub(super) verdict: ReviewVerdict,
+    pub(super) body: String,
+    pub(super) editing: bool,
+    pub(super) busy: bool,
+    pub(super) error: Option<String>,
+    pub(super) _task: Option<Task<()>>,
+}
+
+/// Branches and worktrees of one local repository, refreshed in the background.
+#[derive(Default)]
+pub(super) struct LocalRepo {
+    pub(super) refs: Option<Arc<GitRepositoryRefs>>,
+    pub(super) error: Option<String>,
+    pub(super) loading: bool,
+    pub(super) fetched: Option<Instant>,
+    pub(super) generation: u64,
+    pub(super) _task: Option<Task<()>>,
+}
+
+/// One local Git operation at a time, labelled for the button that started it.
+pub(super) struct LocalJob {
+    /// Task URL or repository row that owns the feedback.
+    pub(super) key: String,
+    pub(super) label: &'static str,
+    pub(super) _task: Task<()>,
+}
+
+/// What the Repository view shows on the right.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum RepoSelection {
+    #[default]
+    Changes,
+    Branch(String),
+    Remote(String),
+    Worktree(PathBuf),
+    /// Stash commit, so a selection survives a stash above it being dropped.
+    Stash(String),
+    Tag(String),
+}
+
+pub(super) struct RepoConfirmation {
+    pub(super) action: GitRefAction,
+    pub(super) message: String,
+}
+
+#[derive(Default)]
+pub(super) struct RepositoryState {
+    /// The project whose repository is shown; follows the active project.
+    pub(super) project: Option<Uuid>,
+    pub(super) selection: RepoSelection,
+    pub(super) collapsed: HashSet<&'static str>,
+    pub(super) review: Option<gpui::Entity<crate::ui::diff_view::DiffView>>,
+    pub(super) index: Option<gpui::Entity<crate::ui::diff_view::DiffFileIndexView>>,
+    pub(super) _review_subscription: Option<gpui::Subscription>,
+    /// Commits of the selected branch that its upstream or base lacks.
+    pub(super) log: LoadState<(String, Vec<GitCommit>)>,
+    /// The commit shown from the selected branch, stash, or tag.
+    pub(super) commit: Option<String>,
+    pub(super) confirmation: Option<RepoConfirmation>,
+    pub(super) stash_message: String,
+    pub(super) stash_editing: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -97,6 +193,24 @@ pub(super) struct ItemState {
     pub(super) mutation_error: Option<String>,
     pub(super) _post_task: Option<Task<()>>,
     pub(super) _mutation_task: Option<Task<()>>,
+    pub(super) commits: LoadState<WorkCommits>,
+    pub(super) selected_commit: Option<String>,
+    pub(super) commit_diffs: HashMap<String, LoadState<WorkDiff>>,
+    pub(super) commit_review: Option<gpui::Entity<crate::ui::diff_view::DiffView>>,
+    pub(super) _commit_review_subscription: Option<gpui::Subscription>,
+    pub(super) code_scope: CodeScope,
+    /// Changes since `since_base`, the head the user last reviewed.
+    pub(super) since: LoadState<WorkDiff>,
+    pub(super) since_base: String,
+    /// Head the Code tab showed before the current one, during this session.
+    pub(super) previous_head: String,
+    pub(super) since_review: Option<gpui::Entity<crate::ui::diff_view::DiffView>>,
+    pub(super) _since_review_subscription: Option<gpui::Subscription>,
+    /// Viewed marks sent to GitHub and not yet confirmed by a refresh.
+    pub(super) viewed_pending: HashMap<String, bool>,
+    pub(super) viewed_error: Option<String>,
+    pub(super) _viewed_tasks: Vec<Task<()>>,
+    pub(super) review_draft: ReviewDraft,
 }
 
 #[derive(Clone)]
@@ -104,6 +218,7 @@ pub(super) struct PrConfirmation {
     pub(super) url: String,
     pub(super) action: PrAction,
     pub(super) head_oid: String,
+    pub(super) head_ref_id: String,
 }
 
 #[derive(Default)]
@@ -194,6 +309,16 @@ pub(crate) struct WorkInbox {
     pub(super) composer_editing: bool,
     pub(super) comment_editing: bool,
     pub(super) confirmation: Option<PrConfirmation>,
+    /// Project root → its branches and worktrees.
+    pub(super) repos: HashMap<PathBuf, LocalRepo>,
+    pub(super) local_job: Option<LocalJob>,
+    /// Feedback of the last local operation: owner key, text, failed.
+    pub(super) local_feedback: Option<(String, String, bool)>,
+    /// Head each pull request showed when its Code tab last opened.
+    pub(super) seen_heads: HashMap<String, String>,
+    pub(super) repository: RepositoryState,
+    pub(super) collapsed_groups: HashSet<crate::domain::work_items::WorkRelation>,
+    pub(super) list_scroll: gpui::ScrollHandle,
     pub(super) connecting: bool,
     pub(super) connection_error: Option<String>,
     pub(super) _connection_task: Option<Task<()>>,

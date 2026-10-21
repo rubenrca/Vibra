@@ -4,10 +4,15 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use super::{WorkItemsPage, WorkQuery, bounded_output, graphql_data, names, string, timestamp};
-use crate::domain::work_items::{WorkItem, WorkKind, WorkSource, WorkStatus};
+use super::{
+    WorkItemsPage, WorkQuery, array, bounded_output, graphql_data, names, string, timestamp,
+};
+use crate::domain::work_items::{
+    CheckRollup, PullSummary, WorkItem, WorkKind, WorkRelation, WorkSource, WorkStatus,
+};
 
 const QUERY: &str = r#"query($search: String!) {
+  viewer { login }
   search(query: $search, type: ISSUE, first: 100) {
     pageInfo { hasNextPage }
     nodes {
@@ -21,6 +26,12 @@ const QUERY: &str = r#"query($search: String!) {
         id number title url body createdAt updatedAt state isDraft merged author { login }
         repository { nameWithOwner } labels(first: 20) { nodes { name } }
         assignees(first: 20) { nodes { login } }
+        headRefName baseRefName headRefOid additions deletions reviewDecision mergeable
+        isCrossRepository
+        reviewRequests(first: 20) {
+          nodes { requestedReviewer { __typename ... on User { login } } }
+        }
+        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       }
     }
   }
@@ -48,6 +59,49 @@ pub(super) fn gh_output(arguments: &[&str], input: Option<Vec<u8>>) -> Result<Ve
         input,
     )
     .context("GitHub: install gh and sign in with gh auth login.")
+}
+
+/// A `gh` command that changes a local checkout. It may fetch, so it gets the
+/// Git write budget, never prompts, and reports gh's own error.
+pub(super) fn gh_write(arguments: &[&str], directory: &std::path::Path) -> Result<()> {
+    let script = format!(
+        "exec gh {}",
+        arguments
+            .iter()
+            .map(|argument| crate::domain::work_items::shell_argument(argument))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let output = crate::infrastructure::process::command_output(
+        super::super::login_shell::command(&script)
+            .current_dir(directory)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GH_PAGER", "cat")
+            .env("GH_HOST", "github.com")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "never")
+            .stdin(std::process::Stdio::null()),
+        None,
+        crate::infrastructure::process::CommandLimits {
+            timeout: std::time::Duration::from_secs(180),
+            stdout: 256 * 1024,
+            stderr: 64 * 1024,
+        },
+    )
+    .context("GitHub: install gh and sign in with gh auth login.")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = stderr
+            .lines()
+            .map(str::trim)
+            .rfind(|line| !line.is_empty())
+            .unwrap_or("gh did not report a reason");
+        bail!(
+            "gh {}: {message}",
+            arguments.first().copied().unwrap_or_default()
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn graphql(query: &str, variables: Value) -> Result<Value> {
@@ -225,6 +279,7 @@ fn parse_page(data: &Value, repositories: &BTreeMap<String, uuid::Uuid>) -> Resu
     let nodes = data["search"]["nodes"]
         .as_array()
         .context("GitHub did not return the tasks.")?;
+    let viewer = data["viewer"]["login"].as_str().unwrap_or_default();
     let mut items = Vec::new();
     for node in nodes {
         let kind = match node["__typename"].as_str() {
@@ -246,7 +301,41 @@ fn parse_page(data: &Value, repositories: &BTreeMap<String, uuid::Uuid>) -> Resu
         } else {
             WorkStatus::Open
         };
+        let author = string(&node["author"], "login");
+        let assignees = names(&node["assignees"]["nodes"], "login");
+        let requested = array(&node["reviewRequests"]["nodes"])
+            .iter()
+            .any(|request| request["requestedReviewer"]["login"].as_str() == Some(viewer));
+        let relation = if viewer.is_empty() {
+            WorkRelation::Other
+        } else if kind == WorkKind::PullRequest && requested && status == WorkStatus::Open {
+            WorkRelation::ReviewRequested
+        } else if author == viewer {
+            WorkRelation::Authored
+        } else if assignees.iter().any(|login| login == viewer) {
+            WorkRelation::Assigned
+        } else {
+            WorkRelation::Other
+        };
+        let pull = (kind == WorkKind::PullRequest).then(|| PullSummary {
+            head_ref: string(node, "headRefName"),
+            base_ref: string(node, "baseRefName"),
+            head_oid: string(node, "headRefOid"),
+            additions: node["additions"].as_u64().unwrap_or_default(),
+            deletions: node["deletions"].as_u64().unwrap_or_default(),
+            review_decision: string(node, "reviewDecision"),
+            checks: CheckRollup::from_state(
+                array(&node["commits"]["nodes"])
+                    .last()
+                    .and_then(|commit| commit["commit"]["statusCheckRollup"]["state"].as_str())
+                    .unwrap_or_default(),
+            ),
+            mergeable: string(node, "mergeable"),
+            cross_repository: node["isCrossRepository"].as_bool() == Some(true),
+        });
         items.push(WorkItem {
+            relation,
+            pull,
             remote_id: string(node, "id"),
             created_at: timestamp(&node["createdAt"]),
             completed: node["stateReason"].as_str() == Some("COMPLETED"),
@@ -264,8 +353,8 @@ fn parse_page(data: &Value, repositories: &BTreeMap<String, uuid::Uuid>) -> Resu
             repository,
             status,
             state_label: status.label().into(),
-            author: string(&node["author"], "login"),
-            assignees: names(&node["assignees"]["nodes"], "login"),
+            author,
+            assignees,
             labels: names(&node["labels"]["nodes"], "name"),
             updated_at: timestamp(&node["updatedAt"]),
         });
@@ -309,6 +398,36 @@ mod tests {
         merged["merged"] = json!(true);
         merged["state"] = json!("MERGED");
         issue["state"] = json!("CLOSED");
+        let mut review = draft.clone();
+        review["isDraft"] = json!(false);
+        review["state"] = json!("OPEN");
+        review["author"] = json!({ "login": "ana" });
+        review["headRefName"] = json!("feature/search");
+        review["headRefOid"] = json!("abc");
+        review["additions"] = json!(12);
+        review["reviewRequests"] = json!({
+            "nodes": [{ "requestedReviewer": { "__typename": "User", "login": "me" } }]
+        });
+        review["commits"] = json!({
+            "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }]
+        });
+        let mut mine = review.clone();
+        mine["author"] = json!({ "login": "me" });
+        mine["reviewRequests"] = json!({ "nodes": [] });
+        let page = parse_page(
+            &json!({
+                "viewer": { "login": "me" },
+                "search": { "nodes": [review, mine], "pageInfo": { "hasNextPage": false } }
+            }),
+            &repositories,
+        )
+        .unwrap();
+        assert_eq!(page.items[0].relation, WorkRelation::ReviewRequested);
+        let pull = page.items[0].pull.as_ref().unwrap();
+        assert_eq!(pull.head_ref, "feature/search");
+        assert_eq!(pull.additions, 12);
+        assert_eq!(pull.checks, CheckRollup::Failing);
+        assert_eq!(page.items[1].relation, WorkRelation::Authored);
         let page = parse_page(
             &json!({
                 "search": {
@@ -319,6 +438,12 @@ mod tests {
             &repositories,
         )
         .unwrap();
+        assert!(
+            page.items
+                .iter()
+                .all(|item| item.relation == WorkRelation::Other)
+        );
+        assert!(page.items[0].pull.is_none() && page.items[1].pull.is_some());
         assert_eq!(
             page.items
                 .iter()

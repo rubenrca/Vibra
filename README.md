@@ -69,18 +69,56 @@ sigue siendo la terminal: cualquier CLI funciona sin integraciones específicas.
 
 - **Review** reúne issues y pull requests de **GitHub** y tareas de **Linear** en
   una lista redimensionable, con conexiones por pestaña y un menú de filtros por
-  asignación, estados múltiples, tiempo, tipo y proyecto. El detalle conserva el
+  asignación, estados múltiples, tiempo, tipo y proyecto. En GitHub la lista se
+  agrupa en **Needs your review**, **Created by you**, **Assigned to you** y el
+  resto (cada grupo se pliega), y cada PR muestra sus líneas +/−, el estado de
+  CI, la decisión de review, si tiene conflictos y dónde está en tu repositorio
+  local (**Checked out**, **Local** o **Worktree**). El detalle conserva el
   título y las acciones visibles, renderiza Markdown y permite leer y publicar
-  comentarios y respuestas. Los PR tienen **Summary**, **Code** (el mismo visor
-  de diff de Workspace, con resaltado, Unified/Split, Wrap y contexto plegable)
-  y **Checks**, con registros de GitHub Actions y **Fix** para preparar una
-  reparación. Merge, squash, rebase, draft, ready, close y reopen requieren
-  confirmar el PR seleccionado. **Enviar al agente** abre un borrador con el
+  comentarios y respuestas. Los PR tienen **Summary**, **Code**, **Commits** y
+  **Checks**:
+  - **Summary** abre con el estado de merge: review, checks, conflictos con la
+    base y si la rama quedó atrás, con **Update branch** y el auto-merge activo;
+  - **Code** es el mismo visor de diff de Workspace (resaltado, Unified/Split,
+    Wrap y contexto plegable) con la lista de archivos, la casilla **Viewed** de
+    GitHub por archivo y su progreso, los hilos de review publicados bajo su
+    línea y **Since last review**, que muestra solo lo que cambió desde tu última
+    review (o desde el head que viste antes en la sesión). Los comentarios por
+    línea van al agente o, con **Review**, se publican en GitHub como
+    **Comment**, **Approve** o **Request changes**; los que caen fuera del diff
+    se citan en el cuerpo de la review;
+  - **Commits** lista el historial del PR como un log, con CI por commit y los
+    commits nuevos desde tu última review; un clic abre su diff;
+  - **Checks** muestra los registros de GitHub Actions y **Fix** prepara una
+    reparación.
+
+  Desde el PR, **Check out** ejecuta `gh pr checkout` en la carpeta del proyecto
+  y **Open in worktree** lo prepara en `~/.vibra/worktrees/<repo>/pr-<n>` y lo
+  abre como proyecto, sin tocar la rama actual. Con la rama del PR activa
+  aparecen **Push** y **Pull**; tras el merge, **Switch to <base> and pull**,
+  **Delete local branch** o **Remove worktree**. Merge, squash, rebase,
+  auto-merge, update branch, delete branch, draft, ready, close y reopen
+  requieren confirmar el PR seleccionado, y la confirmación de un merge avisa de
+  checks fallidos, cambios pedidos, conflictos o una rama atrasada.
+  **Enviar al agente** abre un borrador con el
   contexto de la tarea: elige proyecto y Claude, Codex o Gemini, añade indicaciones
   y pulsa **Enviar** para crear una sesión. El agente debe estar instalado y
   autenticado. Las sesiones relacionadas quedan enlazadas al detalle.
   **Ask** abre una conversación lateral con el agente y un contexto de consulta
   remota, reutilizable por tarea; su terminal también queda disponible en el proyecto;
+- **Repository**, la primera pestaña de Review, es un cliente Git para un
+  proyecto (se elige arriba): **Local changes** con el panel de Changes y su
+  diff, además de **Stash changes**; **Branches** con su seguimiento (↑↓), su PR
+  y los commits que la base no tiene, con **Switch**, **Pull**, **Push**,
+  **Create pull request** y **Delete** (confirmado, con la opción de borrar sin
+  merge); **Remote branches** para crear la rama local; **Worktrees** para
+  abrirlos como proyecto o quitarlos; **Stashes** con su diff y **Apply**,
+  **Pop** y **Drop**; **Tags** con el commit que marcan, y los **Pull requests**
+  abiertos del proyecto. **Fetch** y **Refresh** quedan en la barra;
+- atajos de teclado en Review (`?` los muestra): `J`/`K` recorren la lista,
+  `1`–`4` cambian de pestaña, `]`/`[` saltan de archivo, `V` marca el archivo
+  como visto, `C` hace checkout, `W` abre un worktree, `O` abre GitHub, `R`
+  actualiza, `/` filtra y `G` alterna Repository;
 - **Actividad**, dentro de Review, reúne los agentes activos de todos los
   proyectos (trabajando, espera tu respuesta, pide permiso) y sus eventos: un
   agente que terminó, pidió permiso o espera respuesta en una terminal que no
@@ -141,7 +179,7 @@ el comportamiento trasladado y las diferencias de esta versión nativa.
 - diffs de solo lectura en una sola lista virtualizada: archivos plegables con animación, la cabecera del archivo actual fija arriba, numeración única en Unified (anterior en eliminaciones y nueva en contexto/adiciones), las líneas sin cambios entre bloques plegadas en barras «N unmodified lines» que se abren de 20 en 20 hacia arriba o abajo (o completas con un clic), botones para expandir o colapsar todos los archivos y resaltado de sintaxis con el archivo completo como contexto (Rust, JS/TS, Python, Swift, Go, shell y configs comunes);
 - vista unificada o lado a lado y ajuste de líneas largas, recordados entre sesiones; sin ajuste, el scroll horizontal mueve solo el código, sincronizado entre archivos y columnas; el tamaño del texto del diff se ajusta aparte en Ajustes › Apariencia;
 - comentarios de revisión por línea (botón `+` al pasar el cursor) que se pegan como un solo prompt en la terminal del agente, sin enviarlo, para editarlo antes de pulsar Enter;
-- el resto de mutaciones Git (stage parcial, ramas, rebase, stash) se hacen desde la terminal integrada.
+- ramas, stashes y worktrees también se gestionan desde Review → Repository; el stage parcial y el rebase siguen en la terminal integrada.
 
 ### Agentes y seguimiento
 

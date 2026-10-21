@@ -2,11 +2,17 @@
 
 mod checks;
 mod code;
+mod commits;
 mod item_detail;
+mod local;
+mod merge;
+mod repository;
 
 use super::*;
 use crate::domain::inbox::relative_time;
-use crate::domain::work_items::{InboxPreferences, InboxTime, toggle_value};
+use crate::domain::work_items::{
+    CheckRollup, InboxPreferences, InboxTime, PullSummary, toggle_value,
+};
 use crate::infrastructure::clock::unix_now;
 use crate::ui::menu::{MenuRow, menu_heading, menu_panel, menu_separator};
 use crate::ui::theme::{surface, surface_tint};
@@ -26,57 +32,13 @@ impl WorkspaceView {
         if self.work_inbox.activity {
             return self.inbox_activity_content(cx);
         }
-        let source = self.settings.inbox.source;
-        let feed = self.work_inbox.feed(source);
-        let visible: Vec<_> = feed
-            .items
-            .iter()
-            .filter(|item| self.work_inbox.filter.matches(item, &self.settings.inbox))
-            .collect();
+        let repository = self.settings.inbox.repository_view;
         let width = if self.settings.inbox.list_width.is_finite() {
             self.settings.inbox.list_width.clamp(240.0, 420.0)
         } else {
             280.0
         };
-        let mut list = div()
-            .id("inbox-list-scroll")
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .p(px(6.0))
-            .flex()
-            .flex_col()
-            .gap(px(2.0));
-        if let Some(error) = &feed.error {
-            list = list.child(message(error, true));
-        }
-        if feed.loading && feed.items.is_empty() {
-            list = list.child(message("Loading Review…", false));
-        } else if visible.is_empty() {
-            list = list.child(message(
-                if feed.connected == Some(false) {
-                    "Add a connection to get started."
-                } else if self.settings.inbox.filters_active()
-                    || self.work_inbox.filter.project.is_some()
-                    || !self.work_inbox.filter.query.is_empty()
-                {
-                    "No tasks match these filters."
-                } else {
-                    "No issues or pull requests in your projects."
-                },
-                false,
-            ));
-        }
-        for item in visible {
-            list = list.child(self.inbox_task_card(item, cx));
-        }
-        if feed.truncated {
-            list = list.child(message(
-                "The result limit was reached. Adjust filters to find other tasks.",
-                false,
-            ));
-        }
-        let sidebar = div()
+        let mut sidebar = div()
             .id("inbox-list-pane")
             .relative()
             .w(px(width))
@@ -86,183 +48,54 @@ impl WorkspaceView {
             .flex_col()
             .border_r_1()
             .border_color(colors().border_subtle)
-            .child(
-                div()
-                    .h(px(36.0))
-                    .px_2()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(colors().border_subtle)
-                    .children(
-                        [WorkSource::GitHub, WorkSource::Linear]
-                            .into_iter()
-                            .filter(|provider| {
-                                *provider == WorkSource::GitHub
-                                    || self.work_inbox.feed(*provider).connected == Some(true)
-                            })
-                            .map(|provider| {
-                                div()
-                                    .id(SharedString::from(format!("inbox-tab-{provider:?}")))
-                                    .h(px(24.0))
-                                    .flex_1()
-                                    .rounded(px(5.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .gap(px(6.0))
-                                    .cursor_pointer()
-                                    .text_size(px(12.0))
-                                    .text_color(if source == provider {
-                                        colors().foreground
-                                    } else {
-                                        colors().muted
-                                    })
-                                    .when(source == provider, |tab| {
-                                        tab.bg(surface_tint(
-                                            colors().selection,
-                                            colors().background,
-                                        ))
-                                    })
-                                    .hover(|tab| {
-                                        tab.bg(surface_tint(colors().hover, colors().background))
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.select_work_source(provider, cx)
-                                    }))
-                                    .child(provider_icon(provider, 14.0))
-                                    .child(provider.label())
-                            }),
-                    )
-                    .child(
-                        icon_button(
-                            "inbox-connections",
-                            "chrome-icons/plus.svg",
-                            "Add connection",
-                        )
-                        .on_click(cx.listener(|this, event, _, cx| {
-                            this.open_inbox_menu(InboxMenu::Connections, event, cx)
-                        })),
-                    ),
-            )
-            .child(
-                div()
-                    .h(px(36.0))
-                    .flex_none()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(colors().border_subtle)
-                    .child(
-                        div()
-                            .id("inbox-filter-input")
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .h(px(28.0))
-                            .px_1()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .cursor_text()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.work_inbox.search_editing = true;
-                                this.work_inbox.comment_editing = false;
-                                this.work_inbox.composer_editing = false;
-                                this.focus_handle.focus(window);
-                                cx.notify();
-                            }))
-                            .child(
-                                svg()
-                                    .path("chrome-icons/search.svg")
-                                    .size(px(12.0))
-                                    .flex_none()
-                                    .text_color(colors().subtle),
-                            )
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .text_size(px(12.0))
-                                    .text_color(if self.work_inbox.search_editing {
-                                        colors().foreground
-                                    } else {
-                                        colors().muted
-                                    })
-                                    .child(if self.work_inbox.filter.query.is_empty() {
-                                        "Filter Review".into()
-                                    } else {
-                                        self.work_inbox.filter.query.clone()
-                                    }),
-                            ),
-                    )
-                    .child(
-                        icon_button("inbox-filter-menu", "chrome-icons/filter.svg", "Filters")
-                            .when(
-                                self.settings.inbox.filters_active()
-                                    || self.work_inbox.filter.project.is_some(),
-                                |button| {
-                                    button.bg(surface_tint(colors().selection, colors().background))
-                                },
-                            )
-                            .on_click(cx.listener(|this, event, _, cx| {
-                                this.open_inbox_menu(InboxMenu::Filters, event, cx)
-                            })),
-                    )
-                    .child(
-                        icon_button(
-                            "inbox-read-all",
-                            "chrome-icons/check-all.svg",
-                            "Mark all as read",
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            for item in &this.work_inbox.feed(source).items {
-                                this.settings.inbox.mark_seen(item);
-                            }
-                            this.persist_settings(cx);
-                        })),
-                    )
-                    .child(
-                        icon_button(
-                            "inbox-refresh",
-                            "chrome-icons/refresh.svg",
-                            if feed.loading {
-                                "Refreshing…"
-                            } else {
-                                "Refresh"
-                            },
-                        )
-                        .when(feed.loading, |button| button.opacity(0.4))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.refresh_work_source(source, true, cx);
-                            this.load_inbox_detail(true, cx);
-                        })),
-                    ),
-            )
-            .child(list)
-            .child(
-                div()
-                    .id("resize-inbox-list")
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right_0()
-                    .w(px(5.0))
-                    .cursor_ew_resize()
-                    .hover(|handle| handle.bg(colors().border_subtle))
-                    .on_drag(InboxListResize, |_, _, _, cx| {
-                        cx.new(|_| SidebarResizeDragView)
-                    })
-                    .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                        if event.click_count() == 2 {
-                            this.settings.inbox.list_width = 280.0;
-                            this.persist_settings(cx);
-                        }
-                    })),
-            );
+            .child(self.inbox_source_tabs(cx));
+        sidebar = if repository {
+            sidebar
+                .child(self.repository_toolbar(cx))
+                .child(self.repository_tree(cx))
+        } else {
+            sidebar
+                .child(self.inbox_filter_bar(cx))
+                .child(self.inbox_task_list(cx))
+        };
+        let sidebar = sidebar.child(
+            div()
+                .id("resize-inbox-list")
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(px(5.0))
+                .cursor_ew_resize()
+                .hover(|handle| handle.bg(colors().border_subtle))
+                .on_drag(InboxListResize, |_, _, _, cx| {
+                    cx.new(|_| SidebarResizeDragView)
+                })
+                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                    if event.click_count() == 2 {
+                        this.settings.inbox.list_width = 280.0;
+                        this.persist_settings(cx);
+                    }
+                })),
+        );
+        let title = if repository {
+            self.repository_project()
+                .and_then(|id| self.snapshot.project(id))
+                .map(|project| format!("Repository · {}", project.name))
+                .unwrap_or_else(|| "Repository".into())
+        } else {
+            self.work_inbox
+                .filter
+                .project
+                .and_then(|id| {
+                    self.snapshot
+                        .projects
+                        .iter()
+                        .find(|project| project.id == id)
+                })
+                .map(|project| format!("Review · {}", project.name))
+                .unwrap_or_else(|| "Review".into())
+        };
         div()
             .id("work-inbox")
             .flex_1()
@@ -295,7 +128,11 @@ impl WorkspaceView {
                     .border_color(colors().border_subtle)
                     .child(
                         svg()
-                            .path("chrome-icons/inbox.svg")
+                            .path(if repository {
+                                "chrome-icons/git-branch.svg"
+                            } else {
+                                "chrome-icons/inbox.svg"
+                            })
                             .size(px(14.0))
                             .text_color(colors().subtle),
                     )
@@ -305,25 +142,24 @@ impl WorkspaceView {
                             .min_w(px(0.0))
                             .truncate()
                             .text_size(px(13.0))
-                            .child(
-                                self.work_inbox
-                                    .filter
-                                    .project
-                                    .and_then(|id| {
-                                        self.snapshot
-                                            .projects
-                                            .iter()
-                                            .find(|project| project.id == id)
-                                    })
-                                    .map(|project| format!("Review · {}", project.name))
-                                    .unwrap_or_else(|| "Review".into()),
-                            ),
+                            .child(title),
+                    )
+                    .child(
+                        icon_button(
+                            "inbox-shortcuts",
+                            "chrome-icons/keyboard.svg",
+                            "Keyboard shortcuts (?)",
+                        )
+                        .on_click(cx.listener(|this, event, _, cx| {
+                            this.open_inbox_menu(InboxMenu::Shortcuts, event, cx)
+                        })),
                     )
                     .child(
                         quiet_button("inbox-activity", "Activity").on_click(cx.listener(
                             |this, _, _, cx| {
                                 this.work_inbox.activity = true;
                                 this.work_inbox.menu = None;
+                                this.sync_repository_polling(cx);
                                 this.sync_terminal_surface_visibility(cx);
                                 cx.notify();
                             },
@@ -336,9 +172,319 @@ impl WorkspaceView {
                     .min_h(px(0.0))
                     .flex()
                     .child(sidebar)
-                    .child(self.inbox_detail_panel(cx)),
+                    .child(if repository {
+                        self.repository_detail(cx)
+                    } else {
+                        self.inbox_detail_panel(cx)
+                    }),
             )
             .into_any_element()
+    }
+
+    /// Repository · GitHub · Linear, plus the connection menu.
+    fn inbox_source_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let repository = self.settings.inbox.repository_view;
+        let source = self.settings.inbox.source;
+        let tab = |id: SharedString, icon: AnyElement, label: &'static str, selected: bool| {
+            div()
+                .id(id)
+                .h(px(24.0))
+                .flex_1()
+                .min_w(px(0.0))
+                .rounded(px(5.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.0))
+                .cursor_pointer()
+                .text_size(px(12.0))
+                .text_color(if selected {
+                    colors().foreground
+                } else {
+                    colors().muted
+                })
+                .when(selected, |tab| {
+                    tab.bg(surface_tint(colors().selection, colors().background))
+                })
+                .hover(|tab| tab.bg(surface_tint(colors().hover, colors().background)))
+                .child(icon)
+                .child(div().truncate().child(label))
+        };
+        div()
+            .h(px(36.0))
+            .px_2()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_1()
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .child(
+                tab(
+                    "inbox-tab-repository".into(),
+                    svg()
+                        .path("chrome-icons/git-branch.svg")
+                        .size(px(14.0))
+                        .flex_none()
+                        .text_color(colors().muted)
+                        .into_any_element(),
+                    "Repository",
+                    repository,
+                )
+                .tooltip(|_, cx| sidebar_tooltip("Branches, stashes, and worktrees (G)", cx))
+                .on_click(cx.listener(|this, _, _, cx| this.show_repository_view(true, cx))),
+            )
+            .children(
+                [WorkSource::GitHub, WorkSource::Linear]
+                    .into_iter()
+                    .filter(|provider| {
+                        *provider == WorkSource::GitHub
+                            || self.work_inbox.feed(*provider).connected == Some(true)
+                    })
+                    .map(|provider| {
+                        tab(
+                            SharedString::from(format!("inbox-tab-{provider:?}")),
+                            provider_icon(provider, 14.0).into_any_element(),
+                            provider.label(),
+                            !repository && source == provider,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.show_repository_view(false, cx);
+                            if this.settings.inbox.source != provider {
+                                this.select_work_source(provider, cx);
+                            }
+                        }))
+                    }),
+            )
+            .child(
+                icon_button(
+                    "inbox-connections",
+                    "chrome-icons/plus.svg",
+                    "Add connection",
+                )
+                .on_click(cx.listener(|this, event, _, cx| {
+                    this.open_inbox_menu(InboxMenu::Connections, event, cx)
+                })),
+            )
+    }
+
+    fn inbox_filter_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let source = self.settings.inbox.source;
+        let feed = self.work_inbox.feed(source);
+        div()
+            .h(px(36.0))
+            .flex_none()
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .child(
+                div()
+                    .id("inbox-filter-input")
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h(px(28.0))
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_text()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.focus_inbox_search(window, cx);
+                    }))
+                    .child(
+                        svg()
+                            .path("chrome-icons/search.svg")
+                            .size(px(12.0))
+                            .flex_none()
+                            .text_color(colors().subtle),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(12.0))
+                            .text_color(if self.work_inbox.search_editing {
+                                colors().foreground
+                            } else {
+                                colors().muted
+                            })
+                            .child(if self.work_inbox.filter.query.is_empty() {
+                                "Filter Review".into()
+                            } else {
+                                self.work_inbox.filter.query.clone()
+                            }),
+                    ),
+            )
+            .child(
+                icon_button("inbox-filter-menu", "chrome-icons/filter.svg", "Filters")
+                    .when(
+                        self.settings.inbox.filters_active()
+                            || self.work_inbox.filter.project.is_some(),
+                        |button| button.bg(surface_tint(colors().selection, colors().background)),
+                    )
+                    .on_click(cx.listener(|this, event, _, cx| {
+                        this.open_inbox_menu(InboxMenu::Filters, event, cx)
+                    })),
+            )
+            .child(
+                icon_button(
+                    "inbox-read-all",
+                    "chrome-icons/check-all.svg",
+                    "Mark all as read",
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    for item in &this.work_inbox.feed(source).items {
+                        this.settings.inbox.mark_seen(item);
+                    }
+                    this.persist_settings(cx);
+                })),
+            )
+            .child(
+                icon_button(
+                    "inbox-refresh",
+                    "chrome-icons/refresh.svg",
+                    if feed.loading {
+                        "Refreshing…"
+                    } else {
+                        "Refresh (R)"
+                    },
+                )
+                .when(feed.loading, |button| button.opacity(0.4))
+                .on_click(cx.listener(move |this, _, _, cx| this.refresh_inbox(cx))),
+            )
+    }
+
+    fn inbox_task_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let feed = self.work_inbox.feed(self.settings.inbox.source);
+        let groups = self.grouped_inbox_items();
+        let mut list = div()
+            .id("inbox-list-scroll")
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .track_scroll(&self.work_inbox.list_scroll)
+            .p(px(6.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0));
+        if let Some(error) = &feed.error {
+            list = list.child(message(error, true));
+        }
+        if feed.loading && feed.items.is_empty() {
+            list = list.child(message("Loading Review…", false));
+        } else if groups.is_empty() {
+            list = list.child(message(
+                if feed.connected == Some(false) {
+                    "Add a connection to get started."
+                } else if self.settings.inbox.filters_active()
+                    || self.work_inbox.filter.project.is_some()
+                    || !self.work_inbox.filter.query.is_empty()
+                {
+                    "No tasks match these filters."
+                } else {
+                    "No issues or pull requests in your projects."
+                },
+                false,
+            ));
+        }
+        // One group needs no heading: the list reads as before.
+        let grouped = groups.len() > 1;
+        for (relation, items) in groups {
+            let collapsed = grouped && self.work_inbox.collapsed_groups.contains(&relation);
+            if grouped {
+                list = list.child(
+                    div()
+                        .id(SharedString::from(format!("inbox-group-{relation:?}")))
+                        .h(px(26.0))
+                        .px(px(6.0))
+                        .mt(px(4.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .rounded(px(5.0))
+                        .cursor_pointer()
+                        .hover(|row| row.bg(surface_tint(colors().hover, colors().background)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.work_inbox.collapsed_groups.remove(&relation) {
+                                this.work_inbox.collapsed_groups.insert(relation);
+                            }
+                            this.sync_inbox_selection(cx);
+                            cx.notify();
+                        }))
+                        .child(
+                            svg()
+                                .path(if collapsed {
+                                    "chrome-icons/chevron-right.svg"
+                                } else {
+                                    "chrome-icons/chevron-down.svg"
+                                })
+                                .size(px(12.0))
+                                .text_color(colors().subtle),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(10.5))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(colors().muted)
+                                .child(relation.label().to_uppercase()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(colors().subtle)
+                                .child(items.len().to_string()),
+                        ),
+                );
+            }
+            if collapsed {
+                continue;
+            }
+            for item in items {
+                list = list.child(self.inbox_task_card(item, cx));
+            }
+        }
+        if feed.truncated {
+            list = list.child(message(
+                "The result limit was reached. Adjust filters to find other tasks.",
+                false,
+            ));
+        }
+        list
+    }
+
+    pub(super) fn refresh_inbox(&mut self, cx: &mut Context<Self>) {
+        if self.settings.inbox.repository_view {
+            if let Some(root) = self.repository_root() {
+                self.refresh_local_repo(root, true, cx);
+            }
+            self.refresh_diff_views(cx);
+            return;
+        }
+        let source = self.settings.inbox.source;
+        self.refresh_work_source(source, true, cx);
+        self.load_inbox_detail(true, cx);
+        self.refresh_inbox_repos(true, cx);
+    }
+
+    pub(super) fn focus_inbox_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.work_inbox.search_editing = true;
+        self.work_inbox.comment_editing = false;
+        self.work_inbox.composer_editing = false;
+        self.work_inbox.repository.stash_editing = false;
+        if let Some(url) = self.work_inbox.selected.clone() {
+            self.work_inbox
+                .details
+                .entry(url)
+                .or_default()
+                .review_draft
+                .editing = false;
+        }
+        self.focus_handle.focus(window);
+        cx.notify();
     }
 
     fn inbox_task_card(&self, item: &WorkItem, cx: &mut Context<Self>) -> AnyElement {
@@ -351,6 +497,7 @@ impl WorkspaceView {
             .linked_sessions
             .get(&url)
             .is_some_and(|panes| panes.iter().any(|pane| self.terminals.contains_key(pane)));
+        let (_, local) = self.local_pull(item);
         div()
             .id(SharedString::from(format!("inbox-item-{url}")))
             .px(px(10.0))
@@ -410,6 +557,9 @@ impl WorkspaceView {
                     .truncate()
                     .child(item.title.clone()),
             )
+            .when_some(item.pull.as_ref(), |card, pull| {
+                card.child(pull_facts(pull, local))
+            })
             .child(
                 div()
                     .flex()
@@ -609,11 +759,13 @@ impl WorkspaceView {
                             let seen = std::mem::take(&mut this.settings.inbox.seen);
                             let linked_sessions =
                                 std::mem::take(&mut this.settings.inbox.linked_sessions);
+                            let repository_view = this.settings.inbox.repository_view;
                             this.settings.inbox = InboxPreferences {
                                 source,
                                 seen,
                                 linked_sessions,
                                 list_width: width,
+                                repository_view,
                                 ..Default::default()
                             };
                             this.work_inbox.filter = WorkFilter::default();
@@ -682,9 +834,43 @@ impl WorkspaceView {
                             })),
                     );
             }
+            InboxMenu::Shortcuts => {
+                content = content.child(menu_heading("KEYBOARD"));
+                for (label, keys) in SHORTCUTS {
+                    content = content.child(
+                        MenuRow::new(*label)
+                            .shortcut(keys)
+                            .render(SharedString::from(format!("shortcut-{label}"))),
+                    );
+                }
+            }
+            InboxMenu::RepositoryProjects => {
+                content = content.child(menu_heading("REPOSITORY"));
+                let current = self.repository_project();
+                for project in self
+                    .snapshot
+                    .listed_projects()
+                    .filter(|project| project.directory().is_some())
+                {
+                    let id = project.id;
+                    content = content.child(
+                        MenuRow::new(project.name.clone())
+                            .checked(current == Some(id))
+                            .render(SharedString::from(format!("repository-project-{id}")))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_repository_project(id, cx);
+                            })),
+                    );
+                }
+            }
             InboxMenu::PrActions => {
                 let item = self.selected_work_item()?;
-                for action in available_pr_actions(item) {
+                let detail = self
+                    .work_inbox
+                    .details
+                    .get(&item.url)
+                    .and_then(|state| state.summary.data.as_ref());
+                for action in merge::available_pr_actions(item, detail) {
                     let url = item.url.clone();
                     content = content.child(
                         MenuRow::new(action.label())
@@ -726,6 +912,23 @@ impl WorkspaceView {
         )
     }
 }
+
+/// Review keyboard shortcuts, shown by `?` and the keyboard button.
+pub(super) const SHORTCUTS: &[(&str, &str)] = &[
+    ("Next task", "J"),
+    ("Previous task", "K"),
+    ("Summary, Code, Commits, Checks", "1–4"),
+    ("Next file", "]"),
+    ("Previous file", "["),
+    ("Mark file viewed", "V"),
+    ("Check out", "C"),
+    ("Open in worktree", "W"),
+    ("Open on GitHub", "O"),
+    ("Refresh", "R"),
+    ("Filter", "/"),
+    ("Repository view", "G"),
+    ("Shortcuts", "?"),
+];
 
 fn icon_button(
     id: &'static str,
@@ -782,6 +985,72 @@ fn label_chip(label: &str) -> gpui::Div {
         .child(label.to_owned())
 }
 
+/// One scannable line of a pull request card: size, CI, review, conflicts,
+/// and where it stands locally.
+fn pull_facts(pull: &PullSummary, local: super::local::LocalPull<'_>) -> impl IntoElement {
+    use super::local::LocalPull;
+    let chip = |label: &'static str, color: Rgba| {
+        div()
+            .flex_none()
+            .px(px(5.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(colors().border_subtle)
+            .text_size(px(10.0))
+            .text_color(color)
+            .child(label)
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .text_size(px(11.0))
+        .text_color(colors().subtle)
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .text_color(colors().diff_added)
+                        .child(format!("+{}", pull.additions)),
+                )
+                .child(
+                    div()
+                        .text_color(colors().diff_deleted)
+                        .child(format!("−{}", pull.deletions)),
+                ),
+        )
+        .when(pull.checks != CheckRollup::None, |row| {
+            row.child(checks::check_status_icon(
+                pull.checks == CheckRollup::Failing,
+                pull.checks == CheckRollup::Passing,
+                12.0,
+            ))
+        })
+        .when(pull.review_decision == "APPROVED", |row| {
+            row.child(chip("Approved", colors().success))
+        })
+        .when(pull.review_decision == "CHANGES_REQUESTED", |row| {
+            row.child(chip("Changes requested", colors().danger))
+        })
+        .when(pull.mergeable == "CONFLICTING", |row| {
+            row.child(chip("Conflicts", colors().warning))
+        })
+        .child(div().flex_1())
+        .map(|row| match local {
+            LocalPull::Branch { current: true, .. } => {
+                row.child(chip("Checked out", colors().accent))
+            }
+            LocalPull::Branch {
+                worktree: Some(_), ..
+            } => row.child(chip("Worktree", colors().accent)),
+            LocalPull::Branch { .. } => row.child(chip("Local", colors().muted)),
+            _ => row,
+        })
+}
+
 fn short_time(at: u64) -> String {
     let value = relative_time(unix_now(), at);
     value.strip_suffix(" ago").unwrap_or(&value).to_owned()
@@ -799,20 +1068,5 @@ fn status_mark(item: &WorkItem) -> (&'static str, Rgba) {
             ("chrome-icons/git-pull-request.svg", colors().success)
         }
         WorkStatus::Open => ("chrome-icons/issue-open.svg", colors().success),
-    }
-}
-
-fn available_pr_actions(item: &WorkItem) -> Vec<PrAction> {
-    match item.status {
-        WorkStatus::Merged => vec![],
-        WorkStatus::Closed => vec![PrAction::Reopen],
-        WorkStatus::Draft => vec![PrAction::Ready, PrAction::Close],
-        WorkStatus::Open => vec![
-            PrAction::Merge,
-            PrAction::Squash,
-            PrAction::Rebase,
-            PrAction::Draft,
-            PrAction::Close,
-        ],
     }
 }

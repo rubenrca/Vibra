@@ -1602,3 +1602,102 @@ fn stage_and_unstage_move_whole_files_between_groups() {
     assert!(port.stage(&root, &["../outside".into()]).is_err());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn repository_refs_list_branches_stashes_tags_and_worktrees() {
+    use crate::ports::git::GitRefAction;
+    let root = repository();
+    let port = GitCliPort::default();
+    git(&root, &["branch", "-M", "main"]);
+    git(&root, &["switch", "-qc", "feature/search"]);
+    fs::write(root.join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+    git(&root, &["commit", "-qam", "Add search"]);
+    git(&root, &["tag", "-a", "v1", "-m", "First release"]);
+    git(&root, &["switch", "-q", "main"]);
+    fs::write(root.join("draft.txt"), "draft\n").unwrap();
+    port.run_ref_action(
+        &root,
+        &GitRefAction::Stash {
+            message: "Keep draft".into(),
+        },
+    )
+    .unwrap();
+    assert!(!root.join("draft.txt").exists());
+
+    let refs = port.repository_refs(&root).unwrap().unwrap();
+    assert_eq!(refs.current, "main");
+    assert_eq!(refs.changes, 0);
+    let feature = refs.branch("feature/search").unwrap();
+    assert_eq!(feature.subject, "Add search");
+    assert!(!feature.current && refs.branch("main").unwrap().current);
+    assert_eq!(refs.stashes.len(), 1);
+    assert!(refs.stashes[0].subject.contains("Keep draft"));
+    assert_eq!(refs.tags[0].name, "v1");
+    assert_eq!(refs.tags[0].target, feature.head);
+    assert_eq!(refs.worktrees.len(), 1);
+    assert!(refs.worktrees[0].main);
+
+    let commits = port.log_range(&root, "main", "feature/search", 50).unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].subject, "Add search");
+    assert!(port.log_range(&root, "main", "--all", 50).is_err());
+
+    port.run_ref_action(&root, &GitRefAction::StashPop(0))
+        .unwrap();
+    assert!(root.join("draft.txt").exists());
+    let refs = port.repository_refs(&root).unwrap().unwrap();
+    assert!(refs.stashes.is_empty());
+    assert_eq!(refs.changes, 1);
+
+    let tree = std::env::temp_dir().join(format!("vibra-tree-{}", Uuid::new_v4()));
+    port.run_ref_action(&root, &GitRefAction::AddWorktree(tree.clone()))
+        .unwrap();
+    git(&tree, &["switch", "-q", "feature/search"]);
+    let refs = port.repository_refs(&root).unwrap().unwrap();
+    assert_eq!(refs.worktrees.len(), 2);
+    assert!(refs.worktree_for("feature/search").is_some_and(|worktree| {
+        worktree.path.canonicalize().unwrap() == tree.canonicalize().unwrap()
+    }));
+    // A branch checked out in another worktree cannot be switched to or deleted.
+    assert!(
+        port.run_ref_action(&root, &GitRefAction::Switch("feature/search".into()))
+            .is_err()
+    );
+    port.run_ref_action(&root, &GitRefAction::RemoveWorktree(tree.clone()))
+        .unwrap();
+    assert!(!tree.exists());
+    port.run_ref_action(&root, &GitRefAction::Switch("feature/search".into()))
+        .unwrap();
+    assert_eq!(
+        port.repository_refs(&root).unwrap().unwrap().current,
+        "feature/search"
+    );
+    port.run_ref_action(&root, &GitRefAction::Switch("main".into()))
+        .unwrap();
+    assert!(
+        port.run_ref_action(
+            &root,
+            &GitRefAction::DeleteBranch {
+                name: "feature/search".into(),
+                force: false,
+            },
+        )
+        .is_err(),
+        "unmerged branches need an explicit force"
+    );
+    port.run_ref_action(
+        &root,
+        &GitRefAction::DeleteBranch {
+            name: "feature/search".into(),
+            force: true,
+        },
+    )
+    .unwrap();
+    assert!(
+        port.repository_refs(&root)
+            .unwrap()
+            .unwrap()
+            .branch("feature/search")
+            .is_none()
+    );
+}

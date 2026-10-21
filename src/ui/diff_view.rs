@@ -38,6 +38,7 @@ use gpui::{
 
 use uuid::Uuid;
 
+use crate::domain::work_items::FileViewed;
 use crate::ports::files::FileSystemPort;
 use crate::ports::git::{
     GitBranchChanges, GitBranchRef, GitCommit, GitCommitChanges, GitDiffRow, GitDiffRowKind,
@@ -45,7 +46,8 @@ use crate::ports::git::{
 };
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::diff_rows::{
-    BodyRow, CommentAnchor, DiffLayout, FoldReveal, ReviewComment, ReviewRow, review_prompt,
+    BodyRow, CommentAnchor, DiffLayout, FoldReveal, RemoteThread, ReviewComment, ReviewRow,
+    review_prompt,
 };
 use crate::ui::file_view::FileView;
 use crate::ui::git_graph::GitGraphRow;
@@ -134,6 +136,7 @@ enum RowKey {
     Body(String, usize),
     ContextFold(String, usize),
     Comment(u64),
+    Thread(String),
     Draft,
     Folding(String),
 }
@@ -173,6 +176,12 @@ impl RowMetrics {
 pub struct DiffView {
     external: Option<ExternalDiffSource>,
     full_file: bool,
+    /// GitHub's per-user "Viewed" marks; `None` hides the checkbox.
+    viewed: Option<HashMap<String, FileViewed>>,
+    /// Published remote conversations, shown read-only under their line.
+    remote_threads: Vec<RemoteThread>,
+    /// Shown inside another page: no terminal split and no Escape to close.
+    embedded: bool,
     context_root: PathBuf,
     mode: GitPanelMode,
     mode_menu_open: bool,
@@ -352,6 +361,8 @@ pub enum DiffViewEvent {
     ReviewOpened,
     /// Open a terminal session that runs this command in the repository.
     RunInTerminal { title: String, command: String },
+    /// The user checked or cleared a file's "Viewed" mark.
+    ToggleViewed { path: String, viewed: bool },
 }
 
 impl EventEmitter<DiffViewEvent> for DiffView {}
@@ -378,6 +389,9 @@ impl DiffView {
         Self {
             external: None,
             full_file: false,
+            viewed: None,
+            remote_threads: Vec::new(),
+            embedded: false,
             context_root,
             mode: GitPanelMode::Worktree,
             mode_menu_open: false,
@@ -476,6 +490,152 @@ impl DiffView {
         if wrap {
             self.h_offset = 0.0;
         }
+        cx.notify();
+    }
+
+    /// Show the per-file "Viewed" checkbox with these marks, or hide it.
+    pub(crate) fn set_viewed(
+        &mut self,
+        viewed: Option<HashMap<String, FileViewed>>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.viewed != viewed {
+            self.viewed = viewed;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_remote_threads(
+        &mut self,
+        threads: Vec<RemoteThread>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.remote_threads != threads {
+            self.remote_threads = threads;
+            cx.notify();
+        }
+    }
+
+    /// The review lives inside another page instead of a terminal tab.
+    pub(crate) fn set_embedded(&mut self, cx: &mut Context<Self>) {
+        self.embedded = true;
+        self.review_expanded = true;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn viewed_marks(&self) -> HashMap<String, FileViewed> {
+        self.viewed.clone().unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remote_thread_ids(&self) -> Vec<String> {
+        self.remote_threads
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect()
+    }
+
+    /// Saved review comments, in file and line order. An open draft is not
+    /// one until [`DiffView::save_draft`] keeps it.
+    pub(crate) fn review_comments(&self) -> &[ReviewComment] {
+        &self.comments
+    }
+
+    /// Keep the draft being written as a comment, as Enter would.
+    pub(crate) fn save_draft(&mut self, cx: &mut Context<Self>) {
+        if self.draft.is_some() {
+            self.commit_draft();
+            cx.notify();
+        }
+    }
+
+    /// Drop comments that were published elsewhere.
+    pub(crate) fn remove_comments(&mut self, ids: &[u64], cx: &mut Context<Self>) {
+        self.comments.retain(|comment| !ids.contains(&comment.id));
+        cx.notify();
+    }
+
+    /// Expand a file and scroll its header to the top.
+    pub(crate) fn reveal_path(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.file_preview = None;
+        self.selected_review_path = Some(path.to_owned());
+        self.pending_reveal = Some(path.to_owned());
+        self.expand_path(path.to_owned(), cx);
+        cx.notify();
+    }
+
+    /// The file whose rows are at the top of the review.
+    pub(crate) fn current_path(&self) -> Option<String> {
+        let top = self.list_state.logical_scroll_top();
+        self.rows
+            .get(top.item_ix)
+            .and_then(|row| row.file())
+            .and_then(|file| self.row_files.get(file))
+            .map(|change| change.path.clone())
+            .or_else(|| self.selected_review_path.clone())
+    }
+
+    /// Move to the next (`1`) or previous (`-1`) file.
+    pub(crate) fn step_file(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let paths: Vec<String> = self
+            .ordered_file_refs()
+            .map(|change| change.path.clone())
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let current = self
+            .current_path()
+            .and_then(|path| paths.iter().position(|candidate| *candidate == path));
+        let next = match current {
+            Some(index) => index.saturating_add_signed(delta).min(paths.len() - 1),
+            None => 0,
+        };
+        let path = paths[next].clone();
+        self.reveal_path(&path, cx);
+    }
+
+    /// Check or clear the "Viewed" mark. A viewed file folds away.
+    pub(crate) fn toggle_viewed(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(viewed) = self.viewed.as_mut() else {
+            return;
+        };
+        let now = viewed.get(path) != Some(&FileViewed::Viewed);
+        viewed.insert(
+            path.to_owned(),
+            if now {
+                FileViewed::Viewed
+            } else {
+                FileViewed::Unviewed
+            },
+        );
+        if now && self.expanded.contains(path) {
+            self.toggle_path(path.to_owned(), cx);
+        }
+        cx.emit(DiffViewEvent::ToggleViewed {
+            path: path.to_owned(),
+            viewed: now,
+        });
+        cx.notify();
+    }
+
+    /// Open one saved commit in this review, for pages that list commits.
+    pub(crate) fn show_commit(&mut self, commit: GitCommit, cx: &mut Context<Self>) {
+        if self.mode != GitPanelMode::History {
+            self.set_mode(GitPanelMode::History, cx);
+        }
+        self.return_to_worktree = false;
+        self.select_commit(commit, cx);
+    }
+
+    /// Return an embedded review to the working tree.
+    pub(crate) fn show_worktree(&mut self, cx: &mut Context<Self>) {
+        self.file_preview = None;
+        if self.mode != GitPanelMode::Worktree {
+            self.set_mode(GitPanelMode::Worktree, cx);
+        }
+        self.review_expanded = true;
         cx.notify();
     }
 
@@ -833,7 +993,11 @@ impl DiffView {
         }
         let modifiers = &event.keystroke.modifiers;
         let Some(draft) = self.draft.as_mut() else {
-            if self.external.is_none() && self.review_expanded && matches!(key, "escape" | "esc") {
+            if self.external.is_none()
+                && !self.embedded
+                && self.review_expanded
+                && matches!(key, "escape" | "esc")
+            {
                 self.set_review_expanded(false, cx);
                 cx.emit(DiffViewEvent::ReturnToTerminal);
                 cx.stop_propagation();

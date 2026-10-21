@@ -198,6 +198,48 @@ impl WorkspaceView {
         .detach();
     }
 
+    /// Select the project for `root`, adding it (named `name`) when it is new,
+    /// and show a terminal tab in it.
+    pub(super) fn open_folder_project(
+        &mut self,
+        root: &Path,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Uuid {
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let existing = self
+            .snapshot
+            .listed_projects()
+            .find(|project| {
+                project.directory().is_some_and(|path| {
+                    Path::new(path)
+                        .canonicalize()
+                        .is_ok_and(|path| path == canonical)
+                })
+            })
+            .map(|project| project.id);
+        let id = match existing {
+            Some(id) => {
+                self.snapshot.select_project(id);
+                id
+            }
+            None => {
+                let id = self.snapshot.add_project(&canonical);
+                self.snapshot.rename_project(id, name);
+                id
+            }
+        };
+        if self.snapshot.selected_workspace().is_none() {
+            self.snapshot.open_tab_in_project(id, true);
+        }
+        self.right_sidebar_mode = RightSidebarMode::Files;
+        self.set_left_sidebar_visible(true, true, cx);
+        self.reconcile_terminal_views(cx);
+        self.show_terminal_tab(window, cx);
+        id
+    }
+
     /// Opens a terminal tab in the project, asking for its folder first
     /// when a migrated project has none.
     pub(super) fn open_project_tab(

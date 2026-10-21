@@ -100,6 +100,16 @@ pub struct ReviewComment {
     pub body: String,
 }
 
+/// A read-only conversation already published on the remote review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteThread {
+    pub id: String,
+    pub anchor: CommentAnchor,
+    pub resolved: bool,
+    /// Author and body of each comment, oldest first.
+    pub comments: Vec<(String, String)>,
+}
+
 /// One row of a file body, indexing the prepared diff rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyRow {
@@ -137,6 +147,11 @@ pub enum ReviewRow {
         file: usize,
         comment: usize,
     },
+    /// A published remote thread on the line above.
+    Thread {
+        file: usize,
+        thread: usize,
+    },
     Draft {
         file: usize,
     },
@@ -154,6 +169,7 @@ impl ReviewRow {
             | Self::FileLoading { file }
             | Self::Body { file, .. }
             | Self::Comment { file, .. }
+            | Self::Thread { file, .. }
             | Self::Draft { file }
             | Self::Folding { file } => Some(file),
         }
@@ -173,10 +189,23 @@ pub struct FlattenFile<'a> {
     pub reveals: Option<&'a HashMap<usize, FoldReveal>>,
 }
 
+#[cfg(test)]
 pub fn flatten(
     files: &[FlattenFile<'_>],
     layout: DiffLayout,
     comments: &[ReviewComment],
+    draft: Option<&CommentAnchor>,
+) -> Vec<ReviewRow> {
+    flatten_with_threads(files, layout, comments, &[], draft)
+}
+
+/// Like [`flatten`], with published remote threads below the line they cite,
+/// before the user's own unsent comments.
+pub fn flatten_with_threads(
+    files: &[FlattenFile<'_>],
+    layout: DiffLayout,
+    comments: &[ReviewComment],
+    threads: &[RemoteThread],
     draft: Option<&CommentAnchor>,
 ) -> Vec<ReviewRow> {
     let mut out = Vec::new();
@@ -202,6 +231,11 @@ pub fn flatten(
             .enumerate()
             .filter(|(_, comment)| comment.anchor.path == entry.path)
             .collect();
+        let file_threads: Vec<(usize, &RemoteThread)> = threads
+            .iter()
+            .enumerate()
+            .filter(|(_, thread)| thread.anchor.path == entry.path)
+            .collect();
         let file_draft = draft.filter(|anchor| anchor.path == entry.path);
         let reveals = entry.reveals.unwrap_or(&no_reveals);
         for row in body_rows(rows, layout, entry.folds, reveals) {
@@ -218,6 +252,14 @@ pub fn flatten(
                 .flatten()
                 .chain(hidden.iter().filter_map(line_anchor))
             {
+                for (index, thread) in &file_threads {
+                    if thread.anchor.side == side && thread.anchor.line == line {
+                        out.push(ReviewRow::Thread {
+                            file,
+                            thread: *index,
+                        });
+                    }
+                }
                 for (index, comment) in &file_comments {
                     if comment.anchor.side == side && comment.anchor.line == line {
                         out.push(ReviewRow::Comment {
@@ -624,6 +666,63 @@ mod tests {
                 comment: 0
             }
         );
+    }
+
+    #[test]
+    fn remote_threads_sit_below_their_line_before_local_comments() {
+        let rows = sample();
+        let files = [FlattenFile {
+            path: "a.rs",
+            starts_staged_section: false,
+            expanded: true,
+            folding: false,
+            rows: Some(&rows),
+            folds: &[],
+            reveals: None,
+        }];
+        let anchor = |line| CommentAnchor {
+            path: "a.rs".into(),
+            side: CommentSide::New,
+            line,
+        };
+        let comment = ReviewComment {
+            id: 1,
+            anchor: anchor(2),
+            excerpt: String::new(),
+            body: "Mine".into(),
+        };
+        let thread = RemoteThread {
+            id: "T1".into(),
+            anchor: anchor(2),
+            resolved: false,
+            comments: vec![("ana".into(), "Theirs".into())],
+        };
+        let other = RemoteThread {
+            anchor: CommentAnchor {
+                path: "b.rs".into(),
+                ..anchor(2)
+            },
+            ..thread.clone()
+        };
+        let out = flatten_with_threads(
+            &files,
+            DiffLayout::Unified,
+            std::slice::from_ref(&comment),
+            &[thread, other],
+            None,
+        );
+        let thread_at = out
+            .iter()
+            .position(|row| *row == ReviewRow::Thread { file: 0, thread: 0 })
+            .unwrap();
+        assert_eq!(
+            out[thread_at + 1],
+            ReviewRow::Comment {
+                file: 0,
+                comment: 0
+            }
+        );
+        assert!(!out.contains(&ReviewRow::Thread { file: 0, thread: 1 }));
     }
 
     #[test]

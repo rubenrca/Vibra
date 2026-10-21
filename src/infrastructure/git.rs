@@ -1,4 +1,5 @@
 mod capture;
+mod catalog;
 mod command;
 mod parsing;
 mod port;

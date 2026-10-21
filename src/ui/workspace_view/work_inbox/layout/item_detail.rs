@@ -192,7 +192,8 @@ impl WorkspaceView {
                     )
                 })
                 .when(
-                    item.kind == WorkKind::PullRequest && item.status != WorkStatus::Merged,
+                    item.kind == WorkKind::PullRequest
+                        && !super::merge::available_pr_actions(item, summary).is_empty(),
                     |row| {
                         row.child(
                             section_button(
@@ -212,6 +213,7 @@ impl WorkspaceView {
                         )
                     },
                 )
+                .children(self.inbox_local_controls(item, cx))
                 .child(
                     detail_action("inbox-ask", "chrome-icons/comment.svg", "Ask", true).on_click(
                         cx.listener(|this, _, window, cx| this.open_inbox_discussion(window, cx)),
@@ -231,6 +233,9 @@ impl WorkspaceView {
                     .on_click(move |_, _, cx| cx.open_url(&url)),
                 ),
         );
+        if let Some(feedback) = self.inbox_local_feedback(&item.url) {
+            header = header.child(feedback);
+        }
         if let Some(PrConfirmation {
             url: key, action, ..
         }) = &self.work_inbox.confirmation
@@ -252,16 +257,30 @@ impl WorkspaceView {
                         item.repository,
                         item.reference
                     )))
-                    .child(div().text_size(px(11.0)).text_color(colors().muted).child(
-                        if matches!(
-                            action,
-                            PrAction::Merge | PrAction::Squash | PrAction::Rebase
-                        ) {
-                            "This action merges changes into the remote repository's base branch."
-                        } else {
-                            "This action updates the pull request status on GitHub."
-                        },
-                    ))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(colors().muted)
+                            .child(action.consequence()),
+                    )
+                    .children(
+                        super::merge::merge_warnings(
+                            *action,
+                            summary,
+                            state.and_then(|state| state.checks.data.as_deref()),
+                        )
+                        .into_iter()
+                        .map(|warning| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .text_size(px(11.5))
+                                .text_color(colors().warning)
+                                .child(checks::check_status_icon(true, false, 12.0))
+                                .child(warning)
+                        }),
+                    )
                     .when_some(
                         state.and_then(|state| state.mutation_error.as_ref()),
                         |row, error| row.child(message(error, true)),
@@ -301,61 +320,74 @@ impl WorkspaceView {
                     .mt(px(4.0))
                     .h(px(44.0))
                     .children(
-                        [
-                            (DetailTab::Summary, "Summary"),
-                            (DetailTab::Code, "Code"),
-                            (DetailTab::Checks, "Checks"),
-                        ]
-                        .into_iter()
-                        .map(|(tab, label)| {
-                            let selected = self.work_inbox.detail_tab == tab;
-                            div()
-                                .id(SharedString::from(format!("inbox-detail-{label}")))
-                                .h_full()
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .cursor_pointer()
-                                .text_size(px(13.0))
-                                .text_color(if selected {
-                                    colors().foreground
-                                } else {
-                                    colors().subtle
-                                })
-                                .hover(|tab| tab.text_color(colors().foreground))
-                                .border_b_2()
-                                .border_color(if selected {
-                                    colors().foreground
-                                } else {
-                                    gpui::rgba(0x00000000)
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.select_inbox_detail_tab(tab, cx)
-                                }))
-                                .child(label)
-                                .when(tab == DetailTab::Checks, |tab| {
-                                    tab.when_some(
-                                        checks.filter(|checks| !checks.is_empty()),
-                                        |tab, checks| {
-                                            let failed = checks.iter().any(|check| check.failed());
-                                            let passed = checks.iter().all(|check| check.passed());
-                                            tab.child(checks::check_status_icon(
-                                                failed, passed, 15.0,
-                                            ))
-                                        },
-                                    )
-                                })
-                        }),
+                        DetailTab::ALL
+                            .into_iter()
+                            .map(|tab| (tab, tab.label()))
+                            .map(|(tab, label)| {
+                                let selected = self.work_inbox.detail_tab == tab;
+                                div()
+                                    .id(SharedString::from(format!("inbox-detail-{label}")))
+                                    .h_full()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .cursor_pointer()
+                                    .text_size(px(13.0))
+                                    .text_color(if selected {
+                                        colors().foreground
+                                    } else {
+                                        colors().subtle
+                                    })
+                                    .hover(|tab| tab.text_color(colors().foreground))
+                                    .border_b_2()
+                                    .border_color(if selected {
+                                        colors().foreground
+                                    } else {
+                                        gpui::rgba(0x00000000)
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.select_inbox_detail_tab(tab, cx)
+                                    }))
+                                    .child(label)
+                                    .when(tab == DetailTab::Commits, |tab| {
+                                        tab.when_some(
+                                            state
+                                                .and_then(|state| state.commits.data.as_ref())
+                                                .map(|commits| commits.total),
+                                            |tab, total| {
+                                                tab.child(
+                                                    div()
+                                                        .text_size(px(11.0))
+                                                        .text_color(colors().subtle)
+                                                        .child(total.to_string()),
+                                                )
+                                            },
+                                        )
+                                    })
+                                    .when(tab == DetailTab::Checks, |tab| {
+                                        tab.when_some(
+                                            checks.filter(|checks| !checks.is_empty()),
+                                            |tab, checks| {
+                                                let failed =
+                                                    checks.iter().any(|check| check.failed());
+                                                let passed =
+                                                    checks.iter().all(|check| check.passed());
+                                                tab.child(checks::check_status_icon(
+                                                    failed, passed, 15.0,
+                                                ))
+                                            },
+                                        )
+                                    })
+                            }),
                     )
-                    .child(div().flex_1())
-                    .when(self.work_inbox.detail_tab == DetailTab::Code, |row| {
-                        row.child(self.inbox_code_modes(state, cx))
-                    }),
+                    .child(div().flex_1()),
             );
         }
-        let code =
-            item.kind == WorkKind::PullRequest && self.work_inbox.detail_tab == DetailTab::Code;
+        let code = item.kind == WorkKind::PullRequest
+            && (self.work_inbox.detail_tab == DetailTab::Code
+                || (self.work_inbox.detail_tab == DetailTab::Commits
+                    && state.is_some_and(|state| state.selected_commit.is_some())));
         let mut body = div()
             .id(SharedString::from(format!(
                 "inbox-detail-scroll-{}-{}",
@@ -388,6 +420,9 @@ impl WorkspaceView {
             }
             DetailTab::Checks if item.kind == WorkKind::PullRequest => {
                 self.inbox_checks_body(item, state, cx)
+            }
+            DetailTab::Commits if item.kind == WorkKind::PullRequest => {
+                self.inbox_commits_body(item, state, cx)
             }
             _ => self.inbox_summary_body(item, state, cx),
         });
@@ -423,6 +458,9 @@ impl WorkspaceView {
         let mut content = div().flex().flex_col().gap_5();
         if let Some(error) = state.and_then(|state| state.summary.error.as_ref()) {
             content = content.child(message(error, true));
+        }
+        if let Some(merge) = self.inbox_merge_box(item, state, cx) {
+            content = content.child(merge);
         }
         let body = detail
             .map(|detail| detail.body.as_str())

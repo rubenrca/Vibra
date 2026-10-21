@@ -118,7 +118,11 @@ impl WorkspaceView {
             if !self.work_inbox.activity {
                 self.sync_inbox_selection(cx);
             }
+            if entering_inbox && self.settings.inbox.repository_view {
+                self.open_repository(cx);
+            }
         }
+        self.sync_repository_polling(cx);
         if section == WorkspaceSection::Workspace
             && !self.review_covers_terminal(cx)
             && let Some(session) = self.snapshot.selected_session()

@@ -545,3 +545,263 @@ fn work_inbox_missing_target_never_falls_back_to_another_project(cx: &mut gpui::
         .unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+fn key(text: &str) -> gpui::KeyDownEvent {
+    let mut keystroke = gpui::Keystroke::parse(text).unwrap();
+    if keystroke.key_char.is_none() && keystroke.key.chars().count() == 1 {
+        keystroke.key_char = Some(keystroke.key.clone());
+    }
+    gpui::KeyDownEvent {
+        keystroke,
+        is_held: false,
+    }
+}
+
+#[gpui::test]
+fn review_lists_group_by_relation_and_keys_walk_tasks_and_tabs(cx: &mut gpui::TestAppContext) {
+    use crate::domain::work_items::{WorkRelation, pull_fixture};
+    let (root, _, _, window) = open_recording_workspace(cx, "inbox-keys");
+    window
+        .update(cx, |view, window, cx| {
+            let mut other = pull_fixture();
+            other.url = "https://github.com/demo/app/pull/1".into();
+            other.updated_at = 300;
+            let mut review = pull_fixture();
+            review.url = "https://github.com/demo/app/pull/2".into();
+            review.relation = WorkRelation::ReviewRequested;
+            review.updated_at = 200;
+            let mut issue = fixture();
+            issue.relation = WorkRelation::Assigned;
+            issue.updated_at = 100;
+            view.work_inbox.github.items = vec![other.clone(), review.clone(), issue.clone()];
+            view.select_section(WorkspaceSection::Inbox, window, cx);
+            view.work_inbox.filter.project = None;
+            view.work_inbox.selected = None;
+            view.sync_inbox_selection(cx);
+            // Needs review comes first even though another task is newer.
+            assert_eq!(
+                view.ordered_inbox_items()
+                    .iter()
+                    .map(|item| item.url.as_str())
+                    .collect::<Vec<_>>(),
+                [review.url.as_str(), issue.url.as_str(), other.url.as_str()]
+            );
+            assert_eq!(
+                view.work_inbox.selected.as_deref(),
+                Some(review.url.as_str())
+            );
+
+            assert!(view.handle_inbox_key(&key("2"), window, cx));
+            assert!(view.work_inbox.detail_tab == DetailTab::Code);
+            assert!(view.handle_inbox_key(&key("j"), window, cx));
+            assert_eq!(
+                view.work_inbox.selected.as_deref(),
+                Some(issue.url.as_str())
+            );
+            // Issues only have a summary.
+            assert!(view.work_inbox.detail_tab == DetailTab::Summary);
+            assert!(view.handle_inbox_key(&key("j"), window, cx));
+            assert_eq!(
+                view.work_inbox.selected.as_deref(),
+                Some(other.url.as_str())
+            );
+            assert!(view.handle_inbox_key(&key("j"), window, cx));
+            assert_eq!(
+                view.work_inbox.selected.as_deref(),
+                Some(other.url.as_str())
+            );
+            assert!(view.handle_inbox_key(&key("3"), window, cx));
+            assert!(view.work_inbox.detail_tab == DetailTab::Commits);
+            assert!(view.handle_inbox_key(&key("k"), window, cx));
+            assert!(view.handle_inbox_key(&key("k"), window, cx));
+            // Pull request to pull request keeps the tab.
+            assert_eq!(
+                view.work_inbox.selected.as_deref(),
+                Some(review.url.as_str())
+            );
+
+            view.work_inbox
+                .collapsed_groups
+                .insert(WorkRelation::ReviewRequested);
+            view.sync_inbox_selection(cx);
+            assert_eq!(
+                view.work_inbox.selected.as_deref(),
+                Some(issue.url.as_str())
+            );
+            assert_eq!(view.inbox_card_child_index(&other.url), Some(4));
+
+            assert!(view.handle_inbox_key(&key("shift-/"), window, cx));
+            assert!(view.work_inbox.menu == Some(InboxMenu::Shortcuts));
+            assert!(view.handle_inbox_key(&key("escape"), window, cx));
+            assert!(view.work_inbox.menu.is_none());
+            // Typed text never triggers shortcuts.
+            view.work_inbox.search_editing = true;
+            assert!(view.handle_inbox_key(&key("j"), window, cx));
+            assert_eq!(view.work_inbox.filter.query, "j");
+            view.work_inbox.search_editing = false;
+            assert!(!view.handle_inbox_key(&key("cmd-j"), window, cx));
+
+            assert!(view.handle_inbox_key(&key("g"), window, cx));
+            assert!(view.settings.inbox.repository_view);
+            assert!(!view.handle_inbox_key(&key("j"), window, cx));
+            assert!(view.handle_inbox_key(&key("g"), window, cx));
+            assert!(!view.settings.inbox.repository_view);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn viewed_marks_and_threads_reach_the_pull_request_review(cx: &mut gpui::TestAppContext) {
+    use crate::domain::work_items::{FileViewed, WorkThread, pull_fixture};
+    let (root, _, _, window) = open_recording_workspace(cx, "inbox-viewed");
+    let item = pull_fixture();
+    window
+        .update(cx, |view, window, cx| {
+            view.work_inbox.github.items.push(item.clone());
+            view.select_section(WorkspaceSection::Inbox, window, cx);
+            view.select_work_item(&item.url, cx);
+            let state = view.work_inbox.details.entry(item.url.clone()).or_default();
+            state.summary.data = Some(WorkDetail {
+                head_oid: "b".repeat(40),
+                viewer_review_oid: "c".repeat(40),
+                viewed: [("src/lib.rs".to_owned(), FileViewed::Viewed)].into(),
+                threads: vec![
+                    WorkThread {
+                        id: "T1".into(),
+                        path: "src/lib.rs".into(),
+                        line: Some(3),
+                        ..Default::default()
+                    },
+                    WorkThread {
+                        id: "T2".into(),
+                        path: "src/lib.rs".into(),
+                        line: None,
+                        outdated: true,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            });
+            state.diff.data = Some(WorkDiff {
+                files: vec![crate::domain::work_items::WorkDiffFile {
+                    path: "src/lib.rs".into(),
+                    patch: "@@ -1,2 +1,3 @@\n a\n+b\n c".into(),
+                    ..Default::default()
+                }],
+                truncated: false,
+            });
+            view.sync_inbox_review(&item.url, cx);
+            assert_eq!(view.inbox_since_base(&item.url), Some("c".repeat(40)));
+            let review = view.work_inbox.details[&item.url].review.clone().unwrap();
+            let (viewed, threads) = {
+                let review = review.read(cx);
+                (review.viewed_marks(), review.remote_thread_ids())
+            };
+            assert_eq!(viewed.get("src/lib.rs"), Some(&FileViewed::Viewed));
+            assert_eq!(threads, ["T1"], "outdated threads stay in the summary");
+            // Unchecking shows at once, before GitHub answers.
+            view.work_inbox
+                .details
+                .get_mut(&item.url)
+                .unwrap()
+                .viewed_pending
+                .insert("src/lib.rs".into(), false);
+            view.sync_inbox_annotations(&item.url, cx);
+            assert_eq!(
+                review.read(cx).viewed_marks().get("src/lib.rs"),
+                Some(&FileViewed::Unviewed)
+            );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn repository_view_lists_branch_commits_and_confirms_destructive_actions(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::ports::git::{GitPort, GitRefAction};
+    let (root, _, _, window) = open_recording_workspace(cx, "inbox-repository");
+    let git = |arguments: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{arguments:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.name", "Vibra Test"]);
+    git(&["config", "user.email", "vibra@example.invalid"]);
+    std::fs::write(root.join("a.txt"), "one\n").unwrap();
+    git(&["add", "a.txt"]);
+    git(&["commit", "-qm", "First"]);
+    git(&["switch", "-qc", "feature"]);
+    std::fs::write(root.join("a.txt"), "two\n").unwrap();
+    git(&["commit", "-qam", "Second"]);
+    git(&["switch", "-q", "main"]);
+    let refs = crate::infrastructure::git::GitCliPort::default()
+        .repository_refs(&root)
+        .unwrap()
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            // Refreshes are off in tests; the project folder keys its refs.
+            view.work_inbox.repos.entry(root.clone()).or_default().refs =
+                Some(std::sync::Arc::new(refs.clone()));
+            view.select_section(WorkspaceSection::Inbox, window, cx);
+            view.show_repository_view(true, cx);
+            assert!(view.settings.inbox.repository_view);
+            assert!(view.work_inbox.repository.review.is_some());
+            assert_eq!(view.branch_base("feature"), "main");
+            view.select_repository_item(RepoSelection::Branch("feature".into()), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            let (name, commits) = view.work_inbox.repository.log.data.clone().unwrap();
+            assert_eq!(name, "feature");
+            assert_eq!(
+                commits
+                    .iter()
+                    .map(|commit| commit.subject.as_str())
+                    .collect::<Vec<_>>(),
+                ["Second"]
+            );
+            let delete = GitRefAction::DeleteBranch {
+                name: "feature".into(),
+                force: true,
+            };
+            view.request_repository_action(delete.clone(), window, cx);
+            assert!(view.work_inbox.repository.confirmation.is_some());
+            assert!(view.work_inbox.local_job.is_none(), "asks before deleting");
+            view.request_repository_action(delete, window, cx);
+            assert!(view.work_inbox.repository.confirmation.is_none());
+            assert!(view.work_inbox.local_job.is_some());
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, _| {
+            assert!(view.work_inbox.local_job.is_none());
+            assert!(
+                view.work_inbox
+                    .local_feedback
+                    .as_ref()
+                    .is_some_and(|(_, _, failed)| !failed),
+                "{:?}",
+                view.work_inbox.local_feedback
+            );
+            assert!(view.work_inbox.repository.selection == RepoSelection::Changes);
+            window.remove_window();
+        })
+        .unwrap();
+    assert!(git(&["branch", "--list", "feature"]).is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}

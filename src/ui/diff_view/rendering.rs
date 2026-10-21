@@ -217,14 +217,17 @@ impl DiffView {
                 !self.expanded.is_empty(),
                 cx.listener(|this, _, _, cx| this.collapse_all(cx)),
             ))
-            .when(self.external.is_none() && self.review_focused, |bar| {
-                bar.child(Self::toolbar_icon_button(
-                    "review-show-beside-terminal",
-                    "chrome-icons/split-view.svg",
-                    true,
-                    cx.listener(|this, _, _, cx| this.set_review_focused(false, cx)),
-                ))
-            })
+            .when(
+                self.external.is_none() && !self.embedded && self.review_focused,
+                |bar| {
+                    bar.child(Self::toolbar_icon_button(
+                        "review-show-beside-terminal",
+                        "chrome-icons/split-view.svg",
+                        true,
+                        cx.listener(|this, _, _, cx| this.set_review_focused(false, cx)),
+                    ))
+                },
+            )
             .when(comments > 0, |bar| {
                 bar.child(
                     div()

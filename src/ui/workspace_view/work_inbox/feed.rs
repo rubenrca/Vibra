@@ -4,7 +4,7 @@ use std::time::Duration;
 use gpui::{Context, Timer, prelude::*};
 use uuid::Uuid;
 
-use crate::domain::work_items::{WorkFilter, WorkItem, WorkSource};
+use crate::domain::work_items::{WorkFilter, WorkItem, WorkRelation, WorkSource};
 use crate::infrastructure::work_items::{self, InboxProject, WorkQuery};
 
 use super::{DetailTab, WorkspaceSection, WorkspaceView};
@@ -45,21 +45,54 @@ impl WorkspaceView {
         self.inbox_filters_changed(cx);
     }
 
-    pub(crate) fn sync_inbox_selection(&mut self, cx: &mut Context<Self>) {
-        let selected = self.work_inbox.selected.as_deref();
-        let mut visible = self
+    /// Tasks that pass the filters, grouped by why they concern the user.
+    /// Every group keeps the feed's newest-first order.
+    pub(crate) fn grouped_inbox_items(&self) -> Vec<(WorkRelation, Vec<&WorkItem>)> {
+        let mut groups: Vec<(WorkRelation, Vec<&WorkItem>)> = WorkRelation::ALL
+            .into_iter()
+            .map(|relation| (relation, Vec::new()))
+            .collect();
+        for item in self
             .work_inbox
             .feed(self.settings.inbox.source)
             .items
             .iter()
-            .filter(|item| self.work_inbox.filter.matches(item, &self.settings.inbox));
+            .filter(|item| self.work_inbox.filter.matches(item, &self.settings.inbox))
+        {
+            if let Some((_, items)) = groups
+                .iter_mut()
+                .find(|(relation, _)| *relation == item.relation)
+            {
+                items.push(item);
+            }
+        }
+        groups.retain(|(_, items)| !items.is_empty());
+        groups
+    }
+
+    /// The list in display order, without collapsed groups.
+    pub(crate) fn ordered_inbox_items(&self) -> Vec<&WorkItem> {
+        let groups = self.grouped_inbox_items();
+        let grouped = groups.len() > 1;
+        groups
+            .into_iter()
+            .filter(|(relation, _)| {
+                !grouped || !self.work_inbox.collapsed_groups.contains(relation)
+            })
+            .flat_map(|(_, items)| items)
+            .collect()
+    }
+
+    pub(crate) fn sync_inbox_selection(&mut self, cx: &mut Context<Self>) {
+        let selected = self.work_inbox.selected.as_deref();
+        let visible = self.ordered_inbox_items();
         if visible
-            .clone()
+            .iter()
             .any(|item| Some(item.url.as_str()) == selected)
         {
             return;
         }
-        if let Some(first) = visible.next().map(|item| item.url.clone()) {
+        if let Some(first) = visible.first().map(|item| item.url.clone()) {
             self.select_work_item(&first, cx);
         } else {
             self.work_inbox.selected = None;
@@ -124,6 +157,9 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         self.prune_inbox_details();
+        if source == WorkSource::GitHub {
+            self.refresh_inbox_repos(false, cx);
+        }
         if self.workspace_section == WorkspaceSection::Inbox
             && !self.work_inbox.activity
             && source == self.settings.inbox.source
@@ -251,6 +287,12 @@ impl WorkspaceView {
             return;
         };
         self.settings.inbox.mark_seen(item);
+        let pull = item.kind == crate::domain::work_items::WorkKind::PullRequest;
+        let local_root = item
+            .pull
+            .as_ref()
+            .and(item.project_id)
+            .and_then(|id| self.project_folder(id));
         let changed = self.work_inbox.selected.as_deref() != Some(url);
         if changed {
             self.work_inbox.target_project = item.project_id.or(self.snapshot.selected_project_id);
@@ -258,7 +300,10 @@ impl WorkspaceView {
             inbox.selected = Some(url.into());
             inbox.search_editing = false;
             inbox.action_error = None;
-            inbox.detail_tab = DetailTab::Summary;
+            // Moving between pull requests keeps the tab, like a Git client.
+            if !pull {
+                inbox.detail_tab = DetailTab::Summary;
+            }
             inbox.composer_open = false;
             inbox.composer_editing = false;
             inbox.composer_note.clear();
@@ -267,6 +312,9 @@ impl WorkspaceView {
             inbox.confirmation = None;
         }
         self.load_inbox_detail(false, cx);
+        if let Some(root) = local_root {
+            self.refresh_local_repo(root, false, cx);
+        }
         if changed {
             self.sync_terminal_surface_visibility(cx);
         }

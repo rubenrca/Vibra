@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::work_items::FileViewed;
 use gpui::Focusable;
 
 impl WorkspaceView {
@@ -9,12 +10,17 @@ impl WorkspaceView {
         let Some(item) = self.selected_work_item().cloned() else {
             return;
         };
+        if self.work_inbox.detail_tab == DetailTab::Code {
+            self.note_code_head(&item.url);
+        }
         let state = self.work_inbox.details.entry(item.url.clone()).or_default();
         if state.updated_at != item.updated_at {
             state.updated_at = item.updated_at;
             state.summary.invalidate();
             state.diff.invalidate();
             state.checks.invalidate();
+            state.commits.invalidate();
+            state.since.invalidate();
             state.check_logs.clear();
         }
         let epoch = self.work_inbox.epoch;
@@ -39,6 +45,9 @@ impl WorkspaceView {
                             if stringify!($field) == "diff" {
                                 this.sync_inbox_review(&key, cx);
                             }
+                            if stringify!($field) == "summary" {
+                                this.inbox_summary_loaded(&key, cx);
+                            }
                             cx.notify();
                         });
                     }));
@@ -51,11 +60,412 @@ impl WorkspaceView {
             if self.work_inbox.detail_tab == DetailTab::Code {
                 load!(diff, work_items::load_diff);
             }
+            if self.work_inbox.detail_tab == DetailTab::Commits {
+                load!(commits, work_items::load_commits);
+            }
+        }
+        if self.work_inbox.detail_tab == DetailTab::Code {
+            self.load_inbox_since(cx);
         }
         cx.notify();
     }
 
+    /// The summary carries viewed marks, threads, and the reviewed head.
+    fn inbox_summary_loaded(&mut self, url: &str, cx: &mut Context<Self>) {
+        if self.work_inbox.selected.as_deref() == Some(url)
+            && self.work_inbox.detail_tab == DetailTab::Code
+        {
+            self.note_code_head(url);
+            self.load_inbox_since(cx);
+        }
+        self.sync_inbox_annotations(url, cx);
+    }
+
+    /// Remember the head the Code tab shows, keeping the one seen before it.
+    fn note_code_head(&mut self, url: &str) {
+        let Some(state) = self.work_inbox.details.get_mut(url) else {
+            return;
+        };
+        let Some(head) = state
+            .summary
+            .data
+            .as_ref()
+            .map(|detail| detail.head_oid.clone())
+            .filter(|head| !head.is_empty())
+        else {
+            return;
+        };
+        if let Some(previous) = self
+            .work_inbox
+            .seen_heads
+            .insert(url.to_owned(), head.clone())
+            && previous != head
+        {
+            state.previous_head = previous;
+        }
+    }
+
+    /// The head to compare against for "Since last review": the user's latest
+    /// GitHub review, else the head the Code tab showed earlier this session.
+    pub(super) fn inbox_since_base(&self, url: &str) -> Option<String> {
+        let state = self.work_inbox.details.get(url)?;
+        let detail = state.summary.data.as_ref()?;
+        [&detail.viewer_review_oid, &state.previous_head]
+            .into_iter()
+            .find(|oid| !oid.is_empty() && **oid != detail.head_oid)
+            .cloned()
+    }
+
+    fn load_inbox_since(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.selected_work_item().cloned() else {
+            return;
+        };
+        let Some(base) = self.inbox_since_base(&item.url) else {
+            return;
+        };
+        let Some(state) = self.work_inbox.details.get_mut(&item.url) else {
+            return;
+        };
+        if state.code_scope != CodeScope::SinceReview {
+            return;
+        }
+        let Some(head) = state
+            .summary
+            .data
+            .as_ref()
+            .map(|detail| detail.head_oid.clone())
+        else {
+            return;
+        };
+        if state.since_base != base {
+            state.since.invalidate();
+            state.since_base = base.clone();
+        }
+        if state.since.loading || state.since.data.is_some() {
+            return;
+        }
+        state.since.loading = true;
+        state.since.revision += 1;
+        let revision = state.since.revision;
+        let epoch = self.work_inbox.epoch;
+        let url = item.url.clone();
+        state.since._task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { work_items::load_compare_diff(&item, &base, &head) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.work_inbox.epoch != epoch {
+                    return;
+                }
+                if let Some(state) = this.work_inbox.details.get_mut(&url) {
+                    state.since.apply(revision, result);
+                }
+                this.sync_pull_review(&url, super::review::ReviewKind::Since, cx);
+                cx.notify();
+            });
+        }));
+    }
+
+    pub(super) fn set_inbox_code_scope(&mut self, scope: CodeScope, cx: &mut Context<Self>) {
+        let Some(url) = self.work_inbox.selected.clone() else {
+            return;
+        };
+        self.work_inbox.details.entry(url).or_default().code_scope = scope;
+        self.load_inbox_since(cx);
+        cx.notify();
+    }
+
+    /// Show one commit of the pull request, or the list again with `None`.
+    pub(super) fn select_inbox_commit(&mut self, oid: Option<String>, cx: &mut Context<Self>) {
+        let Some(item) = self.selected_work_item().cloned() else {
+            return;
+        };
+        let url = item.url.clone();
+        let state = self.work_inbox.details.entry(url.clone()).or_default();
+        state.selected_commit = oid.clone();
+        let Some(oid) = oid else {
+            cx.notify();
+            return;
+        };
+        let diff = state.commit_diffs.entry(oid.clone()).or_default();
+        if diff.data.is_some() {
+            self.sync_pull_review(&url, super::review::ReviewKind::Commit, cx);
+            cx.notify();
+            return;
+        }
+        if diff.loading {
+            return;
+        }
+        diff.loading = true;
+        diff.revision += 1;
+        let revision = diff.revision;
+        let epoch = self.work_inbox.epoch;
+        diff._task = Some(cx.spawn(async move |this, cx| {
+            let commit = oid.clone();
+            let result = cx
+                .background_spawn(async move { work_items::load_commit_diff(&item, &commit) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.work_inbox.epoch != epoch {
+                    return;
+                }
+                let Some(state) = this.work_inbox.details.get_mut(&url) else {
+                    return;
+                };
+                if let Some(diff) = state.commit_diffs.get_mut(&oid) {
+                    diff.apply(revision, result);
+                }
+                if state.selected_commit.as_deref() == Some(oid.as_str()) {
+                    this.sync_pull_review(&url, super::review::ReviewKind::Commit, cx);
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Mark a file viewed on GitHub. The mark shows at once and reverts if
+    /// GitHub refuses it.
+    pub(super) fn set_inbox_file_viewed(
+        &mut self,
+        url: &str,
+        path: &str,
+        viewed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(item) = self
+            .work_inbox
+            .github
+            .items
+            .iter()
+            .find(|item| item.url == url)
+            .cloned()
+        else {
+            return;
+        };
+        let state = self.work_inbox.details.entry(url.to_owned()).or_default();
+        state.viewed_pending.insert(path.to_owned(), viewed);
+        state.viewed_error = None;
+        self.sync_inbox_annotations(url, cx);
+        let key = url.to_owned();
+        let file = path.to_owned();
+        let epoch = self.work_inbox.epoch;
+        cx.spawn(async move |this, cx| {
+            let target = file.clone();
+            let result = cx
+                .background_spawn(
+                    async move { work_items::set_file_viewed(&item, &target, viewed) },
+                )
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.work_inbox.epoch != epoch {
+                    return;
+                }
+                let Some(state) = this.work_inbox.details.get_mut(&key) else {
+                    return;
+                };
+                if state.viewed_pending.get(&file) == Some(&viewed) {
+                    state.viewed_pending.remove(&file);
+                }
+                match result {
+                    Ok(()) => {
+                        if let Some(detail) = state.summary.data.as_mut() {
+                            detail.viewed.insert(
+                                file,
+                                if viewed {
+                                    FileViewed::Viewed
+                                } else {
+                                    FileViewed::Unviewed
+                                },
+                            );
+                        }
+                    }
+                    Err(error) => state.viewed_error = Some(format!("{error:#}")),
+                }
+                this.sync_inbox_annotations(&key, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Toggle the "Viewed" mark of the file at the top of the Code tab.
+    pub(super) fn toggle_current_file_viewed(&mut self, cx: &mut Context<Self>) {
+        if let Some(view) = self.visible_code_review() {
+            view.update(cx, |view, cx| {
+                if let Some(path) = view.current_path() {
+                    view.toggle_viewed(&path, cx);
+                }
+            });
+        }
+    }
+
+    /// The review on screen in the Code tab, for its scope.
+    pub(super) fn visible_code_review(
+        &self,
+    ) -> Option<gpui::Entity<crate::ui::diff_view::DiffView>> {
+        let state = self
+            .work_inbox
+            .details
+            .get(self.work_inbox.selected.as_ref()?)?;
+        match self.work_inbox.detail_tab {
+            DetailTab::Code if state.code_scope == CodeScope::SinceReview => {
+                state.since_review.clone()
+            }
+            DetailTab::Code => state.review.clone(),
+            DetailTab::Commits if state.selected_commit.is_some() => state.commit_review.clone(),
+            _ => None,
+        }
+    }
+
+    /// Unsent inline comments of the selected pull request's reviews.
+    pub(super) fn pending_review_comments(
+        &self,
+        cx: &gpui::App,
+    ) -> Vec<(
+        gpui::Entity<crate::ui::diff_view::DiffView>,
+        crate::ui::diff_rows::ReviewComment,
+    )> {
+        let Some(state) = self
+            .work_inbox
+            .selected
+            .as_ref()
+            .and_then(|url| self.work_inbox.details.get(url))
+        else {
+            return Vec::new();
+        };
+        [&state.review, &state.since_review]
+            .into_iter()
+            .flatten()
+            .flat_map(|view| {
+                view.read(cx)
+                    .review_comments()
+                    .iter()
+                    .map(|comment| (view.clone(), comment.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Publish the review: inline comments on lines GitHub accepts, the rest
+    /// quoted in the review body so nothing written is lost.
+    pub(super) fn submit_inbox_review(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.selected_work_item().cloned() else {
+            return;
+        };
+        if let Some(state) = self.work_inbox.details.get(&item.url) {
+            for view in [&state.review, &state.since_review].into_iter().flatten() {
+                view.update(cx, |view, cx| view.save_draft(cx));
+            }
+        }
+        let comments = self.pending_review_comments(cx);
+        let Some(state) = self.work_inbox.details.get_mut(&item.url) else {
+            return;
+        };
+        if state.review_draft.busy {
+            return;
+        }
+        let Some(head) = state
+            .summary
+            .data
+            .as_ref()
+            .map(|detail| detail.head_oid.clone())
+            .filter(|head| !head.is_empty())
+        else {
+            state.review_draft.error = Some("Refresh the pull request before reviewing it.".into());
+            cx.notify();
+            return;
+        };
+        let files = state
+            .diff
+            .data
+            .as_ref()
+            .map(|diff| diff.files.clone())
+            .unwrap_or_default();
+        let mut threads = Vec::new();
+        let mut quoted = Vec::new();
+        for (_, comment) in &comments {
+            let left = comment.anchor.side == crate::ui::diff_rows::CommentSide::Old;
+            let line = comment.anchor.line as u64;
+            let inline = files.iter().any(|file| {
+                file.path == comment.anchor.path
+                    && crate::domain::work_items::patch_has_line(&file.patch, left, line)
+            });
+            if inline {
+                threads.push(crate::domain::work_items::DraftThread {
+                    path: comment.anchor.path.clone(),
+                    line,
+                    left,
+                    body: comment.body.clone(),
+                });
+            } else {
+                quoted.push(format!(
+                    "**{}:{}**\n{}",
+                    comment.anchor.path, comment.anchor.line, comment.body
+                ));
+            }
+        }
+        let mut body = state.review_draft.body.trim().to_owned();
+        if !quoted.is_empty() {
+            if !body.is_empty() {
+                body.push_str("\n\n");
+            }
+            body.push_str(&quoted.join("\n\n"));
+        }
+        let verdict = state.review_draft.verdict;
+        state.review_draft.busy = true;
+        state.review_draft.error = None;
+        let url = item.url.clone();
+        let epoch = self.work_inbox.epoch;
+        let sent: Vec<_> = comments
+            .into_iter()
+            .map(|(view, comment)| (view, comment.id))
+            .collect();
+        state.review_draft._task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    work_items::submit_review(&item, &head, verdict, &body, &threads)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.work_inbox.epoch != epoch {
+                    return;
+                }
+                let Some(state) = this.work_inbox.details.get_mut(&url) else {
+                    return;
+                };
+                state.review_draft.busy = false;
+                match result {
+                    Ok(()) => {
+                        state.review_draft.open = false;
+                        state.review_draft.editing = false;
+                        state.review_draft.body.clear();
+                        state.summary.invalidate();
+                        for (view, id) in sent {
+                            view.update(cx, |view, cx| view.remove_comments(&[id], cx));
+                        }
+                        this.refresh_work_source(WorkSource::GitHub, true, cx);
+                        if this.work_inbox.selected.as_ref() == Some(&url) {
+                            this.load_inbox_detail(true, cx);
+                        }
+                    }
+                    Err(error) => state.review_draft.error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     pub(super) fn select_inbox_detail_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
+        if self
+            .selected_work_item()
+            .is_some_and(|item| item.kind != WorkKind::PullRequest)
+            && tab != DetailTab::Summary
+        {
+            return;
+        }
         self.work_inbox.detail_tab = tab;
         self.load_inbox_detail(false, cx);
         self.sync_inbox_review_preferences(cx);
@@ -66,7 +476,10 @@ impl WorkspaceView {
         if let Some(url) = self.work_inbox.selected.clone() {
             let state = self.work_inbox.details.entry(url).or_default();
             state.code_mode = mode;
-            if let Some(view) = &state.review {
+            for view in [&state.review, &state.since_review, &state.commit_review]
+                .into_iter()
+                .flatten()
+            {
                 view.update(cx, |view, cx| {
                     view.set_full_file(mode == CodeMode::FullFile, cx)
                 });
@@ -210,14 +623,15 @@ impl WorkspaceView {
             return;
         }
         state.mutation_error = None;
+        let detail = state.summary.data.as_ref();
         self.work_inbox.confirmation = Some(PrConfirmation {
             url: url.into(),
             action,
-            head_oid: state
-                .summary
-                .data
-                .as_ref()
+            head_oid: detail
                 .map(|detail| detail.head_oid.clone())
+                .unwrap_or_default(),
+            head_ref_id: detail
+                .map(|detail| detail.merge.head_ref_id.clone())
                 .unwrap_or_default(),
         });
     }
@@ -227,6 +641,7 @@ impl WorkspaceView {
             url,
             action,
             head_oid: head,
+            head_ref_id,
         }) = self.work_inbox.confirmation.clone()
         else {
             return;
@@ -250,7 +665,9 @@ impl WorkspaceView {
         state.mutation_error = None;
         state._mutation_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { work_items::run_pr_action(&item, action, &head) })
+                .background_spawn(async move {
+                    work_items::run_pr_action(&item, action, &head, &head_ref_id)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.work_inbox.epoch != epoch {
@@ -285,6 +702,7 @@ impl WorkspaceView {
     pub(in crate::ui::workspace_view) fn visible_inbox_terminal(&self) -> Option<Uuid> {
         if self.workspace_section != WorkspaceSection::Inbox
             || self.work_inbox.activity
+            || self.settings.inbox.repository_view
             || !self.work_inbox.discussion_open
         {
             return None;

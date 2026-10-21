@@ -96,6 +96,10 @@ impl WorkspaceView {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.work_inbox.activity = false;
                     this.ensure_inbox_loaded(cx);
+                    if this.settings.inbox.repository_view {
+                        this.open_repository(cx);
+                    }
+                    this.sync_repository_polling(cx);
                     cx.notify();
                 }))
                 .into_any_element(),

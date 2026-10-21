@@ -7,8 +7,9 @@ mod linear;
 mod review;
 pub use cache::ListCache;
 pub use detail::{
-    github_check_job, load_check_log, load_checks, load_detail, load_diff, load_full_file,
-    post_comment, run_pr_action,
+    checkout_pull_request, github_check_job, load_check_log, load_checks, load_commit_diff,
+    load_commits, load_compare_diff, load_detail, load_diff, load_full_file, post_comment,
+    run_pr_action, set_file_viewed, submit_review,
 };
 pub use review::load_review_file;
 

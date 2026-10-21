@@ -138,6 +138,118 @@ pub enum GitDiffRowKind {
     Notice,
 }
 
+/// A branch with its tracking state and latest commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitBranchInfo {
+    /// Short name: `feature` locally, `origin/feature` for a remote branch.
+    pub name: String,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+    /// The upstream branch was deleted on the remote.
+    pub gone: bool,
+    pub head: String,
+    pub current: bool,
+    pub subject: String,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitWorktree {
+    pub path: PathBuf,
+    pub head: String,
+    /// Short branch name; `None` for a detached HEAD.
+    pub branch: Option<String>,
+    /// The repository's main working tree, which cannot be removed.
+    pub main: bool,
+    pub prunable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStash {
+    pub index: usize,
+    pub oid: String,
+    pub subject: String,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitTag {
+    pub name: String,
+    /// The tagged commit, also for annotated tags.
+    pub target: String,
+    pub subject: String,
+    pub date: String,
+}
+
+/// Everything the Repository view lists for one repository.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitRepositoryRefs {
+    pub root: PathBuf,
+    /// Current branch, or `HEAD` when detached.
+    pub current: String,
+    /// Staged, unstaged, and untracked paths.
+    pub changes: usize,
+    pub branches: Vec<GitBranchInfo>,
+    pub remotes: Vec<GitBranchInfo>,
+    pub worktrees: Vec<GitWorktree>,
+    pub stashes: Vec<GitStash>,
+    pub tags: Vec<GitTag>,
+}
+
+impl GitRepositoryRefs {
+    pub fn branch(&self, name: &str) -> Option<&GitBranchInfo> {
+        self.branches.iter().find(|branch| branch.name == name)
+    }
+
+    /// The linked worktree (never the main one) that has `branch` checked out.
+    pub fn worktree_for(&self, branch: &str) -> Option<&GitWorktree> {
+        self.worktrees
+            .iter()
+            .find(|worktree| !worktree.main && worktree.branch.as_deref() == Some(branch))
+    }
+}
+
+/// Branch, stash, and worktree changes started from the Repository view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitRefAction {
+    /// `git switch`; a remote branch's short name creates its tracking branch.
+    Switch(String),
+    /// Switch, then fast-forward from the upstream.
+    SwitchAndPull(String),
+    DeleteBranch {
+        name: String,
+        /// Delete even when the branch is not merged (`-D`).
+        force: bool,
+    },
+    /// Stash every change, untracked files included.
+    Stash {
+        message: String,
+    },
+    StashApply(usize),
+    StashPop(usize),
+    StashDrop(usize),
+    /// A new linked worktree with a detached HEAD at the current commit.
+    AddWorktree(PathBuf),
+    RemoveWorktree(PathBuf),
+}
+
+impl GitRefAction {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Switch(_) => "Switch branch",
+            Self::SwitchAndPull(_) => "Switch and pull",
+            Self::DeleteBranch { .. } => "Delete branch",
+            Self::Stash { .. } => "Stash changes",
+            Self::StashApply(_) => "Apply stash",
+            Self::StashPop(_) => "Pop stash",
+            Self::StashDrop(_) => "Drop stash",
+            Self::AddWorktree(_) => "Add worktree",
+            Self::RemoveWorktree(_) => "Remove worktree",
+        }
+    }
+}
+
 /// Options for a commit made from the Changes panel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GitCommitOptions {
@@ -212,4 +324,17 @@ pub trait GitPort: Send + Sync {
     /// What the next commit would contain, as a bounded patch with recent
     /// subjects for style, for drafting its message.
     fn commit_message_context(&self, root: &Path) -> Result<String>;
+    /// Branches, worktrees, stashes, and tags for the Repository view.
+    fn repository_refs(&self, root: &Path) -> Result<Option<GitRepositoryRefs>>;
+    /// Commits reachable from `head` but not from `base` (all of `head`'s
+    /// history when `base` is empty), newest first.
+    fn log_range(
+        &self,
+        root: &Path,
+        base: &str,
+        head: &str,
+        limit: usize,
+    ) -> Result<Vec<GitCommit>>;
+    /// Changes the repository only when the user asks for it.
+    fn run_ref_action(&self, root: &Path, action: &GitRefAction) -> Result<()>;
 }

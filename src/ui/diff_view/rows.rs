@@ -6,12 +6,13 @@ use super::{
     FoldActions, GitPanelMode, RowKey, RowMetrics, SECTION_HEIGHT, SPLIT_DIVIDER_WIDTH,
     STICKY_PUSH_SCAN, git_status_badge,
 };
+use crate::domain::work_items::FileViewed;
 use crate::ports::files::FileEntryKind;
 use crate::ports::git::{GitDiffRow, GitDiffRowKind, GitFileChange};
 use crate::ui::diff_document::DiffDocument;
 use crate::ui::diff_rows::{
-    BodyRow, CommentAnchor, CommentSide, FlattenFile, FoldDirection, ReviewComment, ReviewRow,
-    body_row_anchors, body_rows, flatten,
+    BodyRow, CommentAnchor, CommentSide, FlattenFile, FoldDirection, RemoteThread, ReviewComment,
+    ReviewRow, body_row_anchors, body_rows, flatten_with_threads,
 };
 use crate::ui::syntax::SyntaxSpan;
 use crate::ui::theme::{MONO_FONT, colors, mix, surface_tint};
@@ -82,6 +83,9 @@ impl DiffView {
         for comment in &self.comments {
             (comment.id, &comment.anchor).hash(&mut hasher);
         }
+        for thread in &self.remote_threads {
+            (&thread.id, &thread.anchor, thread.comments.len()).hash(&mut hasher);
+        }
         self.draft
             .as_ref()
             .map(|draft| &draft.anchor)
@@ -112,10 +116,11 @@ impl DiffView {
                 reveals: self.fold_reveals.get(&change.path),
             })
             .collect();
-        let rows = flatten(
+        let rows = flatten_with_threads(
             &entries,
             self.layout,
             &self.comments,
+            &self.remote_threads,
             self.draft.as_ref().map(|draft| &draft.anchor),
         );
         drop(entries);
@@ -181,6 +186,12 @@ impl DiffView {
             ReviewRow::Comment { comment, .. } => {
                 RowKey::Comment(self.comments.get(comment).map_or(0, |comment| comment.id))
             }
+            ReviewRow::Thread { thread, .. } => RowKey::Thread(
+                self.remote_threads
+                    .get(thread)
+                    .map(|thread| thread.id.clone())
+                    .unwrap_or_default(),
+            ),
             ReviewRow::Body { file, row } => match row {
                 BodyRow::Line(index) => RowKey::Body(path(file), index),
                 BodyRow::Split { left, right } => {
@@ -340,6 +351,12 @@ impl DiffView {
                     return div().into_any_element();
                 };
                 self.comment_card(&comment, metrics, cx).into_any_element()
+            }
+            ReviewRow::Thread { thread, .. } => {
+                let Some(thread) = self.remote_threads.get(thread).cloned() else {
+                    return div().into_any_element();
+                };
+                self.thread_card(&thread, metrics).into_any_element()
             }
             ReviewRow::Draft { .. } => self.draft_card(metrics, cx).into_any_element(),
             ReviewRow::Folding { file } => match files.get(file) {
@@ -534,6 +551,28 @@ impl DiffView {
                         }),
                 )
             })
+            .when_some(
+                self.viewed
+                    .as_ref()
+                    .map(|viewed| viewed.get(&path).copied()),
+                |row, state| {
+                    let path = path.clone();
+                    row.child(
+                        viewed_toggle(
+                            if pinned {
+                                "review-sticky-viewed".into()
+                            } else {
+                                SharedString::from(format!("review-viewed-{path}"))
+                            },
+                            state,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toggle_viewed(&path, cx);
+                        })),
+                    )
+                },
+            )
     }
 
     // -----------------------------------------------------------------------
@@ -1198,6 +1237,70 @@ impl DiffView {
             )
     }
 
+    /// A published conversation: read-only, replies happen on the source service.
+    fn thread_card(&self, thread: &RemoteThread, metrics: RowMetrics) -> Div {
+        div()
+            .w_full()
+            .py(px(6.0))
+            .pl(px(self.card_indent(metrics)))
+            .pr_3()
+            .bg(surface_tint(colors().background, colors().panel))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .bg(surface_tint(colors().panel, colors().background))
+                    .when(thread.resolved, |card| card.opacity(0.7))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .text_size(px(10.0))
+                            .text_color(colors().subtle)
+                            .child(
+                                gpui::svg()
+                                    .path("chrome-icons/github.svg")
+                                    .size(px(11.0))
+                                    .text_color(colors().subtle),
+                            )
+                            .child(format!(
+                                "{} comment{}",
+                                thread.comments.len(),
+                                if thread.comments.len() == 1 { "" } else { "s" }
+                            ))
+                            .when(thread.resolved, |row| row.child("· Resolved")),
+                    )
+                    .children(thread.comments.iter().map(|(author, body)| {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(colors().muted)
+                                    .child(author.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .line_height(px(17.0))
+                                    .text_color(colors().foreground)
+                                    .child(body.clone()),
+                            )
+                    })),
+            )
+    }
+
     fn card_action(
         id: impl Into<gpui::ElementId>,
         label: &'static str,
@@ -1228,7 +1331,11 @@ impl DiffView {
         let body = if draft.body.is_empty() {
             div()
                 .text_color(colors().subtle)
-                .child("Tell the agent what to change here…")
+                .child(if self.external.is_some() {
+                    "Write a review comment…"
+                } else {
+                    "Tell the agent what to change here…"
+                })
         } else {
             div()
                 .text_color(colors().foreground)
@@ -1314,4 +1421,62 @@ impl DiffView {
     // -----------------------------------------------------------------------
     // Chrome
     // -----------------------------------------------------------------------
+}
+
+/// GitHub-style "Viewed" checkbox for a file header.
+fn viewed_toggle(id: SharedString, state: Option<FileViewed>) -> Stateful<Div> {
+    let viewed = state == Some(FileViewed::Viewed);
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(22.0))
+        .px(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(if viewed {
+            colors().accent
+        } else {
+            colors().border_subtle
+        })
+        .when(viewed, |toggle| toggle.bg(colors().selection))
+        .cursor_pointer()
+        .hover(|toggle| toggle.bg(colors().hover))
+        .text_size(px(10.5))
+        .text_color(if viewed {
+            colors().foreground
+        } else {
+            colors().muted
+        })
+        .child(
+            div()
+                .size(px(11.0))
+                .flex_none()
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(if viewed {
+                    colors().accent
+                } else {
+                    colors().subtle
+                })
+                .when(viewed, |box_| box_.bg(colors().accent))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(viewed, |box_| {
+                    box_.child(
+                        gpui::svg()
+                            .path("chrome-icons/check.svg")
+                            .size(px(9.0))
+                            .text_color(colors().background),
+                    )
+                }),
+        )
+        .child(if state == Some(FileViewed::Dismissed) {
+            "Changed since viewed"
+        } else {
+            "Viewed"
+        })
 }

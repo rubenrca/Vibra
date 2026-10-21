@@ -18,6 +18,18 @@ independiente del workspace.
   merge captura el head aprobado (`expectedHeadOid`). `src/ui/markdown.rs` renderiza
   CommonMark sin ejecutar HTML remoto. La actividad local sigue en `inbox.rs`.
   Véase [la adaptación de MonoCode](inbox-monocode.md).
+  `work_inbox/local.rs` relaciona cada PR con la rama local de su proyecto
+  (`GitPort::repository_refs`, refrescado en segundo plano con TTL) y ejecuta
+  checkout, worktrees, push/pull y limpieza tras el merge como un único trabajo
+  local a la vez, con el resultado junto al control que lo inició. Los worktrees
+  de PR viven en `~/.vibra/worktrees`. `work_inbox/repository.rs` sostiene la
+  vista Repository: un `DiffView` embebido (`set_embedded`) muestra el working
+  tree con su panel de Changes o un commit guardado de rama, stash o tag, y las
+  acciones destructivas piden confirmación. `work_inbox/review.rs` crea los tres
+  visores de un PR (todo, desde la última review y por commit) y les entrega las
+  marcas Viewed de GitHub (optimistas hasta la respuesta) y los hilos publicados.
+  La review de GitHub fija el head leído (`commitOID`) y solo envía en línea los
+  comentarios que caen en el patch del PR; el resto se cita en el cuerpo.
 - `src/ports`: contratos de terminal, Git y filesystem; `src/infrastructure` implementa
   esos contratos y los repositorios de JSON.
 - `src/infrastructure/paths.rs`: lecturas de archivos con límite, escrituras atómicas
@@ -41,6 +53,9 @@ independiente del workspace.
   los prompts lanzados dentro de una terminal conservan su PATH ya establecido.
 - `src/infrastructure/git/parsing.rs`: parsers puros de status, numstat, historial
   y patches. El adaptador Git mantiene la ejecución de comandos y las cachés.
+  `catalog.rs` lista ramas (con tracking), worktrees, stashes y tags, y ejecuta
+  las acciones de Repository; rechaza nombres que parezcan opciones y pasa `--`
+  antes de ramas y rutas.
 - `src/ui/workspace_view/mod.rs`: construcción y coordinación de la ventana.
 - `navigation.rs`, `projects.rs` y `tabs.rs`: secciones globales, proyectos y navegación
   entre terminales y revisión. `prepare_terminal_tab` aplica la transición compartida;

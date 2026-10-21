@@ -8,9 +8,9 @@ use std::time::Instant;
 use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
-    GitBranchChanges, GitBranchRef, GitCommitChanges, GitCommitOptions, GitDiff, GitDiffRow,
-    GitDiffRowKind, GitDiffSources, GitFileChange, GitFileStatus, GitHistory, GitPort,
-    GitRepositorySnapshot, GitSyncOperation, GitWorktreeCapture,
+    GitBranchChanges, GitBranchRef, GitCommit, GitCommitChanges, GitCommitOptions, GitDiff,
+    GitDiffRow, GitDiffRowKind, GitDiffSources, GitFileChange, GitFileStatus, GitHistory, GitPort,
+    GitRefAction, GitRepositoryRefs, GitRepositorySnapshot, GitSyncOperation, GitWorktreeCapture,
 };
 
 use super::parsing::{
@@ -174,6 +174,28 @@ impl GitPort for GitCliPort {
             context.push_str("\n[patch truncated]\n");
         }
         Ok(context)
+    }
+
+    fn repository_refs(&self, root: &Path) -> Result<Option<GitRepositoryRefs>> {
+        super::catalog::repository_refs(root)
+    }
+
+    fn log_range(
+        &self,
+        root: &Path,
+        base: &str,
+        head: &str,
+        limit: usize,
+    ) -> Result<Vec<GitCommit>> {
+        super::catalog::log_range(root, base, head, limit)
+    }
+
+    fn run_ref_action(&self, root: &Path, action: &GitRefAction) -> Result<()> {
+        super::catalog::run_ref_action(root, action)?;
+        if let Some(root) = repository_root(root)? {
+            self.forget_branch_summary(&root);
+        }
+        Ok(())
     }
 
     fn snapshot(&self, root: &Path) -> Result<Option<GitRepositorySnapshot>> {

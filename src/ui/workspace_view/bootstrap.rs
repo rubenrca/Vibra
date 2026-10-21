@@ -161,6 +161,8 @@ impl WorkspaceView {
                     }
                     cx.notify();
                 }
+                // The workspace review has no remote "Viewed" marks.
+                DiffViewEvent::ToggleViewed { .. } => {}
                 DiffViewEvent::PreferencesChanged { split, wrap } => {
                     this.settings.diff_split = *split;
                     this.settings.diff_wrap = *wrap;
