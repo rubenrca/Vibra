@@ -10,6 +10,7 @@ use gpui::{Hsla, Rgba, WindowAppearance, rgb, rgba};
 
 pub use crate::domain::appearance::AppearanceMode;
 
+mod legibility;
 mod palettes;
 mod user;
 use crate::ports::terminal::TerminalRgb;
@@ -330,7 +331,7 @@ fn theme_from_scheme(scheme: &ImportedScheme) -> Theme {
         }
         spec = spec.with_terminal(ansi);
     }
-    theme_from_seed(spec)
+    legibility::legible(theme_from_seed(spec))
 }
 
 fn find_family(id: &str) -> Option<ThemeFamily> {
@@ -516,8 +517,14 @@ mod tests {
         );
     }
 
+    /// Both tests below swap the process-wide palette; run them one at a time.
+    static ACTIVE_PALETTE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn active_palette_round_trips() {
+        let _guard = ACTIVE_PALETTE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let before = colors();
         set_active(moss_dark());
         assert_eq!(colors().accent, moss_dark().accent);
@@ -526,6 +533,9 @@ mod tests {
 
     #[test]
     fn terminal_palette_follows_the_active_theme() {
+        let _guard = ACTIVE_PALETTE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let before = colors();
         set_active(moss_dark());
         let moss = terminal_palette();

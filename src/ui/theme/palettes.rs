@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 
 use gpui::{rgb, rgba};
 
+use super::legibility::legible;
 use super::{Theme, ThemeFamily, mix, relative_luminance, subtle_border, with_alpha};
 use crate::ports::terminal::TerminalRgb;
 
@@ -140,8 +141,8 @@ fn family(id: &'static str, label: &'static str, light: ThemeSeed, dark: ThemeSe
     ThemeFamily {
         id: id.to_string(),
         label: label.to_string(),
-        light: theme_from_seed(light),
-        dark: theme_from_seed(dark),
+        light: legible(theme_from_seed(light)),
+        dark: legible(theme_from_seed(dark)),
     }
 }
 
@@ -201,6 +202,16 @@ fn with_diff_surfaces(mut theme: Theme, added: u32, deleted: u32, hunk: u32) -> 
     theme
 }
 
+/// Light rows need deeper counts and line numbers than the status colors.
+fn with_diff_text(mut theme: Theme, added: u32, deleted: u32) -> Theme {
+    theme.diff_added = rgb(added);
+    theme.diff_deleted = rgb(deleted);
+    theme
+}
+
+/// Shared by the light product palettes; clears 4.5:1 on every added row.
+const LIGHT_DIFF_ADDED: u32 = 0x17763f;
+
 pub(crate) fn midnight_dark() -> Theme {
     let mut theme = product_theme(
         seed(0x0c0c0c, 0xe6e6e6, 0x528bff, 0xdd6b6b, 0x58b87a, 0xd7ad61),
@@ -237,7 +248,7 @@ pub(crate) fn midnight_light() -> Theme {
             panel: 0xffffff,
             elevated: 0xffffff,
             hover: 0xededed,
-            selection: 0xe6e6e6,
+            selection: 0xe4e4e4,
             muted: 0x616161,
             subtle: 0x858585,
             gutter: 0xeeeef1,
@@ -247,6 +258,7 @@ pub(crate) fn midnight_light() -> Theme {
         },
     );
     theme = with_diff_surfaces(theme, 0xd8f0e0ff, 0xf5d8daff, 0xe8ecf5ff);
+    theme = with_diff_text(theme, LIGHT_DIFF_ADDED, 0xb52e31);
     theme.git_modified = rgb(0xa07830);
     theme
 }
@@ -254,7 +266,7 @@ pub(crate) fn midnight_light() -> Theme {
 pub(crate) fn moss_dark() -> Theme {
     with_diff_surfaces(
         product_theme(
-            seed(0x121916, 0xd6e6dc, 0x5dce98, 0xe07a72, 0x5ecf8a, 0xd4b05a),
+            seed(0x121916, 0xd6e6dc, 0x3fcab7, 0xe07a72, 0x5ecf8a, 0xd4b05a),
             ProductChrome {
                 sidebar: 0x16201b,
                 panel: 0x1a2620,
@@ -276,9 +288,9 @@ pub(crate) fn moss_dark() -> Theme {
 }
 
 fn moss_light() -> Theme {
-    with_diff_surfaces(
+    let theme = with_diff_surfaces(
         product_theme(
-            seed(0xf1f7f3, 0x1a2b22, 0x1f8a54, 0xb83a34, 0x1f8a4c, 0x9a6f18),
+            seed(0xf1f7f3, 0x1a2b22, 0x127367, 0xb83a34, 0x1f8a4c, 0x9a6f18),
             ProductChrome {
                 sidebar: 0xe4efe8,
                 panel: 0xffffff,
@@ -286,7 +298,7 @@ fn moss_light() -> Theme {
                 hover: 0xdcebe2,
                 selection: 0xcfe0d5,
                 muted: 0x4a6656,
-                subtle: 0x789486,
+                subtle: 0x728d80,
                 gutter: 0xeaf3ed,
                 folder: 0x4a7a60,
                 indent_guide: 0x7a9a8855,
@@ -296,7 +308,8 @@ fn moss_light() -> Theme {
         0xd2efdcff,
         0xf3d6d4ff,
         0xdfece4ff,
-    )
+    );
+    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xaf312c)
 }
 
 fn harbor_dark() -> Theme {
@@ -324,7 +337,7 @@ fn harbor_dark() -> Theme {
 }
 
 fn harbor_light() -> Theme {
-    with_diff_surfaces(
+    let theme = with_diff_surfaces(
         product_theme(
             seed(0xf0f4f9, 0x182230, 0x2563b8, 0xb83a48, 0x1f8a54, 0x9a6f18),
             ProductChrome {
@@ -334,7 +347,7 @@ fn harbor_light() -> Theme {
                 hover: 0xd8e3ef,
                 selection: 0xc9d8ea,
                 muted: 0x4a5c74,
-                subtle: 0x7a8ca4,
+                subtle: 0x74869d,
                 gutter: 0xe8eef5,
                 folder: 0x4a6a90,
                 indent_guide: 0x7a90aa55,
@@ -344,7 +357,8 @@ fn harbor_light() -> Theme {
         0xd0eddcff,
         0xf3d6daff,
         0xdfe8f4ff,
-    )
+    );
+    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xaf3141)
 }
 
 fn cinder_dark() -> Theme {
@@ -372,7 +386,7 @@ fn cinder_dark() -> Theme {
 }
 
 fn cinder_light() -> Theme {
-    with_diff_surfaces(
+    let theme = with_diff_surfaces(
         product_theme(
             seed(0xfaf4ef, 0x2a1e18, 0xc4602f, 0xc23b34, 0x2f8a4c, 0xa07018),
             ProductChrome {
@@ -392,7 +406,8 @@ fn cinder_light() -> Theme {
         0xd8efdcff,
         0xf5d6d4ff,
         0xf0e6dcff,
-    )
+    );
+    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xb42d28)
 }
 
 fn violet_dark() -> Theme {
@@ -420,7 +435,7 @@ fn violet_dark() -> Theme {
 }
 
 fn violet_light() -> Theme {
-    with_diff_surfaces(
+    let theme = with_diff_surfaces(
         product_theme(
             seed(0xf5f2fb, 0x221a30, 0x6a48b8, 0xb83a58, 0x1f8a4c, 0x9a6f18),
             ProductChrome {
@@ -440,13 +455,14 @@ fn violet_light() -> Theme {
         0xd2efdcff,
         0xf3d6e0ff,
         0xe8e0f4ff,
-    )
+    );
+    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xae3050)
 }
 
 fn bloom_dark() -> Theme {
     with_diff_surfaces(
         product_theme(
-            seed(0x1a141a, 0xf0e4ee, 0xdb5a9a, 0xf07090, 0x5ecf8a, 0xd4a85a),
+            seed(0x1a141a, 0xf0e4ee, 0xdb5a9a, 0xe5756d, 0x5ecf8a, 0xd4a85a),
             ProductChrome {
                 sidebar: 0x211820,
                 panel: 0x281e27,
@@ -462,15 +478,15 @@ fn bloom_dark() -> Theme {
             },
         ),
         0x1a2e28ff,
-        0x3a1e28ff,
+        0x3a1e20ff,
         0x221822ff,
     )
 }
 
 fn bloom_light() -> Theme {
-    with_diff_surfaces(
+    let theme = with_diff_surfaces(
         product_theme(
-            seed(0xfbf4f9, 0x3a1840, 0xc02670, 0xc23060, 0x1f8a4c, 0x9a6f18),
+            seed(0xfbf4f9, 0x3a1840, 0xc02670, 0xbd3936, 0x1f8a4c, 0x9a6f18),
             ProductChrome {
                 sidebar: 0xf3e4ef,
                 panel: 0xffffff,
@@ -486,17 +502,18 @@ fn bloom_light() -> Theme {
             },
         ),
         0xd2efdcff,
-        0xf5d6e4ff,
+        0xf5d6d6ff,
         0xf2e0ecff,
-    )
+    );
+    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xb32f2d)
 }
 
 fn product_family(id: &'static str, label: &'static str, light: Theme, dark: Theme) -> ThemeFamily {
     ThemeFamily {
         id: id.to_string(),
         label: label.to_string(),
-        light,
-        dark,
+        light: legible(light),
+        dark: legible(dark),
     }
 }
 
@@ -834,4 +851,33 @@ static CATALOG: LazyLock<Vec<ThemeFamily>> = LazyLock::new(build_catalog);
 /// Built-in dual-mode palettes shown in Settings.
 pub fn built_in_themes() -> &'static [ThemeFamily] {
     CATALOG.as_slice()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn product_palettes_meet_the_floors_by_hand() {
+        for (id, theme) in [
+            ("midnight light", midnight_light()),
+            ("midnight dark", midnight_dark()),
+            ("moss light", moss_light()),
+            ("moss dark", moss_dark()),
+            ("harbor light", harbor_light()),
+            ("harbor dark", harbor_dark()),
+            ("cinder light", cinder_light()),
+            ("cinder dark", cinder_dark()),
+            ("violet light", violet_light()),
+            ("violet dark", violet_dark()),
+            ("bloom light", bloom_light()),
+            ("bloom dark", bloom_dark()),
+        ] {
+            assert_eq!(
+                legible(theme),
+                theme,
+                "{id} relies on automatic corrections"
+            );
+        }
+    }
 }
