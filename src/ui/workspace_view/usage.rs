@@ -1,17 +1,18 @@
 //! Subscription usage: a one-line sidebar footer with a pair of concentric
 //! progress rings per provider (session outside, week inside). Hovering one
-//! lists its quotas in a card above the footer; clicking opens a modal listing
-//! every subscription.
+//! lists its quotas in a card above the footer, which eases in and glides
+//! between providers; clicking opens a modal listing every subscription.
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, Bounds, Context, Corner, Div, Hsla, MouseButton, PathBuilder, Pixels, Point, Rgba,
-    SharedString, Stateful, Task, Timer, Window, canvas, div, point, prelude::*, px, relative, svg,
+    Animation, AnimationExt, AnyElement, Bounds, Context, Corner, Div, Hsla, MouseButton,
+    PathBuilder, Pixels, Point, Rgba, SharedString, Stateful, Task, Timer, Window, canvas, div,
+    point, prelude::*, px, relative, svg,
 };
 
 use crate::domain::usage::{
@@ -20,9 +21,9 @@ use crate::domain::usage::{
 use crate::infrastructure::clock::local_utc_offset;
 use crate::infrastructure::usage::UsageMonitor;
 use crate::ui::menu::{menu_hover, menu_panel};
-use crate::ui::theme::{colors, surface_tint};
+use crate::ui::theme::{colors, mix};
 
-use super::chrome::SIDEBAR_ROW_INSET;
+use super::chrome::{SIDEBAR_ROW_INSET, ease_out_cubic};
 use super::context_menu::MENU_EDGE_MARGIN;
 use super::{WorkspaceView, sidebar_tooltip};
 
@@ -36,6 +37,13 @@ const FOOTER_PAD_Y: f32 = 8.0;
 /// Space between the hover card and the chips it describes.
 const HOVER_CARD_GAP: f32 = 4.0;
 const HOVER_CARD_MAX_WIDTH: f32 = 232.0;
+/// The hover card fades in while rising this far into place.
+const HOVER_CARD_RISE: f32 = 4.0;
+const HOVER_CARD_ENTER: Duration = Duration::from_millis(100);
+/// Quotas count up from zero when the card opens…
+const HOVER_COUNT_UP: Duration = Duration::from_millis(400);
+/// …and glide to the next provider's values when the pointer moves on.
+const HOVER_SWITCH: Duration = Duration::from_millis(240);
 
 #[derive(Default)]
 pub(super) struct UsageState {
@@ -48,8 +56,12 @@ pub(super) struct UsageState {
     pub open: bool,
     /// Bottom-left corner of the modal, level with the footer chip that opened it.
     anchor: Point<Pixels>,
-    /// Provider whose chip the pointer is over.
+    /// Provider whose chip the pointer last entered, until it leaves the footer.
     hovered: Option<String>,
+    /// How the hover card got to what it shows, while it shows anything.
+    hover_motion: Option<HoverMotion>,
+    /// Gives each hover motion an animation of its own.
+    hover_motions: u64,
     /// Where the footer sits in the window, to hang the hover card above it.
     footer_bounds: Rc<Cell<Bounds<Pixels>>>,
     _poll_task: Option<Task<()>>,
@@ -69,17 +81,38 @@ impl UsageState {
         }
     }
 
-    fn set_hovered(&mut self, id: &str, hovered: bool) -> bool {
-        let current = self.hovered.as_deref();
-        // Leaving one chip can be reported after entering the next.
-        if hovered && current != Some(id) {
-            self.hovered = Some(id.to_owned());
-        } else if !hovered && current == Some(id) {
-            self.hovered = None;
-        } else {
+    /// Points the hover card at `id`, or closes it with `None`. Returns
+    /// whether anything changed.
+    fn hover(&mut self, id: Option<&str>, now: Instant) -> bool {
+        if self.hovered.as_deref() == id {
             return false;
         }
+        // Moving to another provider glides from what the card shows now.
+        let shown = self.hover_frame(now);
+        self.hovered = id.map(str::to_owned);
+        self.hover_motion = match id {
+            None => None,
+            Some(_) => {
+                self.hover_motions += 1;
+                Some(HoverMotion {
+                    id: self.hover_motions,
+                    opened: shown.as_ref().map_or(now, |(opened, _)| *opened),
+                    changed: now,
+                    from: shown.map(|(_, frame)| frame),
+                })
+            }
+        };
         true
+    }
+
+    /// The hover card as drawn at `now`, with when it opened.
+    fn hover_frame(&self, now: Instant) -> Option<(Instant, CardFrame)> {
+        let motion = self.hover_motion.as_ref()?;
+        let id = self.hovered.as_deref()?;
+        let provider = self.snapshot.providers.get(id)?;
+        let timestamp = now_timestamp();
+        let card = self.card(id, provider, timestamp, local_utc_offset(timestamp));
+        Some((motion.opened, motion.frame(&card, now)))
     }
 
     fn provider_stale(&self, id: &str, provider: &ProviderUsage, now: i64) -> bool {
@@ -193,7 +226,7 @@ impl WorkspaceView {
     fn open_usage(&mut self, bottom: f32, window: &mut Window, cx: &mut Context<Self>) {
         self.usage.anchor = point(px(self.sidebar_popover_left()), px(bottom));
         self.usage.open = true;
-        self.usage.hovered = None;
+        self.usage.hover(None, Instant::now());
         self.context_menu = None;
         self.ide_menu_open = false;
         self.focus_handle.focus(window);
@@ -225,6 +258,12 @@ impl WorkspaceView {
             .flex()
             .items_center()
             .overflow_hidden()
+            // The card stays up between chips and goes once the pointer leaves the footer.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered && this.usage.hover(None, Instant::now()) {
+                    cx.notify();
+                }
+            }))
             .child(super::measure_bounds(self.usage.footer_bounds.clone()))
             .when(
                 snapshot.providers.is_empty() && self.usage.loaded,
@@ -268,7 +307,7 @@ impl WorkspaceView {
                             .text_color(colors().foreground)
                     })
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        if this.usage.set_hovered(&hover_id, *hovered) {
+                        if *hovered && this.usage.hover(Some(&hover_id), Instant::now()) {
                             cx.notify();
                         }
                     }))
@@ -299,6 +338,7 @@ impl WorkspaceView {
         }
         let id = self.usage.hovered.as_deref()?;
         let provider = self.usage.snapshot.providers.get(id)?;
+        let motion = self.usage.hover_motion.clone()?;
         let footer = self.usage.footer_bounds.get();
         let row_width = f32::from(footer.size.width) - 2.0 * SIDEBAR_ROW_INSET;
         // Not measured yet, or a sidebar too narrow for any card.
@@ -307,6 +347,7 @@ impl WorkspaceView {
         }
         let now = now_timestamp();
         let card = self.usage.card(id, provider, now, local_utc_offset(now));
+        let width = row_width.min(HOVER_CARD_MAX_WIDTH);
         let position = point(
             footer.left() + px(SIDEBAR_ROW_INSET),
             footer.top() + px(FOOTER_PAD_Y - HOVER_CARD_GAP),
@@ -320,9 +361,18 @@ impl WorkspaceView {
                         .anchor(Corner::BottomLeft)
                         .position(position)
                         .snap_to_window_with_margin(px(MENU_EDGE_MARGIN))
-                        .child(usage_hover_content(
-                            &card,
-                            row_width.min(HOVER_CARD_MAX_WIDTH),
+                        // The card rises inside this shell, so the anchor never sees it move.
+                        .child(div().with_animation(
+                            SharedString::from(format!("usage-hover-card-{}", motion.id)),
+                            Animation::new(motion.duration()),
+                            move |shell, _| {
+                                shell.child(usage_hover_content(
+                                    &card,
+                                    &motion,
+                                    Instant::now(),
+                                    width,
+                                ))
+                            },
                         )),
                 )
                 .into_any_element(),
@@ -482,7 +532,8 @@ impl WorkspaceView {
 
 /// One provider in the footer, shaped like the navigation rows above it.
 /// Chips share the line and give up width by truncating their name, so a
-/// narrow sidebar never cuts a ring.
+/// narrow sidebar never cuts a ring. Hovering one leaves it as it is: the
+/// card above is the response.
 fn usage_chip(id: SharedString) -> Stateful<Div> {
     div()
         .id(id)
@@ -490,17 +541,12 @@ fn usage_chip(id: SharedString) -> Stateful<Div> {
         .h(px(CHIP_HEIGHT))
         .min_w(px(0.0))
         .px(px(4.0))
-        .rounded(px(7.0))
         .flex()
         .items_center()
         .gap(px(5.0))
         .cursor_pointer()
         .text_size(px(12.0))
         .text_color(colors().muted)
-        .hover(|chip| {
-            chip.bg(surface_tint(colors().hover, colors().sidebar))
-                .text_color(colors().foreground)
-        })
 }
 
 /// A provider's session window, then its weekly one, outermost ring first.
@@ -585,11 +631,12 @@ fn paint_ring_arc(
     }
 }
 
-/// Only quotas close to blocking work get a color of their own.
+/// Only quotas close to blocking work stand out: in the text color as they
+/// near the limit, in the danger color once it is imminent.
 fn quota_alert(percent: Option<f64>) -> Option<Rgba> {
     match percent {
         Some(value) if value >= 95.0 => Some(colors().danger),
-        Some(value) if value >= 80.0 => Some(colors().warning),
+        Some(value) if value >= 80.0 => Some(colors().foreground),
         _ => None,
     }
 }
@@ -654,11 +701,172 @@ fn quota_bar(percent: f64, color: Rgba, height: f32) -> impl IntoElement {
         )
 }
 
-/// The hover card: provider name, then each quota as label and value over its
-/// bar and reset time.
-fn usage_hover_content(card: &UsageCard, width: f32) -> impl IntoElement + use<> {
+/// When the hover card opened, when it last moved to another provider, and
+/// what it showed just before.
+#[derive(Clone, Debug)]
+struct HoverMotion {
+    id: u64,
+    opened: Instant,
+    changed: Instant,
+    /// The card as drawn when the pointer moved to another provider; none
+    /// right after opening, when every quota counts up from zero.
+    from: Option<CardFrame>,
+}
+
+impl HoverMotion {
+    /// How long the card keeps moving after its latest change.
+    fn duration(&self) -> Duration {
+        if self.from.is_some() {
+            HOVER_SWITCH
+        } else {
+            HOVER_COUNT_UP
+        }
+    }
+
+    /// How far the card has faded and risen in.
+    fn entrance(&self, now: Instant) -> f32 {
+        ease_out_cubic(elapsed_share(self.opened, now, HOVER_CARD_ENTER))
+    }
+
+    /// How far the quotas have moved toward the card's values.
+    fn progress(&self, now: Instant) -> f32 {
+        ease_out_cubic(elapsed_share(self.changed, now, self.duration()))
+    }
+
+    /// `card` as drawn at `now`.
+    fn frame(&self, card: &UsageCard, now: Instant) -> CardFrame {
+        let progress = self.progress(now);
+        CardFrame {
+            name: card.name.clone(),
+            rows: card
+                .rows
+                .iter()
+                .map(|row| {
+                    let previous = self.from.as_ref().and_then(|from| from.row(&row.label));
+                    QuotaFrame::of(card, row).advanced_from(previous, progress)
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Share of `duration` elapsed since `start`, capped at the whole of it.
+fn elapsed_share(start: Instant, now: Instant, duration: Duration) -> f32 {
+    (now.saturating_duration_since(start).as_secs_f32() / duration.as_secs_f32()).min(1.0)
+}
+
+/// The hover card as drawn at one instant.
+#[derive(Clone, Debug, PartialEq)]
+struct CardFrame {
+    name: String,
+    rows: Vec<QuotaFrame>,
+}
+
+impl CardFrame {
+    fn row(&self, label: &str) -> Option<&QuotaFrame> {
+        self.rows.iter().find(|row| row.label == label)
+    }
+}
+
+/// One quota as drawn at one instant.
+#[derive(Clone, Debug, PartialEq)]
+struct QuotaFrame {
+    label: String,
+    value: String,
+    percent: Option<f64>,
+    color: Rgba,
+    emphasized: bool,
+    reset: Option<String>,
+}
+
+impl QuotaFrame {
+    /// `row` at rest.
+    fn of(card: &UsageCard, row: &UsageCardRow) -> Self {
+        Self {
+            label: row.label.clone(),
+            value: row.value.clone(),
+            percent: row.percent,
+            color: row
+                .percent
+                .map_or(colors().muted, |percent| card.bar_color(percent)),
+            emphasized: !card.stale && quota_alert(row.percent).is_some(),
+            reset: row.reset.clone(),
+        }
+    }
+
+    /// This quota `progress` of the way from `previous`, or from zero without
+    /// one. A percentage counts along with its bar.
+    fn advanced_from(self, previous: Option<&QuotaFrame>, progress: f32) -> Self {
+        let Some(target) = self.percent.filter(|_| progress < 1.0) else {
+            return self;
+        };
+        let start = previous
+            .and_then(|previous| previous.percent)
+            .unwrap_or(0.0);
+        let percent = start + (target - start) * f64::from(progress);
+        let counts = self.value == format!("{target:.0}%");
+        Self {
+            value: if counts {
+                format!("{percent:.0}%")
+            } else {
+                self.value
+            },
+            percent: Some(percent),
+            color: previous.map_or(self.color, |previous| {
+                mix(previous.color, self.color, progress)
+            }),
+            emphasized: match previous {
+                Some(previous) if progress < 0.5 => previous.emphasized,
+                _ => self.emphasized,
+            },
+            ..self
+        }
+    }
+}
+
+/// `text` fading in over `previous` while `progress` runs to 1.
+fn crossfade(text: String, previous: Option<String>, progress: f32) -> Div {
+    let previous = previous.filter(|previous| *previous != text && progress < 1.0);
+    let fading = previous.is_some();
+    div()
+        .relative()
+        .min_w(px(0.0))
+        .child(
+            div()
+                .truncate()
+                .when(fading, |current| current.opacity(progress))
+                .child(text),
+        )
+        .when_some(previous, |label, previous| {
+            label.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .truncate()
+                    .opacity(1.0 - progress)
+                    .child(previous),
+            )
+        })
+}
+
+/// The hover card at `now`: provider name, then each quota as label and value
+/// over its bar and reset time. It fades and rises in as it opens, counts its
+/// quotas up, and glides between providers.
+fn usage_hover_content(
+    card: &UsageCard,
+    motion: &HoverMotion,
+    now: Instant,
+    width: f32,
+) -> impl IntoElement + use<> {
+    let entrance = motion.entrance(now);
+    let progress = motion.progress(now);
+    let from = motion.from.as_ref();
+    let frame = motion.frame(card, now);
     menu_panel()
         .id("usage-hover-card")
+        .relative()
+        .top(px(HOVER_CARD_RISE * (1.0 - entrance)))
+        .opacity(entrance)
         .min_w(px(0.0))
         .w(px(width))
         .p(px(14.0))
@@ -675,9 +883,12 @@ fn usage_hover_content(card: &UsageCard, width: f32) -> impl IntoElement + use<>
                     div()
                         .min_w(px(0.0))
                         .flex_1()
-                        .truncate()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(card.name.clone()),
+                        .child(crossfade(
+                            card.name.clone(),
+                            from.map(|from| from.name.clone()),
+                            progress,
+                        )),
                 )
                 .when(card.stale, |title| {
                     title.child(
@@ -696,8 +907,10 @@ fn usage_hover_content(card: &UsageCard, width: f32) -> impl IntoElement + use<>
                     .child("No quotas available"),
             )
         })
-        .children(card.rows.iter().map(|row| {
-            let alerting = !card.stale && quota_alert(row.percent).is_some();
+        .children(frame.rows.into_iter().map(|row| {
+            let previous_reset = from
+                .and_then(|from| from.row(&row.label))
+                .and_then(|previous| previous.reset.clone());
             div()
                 .flex()
                 .flex_col()
@@ -713,26 +926,26 @@ fn usage_hover_content(card: &UsageCard, width: f32) -> impl IntoElement + use<>
                                 .flex_1()
                                 .truncate()
                                 .text_color(colors().muted)
-                                .child(row.label.clone()),
+                                .child(row.label),
                         )
                         .child(
                             div()
                                 .flex_none()
-                                .when(alerting, |value| {
+                                .when(row.emphasized, |value| {
                                     value.font_weight(gpui::FontWeight::SEMIBOLD)
                                 })
-                                .child(row.value.clone()),
+                                .child(row.value),
                         ),
                 )
-                .when_some(row.percent, |row, percent| {
-                    row.child(quota_bar(percent, card.bar_color(percent), 4.0))
+                .when_some(row.percent, |quota, percent| {
+                    quota.child(quota_bar(percent, row.color, 4.0))
                 })
-                .when_some(row.reset.clone(), |row, reset| {
-                    row.child(
+                .when_some(row.reset, |quota, reset| {
+                    quota.child(
                         div()
                             .text_size(px(12.0))
                             .text_color(colors().subtle)
-                            .child(reset),
+                            .child(crossfade(reset, previous_reset, progress)),
                     )
                 })
         }))
@@ -986,16 +1199,57 @@ mod tests {
     }
 
     #[test]
-    fn hover_follows_the_pointer_between_chips() {
+    fn hover_card_counts_up_then_glides_between_providers() {
         let mut state = UsageState::default();
-        assert!(state.set_hovered("claude", true));
-        assert!(!state.set_hovered("claude", true));
-        // Entering the next chip before the previous one reports leaving.
-        assert!(state.set_hovered("codex", true));
-        assert!(!state.set_hovered("claude", false));
-        assert_eq!(state.hovered.as_deref(), Some("codex"));
-        assert!(state.set_hovered("codex", false));
+        state.apply(Ok(snapshot(
+            r#"{"providers":{
+                "claude":{"displayName":"Claude","resources":{
+                    "session":{"kind":"consumption","unit":"percent","used":38,"limit":100},
+                    "credits":{"kind":"balance","unit":"credits","available":40}}},
+                "codex":{"displayName":"Codex","resources":{
+                    "session":{"kind":"consumption","unit":"percent","used":84,"limit":100}}}}}"#,
+        )));
+        let shown = |state: &UsageState, now| state.hover_frame(now).unwrap().1;
+        let opened = Instant::now();
+        assert!(state.hover(Some("claude"), opened));
+        assert!(!state.hover(Some("claude"), opened));
+
+        // Opening counts each percentage up from zero and leaves other values alone.
+        let counting = shown(&state, opened + HOVER_COUNT_UP / 4);
+        let percent = counting.rows[0].percent.unwrap();
+        assert!(percent > 0.0 && percent < 38.0);
+        assert_eq!(counting.rows[0].value, format!("{percent:.0}%"));
+        assert_eq!(counting.rows[1].value, "40 credits");
+        assert_eq!(shown(&state, opened + HOVER_COUNT_UP).rows[0].value, "38%");
+
+        // Moving on glides from what the card showed, which keeps it open.
+        let switched = opened + HOVER_COUNT_UP;
+        assert!(state.hover(Some("codex"), switched));
+        let motion = state.hover_motion.clone().unwrap();
+        assert_eq!(motion.opened, opened);
+        assert_eq!(motion.from.map(|from| from.name), Some("Claude".to_owned()));
+        let gliding = shown(&state, switched + HOVER_SWITCH / 4).rows[0]
+            .percent
+            .unwrap();
+        assert!(gliding > 38.0 && gliding < 84.0);
+        let settled = shown(&state, switched + HOVER_SWITCH);
+        assert_eq!(settled.rows[0].value, "84%");
+        assert_eq!(settled.rows[0].color, colors().foreground);
+        assert!(settled.rows[0].emphasized);
+
+        // Leaving the footer closes the card at once.
+        assert!(state.hover(None, switched));
         assert_eq!(state.hovered, None);
+        assert!(state.hover_motion.is_none());
+        assert!(!state.hover(None, switched));
+    }
+
+    #[test]
+    fn only_quotas_near_their_limit_stand_out() {
+        assert_eq!(quota_alert(None), None);
+        assert_eq!(quota_alert(Some(79.0)), None);
+        assert_eq!(quota_alert(Some(84.0)), Some(colors().foreground));
+        assert_eq!(quota_alert(Some(97.0)), Some(colors().danger));
     }
 
     #[gpui::test]
@@ -1016,9 +1270,9 @@ mod tests {
                 ));
                 // Nothing hovered, a provider the snapshot lacks, then the real one.
                 assert!(view.usage_hover_card().is_none());
-                view.usage.hovered = Some("grok".into());
+                view.usage.hover(Some("grok"), Instant::now());
                 assert!(view.usage_hover_card().is_none());
-                view.usage.hovered = Some("codex".into());
+                view.usage.hover(Some("codex"), Instant::now());
                 assert!(view.usage_hover_card().is_some());
                 // The footer is not measured until it has been laid out.
                 view.usage.footer_bounds.set(Bounds::default());
@@ -1033,6 +1287,7 @@ mod tests {
                 view.usage.loading = true;
                 view.open_usage(940.0, window, cx);
                 assert_eq!(view.usage.hovered, None);
+                assert!(view.usage.hover_motion.is_none());
                 window.remove_window();
             })
             .unwrap();
