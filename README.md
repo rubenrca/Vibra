@@ -113,8 +113,8 @@ Sparkle downloaded with `./Scripts/fetch_sparkle.sh`, and `VIBRA_SIGNING_IDENTIT
 set to the full name of the Developer ID certificate:
 
 ```bash
-./Scripts/release.sh 0.3.40 --dry-run
-./Scripts/release.sh 0.3.40
+./Scripts/release.sh 0.3.41 --dry-run
+./Scripts/release.sh 0.3.41
 ```
 
 A stable release builds the universal DMG, signs and notarizes it, signs the

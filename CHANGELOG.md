@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.41 — 2026-10-22
+
+- Add a Transparency switch in Settings → Appearance. Turn it off to replace the translucent window, menus, and popovers with solid backgrounds; it applies immediately and Vibra remembers it.
+
 ## 0.3.40 — 2026-10-21
 
 - Read agent status straight from the agent: Vibra answers the Program Status Protocol (OSC 7501), so Claude Code, Codex, Grok, and pi report when they work, wait for a permission or an answer, or finish, with no hooks installed. Pressing Esc or hitting an API error no longer leaves a Claude pane stuck on Working.

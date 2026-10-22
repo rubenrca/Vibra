@@ -1,6 +1,6 @@
 [package]
 name = "vibra"
-version = "0.3.40"
+version = "0.3.41"
 edition = "2024"
 rust-version = "1.96"
 publish = false
