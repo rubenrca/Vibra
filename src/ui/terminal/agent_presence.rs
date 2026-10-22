@@ -1,5 +1,8 @@
-use crate::domain::agents::{AgentKind, AgentRuntimeState, contains_marker};
-use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence, TerminalSnapshot};
+use crate::domain::agents::{AgentAttention, AgentKind, AgentRuntimeState, contains_marker};
+use crate::ports::terminal::{
+    ProgramBlock, ProgramState, TerminalAgentKindSource, TerminalAgentPresence,
+    TerminalAgentStateSource, TerminalProgramStatus, TerminalSnapshot,
+};
 
 /// Prompts, spinners and footers live in the last few lines of an agent's UI.
 /// Everything above is conversation, where an agent may quote any marker.
@@ -51,8 +54,15 @@ pub(super) fn detect_agent_presence(
                 )
             })
         });
+    // Process and program identities are re-read every time; only names read
+    // off the title or screen outlive the evidence that revealed them.
     let pinned = pinned
-        .filter(|pinned| pinned.kind_source != TerminalAgentKindSource::Process)
+        .filter(|pinned| {
+            matches!(
+                pinned.kind_source,
+                TerminalAgentKindSource::Title | TerminalAgentKindSource::Screen
+            )
+        })
         .map(|pinned| (pinned.kind.clone(), pinned.kind_source));
     let (kind, kind_source) = match (detected, pinned) {
         (Some(process @ (_, TerminalAgentKindSource::Process)), _) => process,
@@ -68,9 +78,68 @@ pub(super) fn detect_agent_presence(
         kind,
         kind_source,
         state,
+        state_source: TerminalAgentStateSource::Heuristic,
+        attention: None,
         process_id: (kind_source == TerminalAgentKindSource::Process)
             .then_some(process_id)
             .flatten(),
+    })
+}
+
+/// Lays the program's own status report over what detection inferred. The
+/// report decides activity outright; its `app` names the agent only when no
+/// process already did. `boot_work` marks work the program started on its
+/// own right after launch (Codex reports a working blip while it boots).
+pub(super) fn apply_program_status(
+    detected: Option<TerminalAgentPresence>,
+    program: Option<&TerminalProgramStatus>,
+    process_id: Option<u32>,
+    boot_work: bool,
+) -> Option<TerminalAgentPresence> {
+    let Some(program) = program else {
+        return detected;
+    };
+    let reported = program.app.as_deref().and_then(AgentKind::from_program_app);
+    let (kind, kind_source) = match (&detected, reported) {
+        (Some(detected), reported) if detected.kind_source == TerminalAgentKindSource::Process => {
+            // A report naming another agent belongs to someone else's TTY.
+            if reported.is_some_and(|kind| !detected.kind.eq_ignore_ascii_case(kind.display_name()))
+            {
+                return Some(detected.clone());
+            }
+            (detected.kind.clone(), TerminalAgentKindSource::Process)
+        }
+        (_, Some(kind)) => (
+            kind.display_name().to_owned(),
+            TerminalAgentKindSource::Program,
+        ),
+        // Not an agent's report: a build tool's progress is not agent activity.
+        (_, None) => return detected,
+    };
+    let (state, attention) = match program.state {
+        ProgramState::Working if boot_work => (AgentRuntimeState::Idle, None),
+        ProgramState::Working => (AgentRuntimeState::Working, None),
+        ProgramState::Blocked => (
+            AgentRuntimeState::Waiting,
+            Some(match program.block {
+                Some(ProgramBlock::Permission) => AgentAttention::Permission,
+                Some(ProgramBlock::Question) => AgentAttention::Question,
+                Some(ProgramBlock::Auth) | None => AgentAttention::Notification,
+            }),
+        ),
+        ProgramState::Idle | ProgramState::Done | ProgramState::Error => {
+            (AgentRuntimeState::Idle, None)
+        }
+    };
+    Some(TerminalAgentPresence {
+        kind,
+        kind_source,
+        state,
+        state_source: TerminalAgentStateSource::Program,
+        attention,
+        process_id: detected
+            .and_then(|detected| detected.process_id)
+            .or(process_id),
     })
 }
 
@@ -133,8 +202,14 @@ fn agent_state_from_text(title: &str, screen: &str) -> AgentRuntimeState {
     ];
     let any =
         |text: &str, markers: &[&str]| markers.iter().any(|marker| contains_marker(text, marker));
-    if any(&title, &waiting_markers) || any(&chrome, &waiting_markers) {
+    let glyph = title_glyph_state(&title);
+    if glyph == Some(AgentRuntimeState::Waiting)
+        || any(&title, &waiting_markers)
+        || any(&chrome, &waiting_markers)
+    {
         AgentRuntimeState::Waiting
+    } else if let Some(state) = glyph {
+        state
     } else if any(&screen, &interrupt_markers)
         || any(&title, &working_markers)
         || any(&chrome, &working_markers)
@@ -142,6 +217,25 @@ fn agent_state_from_text(title: &str, screen: &str) -> AgentRuntimeState {
         AgentRuntimeState::Working
     } else {
         AgentRuntimeState::Idle
+    }
+}
+
+/// Agents that paint their state into the window title say it more reliably
+/// than any screen text: Claude Code (`✳` at rest, a braille or quarter-circle
+/// spinner at work, until it reports OSC 7501 instead) and Gemini CLI (`◇` at
+/// rest, `✦` or `⏲` at work, `✋` on a permission prompt).
+fn title_glyph_state(title: &str) -> Option<AgentRuntimeState> {
+    if title.contains('✋') {
+        Some(AgentRuntimeState::Waiting)
+    } else if title
+        .chars()
+        .any(|ch| matches!(ch, '\u{2801}'..='\u{28ff}' | '\u{25d0}'..='\u{25d3}' | '✦' | '⏲'))
+    {
+        Some(AgentRuntimeState::Working)
+    } else if title.trim_start().starts_with('✳') || title.contains('◇') {
+        Some(AgentRuntimeState::Idle)
+    } else {
+        None
     }
 }
 

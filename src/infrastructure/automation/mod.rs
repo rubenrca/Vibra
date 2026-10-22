@@ -149,7 +149,7 @@ mod tests {
     fn managed_hook_scripts_require_private_directories_and_regular_files() {
         let home = TestHome::new();
         let selected = [AgentKind::Claude].into_iter().collect();
-        manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap();
+        manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, None).unwrap();
         for directory in [home.0.join(".vibra"), home.0.join(".vibra/agent-hooks")] {
             let mode = fs::metadata(directory).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o700);
@@ -158,10 +158,12 @@ mod tests {
         let script = home.0.join(".vibra/agent-hooks/vibra-claude.sh");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         let status =
-            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Status, false).unwrap();
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Status, false, None)
+                .unwrap();
         assert_eq!(status["agents"][0]["installed"], false);
         let repaired =
-            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap();
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, None)
+                .unwrap();
         assert_eq!(repaired["agents"][0]["changed"], true);
         assert_eq!(
             fs::metadata(&script).unwrap().permissions().mode() & 0o777,
@@ -173,7 +175,8 @@ mod tests {
         fs::write(&outside, "unchanged").unwrap();
         symlink(&outside, &script).unwrap();
         assert!(
-            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).is_err()
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, None)
+                .is_err()
         );
         assert_eq!(fs::read_to_string(&outside).unwrap(), "unchanged");
 
@@ -181,7 +184,8 @@ mod tests {
         fs::remove_dir(home.0.join(".vibra/agent-hooks")).unwrap();
         symlink(&home.0, home.0.join(".vibra/agent-hooks")).unwrap();
         assert!(
-            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).is_err()
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, None)
+                .is_err()
         );
     }
 
@@ -193,7 +197,8 @@ mod tests {
         let selected = [AgentKind::Claude, AgentKind::Codex].into_iter().collect();
 
         let error =
-            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap_err();
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, None)
+                .unwrap_err();
 
         assert!(error.to_string().contains("Codex"));
         assert!(!home.0.join(".claude/settings.json").exists());
@@ -209,7 +214,7 @@ mod tests {
         let selected = [AgentKind::Claude].into_iter().collect();
 
         for operation in [AgentHookOperation::Install, AgentHookOperation::Uninstall] {
-            let error = manage_agent_hooks(&home.0, &selected, operation, false).unwrap_err();
+            let error = manage_agent_hooks(&home.0, &selected, operation, false, None).unwrap_err();
             assert!(format!("{error:#}").contains("4 MiB"));
             assert_eq!(fs::read_to_string(&settings).unwrap(), content);
             assert!(!home.0.join(".claude/settings.json.vibra-backup").exists());
@@ -221,7 +226,7 @@ mod tests {
     fn oversized_managed_scripts_are_rejected_without_replacing_them() {
         let home = TestHome::new();
         let selected = [AgentKind::Claude].into_iter().collect();
-        manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap();
+        manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, None).unwrap();
         let settings = home.0.join(".claude/settings.json");
         let original_settings = fs::read(&settings).unwrap();
         let script = home.0.join(".vibra/agent-hooks/vibra-claude.sh");
@@ -229,7 +234,8 @@ mod tests {
         fs::write(&script, &content).unwrap();
 
         let error =
-            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false).unwrap_err();
+            manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, None)
+                .unwrap_err();
         assert!(format!("{error:#}").contains("64 KiB"));
         assert_eq!(fs::read(&settings).unwrap(), original_settings);
         assert_eq!(fs::read_to_string(&script).unwrap(), content);
@@ -247,7 +253,7 @@ mod tests {
         let agents = [AgentKind::Claude, AgentKind::Codex].into_iter().collect();
 
         let report =
-            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false).unwrap();
+            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false, None).unwrap();
         assert!(
             report["agents"]
                 .as_array()
@@ -283,7 +289,7 @@ mod tests {
         }
 
         let repeat =
-            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false).unwrap();
+            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false, None).unwrap();
         assert!(
             repeat["agents"]
                 .as_array()
@@ -298,14 +304,14 @@ mod tests {
         )
         .unwrap();
         let status =
-            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Status, false).unwrap();
+            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Status, false, None).unwrap();
         assert_eq!(status["agents"][0]["installed"], true);
         assert_eq!(status["agents"][1]["installed"], false);
         let repaired =
-            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false).unwrap();
+            manage_agent_hooks(&home.0, &agents, AgentHookOperation::Install, false, None).unwrap();
         assert_eq!(repaired["agents"][1]["changed"], true);
 
-        manage_agent_hooks(&home.0, &agents, AgentHookOperation::Uninstall, false).unwrap();
+        manage_agent_hooks(&home.0, &agents, AgentHookOperation::Uninstall, false, None).unwrap();
         assert!(!home.0.join(".vibra/agent-hooks/vibra-claude.sh").exists());
         assert!(!home.0.join(".vibra/agent-hooks/vibra-codex.sh").exists());
         for path in [&claude_settings, &codex_hooks] {
@@ -384,7 +390,7 @@ mod tests {
     fn hook_events_normalize_to_presence_commands() {
         let session = serde_json::json!({ "session_id": "session-1" });
         assert!(matches!(
-            agent_hook_command(AgentKind::Codex, "prompt", &session).unwrap(),
+            agent_hook_command(AgentKind::Codex, "prompt", &session).unwrap().unwrap(),
             AutomationCommand::SetAgentPresence {
                 kind: AgentKind::Codex,
                 state: AgentRuntimeState::Working,
@@ -400,6 +406,7 @@ mod tests {
                 "prompt",
                 &serde_json::json!({ "session_id": "session-2", "model": { "id": "gpt-5.4" } }),
             )
+            .unwrap()
             .unwrap(),
             AutomationCommand::SetAgentPresence {
                 model: Some(model),
@@ -412,6 +419,7 @@ mod tests {
                 "notification",
                 &serde_json::json!({ "notification_type": "permission_prompt" }),
             )
+            .unwrap()
             .unwrap(),
             AutomationCommand::SetAgentPresence {
                 kind: AgentKind::Claude,
@@ -421,11 +429,223 @@ mod tests {
             }
         ));
         assert!(matches!(
-            agent_hook_command(AgentKind::Codex, "session-end", &session).unwrap(),
+            agent_hook_command(AgentKind::Codex, "session-end", &session).unwrap().unwrap(),
             AutomationCommand::ClearAgentPresence {
                 session_id: Some(session_id),
             } if session_id == "session-1"
         ));
+    }
+
+    #[test]
+    fn hook_events_cover_failures_compaction_questions_and_subagents() {
+        let state = |kind, event, payload: Value| match agent_hook_command(kind, event, &payload)
+            .unwrap()
+        {
+            Some(AutomationCommand::SetAgentPresence {
+                state, attention, ..
+            }) => Some((state, attention)),
+            Some(other) => panic!("unexpected {other:?}"),
+            None => None,
+        };
+        let idle = Some((AgentRuntimeState::Idle, None));
+        let working = Some((AgentRuntimeState::Working, None));
+        let claude = AgentKind::Claude;
+        assert_eq!(state(claude, "stop-failure", serde_json::json!({})), idle);
+        assert_eq!(
+            state(claude, "tool-failure", serde_json::json!({})),
+            working
+        );
+        assert_eq!(
+            state(
+                claude,
+                "compact",
+                serde_json::json!({ "trigger": "manual" })
+            ),
+            idle
+        );
+        assert_eq!(
+            state(claude, "compact", serde_json::json!({ "trigger": "auto" })),
+            None
+        );
+        assert_eq!(
+            state(
+                claude,
+                "ask",
+                serde_json::json!({ "tool_name": "AskUserQuestion" })
+            ),
+            Some((AgentRuntimeState::Waiting, Some(AgentAttention::Question)))
+        );
+        assert_eq!(
+            state(
+                claude,
+                "permission",
+                serde_json::json!({ "tool_name": "ExitPlanMode" })
+            ),
+            Some((AgentRuntimeState::Waiting, Some(AgentAttention::Plan)))
+        );
+        assert_eq!(
+            state(
+                AgentKind::Codex,
+                "permission",
+                serde_json::json!({ "tool_name": "Bash" })
+            ),
+            Some((AgentRuntimeState::Waiting, Some(AgentAttention::Permission)))
+        );
+        for source in ["startup", "resume", "clear"] {
+            assert_eq!(
+                state(
+                    claude,
+                    "session-start",
+                    serde_json::json!({ "source": source })
+                ),
+                idle
+            );
+        }
+        assert_eq!(
+            state(
+                claude,
+                "session-start",
+                serde_json::json!({ "source": "compact" })
+            ),
+            None,
+            "a compaction restart happens mid-turn"
+        );
+        assert_eq!(
+            state(
+                claude,
+                "stop-failure",
+                serde_json::json!({ "agent_id": "a1" })
+            ),
+            None,
+            "a subagent's failure does not end the lead's turn"
+        );
+        assert!(agent_hook_command(AgentKind::Codex, "ask", &Value::Null).is_err());
+    }
+
+    #[test]
+    fn claude_hook_events_follow_the_installed_release() {
+        let home = TestHome::new();
+        let selected: std::collections::HashSet<_> = [AgentKind::Claude].into_iter().collect();
+        let settings = home.0.join(".claude/settings.json");
+        let slots = || -> Vec<String> {
+            let config: Value =
+                serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+            config["hooks"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let status = |version| {
+            manage_agent_hooks(
+                &home.0,
+                &selected,
+                AgentHookOperation::Status,
+                false,
+                version,
+            )
+            .unwrap()["agents"][0]
+                .clone()
+        };
+
+        // An unknown release gets only the events every release accepts.
+        manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, None).unwrap();
+        assert!(slots().contains(&"PreToolUse".to_owned()));
+        assert!(!slots().contains(&"StopFailure".to_owned()));
+        assert_eq!(status(None)["installed"], true);
+
+        // A known current release is missing events: outdated until upgraded.
+        let current = Some([2, 1, 307]);
+        assert_eq!(status(current)["installed"], false);
+        assert_eq!(status(current)["outdated"], true);
+        manage_agent_hooks(
+            &home.0,
+            &selected,
+            AgentHookOperation::Install,
+            false,
+            current,
+        )
+        .unwrap();
+        for slot in ["StopFailure", "PostToolUseFailure", "PostCompact"] {
+            assert!(slots().contains(&slot.to_owned()), "{slot}");
+        }
+        assert_eq!(status(current)["installed"], true);
+        assert_eq!(status(current)["version"], "2.1.307");
+        // Without a version, nothing a version-aware install wrote is removed.
+        manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, None).unwrap();
+        assert!(slots().contains(&"StopFailure".to_owned()));
+
+        // An older release would reject the newer events: they are retired.
+        let old = Some([2, 0, 60]);
+        assert_eq!(status(old)["installed"], false);
+        manage_agent_hooks(&home.0, &selected, AgentHookOperation::Install, false, old).unwrap();
+        assert!(!slots().contains(&"StopFailure".to_owned()));
+        assert!(!slots().contains(&"PostCompact".to_owned()));
+        assert!(slots().contains(&"PostToolUseFailure".to_owned()));
+        assert_eq!(status(old)["installed"], true);
+    }
+
+    #[test]
+    fn installed_claude_release_is_the_older_of_its_records() {
+        let home = TestHome::new();
+        assert_eq!(installed_claude_version(&home.0), None);
+        write_text_atomically(
+            &home.0.join(".claude.json"),
+            r#"{"lastReleaseNotesSeen":"2.1.90"}"#,
+            0o600,
+        )
+        .unwrap();
+        assert_eq!(installed_claude_version(&home.0), Some([2, 1, 90]));
+        fs::create_dir_all(home.0.join(".local/bin")).unwrap();
+        symlink(
+            home.0.join(".local/share/claude/versions/2.1.307"),
+            home.0.join(".local/bin/claude"),
+        )
+        .unwrap();
+        assert_eq!(installed_claude_version(&home.0), Some([2, 1, 90]));
+        write_text_atomically(
+            &home.0.join(".claude.json"),
+            r#"{"lastReleaseNotesSeen":"2.2.0"}"#,
+            0o600,
+        )
+        .unwrap();
+        assert_eq!(installed_claude_version(&home.0), Some([2, 1, 307]));
+        assert_eq!(parse_cli_version("1.0.64-beta.1"), Some([1, 0, 64]));
+        assert_eq!(parse_cli_version("2.1"), None);
+        assert_eq!(parse_cli_version("v2.1.3"), None);
+    }
+
+    #[test]
+    fn detached_requests_are_acknowledged_without_waiting_for_the_ui() {
+        let server = AutomationServer::start().unwrap();
+        let path = server.path().to_path_buf();
+        let client = thread::spawn(move || {
+            let mut stream = UnixStream::connect(path).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            serde_json::to_writer(
+                &mut stream,
+                &AutomationEnvelope {
+                    pane_id: Uuid::new_v4(),
+                    token: Uuid::new_v4(),
+                    command: AutomationCommand::SetAgentState {
+                        state: AgentRuntimeState::Working,
+                    },
+                    detached: true,
+                },
+            )
+            .unwrap();
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
+            serde_json::from_reader::<_, AutomationResponse>(stream).unwrap()
+        });
+        let started = Instant::now();
+        assert!(client.join().unwrap().ok);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // The update itself is still queued for the UI, in order.
+        let incoming = server.receiver().try_recv().unwrap();
+        assert!(incoming.envelope.detached);
     }
 
     #[test]
@@ -444,6 +664,7 @@ mod tests {
                     command: AutomationCommand::SetAgentState {
                         state: AgentRuntimeState::Idle,
                     },
+                    detached: false,
                 },
             )
             .unwrap();
@@ -500,6 +721,7 @@ mod tests {
                         command: AutomationCommand::SetAgentState {
                             state: AgentRuntimeState::Idle,
                         },
+                        detached: false,
                     },
                 )
                 .unwrap();
@@ -565,6 +787,7 @@ mod tests {
                     command: AutomationCommand::SetAgentState {
                         state: AgentRuntimeState::Idle,
                     },
+                    detached: false,
                 },
                 response: tx,
             },
@@ -580,6 +803,7 @@ mod tests {
                     command: AutomationCommand::SetAgentState {
                         state: AgentRuntimeState::Idle,
                     },
+                    detached: false,
                 },
                 response: tx,
             },

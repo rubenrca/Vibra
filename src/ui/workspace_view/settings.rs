@@ -647,7 +647,9 @@ impl WorkspaceView {
                             .text_color(colors().subtle)
                             .child(concat!(
                                 "Vibra recognizes agents running in its terminals ",
-                                "and shows their activity in panes and tabs."
+                                "and shows their activity in panes and tabs. Claude Code, ",
+                                "Codex, Grok, and pi report their own status to the terminal, ",
+                                "so they need no setup."
                             )),
                     )
                     .child(div().h(px(1.0)).bg(colors().border_subtle))
@@ -660,7 +662,7 @@ impl WorkspaceView {
                                     .flex_1()
                                     .text_size(px(13.0))
                                     .text_color(colors().foreground)
-                                    .child("Hooks for precise status"),
+                                    .child("Hooks for task titles"),
                             )
                             .child(self.settings_status_chip(
                                 agent_hooks_status,
@@ -673,9 +675,10 @@ impl WorkspaceView {
                             .line_height(px(20.0))
                             .text_color(colors().subtle)
                             .child(concat!(
-                                "Optional: install hooks so Claude and Codex report when they ",
-                                "work, finish, or ask for permission. Other agents are detected ",
-                                "through their process and screen output."
+                                "Optional: hooks name tasks after your prompts, show the model, ",
+                                "and report status for Claude and Codex releases that do not ",
+                                "report it to the terminal. Other agents are detected through ",
+                                "their process, title, and screen output."
                             )),
                     )
                     .child(self.settings_hook_status_row("Claude", agent_hooks.claude_installed))

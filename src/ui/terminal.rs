@@ -12,10 +12,10 @@ use uuid::Uuid;
 use crate::domain::agents::{AgentKind, AgentRuntimeState};
 use crate::infrastructure::settings::{MAX_TERMINAL_FONT_SIZE, MIN_TERMINAL_FONT_SIZE};
 use crate::ports::terminal::{
-    TerminalAgentPresence, TerminalCell, TerminalCellSide, TerminalCursor, TerminalCursorShape,
-    TerminalEvent, TerminalHandle, TerminalInputMode, TerminalPoint, TerminalPort, TerminalRgb,
-    TerminalSearchDirection, TerminalSelectionType, TerminalSize, TerminalSnapshot,
-    TerminalUnderline, is_safe_hyperlink,
+    ProgramState, TerminalAgentPresence, TerminalAgentStateSource, TerminalCell, TerminalCellSide,
+    TerminalCursor, TerminalCursorShape, TerminalEvent, TerminalHandle, TerminalInputMode,
+    TerminalPoint, TerminalPort, TerminalRgb, TerminalSearchDirection, TerminalSelectionType,
+    TerminalSize, TerminalSnapshot, TerminalUnderline, is_safe_hyperlink,
 };
 use crate::ui::theme::{
     self, MONO_FONT, colors, floating_surface, popover_surface, surface, surface_tint,
@@ -30,7 +30,9 @@ mod agent_presence;
 mod input;
 mod mouse;
 mod render;
-use agent_presence::{detect_agent_presence, is_interactive_shell_process_name};
+use agent_presence::{
+    apply_program_status, detect_agent_presence, is_interactive_shell_process_name,
+};
 #[cfg(test)]
 pub(crate) use input::{
     clipboard_has_image, key_bytes, key_event_bytes, paste_bytes, paste_requires_confirmation,
@@ -58,6 +60,9 @@ const PROCESS_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// a marker scrolling past the footer is not a prompt.
 const AGENT_IDLE_SETTLE: Duration = Duration::from_secs(2);
 const AGENT_WAITING_SETTLE: Duration = Duration::from_secs(1);
+/// Work a program reports right after launch, before the user typed anything
+/// to it, is boot work rather than a turn (Codex reports a ~2 s blip).
+const PROGRAM_BOOT_GRACE: Duration = Duration::from_secs(3);
 const SEARCH_STEP_DELAY: Duration = Duration::from_millis(1);
 const MAX_CLIPBOARD_CONFIRMATIONS: usize = 4;
 const MAX_CLIPBOARD_READ_BYTES: usize = 1024 * 1024;
@@ -99,6 +104,12 @@ pub enum TerminalViewEvent {
         session_id: Uuid,
         x: f32,
         y: f32,
+    },
+    /// The foreground program asked for a desktop notification (OSC 9/777).
+    DesktopNotification {
+        session_id: Uuid,
+        title: String,
+        body: String,
     },
     ExternalPasteResolved {
         session_id: Uuid,
@@ -199,6 +210,10 @@ pub struct TerminalView {
     /// Foreground process the current presence was detected for.
     agent_presence_process_id: Option<u32>,
     pending_agent_state: Option<(AgentRuntimeState, Instant)>,
+    /// Program status generation the current presence already reflects.
+    program_status_generation: u64,
+    /// Last keystroke, paste or command the user sent to the terminal.
+    last_user_input_at: Option<Instant>,
     render_cache: Arc<Mutex<TerminalRenderCache>>,
     last_requested_size: Arc<Mutex<Option<TerminalSize>>>,
     surface_visible: bool,
@@ -210,6 +225,7 @@ pub struct TerminalView {
     _search_task: Option<Task<()>>,
     _input_error_task: Option<Task<()>>,
     _agent_settle_task: Option<Task<()>>,
+    _program_boot_task: Option<Task<()>>,
 }
 
 /// A non-interactive, frozen rendering of a terminal used while its pane is
@@ -339,6 +355,8 @@ impl TerminalView {
             agent_presence: None,
             agent_presence_process_id: None,
             pending_agent_state: None,
+            program_status_generation: 0,
+            last_user_input_at: None,
             render_cache: Arc::new(Mutex::new(TerminalRenderCache::default())),
             last_requested_size: Arc::new(Mutex::new(None)),
             surface_visible: true,
@@ -350,6 +368,7 @@ impl TerminalView {
             _search_task: None,
             _input_error_task: None,
             _agent_settle_task: None,
+            _program_boot_task: None,
         }
     }
 
@@ -421,6 +440,7 @@ impl TerminalView {
         };
         let process_name = handle.foreground_process_name();
         let process_id = handle.foreground_process_id();
+        self.program_status_generation = handle.program_status_generation();
         if process_name
             .as_deref()
             .is_some_and(is_interactive_shell_process_name)
@@ -428,13 +448,18 @@ impl TerminalView {
         {
             return;
         }
-        let snapshot = handle.snapshot();
         let recent_text = handle.recent_text(14);
+        // The grid is only needed when the backend cannot provide recent text.
+        let snapshot = if recent_text.is_some() {
+            Arc::new(TerminalSnapshot::default())
+        } else {
+            handle.snapshot()
+        };
         let pinned = self
             .agent_presence
             .as_ref()
             .filter(|_| process_id.is_some() && process_id == self.agent_presence_process_id);
-        let mut presence = detect_agent_presence(
+        let detected = detect_agent_presence(
             &self.title,
             &snapshot,
             recent_text.as_deref(),
@@ -442,6 +467,27 @@ impl TerminalView {
             process_id,
             pinned,
         );
+        // A report belongs to the process group that made it; once another
+        // group owns the TTY (the shell came back), it describes nobody.
+        let program = handle.program_status().filter(|status| {
+            status.process_group.is_some()
+                && status.process_group == process_id
+                && !process_name
+                    .as_deref()
+                    .is_some_and(is_interactive_shell_process_name)
+        });
+        let boot_until = program.as_ref().and_then(|status| {
+            let until = status.started_at + PROGRAM_BOOT_GRACE;
+            (status.state == ProgramState::Working
+                && Instant::now() < until
+                && self
+                    .last_user_input_at
+                    .is_none_or(|input| input < status.started_at))
+            .then_some(until)
+        });
+        self.schedule_program_boot_check(boot_until, cx);
+        let mut presence =
+            apply_program_status(detected, program.as_ref(), process_id, boot_until.is_some());
         self.agent_presence_process_id = process_id;
         self.settle_agent_state(presence.as_mut(), cx);
         if presence != self.agent_presence {
@@ -453,13 +499,37 @@ impl TerminalView {
         }
     }
 
+    /// Re-reads presence when boot work ends, so a program that is still
+    /// working by then shows as working even in a hidden pane.
+    fn schedule_program_boot_check(&mut self, until: Option<Instant>, cx: &mut Context<Self>) {
+        let Some(until) = until else {
+            self._program_boot_task = None;
+            return;
+        };
+        let timer = cx
+            .background_executor()
+            .timer(until.saturating_duration_since(Instant::now()));
+        self._program_boot_task = Some(cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |this, cx| this.refresh_agent_presence(cx));
+        }));
+    }
+
     /// Holds the previous state while a heuristic transition is unconfirmed,
-    /// and re-checks once it is due so hidden panes still settle.
+    /// and re-checks once it is due so hidden panes still settle. A program's
+    /// own report is not a guess and applies at once.
     fn settle_agent_state(
         &mut self,
         presence: Option<&mut TerminalAgentPresence>,
         cx: &mut Context<Self>,
     ) {
+        if presence
+            .as_ref()
+            .is_some_and(|presence| presence.state_source == TerminalAgentStateSource::Program)
+        {
+            self.pending_agent_state = None;
+            return;
+        }
         let transition =
             presence
                 .zip(self.agent_presence.as_ref())
@@ -580,6 +650,13 @@ impl TerminalView {
                 cx.notify();
             }
             TerminalEvent::Wakeup => {
+                // A program's own status report is applied at once; other
+                // evidence is polled at most every PROCESS_PROBE_INTERVAL.
+                if self.handle.as_ref().is_some_and(|handle| {
+                    handle.program_status_generation() != self.program_status_generation
+                }) {
+                    self.last_process_probe = None;
+                }
                 self.refresh_process_state_if_due(cx);
                 if let Some(handle) = &self.handle {
                     handle.acknowledge_wakeup();
@@ -626,6 +703,13 @@ impl TerminalView {
                     });
                 }));
                 cx.notify();
+            }
+            TerminalEvent::DesktopNotification { title, body } => {
+                cx.emit(TerminalViewEvent::DesktopNotification {
+                    session_id: self.session_id,
+                    title,
+                    body,
+                });
             }
             TerminalEvent::Exit(code) => {
                 if !self.exited {

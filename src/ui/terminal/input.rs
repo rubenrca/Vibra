@@ -48,6 +48,7 @@ impl TerminalView {
         };
         handle.clear_selection();
         handle.scroll(i32::MIN);
+        self.last_user_input_at = Some(Instant::now());
         self.record_input_result(handle.send_input(input), cx)
     }
 
@@ -87,6 +88,9 @@ impl TerminalView {
         };
         handle.clear_selection();
         handle.scroll(i32::MIN);
+        if event_type != TerminalKeyEventType::Release {
+            self.last_user_input_at = Some(Instant::now());
+        }
         self.record_input_result(
             handle.send_key_input(TerminalKeyInput {
                 keystroke: terminal_keystroke(key),

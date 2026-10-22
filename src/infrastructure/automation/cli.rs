@@ -27,7 +27,18 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
         return Ok(false);
     }
 
-    let command = parse_cli_command(mode, &arguments[1..])?;
+    let detached = arguments
+        .get(1)
+        .is_some_and(|operation| operation == "hook");
+    let command = if detached {
+        match parse_agent_hook(&arguments[2..])? {
+            Some(command) => command,
+            // Lifecycle noise, such as a compaction restarting the session.
+            None => return Ok(true),
+        }
+    } else {
+        parse_cli_command(mode, &arguments[1..])?
+    };
     let socket = std::env::var_os("VIBRA_AUTOMATION_SOCKET")
         .map(PathBuf::from)
         .context("VIBRA_AUTOMATION_SOCKET is unavailable; run this inside Vibra")?;
@@ -41,6 +52,7 @@ pub fn run_cli(arguments: &[String]) -> Result<bool> {
         pane_id,
         token,
         command,
+        detached,
     };
     let stream = UnixStream::connect(&socket)
         .with_context(|| format!("could not connect to {}", socket.display()))?;
@@ -105,7 +117,8 @@ pub(super) fn parse_cli_command(mode: &str, arguments: &[String]) -> Result<Auto
     match operation {
         "presence" => parse_agent_presence(&arguments[1..]),
         "attention" => parse_agent_attention(&arguments[1..]),
-        "hook" => parse_agent_hook(&arguments[1..]),
+        "hook" => parse_agent_hook(&arguments[1..])?
+            .context("this hook event does not change the agent status"),
         "clear" => {
             let options = parse_agent_options(&arguments[1..], false)?;
             Ok(AutomationCommand::ClearAgentPresence {
@@ -183,7 +196,7 @@ fn parse_agent_attention(arguments: &[String]) -> Result<AutomationCommand> {
     })
 }
 
-fn parse_agent_hook(arguments: &[String]) -> Result<AutomationCommand> {
+fn parse_agent_hook(arguments: &[String]) -> Result<Option<AutomationCommand>> {
     let kind = arguments
         .first()
         .and_then(|kind| AgentKind::parse(kind))
@@ -214,11 +227,12 @@ fn parse_agent_hook(arguments: &[String]) -> Result<AutomationCommand> {
     agent_hook_command(kind, event, &payload)
 }
 
+/// The status a hook event reports, or `None` when it changes nothing.
 pub(super) fn agent_hook_command(
     kind: AgentKind,
     event: &str,
     payload: &Value,
-) -> Result<AutomationCommand> {
+) -> Result<Option<AutomationCommand>> {
     let session_id = payload
         .get("session_id")
         .and_then(Value::as_str)
@@ -239,33 +253,53 @@ pub(super) fn agent_hook_command(
         model: model.clone(),
         session_id: session_id.clone(),
     };
+    let field = |name| payload.get(name).and_then(Value::as_str);
+    // Subagents report through the same hooks; their turn is not the lead's.
+    let lead = field("agent_id").is_none();
+    let attention = match field("tool_name") {
+        Some("AskUserQuestion") => AgentAttention::Question,
+        Some("ExitPlanMode") => AgentAttention::Plan,
+        _ => AgentAttention::Permission,
+    };
     match (kind, event) {
         (AgentKind::Claude | AgentKind::Codex, "session-end") => {
-            Ok(AutomationCommand::ClearAgentPresence { session_id })
+            Ok(Some(AutomationCommand::ClearAgentPresence { session_id }))
         }
         // A finished tool call means any permission prompt was answered and
         // the turn is still running (also after a blocked stop or a resumed
-        // background task, which emit no prompt event).
-        (AgentKind::Claude | AgentKind::Codex, "prompt" | "tool") => {
-            Ok(presence(AgentRuntimeState::Working, None))
+        // background task, which emit no prompt event). A failed or denied
+        // tool leaves the turn running too.
+        (AgentKind::Claude | AgentKind::Codex, "prompt" | "tool" | "tool-failure") => {
+            Ok(Some(presence(AgentRuntimeState::Working, None)))
         }
-        (AgentKind::Claude | AgentKind::Codex, "stop" | "session-start") => {
-            Ok(presence(AgentRuntimeState::Idle, None))
+        // `stop-failure` ends a turn on an API or model error.
+        (AgentKind::Claude | AgentKind::Codex, "stop" | "stop-failure") => {
+            Ok(lead.then(|| presence(AgentRuntimeState::Idle, None)))
         }
-        (AgentKind::Claude | AgentKind::Codex, "permission") => Ok(presence(
-            AgentRuntimeState::Waiting,
-            Some(AgentAttention::Permission),
-        )),
-        (AgentKind::Claude, "notification") => {
-            match payload.get("notification_type").and_then(Value::as_str) {
-                Some("permission_prompt") => Ok(presence(
-                    AgentRuntimeState::Waiting,
-                    Some(AgentAttention::Permission),
-                )),
-                Some("idle_prompt") => Ok(presence(AgentRuntimeState::Idle, None)),
-                _ => bail!("unsupported Claude notification"),
-            }
+        // A compaction restarts the session in the middle of a turn; only a
+        // launch, a resume or a /clear leaves the agent at its prompt.
+        (AgentKind::Claude | AgentKind::Codex, "session-start") => {
+            let at_prompt = field("source")
+                .is_none_or(|source| matches!(source, "startup" | "resume" | "clear"));
+            Ok((lead && at_prompt).then(|| presence(AgentRuntimeState::Idle, None)))
         }
+        // A manual /compact ends at the prompt without a Stop; an automatic
+        // one runs inside a turn that ends on its own.
+        (AgentKind::Claude, "compact") => {
+            Ok((field("trigger") == Some("manual"))
+                .then(|| presence(AgentRuntimeState::Idle, None)))
+        }
+        (AgentKind::Claude | AgentKind::Codex, "permission") | (AgentKind::Claude, "ask") => {
+            Ok(Some(presence(AgentRuntimeState::Waiting, Some(attention))))
+        }
+        (AgentKind::Claude, "notification") => match field("notification_type") {
+            Some("permission_prompt") => Ok(Some(presence(
+                AgentRuntimeState::Waiting,
+                Some(AgentAttention::Permission),
+            ))),
+            Some("idle_prompt") => Ok(Some(presence(AgentRuntimeState::Idle, None))),
+            _ => bail!("unsupported Claude notification"),
+        },
         (AgentKind::Claude | AgentKind::Codex, _) => bail!("unsupported hook event: {event}"),
         _ => bail!("Vibra does not yet include hooks for {}", kind.cli_name()),
     }
@@ -422,6 +456,7 @@ mod task_title_tests {
             command: AutomationCommand::SetAgentState {
                 state: AgentRuntimeState::Idle,
             },
+            detached: true,
         };
         let started = std::time::Instant::now();
         let error =
@@ -442,7 +477,7 @@ mod task_title_tests {
                 "session_id": "one"
             });
             assert!(matches!(
-                agent_hook_command(kind, "prompt", &payload).unwrap(),
+                agent_hook_command(kind, "prompt", &payload).unwrap().unwrap(),
                 AutomationCommand::SetAgentPresence {
                     task_title: Some(title),
                     state: AgentRuntimeState::Working,
@@ -451,7 +486,7 @@ mod task_title_tests {
             ));
             for event in ["stop", "session-start", "permission"] {
                 assert!(matches!(
-                    agent_hook_command(kind, event, &payload).unwrap(),
+                    agent_hook_command(kind, event, &payload).unwrap().unwrap(),
                     AutomationCommand::SetAgentPresence {
                         task_title: None,
                         ..

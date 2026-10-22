@@ -112,6 +112,7 @@ impl WorkspaceView {
             self.hook_agent_presence.remove(&session_id);
             self.pane_names.remove(&session_id);
             self.agent_activity_seen.remove(&session_id);
+            self.agent_notification_requests.remove(&session_id);
         }
         self.inbox.forget_closed_panes(&live_ids);
         self.work_inbox.forget_closed_discussion_panes(&live_ids);
@@ -260,6 +261,11 @@ impl WorkspaceView {
                 self.publish_agent_activity(*session_id, cx);
                 cx.notify();
             }
+            TerminalViewEvent::DesktopNotification {
+                session_id,
+                title,
+                body,
+            } => self.handle_agent_notification_request(*session_id, title, body, cx),
             TerminalViewEvent::ContextMenuRequested { session_id, x, y } => {
                 let session_id = *session_id;
                 let was_selected = self
@@ -297,7 +303,10 @@ impl WorkspaceView {
                     _ => false,
                 };
                 let definitive_exit = previous.is_some_and(|previous| {
-                    previous.kind_source == TerminalAgentKindSource::Process
+                    matches!(
+                        previous.kind_source,
+                        TerminalAgentKindSource::Process | TerminalAgentKindSource::Program
+                    )
                 }) || !self.hook_agent_presence.contains_key(session_id);
                 if occupant_changed && (presence.is_some() || definitive_exit) {
                     self.hook_agent_presence.remove(session_id);

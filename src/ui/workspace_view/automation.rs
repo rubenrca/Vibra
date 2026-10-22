@@ -11,11 +11,17 @@ use crate::infrastructure::notifications::{
     AgentActivitySnapshot, AgentNotificationDelivery, agent_activity_event,
     agent_notification_copy, should_notify_agent,
 };
-use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentPresence};
+use crate::ports::terminal::{
+    TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentStateSource,
+};
 
 use super::{WorkspaceSection, WorkspaceView};
 
 const HOOK_OBSERVATION_TTL: Duration = Duration::from_secs(15 * 60);
+/// A program may notify on every redraw; one notification per pane at most this often.
+const AGENT_NOTIFICATION_REQUEST_INTERVAL: Duration = Duration::from_secs(3);
+const MAX_NOTIFICATION_TITLE_CHARS: usize = 80;
+const MAX_NOTIFICATION_BODY_CHARS: usize = 240;
 
 #[derive(Clone)]
 pub(super) struct HookAgentPresence {
@@ -43,6 +49,29 @@ fn turn_started(previous: Option<AgentRuntimeState>, current: AgentRuntimeState)
         && matches!(previous, None | Some(AgentRuntimeState::Idle))
 }
 
+/// Program-supplied notification text on one line, without controls or the
+/// invisible and bidirectional formatting characters that could disguise it.
+fn notification_text(text: &str, limit: usize) -> String {
+    let visible: String = text
+        .chars()
+        .filter(|ch| {
+            !matches!(
+                ch,
+                '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}'
+                    | '\u{feff}'
+            )
+        })
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let line = visible.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= limit {
+        return line;
+    }
+    let mut truncated: String = line.chars().take(limit.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
+
 fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
     match state {
         AgentRuntimeState::Idle => "idle",
@@ -51,37 +80,60 @@ fn agent_runtime_state_label(state: AgentRuntimeState) -> &'static str {
     }
 }
 
-/// Process identity wins over hooks; matching, unexpired hooks supply activity.
-/// A hook anchored to a live agent process never expires: long turns and idle
-/// sessions emit no hook events, and screen heuristics must not take over.
+/// Activity comes from the agent's own status report (OSC 7501) first, then
+/// from matching, unexpired hooks, then from heuristics. Process and program
+/// identity win over hooks. A hook anchored to a live agent never expires:
+/// long turns and idle sessions emit no hook events, and screen heuristics
+/// must not take over.
 fn resolve_agent_presence(
     detected: Option<&TerminalAgentPresence>,
     hook: Option<&HookAgentPresence>,
     now: Instant,
 ) -> Option<ResolvedAgentPresence> {
-    let process_anchored =
-        detected.is_some_and(|detected| detected.kind_source == TerminalAgentKindSource::Process);
+    let anchored = detected.is_some_and(|detected| {
+        matches!(
+            detected.kind_source,
+            TerminalAgentKindSource::Process | TerminalAgentKindSource::Program
+        )
+    });
     let hook = hook
         .filter(|presence| {
-            process_anchored || now.duration_since(presence.observed_at) <= HOOK_OBSERVATION_TTL
+            anchored || now.duration_since(presence.observed_at) <= HOOK_OBSERVATION_TTL
         })
         .filter(|hook| {
-            detected.is_none_or(|detected| {
-                detected.kind_source != TerminalAgentKindSource::Process
-                    || hook
-                        .kind
-                        .is_none_or(|kind| detected.kind.eq_ignore_ascii_case(kind.display_name()))
-            })
+            !anchored
+                || hook.kind.is_none_or(|kind| {
+                    detected.is_some_and(|detected| {
+                        detected.kind.eq_ignore_ascii_case(kind.display_name())
+                    })
+                })
         });
     let terminal_kind = detected.map(|presence| (presence.kind.as_str(), presence.kind_source));
     let (kind, kind_source) = match (terminal_kind, hook.and_then(|presence| presence.kind)) {
         (Some((kind, TerminalAgentKindSource::Process)), _) => (kind.to_owned(), "process"),
+        (Some((kind, TerminalAgentKindSource::Program)), _) => (kind.to_owned(), "program"),
         (_, Some(kind)) => (kind.display_name().to_owned(), "hook"),
         (Some((kind, TerminalAgentKindSource::Title)), _) => (kind.to_owned(), "title"),
         (Some((kind, TerminalAgentKindSource::Screen)), _) => (kind.to_owned(), "screen"),
         (None, None) => return None,
     };
-    let (state, state_source, attention) = if let Some(hook) = hook {
+    let program =
+        detected.filter(|detected| detected.state_source == TerminalAgentStateSource::Program);
+    let (state, state_source, attention) = if let Some(program) = program {
+        // A hook may name the reason more precisely than the report did
+        // (a plan to approve rather than a bare block).
+        let attention = match program.attention {
+            Some(AgentAttention::Notification) | None
+                if program.state == AgentRuntimeState::Waiting =>
+            {
+                hook.filter(|hook| hook.state == AgentRuntimeState::Waiting)
+                    .and_then(|hook| hook.attention)
+                    .or(program.attention)
+            }
+            attention => attention,
+        };
+        (program.state, "program", attention)
+    } else if let Some(hook) = hook {
         (hook.state, "hook", hook.attention)
     } else {
         (detected?.state, "heuristic", None)
@@ -234,6 +286,60 @@ impl WorkspaceView {
         })
     }
 
+    /// OSC 9 / OSC 777 from an agent Vibra only infers from its screen. Its
+    /// own words are the best sign that it finished or needs the user. Agents
+    /// that report their status or run hooks are announced by their state
+    /// changes, and other programs' notifications are not agent news.
+    pub(super) fn handle_agent_notification_request(
+        &mut self,
+        pane_id: Uuid,
+        title: &str,
+        body: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.settings.agent_notifications {
+            return;
+        }
+        let Some(presence) = self.resolved_agent_presence(pane_id) else {
+            return;
+        };
+        if presence.state_source != "heuristic"
+            || (self.window_is_active && self.session_is_selected(pane_id, cx))
+        {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .agent_notification_requests
+            .get(&pane_id)
+            .is_some_and(|last| now.duration_since(*last) < AGENT_NOTIFICATION_REQUEST_INTERVAL)
+        {
+            return;
+        }
+        self.agent_notification_requests.insert(pane_id, now);
+        if self.window_is_active {
+            crate::infrastructure::notifications::play_completion_sound();
+            return;
+        }
+        let title = notification_text(title, MAX_NOTIFICATION_TITLE_CHARS);
+        let body = notification_text(body, MAX_NOTIFICATION_BODY_CHARS);
+        let (title, body) = match (title.is_empty(), body.is_empty()) {
+            (_, true) => (presence.kind.clone(), title),
+            (true, false) => (presence.kind.clone(), body),
+            (false, false) => (title, body),
+        };
+        let body = if body.is_empty() {
+            "The agent asked for your attention.".to_owned()
+        } else {
+            body
+        };
+        crate::infrastructure::notifications::deliver(
+            &title,
+            &body,
+            &format!("vibra.agent.{pane_id}"),
+        );
+    }
+
     fn session_is_selected(&self, pane_id: Uuid, cx: &Context<Self>) -> bool {
         self.workspace_section == WorkspaceSection::Workspace
             && !self.review_covers_terminal(cx)
@@ -347,8 +453,73 @@ mod tests {
             kind: kind.into(),
             kind_source,
             state: AgentRuntimeState::Working,
+            state_source: TerminalAgentStateSource::Heuristic,
+            attention: None,
             process_id: Some(42),
         }
+    }
+
+    fn reported(kind: &str, state: AgentRuntimeState) -> TerminalAgentPresence {
+        TerminalAgentPresence {
+            state,
+            state_source: TerminalAgentStateSource::Program,
+            ..detected(kind, TerminalAgentKindSource::Program)
+        }
+    }
+
+    #[test]
+    fn program_reports_outrank_hooks_for_activity_but_keep_hook_details() {
+        let now = Instant::now();
+        // The hook still says Working after an interrupt; the program knows better.
+        let stale = HookAgentPresence {
+            state: AgentRuntimeState::Working,
+            attention: None,
+            ..hook(now)
+        };
+        let presence = resolve_agent_presence(
+            Some(&reported("Codex", AgentRuntimeState::Idle)),
+            Some(&stale),
+            now,
+        )
+        .unwrap();
+        assert_eq!(presence.kind_source, "program");
+        assert_eq!(presence.state, AgentRuntimeState::Idle);
+        assert_eq!(presence.state_source, "program");
+        assert_eq!(presence.model.as_deref(), Some("gpt-5"));
+        assert_eq!(presence.session_id.as_deref(), Some("session-1"));
+
+        // A bare block takes the hook's more specific reason.
+        let mut waiting = reported("Codex", AgentRuntimeState::Waiting);
+        waiting.attention = Some(AgentAttention::Notification);
+        let plan = HookAgentPresence {
+            attention: Some(AgentAttention::Plan),
+            ..hook(now)
+        };
+        let presence = resolve_agent_presence(Some(&waiting), Some(&plan), now).unwrap();
+        assert_eq!(presence.attention, Some(AgentAttention::Plan));
+        waiting.attention = Some(AgentAttention::Question);
+        let presence = resolve_agent_presence(Some(&waiting), Some(&plan), now).unwrap();
+        assert_eq!(presence.attention, Some(AgentAttention::Question));
+
+        // Another agent's hook says nothing about this program.
+        let presence = resolve_agent_presence(
+            Some(&reported("Claude", AgentRuntimeState::Working)),
+            Some(&hook(now)),
+            now,
+        )
+        .unwrap();
+        assert_eq!(presence.kind, "Claude");
+        assert_eq!(presence.model, None);
+    }
+
+    #[test]
+    fn notification_text_is_one_visible_bounded_line() {
+        assert_eq!(
+            notification_text("  Turn\ncomplete\u{202e}\u{200b}  ", 80),
+            "Turn complete"
+        );
+        assert_eq!(notification_text("abcdef", 4), "abc…");
+        assert_eq!(notification_text("\u{7}\u{1b}", 4), "");
     }
 
     #[test]

@@ -113,6 +113,8 @@ pub struct WorkspaceView {
     /// and process lifetime do not own these names; closing the pane does.
     pane_names: HashMap<Uuid, String>,
     agent_activity_seen: HashMap<Uuid, AgentActivitySnapshot>,
+    /// Last desktop notification an agent asked for, per pane, to rate-limit them.
+    agent_notification_requests: HashMap<Uuid, Instant>,
     agent_hook_status: Option<AgentHookStatus>,
     agent_hook_error: Option<SharedString>,
     window_is_active: bool,

@@ -111,6 +111,17 @@ impl AgentKind {
         })
     }
 
+    /// The agent behind an OSC 7501 `app` id. Unknown ids are other programs.
+    pub fn from_program_app(app: &str) -> Option<Self> {
+        match app.to_ascii_lowercase().as_str() {
+            "claude-code" => Some(Self::Claude),
+            "grok-build" => Some(Self::Grok),
+            "gemini-cli" => Some(Self::Gemini),
+            "omp" | "oh-my-pi" => Some(Self::Pi),
+            other => Self::parse(other),
+        }
+    }
+
     pub fn from_process_name(process_name: &str) -> Option<Self> {
         let base = Path::new(process_name)
             .file_name()
@@ -216,6 +227,22 @@ mod tests {
         );
         assert!(AgentKind::from_process_name("codexical").is_none());
         assert!(AgentKind::from_process_name("zsh").is_none());
+    }
+
+    #[test]
+    fn program_app_ids_name_their_agents() {
+        for (app, kind) in [
+            ("claude-code", AgentKind::Claude),
+            ("codex", AgentKind::Codex),
+            ("grok-build", AgentKind::Grok),
+            ("pi", AgentKind::Pi),
+            ("omp", AgentKind::Pi),
+            ("opencode", AgentKind::OpenCode),
+        ] {
+            assert_eq!(AgentKind::from_program_app(app), Some(kind), "{app}");
+        }
+        assert!(AgentKind::from_program_app("rsync").is_none());
+        assert!(AgentKind::from_program_app("terraform").is_none());
     }
 
     #[test]

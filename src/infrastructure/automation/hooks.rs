@@ -13,6 +13,10 @@ use crate::infrastructure::paths::read_file_limited;
 
 const MAX_HOOK_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_HOOK_SCRIPT_BYTES: u64 = 64 * 1024;
+const MAX_CLAUDE_STATE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// A CLI release as `[major, minor, patch]`, ordered like the release.
+pub(super) type CliVersion = [u32; 3];
 
 const CLAUDE_HOOK_SCRIPT: &str = r#"#!/bin/sh
 # Managed by Vibra. This is deliberately a no-op outside a Vibra pane.
@@ -33,6 +37,10 @@ struct HookEntry {
     slot: &'static str,
     matcher: Option<&'static str>,
     event: &'static str,
+    /// First release that accepts this event. Claude Code 1.0.23 through
+    /// 2.1.100 discard the whole settings.json over one unknown hook event,
+    /// so a newer event is written only for a CLI known to accept it.
+    since: Option<CliVersion>,
 }
 
 impl HookEntry {
@@ -41,7 +49,21 @@ impl HookEntry {
             slot,
             matcher,
             event,
+            since: None,
         }
+    }
+
+    const fn since(self, version: CliVersion) -> Self {
+        Self {
+            since: Some(version),
+            ..self
+        }
+    }
+
+    /// An unknown version gets only the events every supported release knows.
+    fn supported_by(self, version: Option<CliVersion>) -> bool {
+        self.since
+            .is_none_or(|since| version.is_some_and(|version| version >= since))
     }
 }
 
@@ -49,8 +71,16 @@ const CLAUDE_HOOKS: &[HookEntry] = &[
     HookEntry::new("SessionStart", Some(""), "session-start"),
     HookEntry::new("UserPromptSubmit", None, "prompt"),
     HookEntry::new("Stop", None, "stop"),
+    // API and model errors end the turn here instead of in Stop.
+    HookEntry::new("StopFailure", None, "stop-failure").since([2, 1, 78]),
     HookEntry::new("PermissionRequest", None, "permission"),
+    // Questions and plan approvals block in PreToolUse, not in a permission prompt.
+    HookEntry::new("PreToolUse", Some("AskUserQuestion|ExitPlanMode"), "ask"),
     HookEntry::new("PostToolUse", None, "tool"),
+    // A denied or failed tool still leaves the turn running.
+    HookEntry::new("PostToolUseFailure", None, "tool-failure").since([2, 0, 56]),
+    // A manual /compact ends at the prompt without a Stop.
+    HookEntry::new("PostCompact", None, "compact").since([2, 1, 76]),
     HookEntry::new("SessionEnd", Some(""), "session-end"),
     HookEntry::new(
         "Notification",
@@ -111,14 +141,62 @@ fn manage_current_user_agent_hooks(operation: AgentHookOperation) -> Result<Agen
     let home = BaseDirs::new()
         .map(|directories| directories.home_dir().to_path_buf())
         .context("could not resolve the user directory")?;
+    let claude_version = installed_claude_version(&home);
     let selected = [AgentKind::Claude, AgentKind::Codex].into_iter().collect();
-    let report = manage_agent_hooks(&home, &selected, operation, false)?;
+    let report = manage_agent_hooks(&home, &selected, operation, false, claude_version)?;
     let report = if operation == AgentHookOperation::Status {
         report
     } else {
-        manage_agent_hooks(&home, &selected, AgentHookOperation::Status, false)?
+        manage_agent_hooks(
+            &home,
+            &selected,
+            AgentHookOperation::Status,
+            false,
+            claude_version,
+        )?
     };
     Ok(agent_hook_status_from_report(&report))
+}
+
+pub(super) fn parse_cli_version(text: &str) -> Option<CliVersion> {
+    let mut parts = text.trim().splitn(3, '.');
+    let mut next = |last: bool| {
+        let part = parts.next()?;
+        let digits = if last {
+            let end = part
+                .find(|ch: char| !ch.is_ascii_digit())
+                .unwrap_or(part.len());
+            &part[..end]
+        } else {
+            part
+        };
+        digits.parse::<u32>().ok()
+    };
+    Some([next(false)?, next(false)?, next(true)?])
+}
+
+/// The Claude Code release this user runs, read without starting it: the
+/// native installer's `~/.local/bin/claude` link names its version, and Claude
+/// records the newest release it has run in `~/.claude.json`. The older of the
+/// two wins, so an event is never written for a release that might reject it.
+pub(super) fn installed_claude_version(home: &Path) -> Option<CliVersion> {
+    let native = fs::read_link(home.join(".local/bin/claude"))
+        .ok()
+        .and_then(|target| {
+            target
+                .file_name()
+                .and_then(|name| parse_cli_version(&name.to_string_lossy()))
+        });
+    let launched = read_file_limited(&home.join(".claude.json"), MAX_CLAUDE_STATE_BYTES, "16 MiB")
+        .ok()
+        .and_then(|content| serde_json::from_slice::<Value>(&content).ok())
+        .and_then(|state| {
+            state
+                .get("lastReleaseNotesSeen")
+                .and_then(Value::as_str)
+                .and_then(parse_cli_version)
+        });
+    [native, launched].into_iter().flatten().min()
 }
 
 /// Brings integrations an older Vibra installed up to the current hook set,
@@ -131,8 +209,15 @@ pub fn upgrade_outdated_agent_hooks() -> Result<()> {
     let home = BaseDirs::new()
         .map(|directories| directories.home_dir().to_path_buf())
         .context("could not resolve the user directory")?;
+    let claude_version = installed_claude_version(&home);
     let all = [AgentKind::Claude, AgentKind::Codex].into_iter().collect();
-    let report = manage_agent_hooks(&home, &all, AgentHookOperation::Status, false)?;
+    let report = manage_agent_hooks(
+        &home,
+        &all,
+        AgentHookOperation::Status,
+        false,
+        claude_version,
+    )?;
     let outdated: HashSet<_> = [AgentKind::Claude, AgentKind::Codex]
         .into_iter()
         .filter(|kind| {
@@ -146,7 +231,13 @@ pub fn upgrade_outdated_agent_hooks() -> Result<()> {
         })
         .collect();
     if !outdated.is_empty() {
-        manage_agent_hooks(&home, &outdated, AgentHookOperation::Install, false)?;
+        manage_agent_hooks(
+            &home,
+            &outdated,
+            AgentHookOperation::Install,
+            false,
+            claude_version,
+        )?;
     }
     Ok(())
 }
@@ -172,7 +263,8 @@ pub(super) fn run_agent_setup_cli(arguments: &[String]) -> Result<()> {
     let home = BaseDirs::new()
         .map(|directories| directories.home_dir().to_path_buf())
         .context("could not resolve the user directory")?;
-    let report = manage_agent_hooks(&home, &selected, operation, dry_run)?;
+    let claude_version = installed_claude_version(&home);
+    let report = manage_agent_hooks(&home, &selected, operation, dry_run, claude_version)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -222,6 +314,7 @@ pub(super) fn manage_agent_hooks(
     selected: &HashSet<AgentKind>,
     operation: AgentHookOperation,
     dry_run: bool,
+    claude_version: Option<CliVersion>,
 ) -> Result<Value> {
     let managed_directory = home.join(".vibra").join("agent-hooks");
     let directory_secure = managed_hooks_directory_secure(home)?;
@@ -240,6 +333,7 @@ pub(super) fn manage_agent_hooks(
                 kind,
                 operation,
                 true,
+                claude_version,
             )
             .map_err(|error| {
                 anyhow!("could not prepare {} hooks: {error:#}", kind.display_name())
@@ -256,6 +350,7 @@ pub(super) fn manage_agent_hooks(
             kind,
             operation,
             dry_run,
+            claude_version,
         )
         .map_err(|error| {
             let action = match operation {
@@ -281,8 +376,9 @@ fn manage_one_agent_hooks(
     kind: AgentKind,
     operation: AgentHookOperation,
     dry_run: bool,
+    claude_version: Option<CliVersion>,
 ) -> Result<Value> {
-    let (config_path, script_name, script, entries) = match kind {
+    let (config_path, script_name, script, all_entries) = match kind {
         AgentKind::Claude => (
             home.join(".claude").join("settings.json"),
             "vibra-claude.sh",
@@ -297,6 +393,21 @@ fn manage_one_agent_hooks(
         ),
         _ => unreachable!(),
     };
+    let version = (kind == AgentKind::Claude)
+        .then_some(claude_version)
+        .flatten();
+    let entries: Vec<_> = all_entries
+        .iter()
+        .copied()
+        .filter(|entry| entry.supported_by(version))
+        .collect();
+    // Only a known release proves an event unsupported; an unknown one keeps
+    // what an install that knew the release wrote.
+    let retired: Vec<_> = all_entries
+        .iter()
+        .filter(|entry| version.is_some() && !entry.supported_by(version))
+        .map(|entry| entry.slot)
+        .collect();
     let script_path = managed_directory.join(script_name);
     let script_command = shell_quote(&script_path.to_string_lossy());
     let commands: Vec<_> = entries
@@ -304,25 +415,37 @@ fn manage_one_agent_hooks(
         .map(|entry| format!("{script_command} {}", entry.event))
         .collect();
     let installed = directory_secure
-        && hooks_installed(&config_path, entries, &commands, &script_path, script)?;
+        && hooks_installed(&config_path, &entries, &commands, &script_path, script)?
+        && !retired.iter().any(|slot| {
+            read_hook_config(&config_path).is_ok_and(|mut config| {
+                remove_hook_entries_in(&mut config, &script_path, Some(slot))
+            })
+        });
     if operation == AgentHookOperation::Status {
         // Set up by an older Vibra that registered fewer hook events.
         let outdated = !installed
             && directory_secure
             && remove_hook_entries(&mut read_hook_config(&config_path)?, &script_path);
-        return Ok(serde_json::json!({
+        let mut report = serde_json::json!({
             "agent": kind.display_name(),
             "installed": installed,
             "outdated": outdated,
             "config": config_path,
             "script": script_path,
-        }));
+        });
+        if let Some([major, minor, patch]) = version {
+            report["version"] = Value::String(format!("{major}.{minor}.{patch}"));
+        }
+        return Ok(report);
     }
 
     let changed = match operation {
         AgentHookOperation::Install => {
             let mut config = read_hook_config(&config_path)?;
             let mut config_changed = false;
+            for slot in &retired {
+                config_changed |= remove_hook_entries_in(&mut config, &script_path, Some(slot));
+            }
             for (entry, command) in entries.iter().zip(&commands) {
                 config_changed |=
                     ensure_hook_entry(&mut config, entry.slot, entry.matcher, command)?;
@@ -515,13 +638,22 @@ pub(super) fn ensure_hook_entry(
 }
 
 fn remove_hook_entries(config: &mut Value, script_path: &Path) -> bool {
+    remove_hook_entries_in(config, script_path, None)
+}
+
+/// Removes Vibra's handlers, from one event slot or from all of them, and
+/// leaves every other handler in place.
+fn remove_hook_entries_in(config: &mut Value, script_path: &Path, slot: Option<&str>) -> bool {
     let Some(hooks) = config.get_mut("hooks").and_then(Value::as_object_mut) else {
         return false;
     };
     let raw_script_path = script_path.to_string_lossy();
     let quoted_script_path = shell_quote(&raw_script_path);
     let mut changed = false;
-    hooks.retain(|_, groups| {
+    hooks.retain(|name, groups| {
+        if slot.is_some_and(|slot| slot != name) {
+            return true;
+        }
         let Some(groups) = groups.as_array_mut() else {
             return true;
         };

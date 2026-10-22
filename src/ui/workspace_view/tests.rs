@@ -1,6 +1,6 @@
 use super::*;
 use crate::infrastructure::automation::AgentRuntimeState;
-use crate::ports::terminal::TerminalAgentKindSource;
+use crate::ports::terminal::{TerminalAgentKindSource, TerminalAgentStateSource};
 use crate::ui::terminal::TerminalViewEvent;
 use crate::{CloseTerminal, NextProject, ShowSettings, ToggleRightSidebar};
 use gpui::Focusable;
@@ -797,6 +797,8 @@ fn agents_that_finish_in_another_pane_land_in_the_inbox(cx: &mut gpui::TestAppCo
         kind: "Codex".into(),
         kind_source: TerminalAgentKindSource::Process,
         state,
+        state_source: TerminalAgentStateSource::Heuristic,
+        attention: None,
         process_id: Some(7),
     };
     window
@@ -1277,6 +1279,8 @@ fn project_agent_sessions_follow_presence_across_tabs_and_projects(cx: &mut gpui
                             kind: kind.into(),
                             kind_source: TerminalAgentKindSource::Process,
                             state,
+                            state_source: TerminalAgentStateSource::Heuristic,
+                            attention: None,
                             process_id: Some(7),
                         }),
                     },
@@ -1592,6 +1596,8 @@ fn manual_pane_names_survive_agent_restarts_and_terminal_exit(cx: &mut gpui::Tes
                             kind: "Codex".into(),
                             kind_source: TerminalAgentKindSource::Process,
                             state: AgentRuntimeState::Working,
+                            state_source: TerminalAgentStateSource::Heuristic,
+                            attention: None,
                             process_id: Some(process_id),
                         }),
                     },

@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use async_channel::Receiver;
 use uuid::Uuid;
 
 use super::terminal_keyboard::TerminalKeyInput;
-use crate::domain::agents::AgentRuntimeState;
+use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerminalSize {
@@ -270,8 +271,18 @@ pub enum TerminalSearchDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalAgentKindSource {
     Process,
+    /// The agent named itself in its own status report (OSC 7501 `app`).
+    Program,
     Title,
     Screen,
+}
+
+/// Where an agent's activity came from: its own status report, or text and
+/// titles read off the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalAgentStateSource {
+    Program,
+    Heuristic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,9 +290,47 @@ pub struct TerminalAgentPresence {
     pub kind: String,
     pub kind_source: TerminalAgentKindSource,
     pub state: AgentRuntimeState,
+    pub state_source: TerminalAgentStateSource,
+    /// Why a waiting agent waits, when the agent said so itself.
+    pub attention: Option<AgentAttention>,
     /// Foreground process group owning the TTY. This pins aliases and waits to
     /// the live agent process instead of to the pane that happens to contain it.
     pub process_id: Option<u32>,
+}
+
+/// A program's activity in the Program Status Protocol's vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramState {
+    Idle,
+    Working,
+    Blocked,
+    Done,
+    Error,
+}
+
+/// What a blocked program needs from the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramBlock {
+    Permission,
+    Question,
+    Auth,
+}
+
+/// The foreground program's own account of its activity: OSC 7501 (Program
+/// Status Protocol), or OSC 9;4 progress from a program that never spoke it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalProgramStatus {
+    /// Process group that owned the TTY when the program last reported. A
+    /// report from a group that has since left the foreground is stale.
+    pub process_group: Option<u32>,
+    /// First report of this program run, to tell boot work from a turn.
+    pub started_at: Instant,
+    /// Stable program identifier such as `claude-code` or `codex`.
+    pub app: Option<String>,
+    /// The program and its child records folded into one state: a block
+    /// anywhere wins, then work anywhere, then the program's own state.
+    pub state: ProgramState,
+    pub block: Option<ProgramBlock>,
 }
 
 #[derive(Clone)]
@@ -292,6 +341,11 @@ pub enum TerminalEvent {
     ClipboardStore(String),
     ClipboardLoad(Arc<dyn Fn(&str) -> String + Send + Sync>),
     Bell,
+    /// OSC 9 / OSC 777: the program asked the terminal to notify the user.
+    DesktopNotification {
+        title: String,
+        body: String,
+    },
     /// The backend cannot safely continue; its last valid snapshot may remain
     /// visible while the PTY shuts down. Preserve this error after `Exit`.
     Failed(String),
@@ -336,6 +390,14 @@ pub trait TerminalHandle: Send + Sync {
     /// current scroll position. Implementations may fall back to `None`.
     fn recent_text(&self, _lines: usize) -> Option<String> {
         None
+    }
+    /// The status the foreground program reports about itself, if any.
+    fn program_status(&self) -> Option<TerminalProgramStatus> {
+        None
+    }
+    /// Changes whenever `program_status` may have changed.
+    fn program_status_generation(&self) -> u64 {
+        0
     }
     fn clear_selection(&self);
     fn start_selection(

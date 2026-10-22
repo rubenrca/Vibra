@@ -2,9 +2,10 @@
 //! mutex; callbacks only enqueue data and never reenter it. The PTY worker owns
 //! the child and reaps it, independently of the lifetime of the UI handle.
 use super::terminal_support::{
-    COLOR_SUPPRESSING_ENV, process_invoked_name, process_working_directory,
-    terminal_child_environment,
+    COLOR_SUPPRESSING_ENV, process_group_agent_name, process_invoked_name,
+    process_working_directory, terminal_child_environment,
 };
+use crate::domain::agents::AgentKind;
 use crate::ports::terminal::*;
 use crate::ports::terminal_keyboard::TerminalKeyInput;
 use anyhow::{Context, Result, bail};
@@ -38,7 +39,9 @@ const MAX_PENDING_PTY_WRITE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TERMINAL_TITLE_BYTES: usize = 4096;
 
 mod engine;
+mod program_status;
 use engine::*;
+use program_status::{ProgramStatusTracker, ProgressState, QUERY_REPLY};
 
 #[derive(Default)]
 pub struct GhosttyTerminalPort;
@@ -66,6 +69,7 @@ struct PtyWorkerControl {
     signal: UnixStream,
     shutdown_requested: Arc<AtomicBool>,
     pending_resize: Arc<Mutex<Option<TerminalSize>>>,
+    program_status: Arc<Mutex<ProgramStatusTracker>>,
 }
 
 /// Poisoned native state is terminal: do not recover its mutex and call FFI
@@ -152,6 +156,7 @@ struct GhosttyTerminal {
     alive: Arc<AtomicBool>,
     shutdown_requested: Arc<AtomicBool>,
     pending_resize: Arc<Mutex<Option<TerminalSize>>>,
+    program_status: Arc<Mutex<ProgramStatusTracker>>,
     pid: u32,
     probe: File,
     signal: UnixStream,
@@ -264,6 +269,8 @@ impl GhosttyTerminal {
         let wakeup = Arc::new(AtomicBool::new(false));
         let alive = Arc::new(AtomicBool::new(true));
         let pending_resize = Arc::new(Mutex::new(None));
+        let program_status = Arc::new(Mutex::new(ProgramStatusTracker::default()));
+        let worker_program_status = program_status.clone();
         let worker_engine = engine.clone();
         let worker_wakeup = wakeup.clone();
         let worker_alive = alive.clone();
@@ -291,6 +298,7 @@ impl GhosttyTerminal {
                         signal: worker_signal,
                         shutdown_requested: worker_shutdown_requested,
                         pending_resize: worker_pending_resize,
+                        program_status: worker_program_status,
                     },
                     worker_engine,
                     tx,
@@ -317,6 +325,7 @@ impl GhosttyTerminal {
             alive,
             shutdown_requested,
             pending_resize,
+            program_status,
             pid,
             probe,
             signal,
@@ -425,7 +434,12 @@ fn pty_worker(
         mut signal,
         shutdown_requested,
         pending_resize,
+        program_status,
     } = control;
+    let foreground = |master: &File| {
+        let group = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+        (group > 0).then_some(group as u32)
+    };
     let mut output = [0u8; 65536];
     let mut writes = VecDeque::new();
     let mut queued_bytes = 0usize;
@@ -518,13 +532,38 @@ fn pty_worker(
                 }
                 Ok(n) => {
                     if !engine.failed.load(Ordering::Acquire) {
-                        changed |= engine
-                            .update(|engine| {
-                                engine.feed(&output[..n]);
-                                enqueue_replies(&mut writes, &mut queued_bytes, engine);
-                                Ok(())
-                            })
-                            .is_ok();
+                        let scan = program_status
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .scan(&output[..n], || foreground(&master));
+                        // The probe's answer must precede the DA1 reply that
+                        // libghostty-vt queues while parsing the same bytes.
+                        if scan.query {
+                            queued_bytes += QUERY_REPLY.len();
+                            writes.push_back((
+                                PtyInput::Bytes(QUERY_REPLY.to_vec()),
+                                QUERY_REPLY.len(),
+                            ));
+                        }
+                        let mut progress = Vec::new();
+                        changed |= scan.changed
+                            | engine
+                                .update(|engine| {
+                                    engine.feed(&output[..n]);
+                                    enqueue_replies(&mut writes, &mut queued_bytes, engine);
+                                    progress.append(&mut engine.callbacks.progress);
+                                    Ok(())
+                                })
+                                .is_ok();
+                        if !progress.is_empty() {
+                            let mut status = program_status
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            for progress in progress.into_iter().filter_map(ProgressState::from_raw)
+                            {
+                                changed |= status.apply_progress(progress, || foreground(&master));
+                            }
+                        }
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -689,17 +728,39 @@ impl TerminalHandle for GhosttyTerminal {
             .or_else(|| self.foreground().and_then(process_working_directory))
     }
     fn foreground_process_name(&self) -> Option<String> {
-        self.foreground()
-            .and_then(process_invoked_name)
-            .or_else(|| {
-                self.alive
-                    .load(Ordering::Acquire)
-                    .then(|| process_invoked_name(self.pid))
-                    .flatten()
-            })
+        let Some(group) = self.foreground() else {
+            return self
+                .alive
+                .load(Ordering::Acquire)
+                .then(|| process_invoked_name(self.pid))
+                .flatten();
+        };
+        let leader = process_invoked_name(group);
+        if leader
+            .as_deref()
+            .is_some_and(|name| AgentKind::from_process_name(name).is_some())
+        {
+            return leader;
+        }
+        // A wrapper may lead the job while the agent runs beneath it.
+        process_group_agent_name(group)
+            .or(leader)
+            .or_else(|| process_invoked_name(self.pid))
     }
     fn foreground_process_id(&self) -> Option<u32> {
         self.foreground()
+    }
+    fn program_status(&self) -> Option<TerminalProgramStatus> {
+        self.program_status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .status()
+    }
+    fn program_status_generation(&self) -> u64 {
+        self.program_status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .generation()
     }
     fn recent_text(&self, lines: usize) -> Option<String> {
         let e = self.engine.lock().ok()?;

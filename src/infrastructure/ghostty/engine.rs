@@ -82,6 +82,8 @@ pub(super) fn checked(code: i32) -> Result<()> {
 pub(super) struct Callbacks {
     pub(super) events: Sender<TerminalEvent>,
     pub(super) replies: VecDeque<u8>,
+    /// OSC 9;4 states parsed during the last feed, drained by the PTY worker.
+    pub(super) progress: Vec<u8>,
 }
 pub(super) unsafe fn bytes<'a>(p: *const u8, n: usize) -> &'a [u8] {
     if n == 0 {
@@ -141,8 +143,37 @@ unsafe extern "C" fn event(data: *mut c_void, kind: i32, p: *const u8, n: usize)
                 }
             }
         }
+        5 => {
+            if let Some((title, body)) = desktop_notification(data) {
+                let _ = context
+                    .events
+                    .try_send(TerminalEvent::DesktopNotification { title, body });
+            }
+        }
+        6 => {
+            // A program redrawing its progress must not grow this between feeds.
+            if let Some(state) = data.first()
+                && context.progress.last() != Some(state)
+                && context.progress.len() < MAX_PROGRESS_REPORTS_PER_FEED
+            {
+                context.progress.push(*state);
+            }
+        }
         _ => {}
     }
+}
+
+const MAX_PROGRESS_REPORTS_PER_FEED: usize = 64;
+
+/// Event 5 is a 4-byte little-endian title length, the title, then the body.
+pub(super) fn desktop_notification(data: &[u8]) -> Option<(String, String)> {
+    let length = u32::from_le_bytes(data.get(..4)?.try_into().ok()?) as usize;
+    let title = data.get(4..4usize.checked_add(length)?)?;
+    let body = &data[4 + length..];
+    Some((
+        String::from_utf8_lossy(title).into_owned(),
+        String::from_utf8_lossy(body).into_owned(),
+    ))
 }
 
 // Only accept an empty OSC 52 response. Destination is limited to the protocol's
@@ -230,6 +261,7 @@ impl Engine {
         let mut callbacks = Box::new(Callbacks {
             events,
             replies: VecDeque::new(),
+            progress: Vec::new(),
         });
         let ptr = NonNull::new(unsafe {
             vg_new(

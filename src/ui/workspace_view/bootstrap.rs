@@ -273,6 +273,7 @@ impl WorkspaceView {
             hook_agent_presence: HashMap::new(),
             pane_names: HashMap::new(),
             agent_activity_seen: HashMap::new(),
+            agent_notification_requests: HashMap::new(),
             agent_hook_status,
             agent_hook_error,
             window_is_active: true,

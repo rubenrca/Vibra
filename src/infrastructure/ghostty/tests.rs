@@ -266,6 +266,109 @@ fn real_pty_ctrl_c_and_query_reply() {
 }
 
 #[test]
+fn real_pty_answers_the_program_status_probe_before_da1() {
+    let script = format!(
+        concat!(
+            "stty -echo -icanon min 1 time 0; printf '\\033]7501;?\\033\\\\\\033[c'; ",
+            "dd bs=1 count={} 2>/dev/null | od -An -tx1"
+        ),
+        QUERY_REPLY.len() + 3
+    );
+    let q = GhosttyTerminal::spawn(
+        Uuid::new_v4(),
+        Path::new("/tmp"),
+        &HashMap::new(),
+        Some(("/bin/sh", &["-c", &script])),
+    )
+    .unwrap();
+    let hex = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+    };
+    let expected = [hex(QUERY_REPLY), hex(b"\x1b[?")].concat();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let text = q.engine.lock().unwrap().text(false).unwrap_or_default();
+        let tokens = text.split_whitespace().collect::<Vec<_>>();
+        if tokens.len() >= expected.len() {
+            assert_eq!(tokens, expected);
+            break;
+        }
+        assert!(Instant::now() < until, "missing reply: {text:?}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn real_pty_reads_program_status_progress_and_notifications() {
+    let t = GhosttyTerminal::spawn(
+        Uuid::new_v4(),
+        Path::new("/tmp"),
+        &HashMap::new(),
+        Some((
+            "/bin/sh",
+            &[
+                "-c",
+                concat!(
+                    "printf '\\033]9;4;3\\007READY1'; read a; ",
+                    "printf '\\033]7501;state=blocked:kind=question:app=codex\\033\\\\READY2'; ",
+                    "read b; printf '\\033]777;notify;Done;Turn complete\\007'; read c"
+                ),
+            ],
+        )),
+    )
+    .unwrap();
+    let wait_for_status = |expected: ProgramState| {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = t.program_status()
+                && status.state == expected
+            {
+                return status;
+            }
+            assert!(Instant::now() < until, "missing {expected:?}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    };
+    wait_for(&t, "READY1");
+    let progress = wait_for_status(ProgramState::Working);
+    assert_eq!(progress.app, None);
+    assert_eq!(progress.process_group, t.foreground_process_id());
+    let generation = t.program_status_generation();
+    t.send_input(b"\n".to_vec()).unwrap();
+    wait_for(&t, "READY2");
+    let reported = wait_for_status(ProgramState::Blocked);
+    assert_eq!(reported.app.as_deref(), Some("codex"));
+    assert_eq!(reported.block, Some(ProgramBlock::Question));
+    assert_ne!(t.program_status_generation(), generation);
+    t.send_input(b"\n".to_vec()).unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(TerminalEvent::DesktopNotification { title, body }) = t.events.try_recv() {
+            assert_eq!((title.as_str(), body.as_str()), ("Done", "Turn complete"));
+            break;
+        }
+        assert!(Instant::now() < until, "missing desktop notification");
+        thread::sleep(Duration::from_millis(10));
+    }
+    t.send_input(b"\n".to_vec()).unwrap();
+}
+
+#[test]
+fn desktop_notification_events_decode_their_length_prefix() {
+    let mut data = 4u32.to_le_bytes().to_vec();
+    data.extend_from_slice(b"TitlBody");
+    assert_eq!(
+        desktop_notification(&data),
+        Some(("Titl".to_owned(), "Body".to_owned()))
+    );
+    assert_eq!(desktop_notification(&[9, 0, 0, 0, b'x']), None);
+    assert_eq!(desktop_notification(&[1, 0]), None);
+}
+
+#[test]
 fn queued_ctrl_c_events_use_restored_shell_mode() {
     let t = GhosttyTerminal::spawn(
         Uuid::new_v4(),

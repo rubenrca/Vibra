@@ -181,10 +181,11 @@ el comportamiento trasladado y las diferencias de esta versión nativa.
 
 - detección de Codex, Claude, Gemini, Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi;
 - estados de actividad en vivo para los agentes que se ejecutan dentro de una terminal de Vibra;
-- avisos de sistema cuando un agente termina o pide permiso fuera del pane visible;
-- identidad resuelta por proceso foreground, sesión, título y texto reciente;
+- estado reportado por el propio agente con el [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) (OSC 7501), sin instalar nada: Claude Code, Codex, Grok y pi indican si trabajan, esperan permiso o una respuesta, o terminaron, también tras interrumpirlos con Esc o tras un error de la API;
+- avisos de sistema cuando un agente termina o pide permiso fuera del pane visible, y las notificaciones que piden los agentes detectados por pantalla (OSC 9 y OSC 777);
+- identidad resuelta por el estado que reporta el agente, el proceso foreground (también bajo envoltorios como `caffeinate`, `npx` u `op run`), sesión, título y texto reciente; el progreso OSC 9;4 y los glifos de título de Claude Code y Gemini CLI afinan la actividad de los agentes que no reportan su estado;
 - nombres personalizados para panes desde su menú contextual;
-- hooks estructurados de Claude y Codex para estados de trabajo, espera, permisos y fin de sesión;
+- hooks opcionales de Claude y Codex para títulos de tarea, modelo y estados en versiones que no reportan OSC 7501;
 - títulos automáticos a partir de la primera línea del mensaje enviado a Claude o Codex, con hooks instalados: se acortan localmente, se guardan por pane y respetan los nombres manuales de la sidebar; respuestas como «sí» o «continúa» conservan el título anterior;
 - socket Unix local protegido por capacidades UUID;
 
@@ -194,9 +195,12 @@ agentes se ejecutan en la terminal (a mano o desde Review, siempre en un tab
 visible) y Vibra conserva su detección,
 estado y notificaciones.
 
-La detección automática está siempre activa. Para obtener estados más precisos
-en Claude y Codex, instala sus hooks opcionales desde **Settings → Actividad de
-agentes CLI → Instalar hooks** o mediante la CLI:
+La detección automática está siempre activa y no necesita configuración: Vibra
+responde a la consulta OSC 7501 de cada agente y lee los estados que reporta.
+Para nombrar las tareas según el primer mensaje, mostrar el modelo y cubrir
+versiones de Claude y Codex que aún no reportan OSC 7501, instala los hooks
+opcionales desde **Settings → Actividad de agentes CLI → Instalar hooks** o
+mediante la CLI:
 
 ```bash
 Vibra agent setup
@@ -206,13 +210,18 @@ Vibra agent uninstall codex
 
 El instalador añade únicamente los handlers de Vibra a `~/.claude/settings.json`
 y `~/.codex/hooks.json`, guarda scripts en `~/.vibra/agent-hooks/` y conserva los
-hooks existentes. Los scripts no hacen nada fuera de un pane de Vibra y los eventos
-se procesan en orden para evitar estados atrasados. Después de instalar el hook de
-Codex, ábrelo una vez y apruébalo en `/hooks`.
+hooks existentes. En Claude registra también los errores de la API, las
+compactaciones manuales, las preguntas y la aprobación de planes, pero sólo los
+eventos que acepta la versión instalada (leída de `~/.local/bin/claude` y
+`~/.claude.json`), porque las versiones antiguas descartan todo `settings.json`
+ante un evento desconocido. Los scripts no hacen nada fuera de un pane de Vibra,
+los eventos se procesan en orden para evitar estados atrasados y el agente no
+espera a que la interfaz los dibuje. Después de instalar el hook de Codex,
+ábrelo una vez y apruébalo en `/hooks`.
 
-Claude y Codex tienen seguimiento estructurado mediante esos hooks. En Gemini,
-Goose, Grok, OpenCode, Cursor, Aider, Amp y Pi, Vibra sólo infiere la actividad
-desde el proceso y el texto visible.
+Cuando un agente reporta OSC 7501, ese estado manda sobre los hooks y la
+heurística. En Gemini, Goose, OpenCode, Cursor, Aider y Amp, Vibra infiere la
+actividad desde el proceso, el título y el texto visible.
 
 ## Requisitos
 

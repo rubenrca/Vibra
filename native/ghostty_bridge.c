@@ -6,6 +6,7 @@
 #include <string.h>
 
 #define VG_MAX_CLIPBOARD_BYTES (1024u * 1024u)
+#define VG_MAX_NOTIFICATION_BYTES 4096u
 _Static_assert(sizeof(GhosttyColorRgb) == 3, "RGB ABI must match the Rust bridge");
 #define TRY(expr) \
     do { \
@@ -84,6 +85,39 @@ static void clipboard_write(GhosttyTerminal t, void *u, const GhosttyClipboardWr
     write->reply(write, &reply);
 }
 
+// Event 5 carries a 4-byte little-endian title length, the title, then the body.
+static void desktop_notification(GhosttyTerminal t, void *u,
+                                 const GhosttyTerminalDesktopNotification *n) {
+    (void)t;
+    VgTerminal *v = u;
+    if (n->size < offsetof(GhosttyTerminalDesktopNotification, body) + sizeof(n->body))
+        return;
+    size_t title_len = n->title.len, body_len = n->body.len;
+    if (title_len > VG_MAX_NOTIFICATION_BYTES || body_len > VG_MAX_NOTIFICATION_BYTES)
+        return;
+    uint8_t *data = malloc(4 + title_len + body_len);
+    if (!data)
+        return;
+    for (int i = 0; i < 4; ++i)
+        data[i] = (uint8_t)(title_len >> (8 * i));
+    if (title_len)
+        memcpy(data + 4, n->title.ptr, title_len);
+    if (body_len)
+        memcpy(data + 4 + title_len, n->body.ptr, body_len);
+    v->event(v->userdata, 5, data, 4 + title_len + body_len);
+    free(data);
+}
+
+// Event 6 carries the OSC 9;4 state and its percentage (-1 when omitted).
+static void progress_report(GhosttyTerminal t, void *u, const GhosttyTerminalProgressReport *r) {
+    (void)t;
+    VgTerminal *v = u;
+    if (r->size < offsetof(GhosttyTerminalProgressReport, progress) + sizeof(r->progress))
+        return;
+    uint8_t data[2] = {(uint8_t)r->state, (uint8_t)r->progress};
+    v->event(v->userdata, 6, data, sizeof(data));
+}
+
 // Render a denial while the borrowed request is valid, but retain its bytes.
 // OSC 52's empty response gives us the exact destination and terminator. Rust
 // owns that template and fills it only after the existing UI grants consent.
@@ -140,6 +174,11 @@ void *vg_new(uint16_t cols, uint16_t rows, VgEvent event, void *userdata) {
         goto fail;
     if (ghostty_terminal_set(v->term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ, clipboard_read) !=
         GHOSTTY_SUCCESS)
+        goto fail;
+    if (ghostty_terminal_set(v->term, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION,
+                             desktop_notification) != GHOSTTY_SUCCESS ||
+        ghostty_terminal_set(v->term, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT, progress_report) !=
+            GHOSTTY_SUCCESS)
         goto fail;
     GhosttyString name = {(const uint8_t *)"xterm-256color", 14};
     if (ghostty_terminal_set(v->term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &name) != GHOSTTY_SUCCESS)

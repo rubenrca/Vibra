@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 /// Interpreter flags rarely exceed a few entries before the script path.
 const MAX_PROCESS_ARGUMENTS: usize = 8;
+/// A foreground job is a pipeline or a wrapper and its child, not a fleet.
+const MAX_PROCESS_GROUP_MEMBERS: usize = 64;
 
 /// Host tools (CI, agent shells, cargo wrappers) often export these to force
 /// monochrome output. Interactive agent CLIs inside Vibra panes should not
@@ -75,6 +77,35 @@ pub(super) fn process_invoked_name(process_id: u32) -> Option<String> {
     Some(
         interpreted_agent_name(&invoked, arguments.get(1..).unwrap_or_default()).unwrap_or(invoked),
     )
+}
+
+/// An agent running beneath the leader of a foreground job, when the leader
+/// is a wrapper that forks rather than execs it: `caffeinate -i claude`,
+/// `npx @openai/codex`, `op run -- claude`.
+#[cfg(target_os = "macos")]
+pub(super) fn process_group_agent_name(process_group: u32) -> Option<String> {
+    use std::mem::size_of_val;
+
+    let mut members = [0 as libc::pid_t; MAX_PROCESS_GROUP_MEMBERS];
+    // Unlike `proc_listpids`, this returns a count of PIDs, not bytes.
+    let count = unsafe {
+        libc::proc_listpgrppids(
+            process_group as libc::pid_t,
+            members.as_mut_ptr().cast(),
+            size_of_val(&members) as libc::c_int,
+        )
+    };
+    let count = usize::try_from(count).ok()?.min(members.len());
+    members[..count]
+        .iter()
+        .filter(|member| **member > 0 && **member as u32 != process_group)
+        .filter_map(|member| process_invoked_name(*member as u32))
+        .find(|name| AgentKind::from_process_name(name).is_some())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn process_group_agent_name(_: u32) -> Option<String> {
+    None
 }
 
 fn path_basename(path: &str) -> Option<String> {
@@ -412,6 +443,31 @@ mod tests {
         );
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn process_group_scan_finds_an_agent_beneath_a_wrapper() {
+        use std::os::unix::process::CommandExt;
+
+        let mut wrapper = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let group = wrapper.id();
+        assert_eq!(process_group_agent_name(group), None);
+        let mut agent = std::process::Command::new("/bin/sleep")
+            .arg0("/usr/local/bin/codex")
+            .arg("5")
+            .process_group(group as i32)
+            .spawn()
+            .unwrap();
+        assert_eq!(process_group_agent_name(group).as_deref(), Some("codex"));
+        for child in [&mut agent, &mut wrapper] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     #[test]

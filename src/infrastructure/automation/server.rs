@@ -9,6 +9,8 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use serde_json::Value;
+
 use super::types::*;
 
 pub struct AutomationServer {
@@ -124,6 +126,7 @@ fn handle_connection(mut stream: UnixStream, sender: &async_channel::Sender<Auto
         });
     let response = match parsed {
         Ok(envelope) => {
+            let detached = envelope.detached;
             let (response_tx, response_rx) = mpsc::channel();
             match enqueue_automation_request(
                 sender,
@@ -133,6 +136,8 @@ fn handle_connection(mut stream: UnixStream, sender: &async_channel::Sender<Auto
                 },
             ) {
                 Err(error) => AutomationResponse::failure(error),
+                // The queue is FIFO, so updates still apply in the order sent.
+                Ok(()) if detached => AutomationResponse::success(Value::Null),
                 Ok(()) => response_rx
                     .recv_timeout(AUTOMATION_IO_TIMEOUT)
                     .unwrap_or_else(|_| {

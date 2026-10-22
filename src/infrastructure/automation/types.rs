@@ -46,6 +46,10 @@ pub struct AutomationEnvelope {
     pub pane_id: Uuid,
     pub token: Uuid,
     pub command: AutomationCommand,
+    /// Hooks only report: the server acknowledges once the update is queued,
+    /// so an agent waiting on its hook never waits for the UI to draw.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detached: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

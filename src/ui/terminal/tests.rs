@@ -856,6 +856,147 @@ fn state_markers_in_conversation_text_are_ignored() {
     assert_eq!(busy.state, AgentRuntimeState::Working);
 }
 
+#[test]
+fn program_status_decides_activity_and_names_unidentified_agents() {
+    use crate::domain::agents::AgentAttention;
+    use crate::ports::terminal::{
+        ProgramBlock, ProgramState, TerminalAgentStateSource, TerminalProgramStatus,
+    };
+    let program = |app: Option<&str>, state, block| TerminalProgramStatus {
+        process_group: Some(9),
+        started_at: Instant::now(),
+        app: app.map(str::to_owned),
+        state,
+        block,
+    };
+    // `caffeinate -i claude`: the process does not name the agent; its report does.
+    let wrapped = apply_program_status(
+        None,
+        Some(&program(
+            Some("claude-code"),
+            ProgramState::Blocked,
+            Some(ProgramBlock::Permission),
+        )),
+        Some(9),
+        false,
+    )
+    .unwrap();
+    assert_eq!(wrapped.kind, "Claude");
+    assert_eq!(wrapped.kind_source, TerminalAgentKindSource::Program);
+    assert_eq!(wrapped.state, AgentRuntimeState::Waiting);
+    assert_eq!(wrapped.state_source, TerminalAgentStateSource::Program);
+    assert_eq!(wrapped.attention, Some(AgentAttention::Permission));
+    assert_eq!(wrapped.process_id, Some(9));
+
+    let snapshot = blank_agent_snapshot();
+    let detected = detect_agent_presence(
+        "Terminal",
+        &snapshot,
+        Some("• Working (3s • esc to interrupt)"),
+        Some("codex"),
+        Some(9),
+        None,
+    )
+    .unwrap();
+    assert_eq!(detected.state, AgentRuntimeState::Working);
+    assert_eq!(detected.state_source, TerminalAgentStateSource::Heuristic);
+    // The program said it is at rest, whatever the footer still shows.
+    let reported = apply_program_status(
+        Some(detected.clone()),
+        Some(&program(Some("codex"), ProgramState::Idle, None)),
+        Some(9),
+        false,
+    )
+    .unwrap();
+    assert_eq!(reported.kind_source, TerminalAgentKindSource::Process);
+    assert_eq!(reported.state, AgentRuntimeState::Idle);
+    assert_eq!(reported.state_source, TerminalAgentStateSource::Program);
+    let booting = apply_program_status(
+        Some(detected.clone()),
+        Some(&program(Some("codex"), ProgramState::Working, None)),
+        Some(9),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        booting.state,
+        AgentRuntimeState::Idle,
+        "boot work is not a turn"
+    );
+    let unnamed = apply_program_status(
+        Some(detected.clone()),
+        Some(&program(None, ProgramState::Working, None)),
+        Some(9),
+        false,
+    )
+    .unwrap();
+    assert_eq!(unnamed.state_source, TerminalAgentStateSource::Program);
+    assert_eq!(
+        apply_program_status(
+            Some(detected.clone()),
+            Some(&program(Some("claude-code"), ProgramState::Idle, None)),
+            Some(9),
+            false,
+        ),
+        Some(detected),
+        "a report naming another agent is not this agent's"
+    );
+    for app in [None, Some("rsync")] {
+        assert!(
+            apply_program_status(
+                None,
+                Some(&program(app, ProgramState::Working, None)),
+                Some(9),
+                false,
+            )
+            .is_none(),
+            "a non-agent program's report is not agent activity"
+        );
+    }
+}
+
+#[test]
+fn title_glyphs_report_claude_and_gemini_states() {
+    let snapshot = blank_agent_snapshot();
+    let state = |title: &str, screen: &str| {
+        detect_agent_presence(
+            title,
+            &snapshot,
+            Some(screen),
+            Some("gemini"),
+            Some(3),
+            None,
+        )
+        .unwrap()
+        .state
+    };
+    assert_eq!(state("◇  Ready (vibra)", "> "), AgentRuntimeState::Idle);
+    assert_eq!(
+        state("✦  Working… (vibra)", "> "),
+        AgentRuntimeState::Working
+    );
+    assert_eq!(
+        state("⏲  Working… (vibra)", "> "),
+        AgentRuntimeState::Working
+    );
+    assert_eq!(
+        state("✋  Action Required (vibra)", "> "),
+        AgentRuntimeState::Waiting
+    );
+    assert_eq!(state("⠂ Fix the login", "> "), AgentRuntimeState::Working);
+    assert_eq!(state("◐ Fix the login", "> "), AgentRuntimeState::Working);
+    assert_eq!(
+        state("✳ Fix the login", "esc to interrupt"),
+        AgentRuntimeState::Idle,
+        "the title's rest glyph outranks a stale footer"
+    );
+    assert_eq!(
+        state("✳ Fix the login", "Allow once\nDon't ask again"),
+        AgentRuntimeState::Waiting,
+        "a prompt on screen still needs the user"
+    );
+}
+
 fn blank_agent_snapshot() -> TerminalSnapshot {
     TerminalSnapshot {
         columns: 80,
