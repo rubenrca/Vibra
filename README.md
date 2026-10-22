@@ -8,7 +8,8 @@ agent tracking into a single window.
 
 ## Install
 
-Download the latest `Vibra.dmg` from [Releases](https://github.com/rubenrca/Vibra/releases/latest).
+Download the latest `Vibra.dmg` from [tryvibra.dev](https://tryvibra.dev) or
+[Releases](https://github.com/rubenrca/Vibra/releases/latest).
 Vibra requires macOS 14 or later and updates itself with Sparkle (`⌘U` checks for
 updates).
 
