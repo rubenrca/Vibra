@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.40 — 2026-10-21
+
+- Read agent status straight from the agent: Vibra answers the Program Status Protocol (OSC 7501), so Claude Code, Codex, Grok, and pi report when they work, wait for a permission or an answer, or finish, with no hooks installed. Pressing Esc or hitting an API error no longer leaves a Claude pane stuck on Working.
+- Recognize agents launched through a wrapper such as `caffeinate -i claude`, `npx @openai/codex`, or `op run -- claude`, and agents that name themselves in their status reports.
+- Sharpen status for agents that do not report it: OSC 9;4 progress counts as work, the title glyphs of Claude Code and Gemini CLI set Working, Idle, or Waiting, and the desktop notifications they request (OSC 9 and OSC 777) reach you when their pane is out of sight.
+- Complete the Claude hooks with API errors, failed tools, manual /compact, questions, and plan approvals, writing only the events the installed Claude release accepts. A compaction no longer shows the agent as Idle mid-turn, and agents no longer wait for Vibra to draw before continuing after a hook.
+
 ## 0.3.39 — 2026-10-21
 
 - Add Repository as the first tab in Review: a Git client for one project with local changes and Stash changes, branches with their tracking, pull request and the commits the base lacks (Switch, Pull, Push, Create pull request, Delete), remote branches, worktrees, stashes (Apply, Pop, Drop), tags, and the project's open pull requests. Fetch and Refresh sit in the bar, and destructive actions ask first.
