@@ -3,20 +3,17 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.40</title>
-            <pubDate>Wed, 21 Oct 2026 23:40:20 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.40</link>
-            <sparkle:version>293</sparkle:version>
-            <sparkle:shortVersionString>0.3.40</sparkle:shortVersionString>
+            <title>0.3.41</title>
+            <pubDate>Thu, 22 Oct 2026 11:28:57 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.41</link>
+            <sparkle:version>299</sparkle:version>
+            <sparkle:shortVersionString>0.3.41</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Read agent status straight from the agent: Vibra answers the Program Status Protocol (OSC 7501), so Claude Code, Codex, Grok, and pi report when they work, wait for a permission or an answer, or finish, with no hooks installed. Pressing Esc or hitting an API error no longer leaves a Claude pane stuck on Working.</li>
-  <li>Recognize agents launched through a wrapper such as `caffeinate -i claude`, `npx @openai/codex`, or `op run -- claude`, and agents that name themselves in their status reports.</li>
-  <li>Sharpen status for agents that do not report it: OSC 9;4 progress counts as work, the title glyphs of Claude Code and Gemini CLI set Working, Idle, or Waiting, and the desktop notifications they request (OSC 9 and OSC 777) reach you when their pane is out of sight.</li>
-  <li>Complete the Claude hooks with API errors, failed tools, manual /compact, questions, and plan approvals, writing only the events the installed Claude release accepts. A compaction no longer shows the agent as Idle mid-turn, and agents no longer wait for Vibra to draw before continuing after a hook.</li>
+  <li>Add a Transparency switch in Settings → Appearance. Turn it off to replace the translucent window, menus, and popovers with solid backgrounds; it applies immediately and Vibra remembers it.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.40/Vibra-0.3.40.dmg" length="15934019" type="application/octet-stream" sparkle:edSignature="twx0Vx2S/WMCG6viWiMiYVACkB6mPbDgunZzPIpTJYjoBh/56RvWZozg6IrFEHhkv7okn8Ilhq5WJImxwktxCA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.41/Vibra-0.3.41.dmg" length="15947112" type="application/octet-stream" sparkle:edSignature="MslWiDC7FEB3HgZFj96rZEvwvvvY9Oow1AugD3+XOefmOv4c49wYKY7uGzmZCkRndaOw+9kEQDrzDo225EHSDQ=="/>
         </item>
     </channel>
 </rss>
