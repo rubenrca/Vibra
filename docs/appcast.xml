@@ -3,23 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.39</title>
-            <pubDate>Wed, 21 Oct 2026 20:08:04 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.39</link>
-            <sparkle:version>289</sparkle:version>
-            <sparkle:shortVersionString>0.3.39</sparkle:shortVersionString>
+            <title>0.3.40</title>
+            <pubDate>Wed, 21 Oct 2026 23:40:20 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.40</link>
+            <sparkle:version>293</sparkle:version>
+            <sparkle:shortVersionString>0.3.40</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Add Repository as the first tab in Review: a Git client for one project with local changes and Stash changes, branches with their tracking, pull request and the commits the base lacks (Switch, Pull, Push, Create pull request, Delete), remote branches, worktrees, stashes (Apply, Pop, Drop), tags, and the project's open pull requests. Fetch and Refresh sit in the bar, and destructive actions ask first.</li>
-  <li>Group GitHub pull requests into Needs your review, Created by you, Assigned to you, and the rest, each collapsible. Every pull request shows its line counts, CI, review decision, conflicts, and where it lives locally (Checked out, Local, or Worktree).</li>
-  <li>Open pull requests on their merge status, with Update branch and active auto-merge in Summary. Add a Commits tab with CI per commit, and bring GitHub's Viewed checkbox, published review threads, and Since last review to Code. Line comments go to the agent or post as a GitHub review: Comment, Approve, or Request changes.</li>
-  <li>Check out a pull request in the project folder, or open it in a worktree under `~/.vibra/worktrees` without touching the current branch. Push, pull, switch back to the base, or clean up the branch and worktree after the merge. Merge confirmations warn about failing checks, requested changes, conflicts, or a branch that fell behind.</li>
-  <li>Drive Review from the keyboard: J and K move through the list, 1–4 switch tabs, ] and [ jump between files, V marks a file viewed, and ? lists every shortcut.</li>
-  <li>Hover a provider's rings in the sidebar footer for a card with its quotas, bars, and reset times. It animates in, glides between providers, and stays open while the pointer is over the footer; clicking still opens the full usage modal.</li>
-  <li>Keep every theme legible: built-in, product, and user themes lift text, status, Git, and diff colors to a minimum contrast by changing only their lightness, and authentic ANSI colors stay untouched. Moss gets a jade accent and Bloom a coral danger color.</li>
+  <li>Read agent status straight from the agent: Vibra answers the Program Status Protocol (OSC 7501), so Claude Code, Codex, Grok, and pi report when they work, wait for a permission or an answer, or finish, with no hooks installed. Pressing Esc or hitting an API error no longer leaves a Claude pane stuck on Working.</li>
+  <li>Recognize agents launched through a wrapper such as `caffeinate -i claude`, `npx @openai/codex`, or `op run -- claude`, and agents that name themselves in their status reports.</li>
+  <li>Sharpen status for agents that do not report it: OSC 9;4 progress counts as work, the title glyphs of Claude Code and Gemini CLI set Working, Idle, or Waiting, and the desktop notifications they request (OSC 9 and OSC 777) reach you when their pane is out of sight.</li>
+  <li>Complete the Claude hooks with API errors, failed tools, manual /compact, questions, and plan approvals, writing only the events the installed Claude release accepts. A compaction no longer shows the agent as Idle mid-turn, and agents no longer wait for Vibra to draw before continuing after a hook.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.39/Vibra-0.3.39.dmg" length="15961206" type="application/octet-stream" sparkle:edSignature="KABvbKRWTaVD9UyAZYEE2NkYMc+UsgwN+2OfX6Kf64c65UgbTuhM/+oNNc5dmR2qEJQ8pJ5G2WcrvEEtgw/WBA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.40/Vibra-0.3.40.dmg" length="15934019" type="application/octet-stream" sparkle:edSignature="twx0Vx2S/WMCG6viWiMiYVACkB6mPbDgunZzPIpTJYjoBh/56RvWZozg6IrFEHhkv7okn8Ilhq5WJImxwktxCA=="/>
         </item>
     </channel>
 </rss>
