@@ -5,7 +5,7 @@ use gpui::{
     linear_gradient, prelude::*, px, relative, svg,
 };
 
-use super::{FontSizeRow, WorkspaceView, settings_card};
+use super::{FontSizeRow, SettingsToggleRow, WorkspaceView, settings_card};
 use crate::ui::theme::{self, AppearanceMode, Theme, ThemeFamily, ThemeTone, colors, surface_tint};
 
 fn preview_line(width: f32, color: gpui::Rgba) -> Div {
@@ -514,5 +514,38 @@ impl WorkspaceView {
                             ))),
                     ),
             )
+            .when(cfg!(target_os = "macos"), |panel| {
+                panel.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(self.settings_section_heading(
+                            "Window",
+                            "Choose how Vibra blends with your desktop.",
+                        ))
+                        .child(
+                            settings_card()
+                                .overflow_hidden()
+                                .child(self.settings_toggle_row(
+                                    SettingsToggleRow {
+                                        label: "Transparency",
+                                        description: concat!(
+                                            "Let your desktop show through the window. ",
+                                            "Turn it off for solid backgrounds.",
+                                        ),
+                                        enabled: self.settings.window_transparency,
+                                        divider: false,
+                                        id: "settings-window-transparency",
+                                    },
+                                    cx,
+                                    |this, window, cx| {
+                                        let enabled = !this.settings.window_transparency;
+                                        this.set_window_transparency(enabled, window, cx);
+                                    },
+                                )),
+                        ),
+                )
+            })
     }
 }

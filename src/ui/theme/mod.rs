@@ -4,9 +4,10 @@
 //! (theme id + light/dark/system) lives in [`resolve`] / [`apply_preference`].
 //! User Warp YAML / Ghostty files load from `~/.vibra/themes`.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{OnceLock, RwLock};
 
-use gpui::{Hsla, Rgba, WindowAppearance, rgb, rgba};
+use gpui::{Hsla, Rgba, WindowAppearance, WindowBackgroundAppearance, rgb, rgba};
 
 pub use crate::domain::appearance::AppearanceMode;
 
@@ -26,11 +27,32 @@ use crate::ui::theme_import::ImportedScheme;
 /// Family name of the bundled JetBrains Mono Variable font.
 pub const MONO_FONT: &str = "JetBrains Mono";
 
+static TRANSLUCENT: AtomicBool = AtomicBool::new(true);
+
+/// Whether surfaces let the native backdrop show through. The window setting can
+/// turn it off; platforms without a native backdrop are always opaque.
+pub fn translucent() -> bool {
+    cfg!(target_os = "macos") && TRANSLUCENT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_translucent(enabled: bool) {
+    TRANSLUCENT.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Native window backdrop that matches [`translucent`].
+pub fn window_background() -> WindowBackgroundAppearance {
+    if translucent() {
+        WindowBackgroundAppearance::Blurred
+    } else {
+        WindowBackgroundAppearance::Opaque
+    }
+}
+
 /// Use one continuous window fill with 12% transparency over the native backdrop.
 /// Keep this separate from floating fills, which need more opacity for readability.
 pub fn window_surface() -> Hsla {
     let mut color: Hsla = colors().background.into();
-    if cfg!(target_os = "macos") {
+    if translucent() {
         color.a *= 0.88;
     }
     color
@@ -46,7 +68,7 @@ pub fn surface(color: impl Into<Hsla>) -> Hsla {
 /// Keep the 6% transparency at paint time; palette and foreground stay opaque.
 pub fn floating_surface(color: impl Into<Hsla>) -> Hsla {
     let mut color = color.into();
-    if cfg!(target_os = "macos") {
+    if translucent() {
         color.a *= 0.94;
     }
     color
@@ -56,7 +78,7 @@ pub fn floating_surface(color: impl Into<Hsla>) -> Hsla {
 /// Only the background is translucent; text and icons retain their full opacity.
 pub fn popover_surface() -> Hsla {
     let mut color: Hsla = colors().sidebar.into();
-    if cfg!(target_os = "macos") {
+    if translucent() {
         color.a *= 0.90;
     }
     color
@@ -529,6 +551,33 @@ mod tests {
         set_active(moss_dark());
         assert_eq!(colors().accent, moss_dark().accent);
         set_active(before);
+    }
+
+    #[test]
+    fn surfaces_turn_opaque_when_translucency_is_off() {
+        let _guard = ACTIVE_PALETTE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = translucent();
+        let background: Hsla = colors().background.into();
+
+        set_translucent(false);
+        assert!(!translucent());
+        assert_eq!(window_background(), WindowBackgroundAppearance::Opaque);
+        assert_eq!(window_surface().a, background.a);
+        assert_eq!(floating_surface(colors().panel).a, colors().panel.a);
+        assert_eq!(popover_surface().a, Hsla::from(colors().sidebar).a);
+
+        set_translucent(true);
+        // Platforms without a native backdrop stay opaque whatever the setting says.
+        assert_eq!(translucent(), cfg!(target_os = "macos"));
+        if translucent() {
+            assert_eq!(window_background(), WindowBackgroundAppearance::Blurred);
+            assert!(window_surface().a < background.a);
+            assert!(floating_surface(colors().panel).a < colors().panel.a);
+            assert!(popover_surface().a < Hsla::from(colors().sidebar).a);
+        }
+        set_translucent(before);
     }
 
     #[test]

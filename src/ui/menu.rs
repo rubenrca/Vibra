@@ -3,7 +3,7 @@
 
 use gpui::{Div, Hsla, Rgba, SharedString, Stateful, div, prelude::*, px, svg};
 
-use crate::ui::theme::colors;
+use crate::ui::theme::{colors, translucent};
 
 pub const MENU_WIDTH: f32 = 232.0;
 const ROW_HEIGHT: f32 = 28.0;
@@ -18,7 +18,7 @@ fn foreground_alpha(alpha: f32) -> Rgba {
 /// Menus sit one step above the chrome so they read as floating.
 pub fn menu_surface() -> Hsla {
     let mut color: Hsla = colors().elevated.into();
-    if cfg!(target_os = "macos") {
+    if translucent() {
         color.a *= 0.97;
     }
     color

@@ -232,7 +232,7 @@ impl WorkspaceView {
         &self,
         row: SettingsToggleRow,
         cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         div()
             .id(row.id)
@@ -247,7 +247,7 @@ impl WorkspaceView {
                 row.border_b_1().border_color(colors().border_subtle)
             })
             .hover(|row| row.bg(surface_tint(colors().hover, colors().elevated)))
-            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
             .child(settings_row_label(row.label, row.description).min_w(px(0.0)))
             .child(
                 div()
@@ -543,7 +543,7 @@ impl WorkspaceView {
         for row in startup {
             let id = row.id;
             startup_card =
-                startup_card.child(self.settings_toggle_row(row, cx, move |this, cx| {
+                startup_card.child(self.settings_toggle_row(row, cx, move |this, _, cx| {
                     this.toggle_general_setting(id, cx);
                 }));
         }
@@ -567,7 +567,9 @@ impl WorkspaceView {
                             id: "settings-agent-notifications",
                         },
                         cx,
-                        |this, cx| this.toggle_general_setting("settings-agent-notifications", cx),
+                        |this, _, cx| {
+                            this.toggle_general_setting("settings-agent-notifications", cx)
+                        },
                     )),
             )
             .child(self.settings_section_heading(
@@ -881,6 +883,25 @@ impl WorkspaceView {
         self.settings.appearance_mode = mode;
         let system_dark = ThemeTone::from_window_appearance(window.appearance()) == ThemeTone::Dark;
         self.apply_theme_preference(system_dark, cx);
+        self.persist_settings(cx);
+    }
+
+    fn set_window_transparency(
+        &mut self,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.window_transparency == enabled {
+            return;
+        }
+        self.settings.window_transparency = enabled;
+        theme::set_translucent(enabled);
+        window.set_background_appearance(theme::window_background());
+        for terminal in self.terminals.values() {
+            terminal.update(cx, |_, cx| cx.notify());
+        }
+        cx.notify();
         self.persist_settings(cx);
     }
 }

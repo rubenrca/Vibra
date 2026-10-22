@@ -46,6 +46,9 @@ pub struct AppSettings {
     /// Notify when an agent finishes or needs attention off-screen.
     #[serde(default = "default_true")]
     pub agent_notifications: bool,
+    /// Let the macOS blur show through the window; off paints solid surfaces.
+    #[serde(default = "default_true")]
+    pub window_transparency: bool,
     #[serde(default = "default_window_width")]
     pub window_width: f32,
     #[serde(default = "default_window_height")]
@@ -137,6 +140,7 @@ impl Default for AppSettings {
             theme_id: default_theme_id(),
             appearance_mode: AppearanceMode::System,
             agent_notifications: true,
+            window_transparency: true,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             diff_split: false,
@@ -425,6 +429,20 @@ mod tests {
         assert!(settings.set_window_size(1512.0, 864.0));
         repository.save(&settings).unwrap();
         assert_eq!(repository.load().unwrap(), settings);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn window_transparency_defaults_on_and_persists_when_turned_off() {
+        let root = std::env::temp_dir().join(format!("vibra-settings-{}", Uuid::new_v4()));
+        let repository = SettingsRepository::at(root.join("settings.json"));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("settings.json"), br#"{"showHiddenFiles":true}"#).unwrap();
+        let mut settings = repository.load().unwrap();
+        assert!(settings.window_transparency);
+        settings.window_transparency = false;
+        repository.save(&settings).unwrap();
+        assert!(!repository.load().unwrap().window_transparency);
         fs::remove_dir_all(root).unwrap();
     }
 

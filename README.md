@@ -42,8 +42,9 @@ updates).
   sidebar footer, read from each CLI's current session. Vibra never stores or
   modifies credentials.
 - **Customization.** Command palette (`⇧⌘P`), quick open (`⌘P`), translucency over
-  the macOS blur, built-in themes plus Warp YAML or Ghostty themes in
-  `~/.vibra/themes`, and **Keep Awake** to prevent sleep.
+  the macOS blur (switch it off in Settings → Appearance), built-in themes plus
+  Warp YAML or Ghostty themes in `~/.vibra/themes`, and **Keep Awake** to prevent
+  sleep.
 
 Vibra does not orchestrate agents from the terminal: it does not create panes or
 launch agents in other sessions. You run whichever CLI you prefer and Vibra keeps

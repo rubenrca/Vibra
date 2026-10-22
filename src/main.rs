@@ -11,7 +11,7 @@ use anyhow::{Context as _, Result};
 use directories::BaseDirs;
 use gpui::{
     Action, App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, SystemMenuType,
-    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, px, size,
+    TitlebarOptions, WindowBounds, WindowOptions, actions, px, size,
 };
 
 use crate::infrastructure::files::LocalFileSystemPort;
@@ -287,15 +287,12 @@ fn run() -> Result<()> {
                 window_height = window_height.min((display_height - 40.0).max(MIN_WINDOW_HEIGHT));
             }
             let bounds = Bounds::centered(None, size(px(window_width), px(window_height)), cx);
+            ui::theme::set_translucent(initial_settings.window_transparency);
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-                    window_background: if cfg!(target_os = "macos") {
-                        WindowBackgroundAppearance::Blurred
-                    } else {
-                        WindowBackgroundAppearance::Opaque
-                    },
+                    window_background: ui::theme::window_background(),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Vibra".into()),
                         appears_transparent: true,
