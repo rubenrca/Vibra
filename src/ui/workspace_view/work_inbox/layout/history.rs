@@ -53,7 +53,7 @@ impl WorkspaceView {
             .map(|row| row.lane_count)
             .max()
             .unwrap_or(1);
-        let graph_width = (lanes as f32 * GRAPH_LANE_WIDTH + 6.0).clamp(24.0, 180.0);
+        let graph_width = (lanes as f32 * GRAPH_LANE_WIDTH + 6.0).clamp(24.0, 240.0);
         let rows = log.history.commits.len() + usize::from(log.history.truncated);
         let open = history.selected.is_some();
         view = view.child(
@@ -206,6 +206,7 @@ impl WorkspaceView {
             return Vec::new();
         };
         let commits = &log.history.commits;
+        let locals = self.history_local_branches();
         range
             .filter_map(|index| {
                 let Some(commit) = commits.get(index) else {
@@ -228,7 +229,7 @@ impl WorkspaceView {
                     log.graph.get(index),
                     graph_width,
                     commit.sha == log.history.head,
-                    &log.history.branch,
+                    &commit_refs(&commit.refs, &log.history.branch, locals.as_ref()),
                     cx,
                 ))
             })
@@ -241,7 +242,7 @@ impl WorkspaceView {
         graph: Option<&GitGraphRow>,
         graph_width: f32,
         is_head: bool,
-        branch: &str,
+        refs: &[CommitRef],
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let sha = commit.sha.clone();
@@ -264,7 +265,7 @@ impl WorkspaceView {
             };
             (pull.number, pull.merged, color, tooltip)
         });
-        let extra_refs = commit.refs.len().saturating_sub(2);
+        let extra_refs = refs.len().saturating_sub(2);
         div()
             .id(SharedString::from(format!("history-commit-{}", commit.sha)))
             .h(px(ROW_HEIGHT))
@@ -299,11 +300,10 @@ impl WorkspaceView {
                     .gap(px(6.0))
                     .overflow_hidden()
                     .children(
-                        commit
-                            .refs
-                            .iter()
+                        refs.iter()
                             .take(2)
-                            .map(|name| ref_chip(name, name == branch)),
+                            .enumerate()
+                            .map(|(index, name)| ref_chip(&commit.sha, index, name)),
                     )
                     .when(extra_refs > 0, |cell| {
                         cell.child(
@@ -392,6 +392,20 @@ impl WorkspaceView {
             .commit_pull(commit)
             .map(|pull| (pull.number, pull.merged));
         let repository = self.history_github_repository();
+        let refs = self
+            .work_inbox
+            .history
+            .log
+            .data
+            .as_ref()
+            .map(|log| {
+                commit_refs(
+                    &commit.refs,
+                    &log.history.branch,
+                    self.history_local_branches().as_ref(),
+                )
+            })
+            .unwrap_or_default();
         let full_sha = commit.sha.clone();
         let history = &self.work_inbox.history;
         let dot = || div().text_color(colors().subtle).child("·");
@@ -471,12 +485,9 @@ impl WorkspaceView {
                                                     .text_color(colors().subtle),
                                             ),
                                     )
-                                    .children(
-                                        commit
-                                            .refs
-                                            .iter()
-                                            .map(|name| ref_chip(name, false).into_any_element()),
-                                    ),
+                                    .children(refs.iter().enumerate().map(|(index, name)| {
+                                        ref_chip("detail", index, name).into_any_element()
+                                    })),
                             ),
                     )
                     .when_some(pull, |row, (number, merged)| {
@@ -583,11 +594,73 @@ fn history_cell(text: String, width: f32, color: Rgba, mono: bool) -> impl IntoE
         .child(text)
 }
 
-/// A branch or tag pointing at a commit; the checked-out branch stands out.
-fn ref_chip(name: &str, current: bool) -> gpui::Div {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum RefKind {
+    Current,
+    Local,
+    Tag,
+    Remote,
+}
+
+/// A branch or tag pointing at a commit, as the table shows it.
+#[derive(Debug, PartialEq, Eq)]
+struct CommitRef {
+    label: String,
+    kind: RefKind,
+    full: String,
+}
+
+/// The checked-out branch first, then local branches, tags, and remote
+/// branches. A remote copy at the same commit as its local branch is left
+/// out, and `origin/` is implied. Without the local branch list, only
+/// `origin/` and `upstream/` count as remote.
+fn commit_refs(
+    refs: &[String],
+    current: &str,
+    locals: Option<&std::collections::HashSet<String>>,
+) -> Vec<CommitRef> {
+    let mut chips: Vec<CommitRef> = refs
+        .iter()
+        .filter_map(|name| {
+            let remote = name.split_once('/').filter(|(remote, _)| {
+                locals.is_some_and(|locals| !locals.contains(name))
+                    || (locals.is_none() && matches!(*remote, "origin" | "upstream"))
+            });
+            let (label, kind) = if name == current {
+                (name.clone(), RefKind::Current)
+            } else if let Some((remote, branch)) = remote {
+                if refs.iter().any(|other| other == branch) {
+                    return None;
+                }
+                let label = if remote == "origin" { branch } else { name };
+                (label.to_owned(), RefKind::Remote)
+            } else if locals.is_some_and(|locals| !locals.contains(name)) {
+                (name.clone(), RefKind::Tag)
+            } else {
+                (name.clone(), RefKind::Local)
+            };
+            Some(CommitRef {
+                label,
+                kind,
+                full: name.clone(),
+            })
+        })
+        .collect();
+    chips.sort_by_key(|chip| chip.kind);
+    chips
+}
+
+fn ref_chip(owner: &str, index: usize, chip: &CommitRef) -> impl IntoElement {
+    let tooltip = match chip.kind {
+        RefKind::Current => format!("{} · checked out", chip.full),
+        RefKind::Local => format!("{} · local branch", chip.full),
+        RefKind::Tag => format!("{} · tag", chip.full),
+        RefKind::Remote => format!("{} · remote branch", chip.full),
+    };
     div()
+        .id(SharedString::from(format!("history-ref-{owner}-{index}")))
         .flex_none()
-        .max_w(px(160.0))
+        .max_w(px(180.0))
         .h(px(18.0))
         .px(px(6.0))
         .rounded(px(4.0))
@@ -595,16 +668,24 @@ fn ref_chip(name: &str, current: bool) -> gpui::Div {
         .items_center()
         .truncate()
         .text_size(px(10.5))
-        .when(current, |chip| {
-            chip.bg(colors().accent)
+        .tooltip(move |_, cx| sidebar_tooltip(tooltip.clone(), cx))
+        .map(|chip_div| match chip.kind {
+            RefKind::Current => chip_div
+                .bg(colors().accent)
                 .text_color(colors().background)
-                .font_weight(gpui::FontWeight::MEDIUM)
+                .font_weight(gpui::FontWeight::MEDIUM),
+            RefKind::Local => chip_div
+                .bg(surface_tint(colors().elevated, colors().background))
+                .text_color(colors().foreground),
+            RefKind::Tag => chip_div
+                .bg(surface_tint(colors().elevated, colors().background))
+                .text_color(colors().warning),
+            RefKind::Remote => chip_div
+                .border_1()
+                .border_color(colors().border_subtle)
+                .text_color(colors().subtle),
         })
-        .when(!current, |chip| {
-            chip.bg(surface_tint(colors().elevated, colors().background))
-                .text_color(colors().muted)
-        })
-        .child(name.to_owned())
+        .child(chip.label.clone())
 }
 
 fn history_empty(text: &'static str) -> impl IntoElement {
@@ -623,4 +704,55 @@ fn history_empty(text: &'static str) -> impl IntoElement {
                 .text_color(colors().subtle),
         )
         .child(div().text_size(px(12.5)).child(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RefKind, commit_refs};
+
+    #[test]
+    fn refs_hide_synced_remotes_and_tell_tags_apart() {
+        let refs = [
+            "origin/main",
+            "main",
+            "v1.0",
+            "origin/dependabot/cargo/serde",
+            "upstream/main",
+            "feature/x",
+        ]
+        .map(String::from);
+        let locals = ["main", "feature/x"]
+            .map(String::from)
+            .into_iter()
+            .collect();
+        let chips = commit_refs(&refs, "main", Some(&locals));
+        let summary: Vec<_> = chips
+            .iter()
+            .map(|chip| (chip.label.as_str(), chip.kind))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("main", RefKind::Current),
+                ("feature/x", RefKind::Local),
+                ("v1.0", RefKind::Tag),
+                ("dependabot/cargo/serde", RefKind::Remote),
+            ],
+            "origin/main and upstream/main sit on the same commit as main"
+        );
+        // Before the local branches load, only known remotes count as remote.
+        let chips = commit_refs(&refs[3..], "main", None);
+        let summary: Vec<_> = chips
+            .iter()
+            .map(|chip| (chip.label.as_str(), chip.kind))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("feature/x", RefKind::Local),
+                ("dependabot/cargo/serde", RefKind::Remote),
+                ("upstream/main", RefKind::Remote),
+            ]
+        );
+    }
 }

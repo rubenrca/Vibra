@@ -15,7 +15,8 @@ use gpui::{
 impl DiffView {
     pub(super) fn history_graph_width(graph: &[GitGraphRow]) -> f32 {
         let lanes = graph.iter().map(|row| row.lane_count).max().unwrap_or(1);
-        (lanes as f32 * GRAPH_LANE_WIDTH).clamp(18.0, 48.0)
+        // Branches keep their lane down to the commit they started from.
+        (lanes as f32 * GRAPH_LANE_WIDTH).clamp(18.0, 72.0)
     }
 
     pub(super) fn commit_controls(
@@ -335,9 +336,12 @@ impl DiffView {
             .iter()
             .map(|rail| (rail.lane, lane_color(rail.color)))
             .collect::<Vec<_>>();
-        let first_parent_edge = graph
-            .first_parent_edge
-            .map(|rail| (rail.lane, lane_color(graph.color)));
+        let merges_in = graph
+            .merges_in
+            .iter()
+            .map(|rail| (rail.lane, lane_color(rail.color)))
+            .collect::<Vec<_>>();
+        let incoming = graph.incoming;
         let edges = graph
             .edges
             .iter()
@@ -372,29 +376,28 @@ impl DiffView {
                             }
                         }
 
-                        // Incoming half of the active rail always reaches the node.
+                        // The active rail comes from above only when a child
+                        // continues into it; a branch tip starts at its node.
                         let active_x = bounds.left() + px(lane_x);
                         let mut active = PathBuilder::stroke(px(1.0));
-                        active.move_to(point(active_x, top));
-                        active.line_to(point(active_x, middle));
-                        if continues {
-                            active.line_to(point(active_x, bottom));
-                        }
-                        if let Ok(path) = active.build() {
+                        active.move_to(point(active_x, if incoming { top } else { middle }));
+                        active.line_to(point(active_x, if continues { bottom } else { middle }));
+                        if (incoming || continues)
+                            && let Ok(path) = active.build()
+                        {
                             window.paint_path(path, active_color);
                         }
 
-                        // When this lane rejoins an existing first-parent lane, bend the
-                        // source-colored rail into it and stop the straight rail at the node.
-                        if let Some((target, color)) = first_parent_edge {
-                            let target_x =
-                                bounds.left() + px(target as f32 * GRAPH_LANE_WIDTH + 6.0);
+                        // Branches that started from this commit curve into it.
+                        for (source, color) in merges_in {
+                            let source_x =
+                                bounds.left() + px(source as f32 * GRAPH_LANE_WIDTH + 6.0);
                             let mut path = PathBuilder::stroke(px(1.0));
-                            path.move_to(point(active_x, middle));
+                            path.move_to(point(source_x, top));
                             path.cubic_bezier_to(
-                                point(target_x, bottom),
-                                point(active_x, middle + px(mid * 0.55)),
-                                point(target_x, bottom - px(mid * 0.55)),
+                                point(active_x, middle),
+                                point(source_x, top + px(mid * 0.55)),
+                                point(active_x, middle - px(mid * 0.55)),
                             );
                             if let Ok(path) = path.build() {
                                 window.paint_path(path, color);

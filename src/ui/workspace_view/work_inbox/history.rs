@@ -65,6 +65,8 @@ impl WorkspaceView {
         let Some(root) = self.history_root() else {
             return;
         };
+        // Local branch names tell branches, remote branches, and tags apart.
+        self.refresh_local_repo(root.clone(), force, cx);
         let history = &mut self.work_inbox.history;
         let current_only = history.current_only;
         let same = history
@@ -201,8 +203,9 @@ impl WorkspaceView {
             .scroll_to_item(next, ScrollStrategy::Top);
     }
 
-    /// The open pull request whose branch ends at this commit, or the one
-    /// its subject says it merged.
+    /// The pull request whose branch ends at this commit (by its head, or by
+    /// a branch of the same name when the PR moved since the last fetch), or
+    /// the one its subject says it merged.
     pub(super) fn commit_pull(&self, commit: &GitCommit) -> Option<CommitPull<'_>> {
         let project = self.history_project();
         let pulls = || {
@@ -212,11 +215,22 @@ impl WorkspaceView {
                 .iter()
                 .filter(move |item| item.project_id == project && item.pull.is_some())
         };
-        if let Some(item) = pulls().find(|item| {
+        let heads = |item: &&WorkItem| {
             item.pull
                 .as_ref()
                 .is_some_and(|pull| pull.head_oid == commit.sha)
-        }) {
+        };
+        let named = |item: &&WorkItem| {
+            item.pull.as_ref().is_some_and(|pull| {
+                !pull.cross_repository
+                    && !pull.head_ref.is_empty()
+                    && commit
+                        .refs
+                        .iter()
+                        .any(|name| branch_names(name, &pull.head_ref))
+            })
+        };
+        if let Some(item) = pulls().find(heads).or_else(|| pulls().find(named)) {
             return Some(CommitPull {
                 number: item.reference.trim_start_matches('#').parse().unwrap_or(0),
                 item: Some(item),
@@ -264,6 +278,17 @@ impl WorkspaceView {
         }
         self.select_work_item(&url, cx);
         cx.notify();
+    }
+
+    /// Names of the project's local branches, once they are read.
+    pub(super) fn history_local_branches(&self) -> Option<std::collections::HashSet<String>> {
+        let refs = self.repo_refs(&self.history_root()?)?;
+        Some(
+            refs.branches
+                .iter()
+                .map(|branch| branch.name.clone())
+                .collect(),
+        )
     }
 
     /// `owner/name` of the project's GitHub repository, from its loaded tasks.
@@ -337,5 +362,28 @@ impl WorkspaceView {
         self.work_inbox.history.review = Some(review);
         self.work_inbox.history.index = Some(index);
         self.work_inbox.history._review_subscription = Some(subscription);
+    }
+}
+
+/// `name` is the branch `branch`, locally or on a remote (`origin/branch`).
+fn branch_names(name: &str, branch: &str) -> bool {
+    name == branch
+        || name
+            .strip_suffix(branch)
+            .and_then(|prefix| prefix.strip_suffix('/'))
+            .is_some_and(|remote| !remote.is_empty() && !remote.contains('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::branch_names;
+
+    #[test]
+    fn pull_branches_match_local_and_remote_names() {
+        assert!(branch_names("feature/x", "feature/x"));
+        assert!(branch_names("origin/feature/x", "feature/x"));
+        assert!(!branch_names("origin/other/feature/x", "x/feature/x"));
+        assert!(!branch_names("my-feature/x", "feature/x"));
+        assert!(!branch_names("a/b/feature/x", "feature/x"));
     }
 }
