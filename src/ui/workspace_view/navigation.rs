@@ -117,12 +117,11 @@ impl WorkspaceView {
             self.ensure_inbox_loaded(cx);
             if !self.work_inbox.activity {
                 self.sync_inbox_selection(cx);
-            }
-            if entering_inbox && self.settings.inbox.repository_view {
-                self.open_repository(cx);
+                if self.settings.inbox.tab == crate::domain::work_items::RepositoryTab::History {
+                    self.open_history(false, cx);
+                }
             }
         }
-        self.sync_repository_polling(cx);
         if section == WorkspaceSection::Workspace
             && !self.review_covers_terminal(cx)
             && let Some(session) = self.snapshot.selected_session()
@@ -162,7 +161,11 @@ impl WorkspaceView {
             .listed_projects()
             .map(|project| (project.id, project.name.clone()))
             .partition(|(id, _)| self.settings.pinned_project_ids.contains(id));
-        let nav_items = [(WorkspaceSection::Inbox, "Review", "chrome-icons/inbox.svg")];
+        let nav_items = [(
+            WorkspaceSection::Inbox,
+            "Repository",
+            "chrome-icons/repository.svg",
+        )];
         let scratch_selected = self.scratch_selected();
         let listed_projects = self.snapshot.listed_projects().count();
         let has_projects = listed_projects > 0;

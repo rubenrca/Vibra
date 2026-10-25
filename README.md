@@ -26,12 +26,16 @@ updates).
   agent), push, pull, a commit graph, and branch comparison. Diffs are unified or
   side by side, with syntax highlighting and per-line comments that paste into
   the agent's terminal.
-- **Review.** GitHub issues and pull requests (through `gh`) with filters,
-  Markdown detail, a diff with **Viewed** and **Since last review**, checks,
-  published reviews, and merge with confirmation. **Send to agent** and **Ask**
-  hand a task to Claude, Codex, or Gemini in a visible tab. **Repository** is a Git
-  client for branches, worktrees, stashes, and tags. A pull request opens in a
-  checkout or in its own worktree.
+- **Repository.** **History** draws the commit graph of every branch, or only
+  the current one, with each commit's pull request; a commit opens its changes
+  below. **Pull requests** and **Issues** come from GitHub (through `gh`), each
+  pull request labeled with what it waits for: failing checks, requested
+  changes, conflicts, a review, or ready to merge. The detail has the
+  conversation, files with **Viewed** and **Since last review**, commits, checks,
+  and merge with confirmation. Line comments go back to an agent or post as a
+  GitHub review. **Send to agent** and **Ask** hand a task to Claude, Codex, or
+  Gemini in a visible tab, and the branch menu checks a pull request out or opens
+  it in its own worktree.
 - **Agents.** Detects Claude Code, Codex, Gemini, Grok, OpenCode, Cursor, Aider,
   Amp, Goose, and Pi, and shows whether each is working, waiting for permission
   or an answer, or done. It reads the status the agent reports itself through the
@@ -84,7 +88,7 @@ pane. After installing the Codex hook, open Codex once and approve it in `/hooks
 | `⌘B` / `⌥⌘B` | Toggle the sidebar / the Workspace panel |
 | `⌘F` | Search the terminal |
 
-In Review, `?` lists its shortcuts.
+In Repository, `?` lists its shortcuts.
 
 ## Development
 
@@ -125,7 +129,7 @@ appcast, publishes to GitHub as Latest, and updates `docs/appcast.xml`. A
 
 - [Architecture](docs/architecture.md): workspace responsibilities and the contracts for navigation, per-project isolation, and saving.
 - [Ghostty integration](docs/ghostty.md).
-- [MonoCode Inbox adaptation](docs/inbox-monocode.md): where Review comes from.
+- [MonoCode Inbox adaptation](docs/inbox-monocode.md): where the Repository pull requests and issues come from.
 - [GPUI patches](third_party/gpui/VIBRA_PATCHES.md): Vibra bundles GPUI 0.2.2 with a fix for Metal alpha compositing.
 
 ## License

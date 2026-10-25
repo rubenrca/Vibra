@@ -209,7 +209,7 @@ impl WorkspaceView {
             .text_color(colors().muted)
             .child(
                 item("status-agents")
-                    .tooltip(|_, cx| sidebar_tooltip("View agents in Review", cx))
+                    .tooltip(|_, cx| sidebar_tooltip("View agent activity", cx))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.work_inbox.activity = true;
                         this.select_section(WorkspaceSection::Inbox, window, cx)
@@ -239,12 +239,12 @@ impl WorkspaceView {
             )
             .child(
                 item("status-inbox")
-                    .tooltip(|_, cx| sidebar_tooltip("Review", cx))
+                    .tooltip(|_, cx| sidebar_tooltip("Repository", cx))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.select_section(WorkspaceSection::Inbox, window, cx)
                     }))
-                    .child(icon("chrome-icons/inbox.svg"))
-                    .child("Review"),
+                    .child(icon("chrome-icons/repository.svg"))
+                    .child("Repository"),
             )
             .child(div().flex_1())
             .when_some(self.current_branch_summary(), |bar, summary| {

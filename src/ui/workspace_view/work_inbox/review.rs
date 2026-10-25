@@ -232,22 +232,14 @@ impl WorkspaceView {
         &self,
         cx: &mut Context<Self>,
     ) {
-        for state in self.work_inbox.details.values() {
-            for view in [&state.review, &state.since_review, &state.commit_review]
-                .into_iter()
-                .flatten()
-            {
-                view.update(cx, |view, cx| {
-                    view.set_preferences(
-                        self.settings.diff_split,
-                        self.settings.diff_wrap,
-                        self.settings.diff_font_size,
-                        cx,
-                    )
-                });
-            }
-        }
-        if let Some(view) = &self.work_inbox.repository.review {
+        let views = self
+            .work_inbox
+            .details
+            .values()
+            .flat_map(|state| [&state.review, &state.since_review, &state.commit_review])
+            .chain([&self.work_inbox.history.review])
+            .flatten();
+        for view in views {
             view.update(cx, |view, cx| {
                 view.set_preferences(
                     self.settings.diff_split,

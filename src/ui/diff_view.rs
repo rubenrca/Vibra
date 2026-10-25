@@ -23,6 +23,7 @@ mod repository;
 mod rows;
 mod sidebar;
 pub(crate) use external::ExternalDiffSource;
+pub(crate) use history::format_short_date;
 pub(crate) use sidebar::DiffFileIndexView;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -57,7 +58,7 @@ use crate::ui::theme::colors;
 const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
 const HISTORY_ROW_HEIGHT: f32 = 36.0;
 const HISTORY_HEADER_HEIGHT: f32 = 24.0;
-const GRAPH_LANE_WIDTH: f32 = 12.0;
+pub(crate) const GRAPH_LANE_WIDTH: f32 = 12.0;
 const HISTORY_AUTHOR_WIDTH: f32 = 88.0;
 const HISTORY_DATE_WIDTH: f32 = 88.0;
 const HISTORY_SHA_WIDTH: f32 = 64.0;
@@ -627,16 +628,6 @@ impl DiffView {
         }
         self.return_to_worktree = false;
         self.select_commit(commit, cx);
-    }
-
-    /// Return an embedded review to the working tree.
-    pub(crate) fn show_worktree(&mut self, cx: &mut Context<Self>) {
-        self.file_preview = None;
-        if self.mode != GitPanelMode::Worktree {
-            self.set_mode(GitPanelMode::Worktree, cx);
-        }
-        self.review_expanded = true;
-        cx.notify();
     }
 
     /// Repo root + relative path → status, for coloring the Files tree (Zed-style).

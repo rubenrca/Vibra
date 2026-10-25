@@ -8,8 +8,8 @@ use std::time::Instant;
 use anyhow::{Context as _, Result, bail};
 
 use crate::ports::git::{
-    GitBranchChanges, GitBranchRef, GitCommit, GitCommitChanges, GitCommitOptions, GitDiff,
-    GitDiffRow, GitDiffRowKind, GitDiffSources, GitFileChange, GitFileStatus, GitHistory, GitPort,
+    GitBranchChanges, GitBranchRef, GitCommitChanges, GitCommitOptions, GitDiff, GitDiffRow,
+    GitDiffRowKind, GitDiffSources, GitFileChange, GitFileStatus, GitHistory, GitPort,
     GitRefAction, GitRepositoryRefs, GitRepositorySnapshot, GitSyncOperation, GitWorktreeCapture,
 };
 
@@ -178,16 +178,6 @@ impl GitPort for GitCliPort {
 
     fn repository_refs(&self, root: &Path) -> Result<Option<GitRepositoryRefs>> {
         super::catalog::repository_refs(root)
-    }
-
-    fn log_range(
-        &self,
-        root: &Path,
-        base: &str,
-        head: &str,
-        limit: usize,
-    ) -> Result<Vec<GitCommit>> {
-        super::catalog::log_range(root, base, head, limit)
     }
 
     fn run_ref_action(&self, root: &Path, action: &GitRefAction) -> Result<()> {
@@ -516,49 +506,11 @@ impl GitPort for GitCliPort {
     }
 
     fn history(&self, root: &Path, limit: usize) -> Result<Option<GitHistory>> {
-        let Some(root) = repository_root(root)? else {
-            return Ok(None);
-        };
-        let limit = limit.clamp(1, 500);
-        let branch = current_branch(&root)?;
-        let head = rev_parse(&root, "HEAD")?.unwrap_or_default();
-        let total = rev_count(&root, "HEAD").unwrap_or(0);
-        let output = run_git(
-            &root,
-            [
-                "log",
-                &format!("-{limit}"),
-                "--topo-order",
-                "-z",
-                "--decorate=short",
-                "--pretty=tformat:%H%x00%h%x00%s%x00%an%x00%as%x00%P%x00%D",
-            ],
-        )?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("does not have any commits")
-                || stderr.contains("bad default revision")
-                || stderr.contains("unknown revision")
-            {
-                return Ok(Some(GitHistory {
-                    branch,
-                    head,
-                    total: 0,
-                    commits: Vec::new(),
-                    truncated: false,
-                }));
-            }
-            ensure_success(&output, "git log")?;
-        }
-        let commits = parse_history(&output.stdout);
-        let truncated = total > commits.len();
-        Ok(Some(GitHistory {
-            branch,
-            head,
-            total,
-            commits,
-            truncated,
-        }))
+        log_history(root, limit, &["HEAD"])
+    }
+
+    fn branch_graph(&self, root: &Path, limit: usize) -> Result<Option<GitHistory>> {
+        log_history(root, limit, &["--branches", "--remotes"])
     }
 
     fn commit_changes(&self, root: &Path, revision: &str) -> Result<GitCommitChanges> {
@@ -798,4 +750,58 @@ impl GitPort for GitCliPort {
         }
         Ok(diff.finish(change.path.clone()))
     }
+}
+
+/// The newest `limit` commits reachable from `revisions`, in topological order.
+fn log_history(root: &Path, limit: usize, revisions: &[&str]) -> Result<Option<GitHistory>> {
+    let Some(root) = repository_root(root)? else {
+        return Ok(None);
+    };
+    let limit = limit.clamp(1, 500);
+    let branch = current_branch(&root)?;
+    let head = rev_parse(&root, "HEAD")?.unwrap_or_default();
+    let limit_arg = format!("-{limit}");
+    let mut arguments = vec![
+        "log",
+        &limit_arg,
+        "--topo-order",
+        "-z",
+        "--decorate=short",
+        "--pretty=tformat:%H%x00%h%x00%s%x00%an%x00%as%x00%P%x00%D",
+    ];
+    arguments.extend(revisions);
+    arguments.push("--");
+    let output = run_git(&root, &arguments)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("does not have any commits")
+            || stderr.contains("bad default revision")
+            || stderr.contains("unknown revision")
+        {
+            return Ok(Some(GitHistory {
+                branch,
+                head,
+                total: 0,
+                commits: Vec::new(),
+                truncated: false,
+            }));
+        }
+        ensure_success(&output, "git log")?;
+    }
+    let commits = parse_history(&output.stdout);
+    let mut count = vec!["rev-list", "--count"];
+    count.extend(revisions);
+    count.push("--");
+    let total = run_git(&root, &count)
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| git_stdout(&output).parse().ok())
+        .unwrap_or(commits.len());
+    Ok(Some(GitHistory {
+        branch,
+        head,
+        total,
+        truncated: total > commits.len(),
+        commits,
+    }))
 }

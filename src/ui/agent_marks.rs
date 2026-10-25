@@ -44,7 +44,6 @@ bundled_assets! {
     ("chrome-icons/copy.svg", "ChromeIcons/copy.svg"),
     ("chrome-icons/coffee.svg", "ChromeIcons/coffee.svg"),
     ("chrome-icons/coffee-steam.svg", "ChromeIcons/coffee-steam.svg"),
-    ("chrome-icons/check-all.svg", "ChromeIcons/check-all.svg"),
     ("chrome-icons/git-merge.svg", "ChromeIcons/git-merge.svg"),
     ("chrome-icons/issue-canceled.svg", "ChromeIcons/issue-canceled.svg"),
     ("chrome-icons/issue-closed.svg", "ChromeIcons/issue-closed.svg"),
@@ -111,11 +110,10 @@ bundled_assets! {
     ("chrome-icons/folder-open.svg", "ChromeIcons/folder-open.svg"),
     ("chrome-icons/trash.svg", "ChromeIcons/trash.svg"),
     ("chrome-icons/rows.svg", "ChromeIcons/rows.svg"),
-    ("chrome-icons/tag.svg", "ChromeIcons/tag.svg"),
-    ("chrome-icons/archive.svg", "ChromeIcons/archive.svg"),
     ("chrome-icons/worktree.svg", "ChromeIcons/worktree.svg"),
-    ("chrome-icons/cloud.svg", "ChromeIcons/cloud.svg"),
     ("chrome-icons/keyboard.svg", "ChromeIcons/keyboard.svg"),
+    ("chrome-icons/activity.svg", "ChromeIcons/activity.svg"),
+    ("chrome-icons/repository.svg", "ChromeIcons/repository.svg"),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

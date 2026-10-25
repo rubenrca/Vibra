@@ -165,36 +165,11 @@ pub struct GitWorktree {
     pub prunable: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitStash {
-    pub index: usize,
-    pub oid: String,
-    pub subject: String,
-    pub date: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitTag {
-    pub name: String,
-    /// The tagged commit, also for annotated tags.
-    pub target: String,
-    pub subject: String,
-    pub date: String,
-}
-
-/// Everything the Repository view lists for one repository.
+/// Local branches and worktrees, to find where a pull request is checked out.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitRepositoryRefs {
-    pub root: PathBuf,
-    /// Current branch, or `HEAD` when detached.
-    pub current: String,
-    /// Staged, unstaged, and untracked paths.
-    pub changes: usize,
     pub branches: Vec<GitBranchInfo>,
-    pub remotes: Vec<GitBranchInfo>,
     pub worktrees: Vec<GitWorktree>,
-    pub stashes: Vec<GitStash>,
-    pub tags: Vec<GitTag>,
 }
 
 impl GitRepositoryRefs {
@@ -210,11 +185,10 @@ impl GitRepositoryRefs {
     }
 }
 
-/// Branch, stash, and worktree changes started from the Repository view.
+/// Branch and worktree changes that bring a pull request to the repository
+/// or clean it up after the merge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitRefAction {
-    /// `git switch`; a remote branch's short name creates its tracking branch.
-    Switch(String),
     /// Switch, then fast-forward from the upstream.
     SwitchAndPull(String),
     DeleteBranch {
@@ -222,32 +196,9 @@ pub enum GitRefAction {
         /// Delete even when the branch is not merged (`-D`).
         force: bool,
     },
-    /// Stash every change, untracked files included.
-    Stash {
-        message: String,
-    },
-    StashApply(usize),
-    StashPop(usize),
-    StashDrop(usize),
     /// A new linked worktree with a detached HEAD at the current commit.
     AddWorktree(PathBuf),
     RemoveWorktree(PathBuf),
-}
-
-impl GitRefAction {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Switch(_) => "Switch branch",
-            Self::SwitchAndPull(_) => "Switch and pull",
-            Self::DeleteBranch { .. } => "Delete branch",
-            Self::Stash { .. } => "Stash changes",
-            Self::StashApply(_) => "Apply stash",
-            Self::StashPop(_) => "Pop stash",
-            Self::StashDrop(_) => "Drop stash",
-            Self::AddWorktree(_) => "Add worktree",
-            Self::RemoveWorktree(_) => "Remove worktree",
-        }
-    }
 }
 
 /// Options for a commit made from the Changes panel.
@@ -291,6 +242,8 @@ pub trait GitPort: Send + Sync {
         head: Option<&str>,
     ) -> Result<Option<GitBranchChanges>>;
     fn history(&self, root: &Path, limit: usize) -> Result<Option<GitHistory>>;
+    /// Like [`GitPort::history`], across every local and remote branch.
+    fn branch_graph(&self, root: &Path, limit: usize) -> Result<Option<GitHistory>>;
     fn commit_changes(&self, root: &Path, revision: &str) -> Result<GitCommitChanges>;
     /// Both whole files behind one file's diff. Worktree comparisons
     /// (`against` = `None`) use the same sides as [`GitPort::diff`].
@@ -324,17 +277,8 @@ pub trait GitPort: Send + Sync {
     /// What the next commit would contain, as a bounded patch with recent
     /// subjects for style, for drafting its message.
     fn commit_message_context(&self, root: &Path) -> Result<String>;
-    /// Branches, worktrees, stashes, and tags for the Repository view.
+    /// Local branches and worktrees.
     fn repository_refs(&self, root: &Path) -> Result<Option<GitRepositoryRefs>>;
-    /// Commits reachable from `head` but not from `base` (all of `head`'s
-    /// history when `base` is empty), newest first.
-    fn log_range(
-        &self,
-        root: &Path,
-        base: &str,
-        head: &str,
-        limit: usize,
-    ) -> Result<Vec<GitCommit>>;
     /// Changes the repository only when the user asks for it.
     fn run_ref_action(&self, root: &Path, action: &GitRefAction) -> Result<()>;
 }

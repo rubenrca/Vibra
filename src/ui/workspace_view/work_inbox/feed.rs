@@ -17,6 +17,7 @@ impl WorkspaceView {
                 .any(|project| project.id == *id)
         });
         self.settings.inbox.hidden_projects.clear();
+        self.work_inbox.history.project = None;
     }
 
     pub(crate) fn inbox_project_selected(&self, id: Uuid) -> bool {
@@ -40,20 +41,19 @@ impl WorkspaceView {
         self.inbox_filters_changed(cx);
     }
 
-    /// Tasks that pass the filters, grouped by why they concern the user.
-    /// Every group keeps the feed's newest-first order.
+    /// The current tab's tasks that pass the filters, grouped by why they
+    /// concern the user. Every group keeps the feed's newest-first order.
     pub(crate) fn grouped_inbox_items(&self) -> Vec<(WorkRelation, Vec<&WorkItem>)> {
-        let mut groups: Vec<(WorkRelation, Vec<&WorkItem>)> = WorkRelation::ALL
-            .into_iter()
-            .map(|relation| (relation, Vec::new()))
-            .collect();
-        for item in self
-            .work_inbox
-            .github
-            .items
+        let Some(kind) = self.settings.inbox.tab.kind() else {
+            return Vec::new();
+        };
+        let mut groups: Vec<(WorkRelation, Vec<&WorkItem>)> = WorkRelation::order(kind)
             .iter()
-            .filter(|item| self.work_inbox.filter.matches(item, &self.settings.inbox))
-        {
+            .map(|relation| (*relation, Vec::new()))
+            .collect();
+        for item in self.work_inbox.github.items.iter().filter(|item| {
+            item.kind == kind && self.work_inbox.filter.matches(item, &self.settings.inbox)
+        }) {
             if let Some((_, items)) = groups
                 .iter_mut()
                 .find(|(relation, _)| *relation == item.relation)
@@ -79,6 +79,10 @@ impl WorkspaceView {
     }
 
     pub(crate) fn sync_inbox_selection(&mut self, cx: &mut Context<Self>) {
+        // History has no list; the task stays for when the user comes back.
+        if self.settings.inbox.tab.kind().is_none() {
+            return;
+        }
         let selected = self.work_inbox.selected.as_deref();
         let visible = self.ordered_inbox_items();
         if visible
@@ -146,7 +150,10 @@ impl WorkspaceView {
     pub(crate) fn inbox_items_updated(&mut self, refresh_detail: bool, cx: &mut Context<Self>) {
         self.prune_inbox_details();
         self.refresh_inbox_repos(false, cx);
-        if self.workspace_section == WorkspaceSection::Inbox && !self.work_inbox.activity {
+        if self.workspace_section == WorkspaceSection::Inbox
+            && !self.work_inbox.activity
+            && self.settings.inbox.tab.kind().is_some()
+        {
             self.sync_inbox_selection(cx);
             self.load_inbox_detail(refresh_detail, cx);
         }
@@ -256,9 +263,22 @@ impl WorkspaceView {
             .as_ref()
             .and(item.project_id)
             .and_then(|id| self.project_folder(id));
+        let target_project = item.project_id.or(self.snapshot.selected_project_id);
         let changed = self.work_inbox.selected.as_deref() != Some(url);
         if changed {
-            self.work_inbox.target_project = item.project_id.or(self.snapshot.selected_project_id);
+            // Popovers and the review being written belong to the task they
+            // were opened on; its text stays for when the user comes back.
+            self.dismiss_inbox_menu();
+            if let Some(state) = self
+                .work_inbox
+                .selected
+                .clone()
+                .and_then(|previous| self.work_inbox.details.get_mut(&previous))
+            {
+                state.review_draft.open = false;
+                state.review_draft.editing = false;
+            }
+            self.work_inbox.target_project = target_project;
             let inbox = &mut self.work_inbox;
             inbox.selected = Some(url.into());
             inbox.search_editing = false;

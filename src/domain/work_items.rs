@@ -370,6 +370,84 @@ pub struct PullSummary {
     pub cross_repository: bool,
 }
 
+/// The tabs of the Repository section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RepositoryTab {
+    History,
+    PullRequests,
+    Issues,
+}
+
+impl RepositoryTab {
+    pub const ALL: [Self; 3] = [Self::History, Self::PullRequests, Self::Issues];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::History => "History",
+            Self::PullRequests => "Pull requests",
+            Self::Issues => "Issues",
+        }
+    }
+
+    /// The tasks a list tab shows; History has no list.
+    pub fn kind(self) -> Option<WorkKind> {
+        match self {
+            Self::History => None,
+            Self::PullRequests => Some(WorkKind::PullRequest),
+            Self::Issues => Some(WorkKind::Issue),
+        }
+    }
+}
+
+/// The pull request a commit subject names: GitHub's squash merge
+/// `Title (#12)` or merge commit `Merge pull request #12 from owner/branch`.
+pub fn subject_pull_number(subject: &str) -> Option<u64> {
+    let number = |digits: &str| {
+        (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| digits.parse().ok())
+            .flatten()
+    };
+    if let Some(rest) = subject.strip_prefix("Merge pull request #") {
+        return number(rest.split_whitespace().next().unwrap_or_default());
+    }
+    let inner = subject.trim_end().strip_suffix(')')?;
+    let start = inner.rfind("(#")?;
+    number(&inner[start + 2..])
+}
+
+/// What a pull request waits for, as a short label in the Review list:
+/// blockers first, then whose turn it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullStep {
+    Conflicts,
+    ChecksFailing,
+    ChangesRequested,
+    Draft,
+    ReviewRequested,
+    ChecksRunning,
+    AwaitingReview,
+    ReadyToMerge,
+    Merged,
+    Closed,
+}
+
+impl PullStep {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Conflicts => "Conflicts",
+            Self::ChecksFailing => "Checks failing",
+            Self::ChangesRequested => "Changes requested",
+            Self::Draft => "Draft",
+            Self::ReviewRequested => "Review requested",
+            Self::ChecksRunning => "Checks running",
+            Self::AwaitingReview => "Awaiting review",
+            Self::ReadyToMerge => "Ready to merge",
+            Self::Merged => "Merged",
+            Self::Closed => "Closed",
+        }
+    }
+}
+
 /// Why a task concerns the signed-in user. The list groups by it, in order.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -383,24 +461,32 @@ pub enum WorkRelation {
 }
 
 impl WorkRelation {
-    pub const ALL: [Self; 4] = [
-        Self::ReviewRequested,
-        Self::Authored,
-        Self::Assigned,
-        Self::Other,
-    ];
+    /// Group order in a list of `kind`: the work that waits on the user first.
+    /// Issues cannot request a review.
+    pub fn order(kind: WorkKind) -> &'static [Self] {
+        match kind {
+            WorkKind::PullRequest => &[
+                Self::ReviewRequested,
+                Self::Authored,
+                Self::Assigned,
+                Self::Other,
+            ],
+            WorkKind::Issue => &[Self::Assigned, Self::Authored, Self::Other],
+        }
+    }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ReviewRequested => "Needs your review",
-            Self::Authored => "Created by you",
-            Self::Assigned => "Assigned to you",
-            Self::Other => "Everything else",
+    pub fn label(self, kind: WorkKind) -> &'static str {
+        match (self, kind) {
+            (Self::ReviewRequested, _) => "Needs your review",
+            (Self::Authored, WorkKind::PullRequest) => "Your pull requests",
+            (Self::Authored, WorkKind::Issue) => "Opened by you",
+            (Self::Assigned, _) => "Assigned to you",
+            (Self::Other, _) => "Others",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WorkKind {
     Issue,
     PullRequest,
@@ -453,6 +539,23 @@ pub struct WorkItem {
 }
 
 impl WorkItem {
+    pub fn pull_step(&self) -> Option<PullStep> {
+        let pull = self.pull.as_ref()?;
+        let step = match self.status {
+            WorkStatus::Merged => PullStep::Merged,
+            WorkStatus::Closed => PullStep::Closed,
+            _ if pull.mergeable == "CONFLICTING" => PullStep::Conflicts,
+            _ if pull.checks == CheckRollup::Failing => PullStep::ChecksFailing,
+            _ if pull.review_decision == "CHANGES_REQUESTED" => PullStep::ChangesRequested,
+            WorkStatus::Draft => PullStep::Draft,
+            _ if self.relation == WorkRelation::ReviewRequested => PullStep::ReviewRequested,
+            _ if pull.checks == CheckRollup::Pending => PullStep::ChecksRunning,
+            _ if pull.review_decision == "REVIEW_REQUIRED" => PullStep::AwaitingReview,
+            WorkStatus::Open => PullStep::ReadyToMerge,
+        };
+        Some(step)
+    }
+
     pub fn unread(&self, seen: &BTreeMap<String, u64>) -> bool {
         seen.get(&self.url).is_none_or(|at| *at < self.updated_at)
     }
@@ -482,12 +585,11 @@ pub struct InboxPreferences {
     pub seen: BTreeMap<String, u64>,
     pub linked_sessions: BTreeMap<String, Vec<Uuid>>,
     pub statuses: Vec<WorkStatus>,
-    pub hidden_kinds: Vec<WorkKind>,
+    /// The Repository tab on screen.
+    pub tab: RepositoryTab,
     pub hidden_projects: Vec<Uuid>,
     pub time: InboxTime,
     pub list_width: f32,
-    /// Review shows the local repository instead of a task source.
-    pub repository_view: bool,
 }
 
 impl Default for InboxPreferences {
@@ -498,11 +600,10 @@ impl Default for InboxPreferences {
             seen: BTreeMap::new(),
             linked_sessions: BTreeMap::new(),
             statuses: Vec::new(),
-            hidden_kinds: Vec::new(),
+            tab: RepositoryTab::PullRequests,
             hidden_projects: Vec::new(),
             time: InboxTime::All,
             list_width: 280.0,
-            repository_view: false,
         }
     }
 }
@@ -542,7 +643,6 @@ impl InboxPreferences {
             || !self.status_selected(WorkStatus::Draft)
             || self.status_selected(WorkStatus::Closed)
             || self.status_selected(WorkStatus::Merged)
-            || !self.hidden_kinds.is_empty()
             || !self.hidden_projects.is_empty()
             || self.time != InboxTime::All
     }
@@ -596,10 +696,9 @@ impl WorkFilter {
         {
             return false;
         }
-        if preferences.hidden_kinds.contains(&item.kind)
-            || item
-                .project_id
-                .is_some_and(|id| preferences.hidden_projects.contains(&id))
+        if item
+            .project_id
+            .is_some_and(|id| preferences.hidden_projects.contains(&id))
             || !preferences.time.includes(
                 item.updated_at,
                 crate::domain::usage::now_timestamp().max(0) as u64,
@@ -735,13 +834,50 @@ mod tests {
         item.status = WorkStatus::Open;
         assert!(!filter.matches(&item, &prefs));
         prefs.statuses.clear();
-        prefs.hidden_kinds.push(WorkKind::Issue);
-        assert!(!filter.matches(&item, &prefs));
+        assert!(
+            filter.matches(&item, &prefs),
+            "an empty selection is the default"
+        );
         let restored: InboxPreferences = serde_json::from_str(r#"{"status":"Closed"}"#).unwrap();
         assert!(restored.status_selected(WorkStatus::Closed));
         let today = local_day_start(1_790_000_000);
         assert!(InboxTime::Today.includes(today, 1_790_000_000));
         assert!(!InboxTime::Today.includes(today - 1, 1_790_000_000));
+    }
+
+    #[test]
+    fn commit_subjects_name_their_pull_request() {
+        assert_eq!(subject_pull_number("Add search (#482)"), Some(482));
+        assert_eq!(
+            subject_pull_number("Merge pull request #12 from demo/feature"),
+            Some(12)
+        );
+        assert_eq!(subject_pull_number("Fix (#12) in the middle"), None);
+        assert_eq!(subject_pull_number("Bump (#abc)"), None);
+        assert_eq!(subject_pull_number("Plain subject"), None);
+        assert_eq!(subject_pull_number("Empty (#)"), None);
+    }
+
+    #[test]
+    fn pull_steps_put_blockers_before_whose_turn_it_is() {
+        let mut item = pull_fixture();
+        let step = |item: &WorkItem| item.pull_step().unwrap();
+        assert_eq!(step(&item), PullStep::ReadyToMerge);
+        item.pull.as_mut().unwrap().review_decision = "REVIEW_REQUIRED".into();
+        assert_eq!(step(&item), PullStep::AwaitingReview);
+        item.pull.as_mut().unwrap().checks = CheckRollup::Pending;
+        assert_eq!(step(&item), PullStep::ChecksRunning);
+        item.relation = WorkRelation::ReviewRequested;
+        assert_eq!(step(&item), PullStep::ReviewRequested);
+        item.status = WorkStatus::Draft;
+        assert_eq!(step(&item), PullStep::Draft);
+        item.pull.as_mut().unwrap().checks = CheckRollup::Failing;
+        assert_eq!(step(&item), PullStep::ChecksFailing);
+        item.pull.as_mut().unwrap().mergeable = "CONFLICTING".into();
+        assert_eq!(step(&item), PullStep::Conflicts);
+        item.status = WorkStatus::Merged;
+        assert_eq!(step(&item), PullStep::Merged);
+        assert_eq!(fixture().pull_step(), None);
     }
 
     #[test]

@@ -78,21 +78,38 @@ impl WorkspaceView {
             rows.push((Requirement::Pending, format!("Behind {base}")));
         }
         let url = item.url.clone();
+        let (headline, color) = match item.pull_step() {
+            Some(step) => (step.label(), step_color(step)),
+            None => ("Merge status", colors().muted),
+        };
         let mut box_ = div()
-            .p_3()
+            .p(px(14.0))
             .rounded(px(8.0))
             .border_1()
             .border_color(colors().border_subtle)
             .bg(surface_tint(colors().panel, colors().background))
             .flex()
             .flex_col()
-            .gap_2()
+            .gap(px(8.0))
             .child(
                 div()
-                    .text_size(px(11.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(colors().muted)
-                    .child("MERGE STATUS"),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .pb(px(2.0))
+                    .child(
+                        svg()
+                            .path("chrome-icons/git-merge.svg")
+                            .size(px(15.0))
+                            .text_color(color),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.5))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors().foreground)
+                            .child(headline),
+                    ),
             )
             .children(rows.into_iter().map(|(requirement, label)| {
                 div()
@@ -100,6 +117,11 @@ impl WorkspaceView {
                     .items_center()
                     .gap_2()
                     .text_size(px(12.5))
+                    .text_color(if requirement == Requirement::Met {
+                        colors().muted
+                    } else {
+                        colors().foreground
+                    })
                     .child(checks::check_status_icon(
                         requirement == Requirement::Failing,
                         requirement == Requirement::Met,
@@ -137,26 +159,122 @@ impl WorkspaceView {
         .flatten()
         .collect();
         if !buttons.is_empty() {
-            box_ = box_.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .children(buttons.into_iter().map(|action| {
-                        let url = url.clone();
-                        section_button(
-                            SharedString::from(format!("inbox-merge-{action:?}")),
-                            action.label(),
-                            false,
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.propose_inbox_pr_action(&url, action);
-                            cx.notify();
-                        }))
-                    })),
-            );
+            box_ = box_.child(div().pt(px(4.0)).flex().flex_wrap().gap_2().children(
+                buttons.into_iter().map(|action| {
+                    let url = url.clone();
+                    super::item_detail::header_button(
+                        SharedString::from(format!("inbox-merge-{action:?}")),
+                        None,
+                        action.label(),
+                        false,
+                    )
+                    .on_click(cx.listener(
+                        move |this, event: &ClickEvent, _, cx| {
+                            let position = (event.position().x.into(), event.position().y.into());
+                            this.confirm_pr_action_at(&url, action, position, cx);
+                        },
+                    ))
+                }),
+            ));
         }
         Some(box_.into_any_element())
+    }
+
+    /// The pending pull request action, its consequence and warnings.
+    pub(super) fn inbox_confirmation(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let PrConfirmation { url, action, .. } = self.work_inbox.confirmation.as_ref()?;
+        let item = self
+            .work_inbox
+            .github
+            .items
+            .iter()
+            .find(|item| item.url == *url)?;
+        let state = self.work_inbox.details.get(url);
+        let busy = state.is_some_and(|state| state.mutation_busy);
+        let destructive = matches!(action, PrAction::Close | PrAction::DeleteBranch);
+        Some(
+            div()
+                .p(px(10.0))
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(action.label()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(colors().subtle)
+                                .child(format!("{} {}", item.repository, item.reference)),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(colors().muted)
+                        .child(action.consequence()),
+                )
+                .children(
+                    merge_warnings(
+                        *action,
+                        state.and_then(|state| state.summary.data.as_ref()),
+                        state.and_then(|state| state.checks.data.as_deref()),
+                    )
+                    .into_iter()
+                    .map(|warning| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_size(px(12.0))
+                            .text_color(colors().warning)
+                            .child(checks::check_status_icon(true, false, 12.0))
+                            .child(warning)
+                    }),
+                )
+                .when_some(
+                    state.and_then(|state| state.mutation_error.as_ref()),
+                    |panel, error| panel.child(message(error, true)),
+                )
+                .child(
+                    div()
+                        .pt(px(4.0))
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            quiet_button("inbox-cancel-action", "Cancel").on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    if this.dismiss_inbox_menu() {
+                                        cx.notify();
+                                    }
+                                },
+                            )),
+                        )
+                        .child(
+                            super::item_detail::header_button(
+                                "inbox-confirm-action",
+                                None,
+                                if busy { "Applying…" } else { action.label() },
+                                true,
+                            )
+                            .when(destructive, |button| button.bg(colors().danger))
+                            .when(busy, |button| button.opacity(0.6))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.confirm_inbox_pr_action(cx)),
+                            ),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 }
 

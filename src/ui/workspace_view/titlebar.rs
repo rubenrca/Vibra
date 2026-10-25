@@ -106,7 +106,7 @@ impl super::WorkspaceView {
                     }
                 })
                 .unwrap_or("Vibra"),
-            WorkspaceSection::Inbox => "Review",
+            WorkspaceSection::Inbox => "Repository",
             WorkspaceSection::Settings => "Settings",
         }
         .to_owned();

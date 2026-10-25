@@ -129,8 +129,8 @@ impl super::WorkspaceView {
                 ),
                 ("Workspace: Explorer", "", PaletteAction::ShowFiles),
                 (
-                    "Review: Open",
-                    "Pull requests, issues, and agent activity",
+                    "Repository: Open",
+                    "History, pull requests, issues, and agent activity",
                     PaletteAction::ShowSection(WorkspaceSection::Inbox),
                 ),
                 ("Settings: Open", "⌘,", PaletteAction::ShowSettings),

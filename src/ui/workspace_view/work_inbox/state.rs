@@ -10,7 +10,8 @@ use crate::domain::work_items::{
     PrAction, ReviewVerdict, WorkCheck, WorkCommits, WorkDetail, WorkDiff, WorkFilter, WorkItem,
 };
 use crate::infrastructure::work_items::{WorkItemsPage, WorkQuery};
-use crate::ports::git::{GitCommit, GitRefAction, GitRepositoryRefs};
+use crate::ports::git::{GitHistory, GitRepositoryRefs};
+use crate::ui::git_graph::GitGraphRow;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum InboxMenu {
@@ -19,7 +20,14 @@ pub(super) enum InboxMenu {
     Agents,
     PrActions,
     Shortcuts,
-    RepositoryProjects,
+    /// Local Git actions on the pull request's branch.
+    Branch,
+    /// The GitHub review being written.
+    Review,
+    /// The pending pull request action.
+    Confirm,
+    /// The project whose history is shown.
+    HistoryProjects,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -36,8 +44,8 @@ impl DetailTab {
 
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Summary => "Summary",
-            Self::Code => "Code",
+            Self::Summary => "Conversation",
+            Self::Code => "Files",
             Self::Commits => "Commits",
             Self::Checks => "Checks",
         }
@@ -84,40 +92,29 @@ pub(super) struct LocalJob {
     pub(super) _task: Task<()>,
 }
 
-/// What the Repository view shows on the right.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) enum RepoSelection {
-    #[default]
-    Changes,
-    Branch(String),
-    Remote(String),
-    Worktree(PathBuf),
-    /// Stash commit, so a selection survives a stash above it being dropped.
-    Stash(String),
-    Tag(String),
+/// One repository's commits and their graph lanes.
+pub(super) struct HistoryLog {
+    pub(super) root: PathBuf,
+    pub(super) current_only: bool,
+    pub(super) history: GitHistory,
+    pub(super) graph: Vec<GitGraphRow>,
 }
 
-pub(super) struct RepoConfirmation {
-    pub(super) action: GitRefAction,
-    pub(super) message: String,
-}
-
+/// The History tab: one project's commit graph and the commit opened below it.
 #[derive(Default)]
-pub(super) struct RepositoryState {
-    /// The project whose repository is shown; follows the active project.
+pub(super) struct HistoryState {
+    /// The user's pick; the active project otherwise.
     pub(super) project: Option<Uuid>,
-    pub(super) selection: RepoSelection,
-    pub(super) collapsed: HashSet<&'static str>,
+    /// Only the checked-out branch instead of every branch.
+    pub(super) current_only: bool,
+    pub(super) log: LoadState<HistoryLog>,
+    pub(super) fetched: Option<Instant>,
+    /// SHA of the commit whose changes are open.
+    pub(super) selected: Option<String>,
     pub(super) review: Option<gpui::Entity<crate::ui::diff_view::DiffView>>,
     pub(super) index: Option<gpui::Entity<crate::ui::diff_view::DiffFileIndexView>>,
     pub(super) _review_subscription: Option<gpui::Subscription>,
-    /// Commits of the selected branch that its upstream or base lacks.
-    pub(super) log: LoadState<(String, Vec<GitCommit>)>,
-    /// The commit shown from the selected branch, stash, or tag.
-    pub(super) commit: Option<String>,
-    pub(super) confirmation: Option<RepoConfirmation>,
-    pub(super) stash_message: String,
-    pub(super) stash_editing: bool,
+    pub(super) scroll: gpui::UniformListScrollHandle,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -291,6 +288,8 @@ pub(crate) struct WorkInbox {
     pub(super) filter: WorkFilter,
     pub(super) search_editing: bool,
     pub(super) selected: Option<String>,
+    /// The task each list tab showed last, to return to it.
+    pub(super) tab_selection: HashMap<crate::domain::work_items::WorkKind, String>,
     pub(super) target_project: Option<Uuid>,
     pub(super) agent: usize,
     pub(super) action_error: Option<String>,
@@ -313,7 +312,7 @@ pub(crate) struct WorkInbox {
     pub(super) local_feedback: Option<(String, String, bool)>,
     /// Head each pull request showed when its Code tab last opened.
     pub(super) seen_heads: HashMap<String, String>,
-    pub(super) repository: RepositoryState,
+    pub(super) history: HistoryState,
     pub(super) collapsed_groups: HashSet<crate::domain::work_items::WorkRelation>,
     pub(super) list_scroll: gpui::ScrollHandle,
     pub(super) _poll_task: Option<Task<()>>,

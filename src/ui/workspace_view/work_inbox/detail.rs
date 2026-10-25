@@ -445,6 +445,9 @@ impl WorkspaceView {
                         for (view, id) in sent {
                             view.update(cx, |view, cx| view.remove_comments(&[id], cx));
                         }
+                        if this.work_inbox.menu == Some(InboxMenu::Review) {
+                            this.work_inbox.menu = None;
+                        }
                         this.refresh_work_items(true, cx);
                         if this.work_inbox.selected.as_ref() == Some(&url) {
                             this.load_inbox_detail(true, cx);
@@ -684,6 +687,9 @@ impl WorkspaceView {
                                 .is_some_and(|pending| pending.url == url)
                             {
                                 this.work_inbox.confirmation = None;
+                                if this.work_inbox.menu == Some(InboxMenu::Confirm) {
+                                    this.work_inbox.menu = None;
+                                }
                             }
                             this.refresh_work_items(true, cx);
                             if this.work_inbox.selected.as_ref() == Some(&url) {
@@ -702,7 +708,7 @@ impl WorkspaceView {
     pub(in crate::ui::workspace_view) fn visible_inbox_terminal(&self) -> Option<Uuid> {
         if self.workspace_section != WorkspaceSection::Inbox
             || self.work_inbox.activity
-            || self.settings.inbox.repository_view
+            || self.settings.inbox.tab == RepositoryTab::History
             || !self.work_inbox.discussion_open
         {
             return None;

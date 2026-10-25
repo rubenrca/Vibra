@@ -22,10 +22,17 @@ independiente del workspace.
   (`GitPort::repository_refs`, refrescado en segundo plano con TTL) y ejecuta
   checkout, worktrees, push/pull y limpieza tras el merge como un único trabajo
   local a la vez, con el resultado junto al control que lo inició. Los worktrees
-  de PR viven en `~/.vibra/worktrees`. `work_inbox/repository.rs` sostiene la
-  vista Repository: un `DiffView` embebido (`set_embedded`) muestra el working
-  tree con su panel de Changes o un commit guardado de rama, stash o tag, y las
-  acciones destructivas piden confirmación. `work_inbox/review.rs` crea los tres
+  de PR viven en `~/.vibra/worktrees`. La sección se llama Repository en la
+  interfaz; sus pestañas (`RepositoryTab`) son History, Pull requests e Issues, y
+  cada PR muestra su `PullStep`, lo que espera. `work_inbox/history.rs` lee el
+  grafo de todas las ramas (`GitPort::branch_graph`) o solo de la actual, enlaza
+  cada commit con su PR (el head de una rama con PR abierto, o el `(#N)` de un
+  squash y el `Merge pull request #N` de un merge) y abre el commit en un
+  `DiffView` incrustado (`set_embedded`, `show_commit`). Mientras History está
+  en pantalla, la lista conserva su tarea seleccionada. Menús, el envío de la review de GitHub y las confirmaciones de PR son
+  popovers anclados al control; `dismiss_inbox_menu` los cierra igual con Escape,
+  un clic fuera o al cambiar de tarea, salvo la acción o review en curso.
+  `work_inbox/review.rs` crea los tres
   visores de un PR (todo, desde la última review y por commit) y les entrega las
   marcas Viewed de GitHub (optimistas hasta la respuesta) y los hilos publicados.
   La review de GitHub fija el head leído (`commitOID`) y solo envía en línea los
@@ -53,8 +60,8 @@ independiente del workspace.
   los prompts lanzados dentro de una terminal conservan su PATH ya establecido.
 - `src/infrastructure/git/parsing.rs`: parsers puros de status, numstat, historial
   y patches. El adaptador Git mantiene la ejecución de comandos y las cachés.
-  `catalog.rs` lista ramas (con tracking), worktrees, stashes y tags, y ejecuta
-  las acciones de Repository; rechaza nombres que parezcan opciones y pasa `--`
+  `catalog.rs` lista ramas locales (con tracking) y worktrees, y ejecuta las
+  acciones locales de los PR; rechaza nombres que parezcan opciones y pasa `--`
   antes de ramas y rutas.
 - `src/ui/workspace_view/mod.rs`: construcción y coordinación de la ventana.
 - `navigation.rs`, `projects.rs` y `tabs.rs`: secciones globales, proyectos y navegación

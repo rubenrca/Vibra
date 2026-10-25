@@ -320,7 +320,7 @@ impl DiffView {
             ))
     }
 
-    pub(super) fn graph_column(
+    pub(crate) fn graph_column(
         graph: Option<&GitGraphRow>,
         width: f32,
         is_head: bool,
@@ -439,7 +439,8 @@ impl DiffView {
     }
 }
 
-fn format_short_date(iso: &str) -> String {
+/// `2026-10-21` → `21 Oct 2026`.
+pub(crate) fn format_short_date(iso: &str) -> String {
     let mut parts = iso.split('-');
     let Some(year) = parts.next() else {
         return iso.to_owned();

@@ -2,15 +2,15 @@
 
 mod detail;
 mod feed;
+mod history;
 mod launch;
 mod layout;
 mod local;
-mod repository;
 mod review;
 mod state;
 
 pub(crate) use crate::domain::work_items::{
-    PrAction, WorkCheck, WorkDiff, WorkFilter, WorkItem, WorkKind, WorkStatus,
+    PrAction, RepositoryTab, WorkCheck, WorkDiff, WorkFilter, WorkItem, WorkKind, WorkStatus,
 };
 pub(crate) use crate::infrastructure::work_items;
 pub(crate) use crate::ui::theme::colors;
@@ -23,7 +23,6 @@ pub(crate) use uuid::Uuid;
 use crate::ui::text_edit::{TextKeyOutcome, apply_text_key};
 use gpui::KeyDownEvent;
 
-pub(crate) use super::navigation::section_button;
 use super::{WorkspaceSection, WorkspaceView};
 
 impl WorkspaceView {
@@ -36,29 +35,21 @@ impl WorkspaceView {
         if self.workspace_section != WorkspaceSection::Inbox || self.work_inbox.activity {
             return false;
         }
-        if matches!(event.keystroke.key.as_str(), "escape" | "esc")
-            && self.work_inbox.menu.take().is_some()
-        {
+        if matches!(event.keystroke.key.as_str(), "escape" | "esc") && self.dismiss_inbox_menu() {
             cx.notify();
             return true;
         }
-        let repository = self.settings.inbox.repository_view;
-        let search = !repository && self.work_inbox.search_editing;
-        let composer =
-            !repository && self.work_inbox.composer_editing && self.work_inbox.composer_open;
-        let comment = !repository && self.work_inbox.comment_editing;
-        let stash = repository && self.work_inbox.repository.stash_editing;
-        let review = !repository
-            && self.work_inbox.selected.as_ref().is_some_and(|url| {
-                self.work_inbox
-                    .details
-                    .get(url)
-                    .is_some_and(|state| state.review_draft.open && state.review_draft.editing)
-            });
+        let search = self.work_inbox.search_editing;
+        let composer = self.work_inbox.composer_editing && self.work_inbox.composer_open;
+        let comment = self.work_inbox.comment_editing;
+        let review = self.work_inbox.selected.as_ref().is_some_and(|url| {
+            self.work_inbox
+                .details
+                .get(url)
+                .is_some_and(|state| state.review_draft.open && state.review_draft.editing)
+        });
         let buffer = if search {
             &mut self.work_inbox.filter.query
-        } else if stash {
-            &mut self.work_inbox.repository.stash_message
         } else if composer {
             &mut self.work_inbox.composer_note
         } else if comment || review {
@@ -85,7 +76,7 @@ impl WorkspaceView {
             &event.keystroke.key,
             event.keystroke.key_char.as_deref(),
             &event.keystroke.modifiers,
-            !search && !stash,
+            !search,
             || cx.read_from_clipboard().and_then(|item| item.text()),
         );
         match outcome {
@@ -95,7 +86,6 @@ impl WorkspaceView {
                     self.work_inbox.search_editing = true;
                 }
             }
-            TextKeyOutcome::Submit if stash => self.stash_repository_changes(window, cx),
             TextKeyOutcome::Submit if comment => self.post_inbox_comment(cx),
             TextKeyOutcome::Submit if review => self.submit_inbox_review(cx),
             TextKeyOutcome::Submit if composer => self.start_work_item(window, cx),
@@ -106,7 +96,6 @@ impl WorkspaceView {
                 self.work_inbox.search_editing = false;
                 self.work_inbox.composer_editing = false;
                 self.work_inbox.comment_editing = false;
-                self.work_inbox.repository.stash_editing = false;
                 if let Some(url) = self.work_inbox.selected.clone()
                     && let Some(state) = self.work_inbox.details.get_mut(&url)
                 {
@@ -131,7 +120,6 @@ impl WorkspaceView {
         if modifiers.platform || modifiers.control || modifiers.alt || modifiers.function {
             return false;
         }
-        let repository = self.settings.inbox.repository_view;
         let key = keystroke.key.to_ascii_lowercase();
         if keystroke.key_char.as_deref() == Some("?")
             || key == "?"
@@ -144,9 +132,13 @@ impl WorkspaceView {
             return true;
         }
         match key.as_str() {
-            "g" => self.show_repository_view(!repository, cx),
+            "h" => self.select_repository_tab(RepositoryTab::History, cx),
+            "p" => self.select_repository_tab(RepositoryTab::PullRequests, cx),
+            "i" => self.select_repository_tab(RepositoryTab::Issues, cx),
             "r" => self.refresh_inbox(cx),
-            _ if repository => return false,
+            _ if self.settings.inbox.tab == RepositoryTab::History => {
+                return self.handle_history_shortcut(&key, cx);
+            }
             "/" => self.focus_inbox_search(window, cx),
             "j" | "down" => self.step_inbox_item(1, cx),
             "k" | "up" => self.step_inbox_item(-1, cx),
@@ -164,16 +156,40 @@ impl WorkspaceView {
             "v" if self.work_inbox.detail_tab == DetailTab::Code => {
                 self.toggle_current_file_viewed(cx)
             }
-            "c" | "w" | "o" => {
+            "c" | "w" | "o" | "a" => {
                 let Some(item) = self.selected_work_item().cloned() else {
                     return false;
                 };
                 match key.as_str() {
                     "o" => cx.open_url(&item.url),
+                    "a" => self.open_inbox_composer(cx),
                     _ if item.pull.is_none() => return false,
                     "c" => self.checkout_pull(&item.url, window, cx),
                     _ => self.open_pull_worktree(&item.url, window, cx),
                 }
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// Keys of the History tab: walk commits, close one, open it on GitHub.
+    fn handle_history_shortcut(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        match key {
+            "j" | "down" => self.step_history_commit(1, cx),
+            "k" | "up" => self.step_history_commit(-1, cx),
+            "escape" | "esc" if self.work_inbox.history.selected.is_some() => {
+                self.select_history_commit(None, cx)
+            }
+            "o" => {
+                let (Some(sha), Some(repository)) = (
+                    self.work_inbox.history.selected.clone(),
+                    self.history_github_repository(),
+                ) else {
+                    return false;
+                };
+                cx.open_url(&format!("https://github.com/{repository}/commit/{sha}"));
             }
             _ => return false,
         }

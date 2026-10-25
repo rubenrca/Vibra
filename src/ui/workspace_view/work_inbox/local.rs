@@ -163,13 +163,12 @@ impl WorkspaceView {
                     }
                     Err(error) => repo.error = Some(format!("{error:#}")),
                 }
-                this.sync_repository_selection(cx);
                 cx.notify();
             });
         }));
     }
 
-    /// Every project with a pull request in the feed, plus the Repository view.
+    /// Every project with a pull request in the feed.
     pub(super) fn refresh_inbox_repos(&mut self, force: bool, cx: &mut Context<Self>) {
         let mut projects: Vec<Uuid> = self
             .work_inbox
@@ -179,7 +178,6 @@ impl WorkspaceView {
             .filter(|item| item.pull.is_some())
             .filter_map(|item| item.project_id)
             .collect();
-        projects.extend(self.repository_project());
         projects.sort_unstable();
         projects.dedup();
         for root in projects
@@ -234,11 +232,14 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// The working tree changed under every review of this window.
+    /// The repository changed under every review and the history of this window.
     pub(super) fn refresh_diff_views(&mut self, cx: &mut Context<Self>) {
         self.diff_view.update(cx, |view, cx| view.refresh_now(cx));
-        if let Some(review) = &self.work_inbox.repository.review {
-            review.update(cx, |view, cx| view.refresh_now(cx));
+        self.work_inbox.history.fetched = None;
+        if self.workspace_section == WorkspaceSection::Inbox
+            && self.settings.inbox.tab == RepositoryTab::History
+        {
+            self.open_history(false, cx);
         }
     }
 

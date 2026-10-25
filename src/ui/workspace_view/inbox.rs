@@ -92,14 +92,10 @@ impl WorkspaceView {
             })
             .collect();
         let actions = vec![
-            section_button("inbox-show-tasks", "← Tasks", false)
+            section_button("inbox-show-tasks", "← Back", false)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.work_inbox.activity = false;
                     this.ensure_inbox_loaded(cx);
-                    if this.settings.inbox.repository_view {
-                        this.open_repository(cx);
-                    }
-                    this.sync_repository_polling(cx);
                     cx.notify();
                 }))
                 .into_any_element(),
@@ -195,7 +191,7 @@ impl WorkspaceView {
             body = body.child(self.inbox_item_row(item, now, cx));
         }
 
-        section_frame("Review", actions, body.into_any_element())
+        section_frame("Agent activity", actions, body.into_any_element())
     }
 
     fn inbox_item_row(&self, item: &InboxItem, now: u64, cx: &mut Context<Self>) -> AnyElement {

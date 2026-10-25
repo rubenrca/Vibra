@@ -2,7 +2,7 @@
 //! diff in the shared review.
 
 use super::*;
-use crate::domain::work_items::WorkCommit;
+use crate::domain::work_items::{CheckRollup, WorkCommit};
 
 impl WorkspaceView {
     pub(super) fn inbox_commits_body(
@@ -200,60 +200,58 @@ impl WorkspaceView {
             .and_then(|commits| commits.commits.iter().find(|commit| commit.oid == oid));
         let diff = state.and_then(|state| state.commit_diffs.get(oid));
         let url = format!("{}/commits/{oid}", item.url);
-        let mut body = div()
-            .flex_1()
-            .min_h(px(0.0))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        quiet_button("inbox-commits-back", "← All commits").on_click(
-                            cx.listener(|this, _, _, cx| this.select_inbox_commit(None, cx)),
+        let mut body = div().flex_1().min_h(px(0.0)).flex().flex_col().child(
+            div()
+                .h(px(40.0))
+                .flex_none()
+                .px_2()
+                .flex()
+                .items_center()
+                .gap_2()
+                .border_b_1()
+                .border_color(colors().border_subtle)
+                .child(
+                    quiet_button("inbox-commits-back", "← All commits")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_inbox_commit(None, cx))),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(13.0))
+                        .child(
+                            commit
+                                .map(|commit| commit.headline.clone())
+                                .unwrap_or_default(),
                         ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family(crate::ui::theme::MONO_FONT)
+                        .text_size(px(11.0))
+                        .text_color(colors().muted)
+                        .child(oid.chars().take(7).collect::<String>()),
+                )
+                .child(
+                    icon_button(
+                        "inbox-commit-external",
+                        "chrome-icons/open-external.svg",
+                        "Open commit on GitHub",
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(13.0))
-                            .child(
-                                commit
-                                    .map(|commit| commit.headline.clone())
-                                    .unwrap_or_default(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(crate::ui::theme::MONO_FONT)
-                            .text_size(px(11.0))
-                            .text_color(colors().muted)
-                            .child(oid.chars().take(7).collect::<String>()),
-                    )
-                    .child(
-                        icon_button(
-                            "inbox-commit-external",
-                            "chrome-icons/open-external.svg",
-                            "Open commit on GitHub",
-                        )
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                    ),
-            );
+                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                ),
+        );
         if let Some(error) = diff.and_then(|diff| diff.error.as_ref()) {
-            body = body.child(message(error, true));
+            body = body.child(div().p_2().child(message(error, true)));
         }
         match state.and_then(|state| state.commit_review.clone()) {
             Some(view) if diff.is_some_and(|diff| diff.data.is_some()) => {
                 body = body.child(div().flex_1().min_h(px(0.0)).child(view));
             }
             _ if diff.is_some_and(|diff| diff.error.is_some()) => {}
-            _ => body = body.child(message("Loading commit files…", false)),
+            _ => body = body.child(div().p_3().child(message("Loading commit files…", false))),
         }
         body.into_any_element()
     }

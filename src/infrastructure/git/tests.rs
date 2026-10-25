@@ -1604,7 +1604,7 @@ fn stage_and_unstage_move_whole_files_between_groups() {
 }
 
 #[test]
-fn repository_refs_list_branches_stashes_tags_and_worktrees() {
+fn repository_refs_list_branches_and_worktrees() {
     use crate::ports::git::GitRefAction;
     let root = repository();
     let port = GitCliPort::default();
@@ -1612,42 +1612,14 @@ fn repository_refs_list_branches_stashes_tags_and_worktrees() {
     git(&root, &["switch", "-qc", "feature/search"]);
     fs::write(root.join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
     git(&root, &["commit", "-qam", "Add search"]);
-    git(&root, &["tag", "-a", "v1", "-m", "First release"]);
     git(&root, &["switch", "-q", "main"]);
-    fs::write(root.join("draft.txt"), "draft\n").unwrap();
-    port.run_ref_action(
-        &root,
-        &GitRefAction::Stash {
-            message: "Keep draft".into(),
-        },
-    )
-    .unwrap();
-    assert!(!root.join("draft.txt").exists());
 
     let refs = port.repository_refs(&root).unwrap().unwrap();
-    assert_eq!(refs.current, "main");
-    assert_eq!(refs.changes, 0);
     let feature = refs.branch("feature/search").unwrap();
     assert_eq!(feature.subject, "Add search");
     assert!(!feature.current && refs.branch("main").unwrap().current);
-    assert_eq!(refs.stashes.len(), 1);
-    assert!(refs.stashes[0].subject.contains("Keep draft"));
-    assert_eq!(refs.tags[0].name, "v1");
-    assert_eq!(refs.tags[0].target, feature.head);
     assert_eq!(refs.worktrees.len(), 1);
     assert!(refs.worktrees[0].main);
-
-    let commits = port.log_range(&root, "main", "feature/search", 50).unwrap();
-    assert_eq!(commits.len(), 1);
-    assert_eq!(commits[0].subject, "Add search");
-    assert!(port.log_range(&root, "main", "--all", 50).is_err());
-
-    port.run_ref_action(&root, &GitRefAction::StashPop(0))
-        .unwrap();
-    assert!(root.join("draft.txt").exists());
-    let refs = port.repository_refs(&root).unwrap().unwrap();
-    assert!(refs.stashes.is_empty());
-    assert_eq!(refs.changes, 1);
 
     let tree = std::env::temp_dir().join(format!("vibra-tree-{}", Uuid::new_v4()));
     port.run_ref_action(&root, &GitRefAction::AddWorktree(tree.clone()))
@@ -1660,19 +1632,17 @@ fn repository_refs_list_branches_stashes_tags_and_worktrees() {
     }));
     // A branch checked out in another worktree cannot be switched to or deleted.
     assert!(
-        port.run_ref_action(&root, &GitRefAction::Switch("feature/search".into()))
+        port.run_ref_action(&root, &GitRefAction::SwitchAndPull("feature/search".into()))
             .is_err()
     );
     port.run_ref_action(&root, &GitRefAction::RemoveWorktree(tree.clone()))
         .unwrap();
     assert!(!tree.exists());
-    port.run_ref_action(&root, &GitRefAction::Switch("feature/search".into()))
+    port.run_ref_action(&root, &GitRefAction::SwitchAndPull("feature/search".into()))
         .unwrap();
-    assert_eq!(
-        port.repository_refs(&root).unwrap().unwrap().current,
-        "feature/search"
-    );
-    port.run_ref_action(&root, &GitRefAction::Switch("main".into()))
+    let refs = port.repository_refs(&root).unwrap().unwrap();
+    assert!(refs.branch("feature/search").unwrap().current);
+    port.run_ref_action(&root, &GitRefAction::SwitchAndPull("main".into()))
         .unwrap();
     assert!(
         port.run_ref_action(
@@ -1700,4 +1670,34 @@ fn repository_refs_list_branches_stashes_tags_and_worktrees() {
             .branch("feature/search")
             .is_none()
     );
+}
+
+#[test]
+fn branch_graph_reaches_branches_the_current_history_does_not() {
+    let root = repository();
+    let port = GitCliPort::default();
+    git(&root, &["branch", "-M", "main"]);
+    git(&root, &["switch", "-qc", "feature/graph"]);
+    fs::write(root.join("tracked.txt"), "feature\n").unwrap();
+    git(&root, &["commit", "-qam", "Feature work (#12)"]);
+    git(&root, &["switch", "-q", "main"]);
+
+    let current = port.history(&root, 50).unwrap().unwrap();
+    assert!(
+        !current
+            .commits
+            .iter()
+            .any(|commit| commit.subject == "Feature work (#12)")
+    );
+    let graph = port.branch_graph(&root, 50).unwrap().unwrap();
+    let feature = graph
+        .commits
+        .iter()
+        .find(|commit| commit.subject == "Feature work (#12)")
+        .expect("the graph includes every branch");
+    assert!(feature.refs.iter().any(|name| name == "feature/graph"));
+    assert_eq!(graph.branch, "main");
+    assert_eq!(graph.total, graph.commits.len());
+    assert!(!graph.truncated);
+    fs::remove_dir_all(root).unwrap();
 }
