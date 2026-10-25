@@ -1,4 +1,4 @@
-//! Native Inbox coordination. Layout and detail actions follow MonoCode’s Inbox.
+//! Repository section coordination: keyboard, tabs, and the task list.
 
 mod detail;
 mod feed;

@@ -25,6 +25,9 @@ their respective authors.
 
 The interface icons in `Resources/ChromeIcons` follow the geometry of
 [Lucide](https://lucide.dev/) (ISC license, Copyright (c) Lucide Contributors).
+The GitHub mark in the same folder is supplied by
+[Simple Icons](https://simpleicons.org/) (CC0-1.0); GitHub's name and logo
+remain its owner's trademarks.
 
 ## Agent marks
 

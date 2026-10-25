@@ -1,5 +1,5 @@
-//! Review: the pull request and issue list beside the selected task.
-//! Adapted from MonoCode InboxView / InboxFiltersMenu (c576783).
+//! Repository: the section's tabs, the pull request and issue list beside
+//! the selected task, and its menus.
 
 mod checks;
 mod code;

@@ -17,7 +17,7 @@ independiente del workspace.
   invalida el detalle. Los borradores permanecen con su URL y una confirmación de
   merge captura el head aprobado (`expectedHeadOid`). `src/ui/markdown.rs` renderiza
   CommonMark sin ejecutar HTML remoto. La actividad local sigue en `inbox.rs`.
-  Véase [la adaptación de MonoCode](inbox-monocode.md).
+  Véase [Repository](repository.md).
   `work_inbox/local.rs` relaciona cada PR con la rama local de su proyecto
   (`GitPort::repository_refs`, refrescado en segundo plano con TTL) y ejecuta
   checkout, worktrees, push/pull y limpieza tras el merge como un único trabajo

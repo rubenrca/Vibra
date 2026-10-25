@@ -129,7 +129,7 @@ appcast, publishes to GitHub as Latest, and updates `docs/appcast.xml`. A
 
 - [Architecture](docs/architecture.md): workspace responsibilities and the contracts for navigation, per-project isolation, and saving.
 - [Ghostty integration](docs/ghostty.md).
-- [MonoCode Inbox adaptation](docs/inbox-monocode.md): where the Repository pull requests and issues come from.
+- [Repository](docs/repository.md): history, pull requests, and issues.
 - [GPUI patches](third_party/gpui/VIBRA_PATCHES.md): Vibra bundles GPUI 0.2.2 with a fix for Metal alpha compositing.
 
 ## License

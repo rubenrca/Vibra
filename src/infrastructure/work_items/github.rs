@@ -157,7 +157,7 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
             ..Default::default()
         });
     }
-    // MonoCode scopes both assigned and unassigned views to local project remotes.
+    // Both assigned and unassigned views stay scoped to local project remotes.
     // Each repository/kind gets its own quota, so active PRs cannot crowd out issues.
     let searches: Vec<_> = repositories
         .keys()
