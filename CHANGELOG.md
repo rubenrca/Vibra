@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.42 — 2026-10-26
+
+- Rename Review to Repository and give History, Pull requests, and Issues their own tabs.
+- Explore the commit graph across all branches or the current branch, with branch and tag labels, pull requests, authors, dates, and commit IDs. Select a commit to see its changes; use J and K to move between commits and Escape to close the detail.
+- See what each pull request is waiting for, including failing checks, requested changes, conflicts, or review. Pull request details have a compact header, a branch menu for local Git actions, full-width files with review controls, and a conversation timeline.
+- Keep branch lanes connected to their base in History and the workspace graph, distinguish local and remote refs, and match pull requests to local branches even when their heads have moved.
+- Remove the former Repository Git client tab and its stash, tag, and remote branch listings.
+
 ## 0.3.41 — 2026-10-22
 
 - Add a Transparency switch in Settings → Appearance. Turn it off to replace the translucent window, menus, and popovers with solid backgrounds; it applies immediately and Vibra remembers it.
