@@ -26,6 +26,7 @@ actions!(
     vibra,
     [
         AddProject,
+        NewSpace,
         NewTerminalTab,
         CloseTerminal,
         ToggleLeftSidebar,
@@ -61,7 +62,6 @@ actions!(
         TogglePaneZoom,
         ToggleCommandPalette,
         QuickOpen,
-        ToggleScratch,
         OpenIde,
         ShowSettings,
         CheckForUpdates,
@@ -77,7 +77,7 @@ pub struct GoToTab {
     pub index: usize,
 }
 
-/// Jump to a project in sidebar order, using the same numbering as tabs.
+/// Jump to a space in sidebar order, using the same numbering as tabs.
 #[derive(Clone, PartialEq, Debug, Action)]
 #[action(namespace = vibra, no_json)]
 pub struct GoToProject {
@@ -144,7 +144,7 @@ fn run() -> Result<()> {
 
             cx.bind_keys([
                 KeyBinding::new("shift-cmd-o", AddProject, None),
-                KeyBinding::new("cmd-n", NewTerminalTab, None),
+                KeyBinding::new("cmd-n", NewSpace, None),
                 KeyBinding::new("cmd-t", NewTerminalTab, None),
                 KeyBinding::new("cmd-w", CloseTerminal, None),
                 KeyBinding::new("cmd-b", ToggleLeftSidebar, None),
@@ -182,7 +182,6 @@ fn run() -> Result<()> {
                 KeyBinding::new("shift-cmd-enter", TogglePaneZoom, None),
                 KeyBinding::new("shift-cmd-p", ToggleCommandPalette, None),
                 KeyBinding::new("cmd-p", QuickOpen, None),
-                KeyBinding::new("alt-cmd-t", ToggleScratch, None),
                 KeyBinding::new("shift-cmd-e", OpenIde, None),
                 KeyBinding::new("cmd-,", ShowSettings, None),
                 KeyBinding::new("cmd-u", CheckForUpdates, None),
@@ -215,8 +214,9 @@ fn run() -> Result<()> {
                 Menu {
                     name: "File".into(),
                     items: vec![
-                        MenuItem::action("Add Project…", AddProject),
+                        MenuItem::action("New Space", NewSpace),
                         MenuItem::action("New Terminal Tab", NewTerminalTab),
+                        MenuItem::action("Open Folder…", AddProject),
                         MenuItem::separator(),
                         MenuItem::action("Open Current Folder in…", OpenIde),
                         MenuItem::separator(),
@@ -238,26 +238,25 @@ fn run() -> Result<()> {
                         MenuItem::separator(),
                         MenuItem::action("Command Palette", ToggleCommandPalette),
                         MenuItem::action("Quick Open", QuickOpen),
-                        MenuItem::action("Scratch Terminal", ToggleScratch),
                     ],
                 },
                 Menu {
                     name: "Window".into(),
                     items: vec![
-                        MenuItem::action("Previous Project", PreviousProject),
-                        MenuItem::action("Next Project", NextProject),
+                        MenuItem::action("Previous Space", PreviousProject),
+                        MenuItem::action("Next Space", NextProject),
                         MenuItem::action("Back", NavigateBack),
                         MenuItem::action("Forward", NavigateForward),
                         MenuItem::separator(),
-                        MenuItem::action("Go to Project 1", GoToProject { index: 1 }),
-                        MenuItem::action("Go to Project 2", GoToProject { index: 2 }),
-                        MenuItem::action("Go to Project 3", GoToProject { index: 3 }),
-                        MenuItem::action("Go to Project 4", GoToProject { index: 4 }),
-                        MenuItem::action("Go to Project 5", GoToProject { index: 5 }),
-                        MenuItem::action("Go to Project 6", GoToProject { index: 6 }),
-                        MenuItem::action("Go to Project 7", GoToProject { index: 7 }),
-                        MenuItem::action("Go to Project 8", GoToProject { index: 8 }),
-                        MenuItem::action("Go to Last Project", GoToProject { index: 9 }),
+                        MenuItem::action("Go to Space 1", GoToProject { index: 1 }),
+                        MenuItem::action("Go to Space 2", GoToProject { index: 2 }),
+                        MenuItem::action("Go to Space 3", GoToProject { index: 3 }),
+                        MenuItem::action("Go to Space 4", GoToProject { index: 4 }),
+                        MenuItem::action("Go to Space 5", GoToProject { index: 5 }),
+                        MenuItem::action("Go to Space 6", GoToProject { index: 6 }),
+                        MenuItem::action("Go to Space 7", GoToProject { index: 7 }),
+                        MenuItem::action("Go to Space 8", GoToProject { index: 8 }),
+                        MenuItem::action("Go to Last Space", GoToProject { index: 9 }),
                         MenuItem::separator(),
                         MenuItem::action("Go to Tab 1", GoToTab { index: 1 }),
                         MenuItem::action("Go to Tab 2", GoToTab { index: 2 }),

@@ -448,9 +448,9 @@ mod tests {
             projects: vec![ProjectSnapshot {
                 id: Uuid::new_v4(),
                 name: "Legacy".into(),
+                name_source: None,
                 root_path: "/tmp/legacy".into(),
                 collapsed: false,
-                scratch: false,
                 selected_session_id: Some(session.id),
                 visible_session_ids: Some(vec![session.id]),
                 sessions: vec![session],

@@ -745,8 +745,7 @@ impl WorkspaceView {
                 .iter()
                 .any(|project| project.id == *id && project.directory().is_some())
         }) else {
-            self.work_inbox.action_error =
-                Some("Choose a project to open the conversation.".into());
+            self.work_inbox.action_error = Some("Choose a space to open the conversation.".into());
             cx.notify();
             return;
         };

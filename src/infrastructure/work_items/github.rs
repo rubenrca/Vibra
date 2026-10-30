@@ -152,7 +152,7 @@ pub(super) fn list(query: &WorkQuery) -> Result<WorkItemsPage> {
         return Ok(WorkItemsPage {
             connected: true,
             warning: Some(
-                "Add a project with a GitHub remote to see its issues and pull requests.".into(),
+                "Open a space in a repository with a GitHub remote to see its issues and pull requests.".into(),
             ),
             ..Default::default()
         });

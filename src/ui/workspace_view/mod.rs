@@ -16,8 +16,8 @@ mod navigation;
 mod palette;
 mod panes;
 mod projects;
-mod scratch;
 mod settings;
+mod spaces;
 mod status_bar;
 mod storage;
 mod tab_drag;
@@ -115,6 +115,9 @@ pub struct WorkspaceView {
     agent_activity_seen: HashMap<Uuid, AgentActivitySnapshot>,
     /// Last desktop notification an agent asked for, per pane, to rate-limit them.
     agent_notification_requests: HashMap<Uuid, Instant>,
+    /// When each agent entered its current state, for the sidebar's Agents list.
+    agent_state_since: HashMap<Uuid, Instant>,
+    _agent_clock_task: Option<Task<()>>,
     agent_hook_status: Option<AgentHookStatus>,
     agent_hook_error: Option<SharedString>,
     window_is_active: bool,
@@ -225,7 +228,8 @@ impl WorkspaceView {
             .update(cx, |diff_view, cx| diff_view.set_root(root, cx));
     }
 
-    /// The project folder is stable even when a terminal changes its cwd.
+    /// The space's folder: the repository its selected terminal is in, kept
+    /// up to date by `follow_spaces` rather than read from the live cwd.
     fn project_root(&self) -> PathBuf {
         self.snapshot
             .selected_project()
@@ -354,6 +358,12 @@ impl WorkspaceView {
         self.review_docked_tab_id = None;
         self.diff_view
             .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
+        // A space kept only by its review goes with it.
+        if self.drop_empty_spaces(cx) {
+            self.reconcile_terminal_views(cx);
+            self.show_terminal_tab(window, cx);
+            return;
+        }
         self.sync_terminal_surface_visibility(cx);
         self.sync_git_panel_visibility(cx);
         self.focus_selected_terminal(window, cx);
@@ -498,12 +508,10 @@ impl WorkspaceView {
                 .p_3()
                 .text_size(px(12.0))
                 .text_color(colors().muted)
-                .child(if self.scratch_selected() {
-                    "Open a terminal to browse its folder"
-                } else if self.snapshot.selected_project().is_some() {
-                    "Link a folder to this project"
+                .child(if self.snapshot.selected_project().is_some() {
+                    "Open a terminal in this space"
                 } else {
-                    "Select a project"
+                    "Open a space with ⌘N"
                 })
                 .into_any_element()
         } else {

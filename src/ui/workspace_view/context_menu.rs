@@ -1,4 +1,4 @@
-//! Project and pane menus, rename prompts, and their actions.
+//! Space and pane menus, rename prompts, and their actions.
 
 use std::path::Path;
 
@@ -132,6 +132,25 @@ impl WorkspaceView {
                 self.confirm_new_entry(directory, &name, true, cx);
                 return;
             }
+            // An empty name gives the space back its folder's name, which it follows.
+            RenamePromptKind::Project { project_id } if name.is_empty() => {
+                let folder = self
+                    .snapshot
+                    .project(project_id)
+                    .and_then(|project| project.directory())
+                    .map(|root| {
+                        super::spaces::space_name(Path::new(root), self.home_directory.as_deref())
+                    });
+                if let Some(folder) = folder
+                    && self.snapshot.name_space_after_folder(project_id, folder)
+                {
+                    self.persist(cx);
+                }
+                self.rename_prompt = None;
+                self.persistence_error = None;
+                cx.notify();
+                return;
+            }
             _ => {}
         }
         if name.is_empty() {
@@ -183,17 +202,17 @@ impl WorkspaceView {
             return;
         };
         match (menu.kind, action) {
+            (ContextMenuKind::SidebarBackground, ContextMenuAction::NewSpace) => {
+                self.new_space(window, cx);
+            }
             (ContextMenuKind::SidebarBackground, ContextMenuAction::AddProject) => {
-                self.choose_project_folder(None, false, window, cx);
+                self.open_folder_space(window, cx);
             }
             (ContextMenuKind::Project { project_id }, ContextMenuAction::Rename) => {
                 self.begin_rename_prompt(RenamePromptKind::Project { project_id }, cx);
             }
             (ContextMenuKind::Project { project_id }, ContextMenuAction::NewTab) => {
                 self.open_project_tab(project_id, window, cx);
-            }
-            (ContextMenuKind::Project { project_id }, ContextMenuAction::AssociateFolder) => {
-                self.choose_project_folder(Some(project_id), false, window, cx);
             }
             (ContextMenuKind::Project { project_id }, ContextMenuAction::RevealProject) => {
                 if let Some(path) = self
@@ -264,19 +283,19 @@ impl WorkspaceView {
                     )
                     .map(|(item, action)| (item.shortcut("⌘T"), action)),
                     row(
-                        "Rename project",
+                        "Rename space",
                         "chrome-icons/pencil.svg",
                         ContextMenuAction::Rename,
                     ),
                     if pinned {
                         row(
-                            "Unpin project",
+                            "Unpin space",
                             "chrome-icons/pin-off.svg",
                             ContextMenuAction::ToggleProjectPin,
                         )
                     } else {
                         row(
-                            "Pin project",
+                            "Pin space",
                             "chrome-icons/pin.svg",
                             ContextMenuAction::ToggleProjectPin,
                         )
@@ -287,14 +306,9 @@ impl WorkspaceView {
                         "chrome-icons/folder-open.svg",
                         ContextMenuAction::RevealProject,
                     ),
-                    row(
-                        "Link folder…",
-                        "chrome-icons/folder.svg",
-                        ContextMenuAction::AssociateFolder,
-                    ),
                     None,
                     row(
-                        "Remove project…",
+                        "Close space…",
                         "chrome-icons/trash.svg",
                         ContextMenuAction::RemoveProject,
                     )
@@ -303,7 +317,13 @@ impl WorkspaceView {
             }
             ContextMenuKind::SidebarBackground => vec![
                 row(
-                    "Add project…",
+                    "New space",
+                    "chrome-icons/plus.svg",
+                    ContextMenuAction::NewSpace,
+                )
+                .map(|(item, action)| (item.shortcut("⌘N"), action)),
+                row(
+                    "Open folder…",
                     "chrome-icons/folder-plus.svg",
                     ContextMenuAction::AddProject,
                 )
@@ -452,12 +472,17 @@ impl WorkspaceView {
         let prompt = self.rename_prompt.clone()?;
         let title = match prompt.kind {
             RenamePromptKind::Pane { .. } => "Rename pane",
-            RenamePromptKind::Project { .. } => "Rename project",
+            RenamePromptKind::Project { .. } => "Rename space",
             RenamePromptKind::NewFile { .. } => "New file",
             RenamePromptKind::NewFolder { .. } => "New folder",
         };
         let value = if prompt.value.is_empty() {
-            "Enter a name…".to_owned()
+            match prompt.kind {
+                RenamePromptKind::Project { .. } => {
+                    "Leave empty to use the folder's name".to_owned()
+                }
+                _ => "Enter a name…".to_owned(),
+            }
         } else {
             prompt.value
         };

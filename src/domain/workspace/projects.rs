@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
@@ -9,9 +9,9 @@ impl ProjectSnapshot {
         Self {
             id,
             name,
+            name_source: Some(WorkspaceTitleSource::Automatic),
             root_path,
             collapsed: false,
-            scratch: false,
             sessions: Vec::new(),
             selected_session_id: None,
             visible_session_ids: None,
@@ -34,38 +34,92 @@ impl ProjectSnapshot {
             .flat_map(|workspace| &workspace.tabs)
             .flat_map(|tab| &tab.sessions)
     }
+
+    /// The terminal the space follows: the one selected in its current tab.
+    pub fn selected_session(&self) -> Option<&SessionSnapshot> {
+        let workspaces = self.workspaces.as_ref()?;
+        let workspace = workspaces
+            .iter()
+            .find(|workspace| Some(workspace.id) == self.selected_workspace_id)
+            .or(workspaces.first())?;
+        let tab = workspace
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.id) == workspace.selected_tab_id)?;
+        tab.sessions
+            .iter()
+            .find(|session| Some(session.id) == tab.selected_session_id)
+    }
+
+    /// Moves the space to `root`, renaming it `name` unless the user named it.
+    fn follow_location(&mut self, root: &Path, name: String) -> bool {
+        let mut changed = false;
+        if self.name_source.is_none() {
+            // Saved before spaces: a name other than its folder's was chosen.
+            let folder = Path::new(&self.root_path)
+                .file_name()
+                .and_then(|folder| folder.to_str());
+            self.name_source = Some(if folder.is_none_or(|folder| folder == self.name) {
+                WorkspaceTitleSource::Automatic
+            } else {
+                WorkspaceTitleSource::Manual
+            });
+            changed = true;
+        }
+        let root = root.to_string_lossy();
+        if self.root_path != root {
+            self.root_path = root.into_owned();
+            changed = true;
+        }
+        if self.name_source == Some(WorkspaceTitleSource::Automatic) && self.name != name {
+            self.name = name;
+            changed = true;
+        }
+        changed
+    }
 }
 
 impl WorkspaceSnapshot {
-    /// Projects the user added, in sidebar order; Scratch is not one.
-    pub fn listed_projects(&self) -> impl Iterator<Item = &ProjectSnapshot> {
-        self.projects.iter().filter(|project| !project.scratch)
-    }
-
-    pub fn scratch_id(&self) -> Option<Uuid> {
-        self.projects
-            .iter()
-            .find(|project| project.scratch)
-            .map(|project| project.id)
-    }
-
-    /// Created on first use, so workspaces that never open it stay unchanged.
-    pub fn ensure_scratch(&mut self) -> Uuid {
-        if let Some(id) = self.scratch_id() {
-            return id;
-        }
+    /// A new space in `root`, selected. Unlike `add_project` it never reuses
+    /// one: several spaces may be in the same folder.
+    pub fn add_space(&mut self, root: &Path, name: String) -> Uuid {
         let id = Uuid::new_v4();
-        let mut project = ProjectSnapshot::new(id, "Scratch".into(), String::new());
-        project.scratch = true;
-        self.projects.push(project);
+        self.projects.push(ProjectSnapshot::new(
+            id,
+            name,
+            root.to_string_lossy().into_owned(),
+        ));
+        self.select_project(id);
         self.normalize();
         id
+    }
+
+    /// Spaces follow their selected terminal: `locate` maps its cwd to the
+    /// space's folder and that folder's name, or `None` when the cwd is gone.
+    /// Returns whether a space moved or was renamed.
+    pub fn follow_space_locations(
+        &mut self,
+        mut locate: impl FnMut(&Path) -> Option<(PathBuf, String)>,
+    ) -> bool {
+        let mut changed = false;
+        for project in &mut self.projects {
+            let Some(cwd) = project
+                .selected_session()
+                .map(|session| PathBuf::from(&session.working_directory))
+            else {
+                continue;
+            };
+            if let Some((root, name)) = locate(&cwd) {
+                changed |= project.follow_location(&root, name);
+            }
+        }
+        changed
     }
 
     /// Register a folder independently of its sessions. Reopening it selects it.
     pub fn add_project(&mut self, root: &Path) -> Uuid {
         let root_path = root.to_string_lossy().into_owned();
-        let id = if let Some(project) = self.listed_projects().find(|p| p.root_path == root_path) {
+        let id = if let Some(project) = self.projects.iter().find(|p| p.root_path == root_path) {
             project.id
         } else {
             let id = Uuid::new_v4();
@@ -101,8 +155,8 @@ impl WorkspaceSnapshot {
         self.open_tab_in_directory(project_id, root, focus)
     }
 
-    /// Like `open_tab_in_project`, for the folderless Scratch terminal: its
-    /// tabs start wherever the caller says, usually the current tab's cwd.
+    /// Like `open_tab_in_project`, starting wherever the caller says: the
+    /// home folder for a space whose folder is gone.
     pub fn open_tab_in_directory(
         &mut self,
         project_id: Uuid,
@@ -179,16 +233,48 @@ impl WorkspaceSnapshot {
             return false;
         };
         project.name = name.to_owned();
+        project.name_source = Some(WorkspaceTitleSource::Manual);
+        true
+    }
+
+    /// Gives a space back its folder's `name`, which it follows from then on.
+    pub fn name_space_after_folder(&mut self, project_id: Uuid, name: String) -> bool {
+        let Some(project) = self.project_mut(project_id) else {
+            return false;
+        };
+        project.name = name;
+        project.name_source = Some(WorkspaceTitleSource::Automatic);
         true
     }
 
     /// Associating a folder never rewrites the cwd of an existing terminal.
+    /// Spaces find their folder by following their terminal; tests point one.
+    #[cfg(test)]
     pub fn set_project_directory(&mut self, project_id: Uuid, root: &Path) -> bool {
         let Some(project) = self.project_mut(project_id) else {
             return false;
         };
         project.root_path = root.to_string_lossy().into_owned();
         true
+    }
+
+    /// Spaces live while they have terminals: removes every other one but
+    /// `keep`, and returns the removed IDs.
+    pub fn remove_empty_spaces(&mut self, keep: Option<Uuid>) -> Vec<Uuid> {
+        let removed: Vec<_> = self
+            .projects
+            .iter()
+            .filter(|project| {
+                Some(project.id) != keep && project.terminal_sessions().next().is_none()
+            })
+            .map(|project| project.id)
+            .collect();
+        if !removed.is_empty() {
+            self.projects
+                .retain(|project| !removed.contains(&project.id));
+            self.normalize();
+        }
+        removed
     }
 
     /// Removes only app state; no folder or repository is deleted.

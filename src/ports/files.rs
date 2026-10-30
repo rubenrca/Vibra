@@ -67,4 +67,10 @@ pub trait FileSystemPort: Send + Sync {
         entries.truncate(limit);
         Ok(entries)
     }
+
+    /// Where a space whose terminal is in `directory` belongs: the enclosing
+    /// repository, else `directory` itself. The search stops below `home`, so
+    /// a versioned home folder does not claim every space. `None` when
+    /// `directory` is not a folder anymore.
+    fn space_root(&self, directory: &Path, home: Option<&Path>) -> Option<PathBuf>;
 }

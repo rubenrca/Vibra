@@ -8,7 +8,6 @@ use uuid::Uuid;
 use crate::ui::theme::{colors, surface, surface_tint};
 
 use super::chrome::SIDEBAR_ROW_INSET;
-use super::scratch::SCRATCH_SHORTCUT;
 
 use super::{
     ContextMenuKind, PaletteMode, RightSidebarMode, WorkspaceSection, WorkspaceView,
@@ -76,7 +75,7 @@ pub(super) fn keycap(label: &'static str) -> Div {
 }
 
 /// Sidebar section heading with room for a trailing action.
-fn section_label(label: &'static str) -> Div {
+pub(super) fn section_label(label: &'static str) -> Div {
     div()
         .h(px(28.0))
         .mt(px(10.0))
@@ -158,7 +157,8 @@ impl WorkspaceView {
     pub(super) fn global_sidebar_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let (pinned, projects): (Vec<_>, Vec<_>) = self
             .snapshot
-            .listed_projects()
+            .projects
+            .iter()
             .map(|project| (project.id, project.name.clone()))
             .partition(|(id, _)| self.settings.pinned_project_ids.contains(id));
         let nav_items = [(
@@ -166,9 +166,7 @@ impl WorkspaceView {
             "Repository",
             "chrome-icons/repository.svg",
         )];
-        let scratch_selected = self.scratch_selected();
-        let listed_projects = self.snapshot.listed_projects().count();
-        let has_projects = listed_projects > 0;
+        let space_count = self.snapshot.projects.len();
         div()
             .size_full()
             .flex()
@@ -239,97 +237,82 @@ impl WorkspaceView {
                                 },
                             ))
                             .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
-                    }))
-                    .child(
-                        rail_row("nav-scratch")
-                            .when(scratch_selected, |row| {
-                                row.bg(surface_tint(colors().selection, colors().sidebar))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(colors().foreground)
-                            })
-                            .tooltip(|_, cx| {
-                                sidebar_tooltip(format!("Scratch · {SCRATCH_SHORTCUT}"), cx)
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_scratch(window, cx)),
-                            )
-                            .child(
-                                svg()
-                                    .path("chrome-icons/terminal.svg")
-                                    .size(px(15.0))
-                                    .flex_none()
-                                    .text_color(if scratch_selected {
-                                        colors().foreground
-                                    } else {
-                                        colors().subtle
-                                    }),
-                            )
-                            .child(div().flex_1().min_w(px(0.0)).truncate().child("Scratch")),
-                    ),
+                    })),
             )
+            // Spaces above, Agents below; dragging the line between them
+            // resizes Agents.
             .child(
                 div()
-                    .id("global-project-list")
-                    .map(|list| self.project_list_drop_area(list, cx))
+                    .id("sidebar-body")
                     .flex_1()
                     .min_h(px(0.0))
-                    .overflow_y_scroll()
-                    .px(px(SIDEBAR_ROW_INSET))
-                    .pb_2()
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                            let y = event.position.y.into();
-                            this.open_sidebar_context_menu(
-                                ContextMenuKind::SidebarBackground,
-                                y,
-                                y,
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .when(!pinned.is_empty(), |list| {
-                        list.child(section_label("Pinned"))
-                            .children(self.project_rows(pinned, cx))
-                    })
+                    .flex()
+                    .flex_col()
+                    .on_drag_move(cx.listener(Self::resize_agents_panel))
                     .child(
-                        section_label("Projects").child(
-                            div()
-                                .id("add-global-project")
-                                .group("add-global-project")
-                                .size(px(22.0))
-                                .flex_none()
-                                .rounded(px(5.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .hover(|button| {
-                                    button.bg(surface_tint(colors().hover, colors().sidebar))
-                                })
-                                .tooltip(|_, cx| sidebar_tooltip("Add project · ⇧⌘O", cx))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.choose_project_folder(None, false, window, cx)
-                                }))
-                                .child(
-                                    svg()
-                                        .path("chrome-icons/plus.svg")
-                                        .size(px(15.0))
+                        div()
+                            .id("global-project-list")
+                            .map(|list| self.project_list_drop_area(list, cx))
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .overflow_y_scroll()
+                            .px(px(SIDEBAR_ROW_INSET))
+                            .pb_2()
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                    let y = event.position.y.into();
+                                    this.open_sidebar_context_menu(
+                                        ContextMenuKind::SidebarBackground,
+                                        y,
+                                        y,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .when(!pinned.is_empty(), |list| {
+                                list.child(section_label("Pinned"))
+                                    .children(self.project_rows(pinned, cx))
+                            })
+                            .child(
+                                section_label("Spaces").child(
+                                    div()
+                                        .id("add-global-project")
+                                        .group("add-global-project")
+                                        .size(px(22.0))
                                         .flex_none()
-                                        .text_color(colors().muted)
-                                        .group_hover("add-global-project", |icon| {
-                                            icon.text_color(colors().foreground)
-                                        }),
+                                        .rounded(px(5.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .hover(|button| {
+                                            button
+                                                .bg(surface_tint(colors().hover, colors().sidebar))
+                                        })
+                                        .tooltip(|_, cx| sidebar_tooltip("New space · ⌘N", cx))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.new_space(window, cx)
+                                        }))
+                                        .child(
+                                            svg()
+                                                .path("chrome-icons/plus.svg")
+                                                .size(px(15.0))
+                                                .flex_none()
+                                                .text_color(colors().muted)
+                                                .group_hover("add-global-project", |icon| {
+                                                    icon.text_color(colors().foreground)
+                                                }),
+                                        ),
                                 ),
-                        ),
-                    )
-                    .children(self.project_rows(projects, cx))
-                    .when(listed_projects > 1, |list| {
-                        list.child(self.project_list_end_target(cx))
-                    })
-                    .when(!has_projects, |list| {
-                        list.child(
+                            )
+                            .children(self.project_rows(projects, cx))
+                            .when(space_count > 1, |list| {
+                                list.child(self.project_list_end_target(cx))
+                            })
+                            .when(space_count == 0, |list| {
+                                list.child(
                             div()
                                 .id("global-empty-projects")
                                 .mt_1()
@@ -345,15 +328,22 @@ impl WorkspaceView {
                                 .hover(|card| {
                                     card.bg(surface_tint(colors().hover, colors().sidebar))
                                 })
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.choose_project_folder(None, false, window, cx)
-                                }))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.new_space(window, cx)),
+                                )
                                 .child(
                                     div()
-                                        .text_size(px(12.5))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(colors().foreground)
-                                        .child("Add your first project"),
+                                        .flex()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .text_size(px(12.5))
+                                                .font_weight(gpui::FontWeight::MEDIUM)
+                                                .text_color(colors().foreground)
+                                                .child("Open a space"),
+                                        )
+                                        .child(keycap("⌘N")),
                                 )
                                 .child(
                                     div()
@@ -361,12 +351,15 @@ impl WorkspaceView {
                                         .line_height(px(17.0))
                                         .text_color(colors().subtle)
                                         .child(concat!(
-                                            "Choose a folder to keep its terminals, ",
-                                            "files, and changes together.",
+                                            "A space starts in your home folder and follows ",
+                                            "its terminal: cd into a repository and it takes ",
+                                            "that repository's name, branch, and files.",
                                         )),
                                 ),
                         )
-                    }),
+                            }),
+                    )
+                    .child(self.agents_section(cx)),
             )
             .child(self.usage_tracker(cx))
             .into_any_element()

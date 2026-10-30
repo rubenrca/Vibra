@@ -129,6 +129,17 @@ impl FileSystemPort for LocalFileSystemPort {
             .map(|entry| entry.entry)
             .collect())
     }
+
+    fn space_root(&self, directory: &Path, home: Option<&Path>) -> Option<PathBuf> {
+        if !directory.is_dir() {
+            return None;
+        }
+        let repository = directory
+            .ancestors()
+            .take_while(|folder| Some(*folder) != home)
+            .find(|folder| folder.join(".git").exists());
+        Some(repository.unwrap_or(directory).to_path_buf())
+    }
 }
 
 fn collect_search_files_from_disk(
@@ -325,6 +336,30 @@ mod tests {
     use super::*;
     use std::process::Command;
     use uuid::Uuid;
+
+    #[test]
+    fn spaces_belong_to_the_enclosing_repository_but_never_to_home() {
+        let home = std::env::temp_dir().join(format!("vibra-space-root-{}", Uuid::new_v4()));
+        let repository = home.join("Dev/app");
+        let source = repository.join("src/ui");
+        let plain = home.join("Dev/notes");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&plain).unwrap();
+        fs::create_dir_all(repository.join(".git")).unwrap();
+        // A versioned home folder must not swallow the spaces below it.
+        fs::create_dir_all(home.join(".git")).unwrap();
+        let port = LocalFileSystemPort;
+
+        assert_eq!(
+            port.space_root(&source, Some(&home)),
+            Some(repository.clone())
+        );
+        assert_eq!(port.space_root(&repository, Some(&home)), Some(repository));
+        assert_eq!(port.space_root(&plain, Some(&home)), Some(plain));
+        assert_eq!(port.space_root(&home, Some(&home)), Some(home.clone()));
+        assert_eq!(port.space_root(&home.join("missing"), Some(&home)), None);
+        fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn quick_open_respects_nested_gitignore_rules() {

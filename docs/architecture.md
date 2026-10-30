@@ -73,11 +73,13 @@ independiente del workspace.
   Un fallo nativo o mutex poisoned invalida el motor Ghostty; el snapshot Rust sigue
   disponible y el proceso se recolecta. TerminalView conserva `Failed` tras `Exit`
   y cancela entrada, búsquedas y pegados pendientes.
-- `scratch.rs`: Scratch, una terminal libre en un proyecto oculto (`scratch`) sin
-  carpeta, con su fila bajo Review y ⌥⌘T. `listed_projects` lo excluye del
-  sidebar, atajos, paleta y filtros. Sus tabs nuevos parten del cwd del tab
-  actual (o del home) y, sin raíz, Explorer, Changes y la rama siguen a la
-  terminal seleccionada. Vigilar el home ignora `Library` y carpetas ocultas.
+- `spaces.rs`: cada proyecto es un space que sigue a su terminal seleccionada
+  (`follow_spaces`), ⌘N (`new_space`, una terminal en el home), la limpieza de
+  spaces sin terminales (`drop_empty_spaces`) y la lista Agents de la sidebar,
+  con una tarjeta por agente (estado y tiempo en él, tarea, space y rama),
+  ordenada por urgencia (Needs you, Working, Idle) y con una altura que se
+  arrastra (`agents_panel_height` en settings). La UI dice "space"; el
+  código conserva `project`. Vigilar el home ignora `Library` y carpetas ocultas.
 - `explorer.rs`: carga y selección de archivos, filas del árbol y creación de entradas.
   `files.rs` reúne las filas visibles, el watcher y los iconos/estados de Git.
   Quick Open pide `FileSystemPort::search_files`; el adaptador local aplica ignores,
@@ -127,8 +129,21 @@ catálogo, con sus colores particulares explícitos.
 El catálogo propio está en `theme/user.rs`: sus IDs independientes de colisiones
 se resuelven junto a aliases legacy antes de persistir una preferencia disponible.
 
-La raíz del proyecto define Explorer, Changes y las terminales nuevas. El `cwd`
-de una terminal puede cambiar sin alterar esa raíz.
+La raíz del proyecto define Explorer, Changes y las terminales nuevas. Esa raíz
+es la del space: el repositorio que contiene el `cwd` de su terminal
+seleccionada, o esa carpeta si no hay repositorio (`FileSystemPort::space_root`
+nunca sube hasta el home). `follow_spaces` la actualiza cuando cambia el `cwd`
+o la terminal seleccionada; las terminales existentes conservan su `cwd`. El
+nombre sigue a la carpeta (`name_source` Automatic, `~` para el home) hasta que
+el usuario lo renombra; un nombre vacío lo devuelve a la carpeta. Los workspaces
+guardados antes no tienen `name_source` y lo resuelven al primer seguimiento:
+un nombre distinto del de su carpeta se considera elegido.
+
+Un space vive mientras tenga terminales. Cerrar la última lo cierra, aunque esté
+fijado (fijar solo lo ordena arriba); el seleccionado aguanta mientras muestre
+una review o un documento y se va al cerrarla. Al cargar se descartan los
+proyectos sin terminales, incluidos los guardados antes de los spaces. El
+antiguo Scratch (`"scratch": true` en el JSON) se lee como un space más.
 
 Los resultados asíncronos pertenecen al contexto que los pidió. La barra de estado
 conserva la raíz junto al resumen Git. Changes usa una generación al cambiar de

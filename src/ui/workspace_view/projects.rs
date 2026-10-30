@@ -1,4 +1,5 @@
-//! Folder selection and project navigation. Existing terminals keep their cwd.
+//! Space rows, folder selection, and navigation between spaces. Existing
+//! terminals keep their cwd; `spaces.rs` moves a space to follow it.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -7,29 +8,24 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, Bounds, Context, DragMoveEvent, MouseButton, MouseDownEvent, PathPromptOptions,
     Pixels, Point, PromptLevel, SharedString, Window, div, linear_color_stop, linear_gradient,
-    prelude::*, px, svg,
+    prelude::*, px, relative, svg,
 };
 use uuid::Uuid;
 
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
-use crate::ui::agent_marks::{agent_compact_badge, agent_status_color};
+use crate::ui::agent_marks::agent_status_color;
 use crate::ui::theme::{colors, surface_tint};
 use crate::{AddProject, GoToProject};
 
 use super::chrome::sidebar_row_width;
+use super::spaces::space_avatar;
 use super::{
-    ContextMenuKind, DragGhost, PaneIdentity, ProjectDrag, ReorderDrag, ReorderSlot,
-    RightSidebarMode, SIDEBAR_CONTROL_SIZE, WorkspaceSection, WorkspaceView, sidebar_tooltip,
+    ContextMenuKind, DragGhost, ProjectDrag, ReorderDrag, ReorderSlot, RightSidebarMode,
+    SIDEBAR_CONTROL_SIZE, WorkspaceSection, WorkspaceView, sidebar_tooltip,
 };
 
-/// A project row and the space below it.
+/// A space row and the gap below it.
 const PROJECT_ROW_PITCH: f32 = 34.0;
-/// Agent cards: agent and status, task title, then the project's branch.
-const PROJECT_AGENT_CARD_PITCH: f32 = 64.0;
-const PROJECT_AGENT_CARD_PITCH_NO_BRANCH: f32 = 47.0;
-/// Agent cards sit flush under their project; the agent mark centers under the
-/// folder icon.
-const PROJECT_AGENT_CARD_PADDING: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ProjectDiffStats {
@@ -80,7 +76,7 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    fn project_branch(&self, id: Uuid) -> Option<String> {
+    pub(super) fn project_branch(&self, id: Uuid) -> Option<String> {
         let root = self
             .snapshot
             .projects
@@ -106,28 +102,17 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.choose_project_folder(None, false, window, cx);
+        self.open_folder_space(window, cx);
     }
 
-    pub(super) fn choose_project_folder(
-        &mut self,
-        project_id: Option<Uuid>,
-        open_tab: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// `⇧⌘O`: a space with a terminal in the chosen folder, or the space
+    /// already there.
+    pub(super) fn open_folder_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some(
-                if project_id.is_some() {
-                    "Link folder"
-                } else {
-                    "Add project"
-                }
-                .into(),
-            ),
+            prompt: Some("Open folder".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = picker.await;
@@ -154,37 +139,26 @@ impl WorkspaceView {
                         return;
                     }
                 };
-                let id = match project_id {
+                let existing = this
+                    .snapshot
+                    .projects
+                    .iter()
+                    .find(|project| {
+                        project.directory().is_some_and(|path| {
+                            Path::new(path)
+                                .canonicalize()
+                                .is_ok_and(|path| path == root)
+                        })
+                    })
+                    .map(|project| project.id);
+                let id = match existing {
                     Some(id) => {
-                        if !this.snapshot.set_project_directory(id, &root) {
-                            return;
-                        }
                         this.snapshot.select_project(id);
                         id
                     }
-                    None => {
-                        let existing = this
-                            .snapshot
-                            .projects
-                            .iter()
-                            .find(|project| {
-                                project.directory().is_some_and(|path| {
-                                    Path::new(path)
-                                        .canonicalize()
-                                        .is_ok_and(|path| path == root)
-                                })
-                            })
-                            .map(|project| project.id);
-                        if let Some(id) = existing {
-                            this.snapshot.select_project(id);
-                            id
-                        } else {
-                            this.snapshot.add_project(&root)
-                        }
-                    }
+                    None => this.snapshot.add_project(&root),
                 };
-                let empty = this.snapshot.selected_workspace().is_none();
-                if open_tab || (project_id.is_none() && empty) {
+                if this.snapshot.selected_workspace().is_none() {
                     this.snapshot.open_tab_in_project(id, true);
                 }
                 this.persistence_error = None;
@@ -210,7 +184,8 @@ impl WorkspaceView {
         let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let existing = self
             .snapshot
-            .listed_projects()
+            .projects
+            .iter()
             .find(|project| {
                 project.directory().is_some_and(|path| {
                     Path::new(path)
@@ -240,8 +215,8 @@ impl WorkspaceView {
         id
     }
 
-    /// Opens a terminal tab in the project, asking for its folder first
-    /// when a migrated project has none.
+    /// Opens a terminal tab in the space's folder, or in the home folder
+    /// when the space has none or it is gone.
     pub(super) fn open_project_tab(
         &mut self,
         id: Uuid,
@@ -251,26 +226,16 @@ impl WorkspaceView {
         let Some(project) = self.snapshot.project(id) else {
             return;
         };
-        if project.scratch {
-            let directory = self.scratch_tab_directory(cx);
-            if self
-                .snapshot
-                .open_tab_in_directory(id, directory, true)
-                .is_some()
-            {
-                self.reconcile_terminal_views(cx);
-                self.show_terminal_tab(window, cx);
-            }
-            return;
-        }
-        if project
+        let directory = project
             .directory()
-            .is_none_or(|root| !Path::new(root).is_dir())
+            .filter(|root| Path::new(root).is_dir())
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.home_folder().to_string_lossy().into_owned());
+        if self
+            .snapshot
+            .open_tab_in_directory(id, directory, true)
+            .is_some()
         {
-            self.choose_project_folder(Some(id), true, window, cx);
-            return;
-        }
-        if self.snapshot.open_tab_in_project(id, true).is_some() {
             self.reconcile_terminal_views(cx);
             self.show_terminal_tab(window, cx);
         }
@@ -287,7 +252,8 @@ impl WorkspaceView {
     pub(super) fn visible_project_order(&self) -> Vec<Uuid> {
         let (pinned, others): (Vec<Uuid>, Vec<Uuid>) = self
             .snapshot
-            .listed_projects()
+            .projects
+            .iter()
             .map(|project| project.id)
             .partition(|id| self.settings.pinned_project_ids.contains(id));
         pinned.into_iter().chain(others).collect()
@@ -321,12 +287,12 @@ impl WorkspaceView {
         };
         let confirmation = window.prompt(
             PromptLevel::Warning,
-            &format!("Remove {} from Vibra?", project.name),
+            &format!("Close the {} space?", project.name),
             Some(concat!(
                 "Its tabs and processes will be closed. ",
                 "The folder and its files will remain on disk.",
             )),
-            &["Cancel", "Remove project"],
+            &["Cancel", "Close space"],
             cx,
         );
         cx.spawn_in(window, async move |this, cx| {
@@ -380,7 +346,6 @@ impl WorkspaceView {
         let selected = self.snapshot.selected_project_id == Some(id)
             && self.workspace_section == WorkspaceSection::Workspace;
         let project_padding = 6.0;
-        let icon_slot_size = 20.0;
         let diff_stats = self
             .project_diff_stats(id)
             .filter(|stats| stats.additions > 0 || stats.deletions > 0);
@@ -389,14 +354,15 @@ impl WorkspaceView {
         } else {
             colors().hover
         };
-        let color = colors().muted;
+        let branch = self.project_branch(id);
+        let fade_controls = diff_stats.is_some() || branch.is_some();
         let activity = self.project_agent_activity(id);
         let drag = ProjectDrag { project_id: id };
         let row_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
         let ghost = {
             let name = name.clone();
             DragGhost::new(7.0, colors().sidebar, move || {
-                project_drag_ghost(color, name.clone(), project_padding, icon_slot_size)
+                project_drag_ghost(name.clone(), project_padding)
             })
         };
         div()
@@ -455,20 +421,7 @@ impl WorkspaceView {
                     this.hover_project(source, id, event.bounds, event.event.position, cx);
                 }),
             )
-            .child(
-                div()
-                    .size(px(icon_slot_size))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        svg()
-                            .path("chrome-icons/folder.svg")
-                            .size(px(14.0))
-                            .text_color(color),
-                    ),
-            )
+            .child(space_avatar(&name))
             .child(
                 div()
                     .flex_1()
@@ -491,6 +444,18 @@ impl WorkspaceView {
                     })
                     .child(name),
             )
+            .when_some(branch, |row, branch| {
+                row.child(
+                    div()
+                        .flex_shrink()
+                        .min_w(px(0.0))
+                        .max_w(relative(0.45))
+                        .truncate()
+                        .text_size(px(12.0))
+                        .text_color(colors().subtle)
+                        .child(branch),
+                )
+            })
             .child(
                 div()
                     .min_w(px(controls_width))
@@ -576,7 +541,7 @@ impl WorkspaceView {
                             .justify_end()
                             .opacity(0.0)
                             .group_hover("global-project", |style| style.opacity(1.0))
-                            .when(diff_stats.is_some(), |overlay| {
+                            .when(fade_controls, |overlay| {
                                 overlay.bg(linear_gradient(
                                     90.0,
                                     linear_color_stop(hover_background, 0.0).opacity(0.0),
@@ -617,183 +582,6 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    /// Keep live agent sessions visible across tabs, including idle agents
-    /// between turns. Ordinary shells and remembered task titles stay out.
-    pub(super) fn project_agent_sessions(
-        &self,
-        project_id: Uuid,
-        cx: &Context<Self>,
-    ) -> Vec<(Uuid, PaneIdentity)> {
-        self.snapshot
-            .projects
-            .iter()
-            .find(|project| project.id == project_id)
-            .into_iter()
-            .flat_map(|project| project.terminal_sessions())
-            .enumerate()
-            .filter_map(|(index, session)| {
-                let identity = self.pane_identity(session, index, cx);
-                identity
-                    .agent_kind
-                    .is_some()
-                    .then_some((session.id, identity))
-            })
-            .collect()
-    }
-
-    fn project_agent_card(
-        &self,
-        session_id: Uuid,
-        identity: PaneIdentity,
-        branch: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let selected = self.workspace_section == WorkspaceSection::Workspace
-            && !self.review_covers_terminal(cx)
-            && self
-                .snapshot
-                .selected_session()
-                .is_some_and(|session| session.id == session_id);
-        let agent = identity
-            .agent_kind
-            .clone()
-            .unwrap_or_else(|| "Agent".into());
-        let status = identity.agent_state.map(|state| {
-            (
-                agent_state_short_label(state, identity.agent_attention),
-                agent_status_color(Some(state), identity.agent_attention)
-                    .unwrap_or_else(|| colors().subtle),
-            )
-        });
-        let tooltip = format!(
-            "{}{}",
-            identity.title,
-            identity
-                .detail
-                .as_ref()
-                .map(|detail| format!("\n{detail}"))
-                .unwrap_or_default(),
-        );
-        let meta = |child: AnyElement| {
-            div()
-                .h(px(16.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .text_size(px(11.5))
-                .line_height(px(16.0))
-                .text_color(colors().subtle)
-                .child(child)
-        };
-        let card_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
-        div()
-            .id(SharedString::from(format!("project-agent-{session_id}")))
-            .relative()
-            .w(px(sidebar_row_width(self.left_sidebar_width())))
-            .h(px(project_agent_card_pitch(branch.is_some()) - 2.0))
-            .mb(px(2.0))
-            .px(px(PROJECT_AGENT_CARD_PADDING))
-            .py(px(5.0))
-            .rounded(px(7.0))
-            .flex()
-            .flex_col()
-            .gap(px(1.0))
-            .cursor_pointer()
-            .when(selected, |card| {
-                card.bg(surface_tint(colors().selection, colors().sidebar))
-            })
-            .hover(move |card| {
-                if selected {
-                    card
-                } else {
-                    card.bg(surface_tint(colors().hover, colors().sidebar))
-                }
-            })
-            .tooltip(move |_, cx| sidebar_tooltip(tooltip.clone(), cx))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.open_pane(session_id, window, cx);
-                cx.stop_propagation();
-            }))
-            .on_mouse_down(MouseButton::Right, {
-                let card_bounds = card_bounds.clone();
-                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                    let card = card_bounds.get();
-                    this.open_sidebar_context_menu(
-                        ContextMenuKind::Pane { session_id },
-                        card.top().into(),
-                        card.bottom().into(),
-                        cx,
-                    );
-                    cx.stop_propagation();
-                })
-            })
-            .child(super::measure_bounds(card_bounds))
-            .child(
-                div()
-                    .h(px(16.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(agent_compact_badge(
-                        identity.agent_kind.as_deref(),
-                        None,
-                        None,
-                        selected,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(11.5))
-                            .text_color(colors().muted)
-                            .child(agent),
-                    )
-                    .when_some(status, |line, (label, color)| {
-                        line.child(
-                            div()
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap(px(5.0))
-                                .text_size(px(11.0))
-                                .text_color(colors().subtle)
-                                .child(div().size(px(6.0)).rounded_full().bg(color))
-                                .child(label),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .h(px(18.0))
-                    .truncate()
-                    .text_size(px(13.0))
-                    .line_height(px(18.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().foreground)
-                    .child(identity.title),
-            )
-            .when_some(branch, |card, branch| {
-                card.child(meta(
-                    div()
-                        .min_w(px(0.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(
-                            svg()
-                                .path("chrome-icons/git-branch.svg")
-                                .size(px(12.0))
-                                .flex_none()
-                                .text_color(colors().subtle),
-                        )
-                        .child(div().min_w(px(0.0)).truncate().child(branch))
-                        .into_any_element(),
-                ))
-            })
-            .into_any_element()
-    }
-
     /// One sidebar section, with a gap where a project dragged within it lands.
     pub(super) fn project_rows(
         &self,
@@ -801,10 +589,6 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let order: Vec<_> = projects.iter().map(|(id, _)| *id).collect();
-        let mut agents: std::collections::HashMap<_, _> = order
-            .iter()
-            .map(|id| (*id, self.project_agent_sessions(*id, cx)))
-            .collect();
         let source = match self.reorder_drag {
             Some(ReorderDrag::Project(id)) if cx.has_active_drag() && order.contains(&id) => {
                 Some(id)
@@ -818,17 +602,7 @@ impl WorkspaceView {
             .is_some_and(|id| self.settings.pinned_project_ids.contains(id));
         let mut motion = self.project_motion.borrow_mut();
         let motion = &mut motion[usize::from(section)];
-        let project_height = |id: Uuid| {
-            let card = project_agent_card_pitch(self.project_branch(id).is_some());
-            PROJECT_ROW_PITCH + agents.get(&id).map_or(0, Vec::len) as f32 * card
-        };
-        let gap_height = source.map_or(PROJECT_ROW_PITCH, project_height);
-        motion.update_with_sizes(&slots, |slot| {
-            px(match slot {
-                ReorderSlot::Item(id) => project_height(id),
-                ReorderSlot::Gap => gap_height,
-            })
-        });
+        motion.update(&slots, px(PROJECT_ROW_PITCH));
         let mut projects = projects;
         slots
             .into_iter()
@@ -839,20 +613,10 @@ impl WorkspaceView {
                         .position(|(project, _)| *project == id)
                         .expect("project in section");
                     let (_, name) = projects.swap_remove(index);
-                    let branch = self.project_branch(id);
-                    let agent_rows: Vec<_> = agents
-                        .remove(&id)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|(session_id, identity)| {
-                            self.project_agent_card(session_id, identity, branch.clone(), cx)
-                        })
-                        .collect();
                     super::slide_into_place(
                         div()
                             .relative()
-                            .child(self.project_sidebar_header(id, name, cx))
-                            .children(agent_rows),
+                            .child(self.project_sidebar_header(id, name, cx)),
                         motion.slide(id),
                         "project",
                         true,
@@ -860,7 +624,7 @@ impl WorkspaceView {
                 }
                 ReorderSlot::Gap => super::reorder_gap()
                     .w(px(sidebar_row_width(self.left_sidebar_width())))
-                    .h(px(gap_height - 2.0))
+                    .h(px(PROJECT_ROW_PITCH - 2.0))
                     .mb(px(2.0))
                     .rounded(px(7.0))
                     .into_any_element(),
@@ -962,12 +726,12 @@ impl WorkspaceView {
         let project = self.snapshot.selected_project();
         let name = project
             .map(|p| p.name.clone())
-            .unwrap_or_else(|| "Vibra".into());
+            .unwrap_or_else(|| "No space open".into());
         let path = project.and_then(|p| p.directory()).map(PathBuf::from);
         let button = if project.is_some() {
             "New terminal · ⌘T"
         } else {
-            "Add project · ⇧⌘O"
+            "New space · ⌘N"
         };
         div()
             .size_full()
@@ -991,10 +755,10 @@ impl WorkspaceView {
                 )
             })
             .child(div().text_size(px(12.0)).text_color(colors().muted).child(
-                if project.is_some_and(|p| p.scratch) {
-                    "Open a terminal anywhere on this Mac"
+                if project.is_some() {
+                    "Open a terminal in this space to get started"
                 } else {
-                    "Open a terminal in this folder to get started"
+                    "A space opens a terminal in your home folder and follows it"
                 },
             ))
             .child(
@@ -1018,12 +782,7 @@ impl WorkspaceView {
 }
 
 /// The row as it looks while selected, without controls that cannot be used mid-drag.
-fn project_drag_ghost(
-    color: gpui::Rgba,
-    name: String,
-    padding: f32,
-    icon_slot_size: f32,
-) -> AnyElement {
+fn project_drag_ghost(name: String, padding: f32) -> AnyElement {
     div()
         .h(px(32.0))
         .px(px(padding))
@@ -1032,20 +791,7 @@ fn project_drag_ghost(
         .items_center()
         .gap(px(10.0))
         .bg(surface_tint(colors().selection, colors().sidebar))
-        .child(
-            div()
-                .size(px(icon_slot_size))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    svg()
-                        .path("chrome-icons/folder.svg")
-                        .size(px(14.0))
-                        .text_color(color),
-                ),
-        )
+        .child(space_avatar(&name))
         .child(
             div()
                 .flex_1()
@@ -1058,25 +804,4 @@ fn project_drag_ghost(
                 .child(name),
         )
         .into_any_element()
-}
-
-fn project_agent_card_pitch(has_branch: bool) -> f32 {
-    if has_branch {
-        PROJECT_AGENT_CARD_PITCH
-    } else {
-        PROJECT_AGENT_CARD_PITCH_NO_BRANCH
-    }
-}
-
-/// Fits the card's top line; the Inbox keeps the longer wording.
-fn agent_state_short_label(
-    state: AgentRuntimeState,
-    attention: Option<AgentAttention>,
-) -> &'static str {
-    match (state, attention) {
-        (AgentRuntimeState::Waiting, Some(AgentAttention::Permission)) => "Permission",
-        (AgentRuntimeState::Waiting, _) => "Waiting",
-        (AgentRuntimeState::Working, _) => "Working",
-        (AgentRuntimeState::Idle, _) => "Idle",
-    }
 }

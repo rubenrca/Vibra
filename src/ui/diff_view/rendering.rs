@@ -465,7 +465,7 @@ impl DiffView {
                 if self.snapshot.is_none() && self.refreshing && !self.snapshot_settled {
                     Some("Reading repository…")
                 } else if self.snapshot.is_none() {
-                    Some("No Git repository in this project.")
+                    Some("No Git repository in this space.")
                 } else if self
                     .snapshot
                     .as_ref()
@@ -484,7 +484,7 @@ impl DiffView {
                 {
                     Some("Comparing with the base branch…")
                 } else if self.snapshot.is_none() && self.branch_changes.is_none() {
-                    Some("No Git repository in this project.")
+                    Some("No Git repository in this space.")
                 } else if self
                     .branch_changes
                     .as_ref()
@@ -509,7 +509,7 @@ impl DiffView {
                 } else if self.turn_error.is_some() && self.turn_changes.is_none() {
                     Some("Could not compare the latest turn.")
                 } else if self.turn_baseline.is_none() && self.snapshot.is_none() {
-                    Some("No Git repository in this project.")
+                    Some("No Git repository in this space.")
                 } else if self.turn_baseline.is_none() {
                     Some(
                         "No agent turn recorded here yet. When an agent starts working in this \
@@ -546,7 +546,7 @@ impl DiffView {
                 {
                     Some("Loading history…")
                 } else if self.history.is_none() && self.snapshot.is_none() {
-                    Some("No Git repository in this project.")
+                    Some("No Git repository in this space.")
                 } else if self
                     .history
                     .as_ref()

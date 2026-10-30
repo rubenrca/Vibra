@@ -1249,16 +1249,27 @@ fn project_diff_counts_follow_folders_and_ignore_removed_projects(cx: &mut gpui:
 }
 
 #[gpui::test]
-fn project_agent_sessions_follow_presence_across_tabs_and_projects(cx: &mut gpui::TestAppContext) {
+fn sidebar_agents_list_every_space_grouped_by_what_they_need(cx: &mut gpui::TestAppContext) {
+    use super::spaces::AgentGroup;
+
     let (root, snapshot, _, window) = open_recording_workspace(cx, "project-agents");
     let first_project = snapshot.selected_project_id.unwrap();
     let first_pane = snapshot.selected_session().unwrap().id;
+    let listed = |view: &WorkspaceView, cx: &Context<WorkspaceView>| {
+        view.sidebar_agents(cx)
+            .into_iter()
+            .map(|(group, agents)| {
+                let panes = agents.iter().map(|agent| agent.session_id).collect();
+                (group, panes)
+            })
+            .collect::<Vec<(AgentGroup, Vec<Uuid>)>>()
+    };
     window
         .update(cx, |view, window, cx| {
             // A saved title alone must never turn a shell into an agent row.
             view.snapshot
                 .update_agent_task_title(first_pane, "Review sidebar");
-            assert!(view.project_agent_sessions(first_project, cx).is_empty());
+            assert!(view.sidebar_agents(cx).is_empty());
             view.snapshot.open_tab_in_project(first_project, true);
             let second_pane = view.snapshot.selected_session().unwrap().id;
             let second_project = view.snapshot.add_project(&root.join("second"));
@@ -1287,18 +1298,26 @@ fn project_agent_sessions_follow_presence_across_tabs_and_projects(cx: &mut gpui
                     cx,
                 );
             }
-            let sessions = view.project_agent_sessions(first_project, cx);
             assert_eq!(
-                sessions.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-                vec![first_pane, second_pane]
+                listed(view, cx),
+                vec![
+                    (AgentGroup::NeedsYou, vec![second_pane]),
+                    (AgentGroup::Working, vec![first_pane]),
+                    (AgentGroup::Idle, vec![third_pane]),
+                ]
             );
-            assert_eq!(sessions[0].1.title, "Review sidebar");
-            assert_eq!(sessions[0].1.agent_state, Some(AgentRuntimeState::Working));
-            assert_eq!(sessions[1].1.agent_state, Some(AgentRuntimeState::Waiting));
-            let sessions = view.project_agent_sessions(second_project, cx);
-            assert_eq!(sessions.len(), 1);
-            assert_eq!(sessions[0].0, third_pane);
-            assert_eq!(sessions[0].1.agent_state, Some(AgentRuntimeState::Idle));
+            let groups = view.sidebar_agents(cx);
+            let working = &groups[1].1[0];
+            assert_eq!(working.identity.title, "Review sidebar");
+            assert_eq!(
+                working.space,
+                view.snapshot.project(first_project).unwrap().name
+            );
+            assert!(working.since.is_some());
+            assert_eq!(
+                groups[2].1[0].space,
+                view.snapshot.project(second_project).unwrap().name
+            );
 
             // The row uses the existing global navigation, including hidden panes.
             view.open_pane(first_pane, window, cx);
@@ -1319,9 +1338,14 @@ fn project_agent_sessions_follow_presence_across_tabs_and_projects(cx: &mut gpui
                 },
                 cx,
             );
-            let sessions = view.project_agent_sessions(first_project, cx);
-            assert_eq!(sessions.len(), 1);
-            assert_eq!(sessions[0].0, second_pane);
+            assert!(!view.agent_state_since.contains_key(&first_pane));
+            assert_eq!(
+                listed(view, cx),
+                vec![
+                    (AgentGroup::NeedsYou, vec![second_pane]),
+                    (AgentGroup::Idle, vec![third_pane]),
+                ]
+            );
             view.handle_terminal_view_event(
                 &TerminalViewEvent::Exited {
                     session_id: second_pane,
@@ -1329,8 +1353,77 @@ fn project_agent_sessions_follow_presence_across_tabs_and_projects(cx: &mut gpui
                 },
                 cx,
             );
-            assert!(view.project_agent_sessions(first_project, cx).is_empty());
-            assert_eq!(view.project_agent_sessions(second_project, cx).len(), 1);
+            assert_eq!(listed(view, cx), vec![(AgentGroup::Idle, vec![third_pane])]);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn spaces_follow_their_terminal_into_repositories_and_close_with_it(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "spaces");
+    let space = snapshot.selected_project_id.unwrap();
+    let pane = snapshot.selected_session().unwrap().id;
+    let repository = root.join("Dev/app");
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::create_dir_all(repository.join(".git")).unwrap();
+    let cd = |view: &mut WorkspaceView, path: PathBuf, cx: &mut Context<WorkspaceView>| {
+        view.handle_terminal_view_event(
+            &TerminalViewEvent::WorkingDirectoryChanged {
+                session_id: pane,
+                path,
+            },
+            cx,
+        );
+    };
+    window
+        .update(cx, |view, window, cx| {
+            // The test folder stands in for the home folder.
+            view.home_directory = Some(root.clone());
+
+            // Inside a repository the space takes the repository, not the subfolder.
+            cd(view, repository.join("src"), cx);
+            let project = view.snapshot.project(space).unwrap();
+            assert_eq!(project.name, "app");
+            assert_eq!(project.directory(), repository.to_str());
+            assert_eq!(view.project_root(), repository);
+
+            cd(view, root.clone(), cx);
+            assert_eq!(view.snapshot.project(space).unwrap().name, "~");
+            assert_eq!(view.project_root(), root);
+
+            // A name the user chose stays while the space moves.
+            assert!(view.snapshot.rename_project(space, "Work"));
+            cd(view, repository.clone(), cx);
+            assert_eq!(view.snapshot.project(space).unwrap().name, "Work");
+            assert_eq!(view.project_root(), repository);
+
+            // ⌘N opens another space in the home folder with its own terminal.
+            view.new_space(window, cx);
+            let second = view.snapshot.selected_project_id.unwrap();
+            assert_ne!(second, space);
+            let project = view.snapshot.project(second).unwrap();
+            assert_eq!(project.name, "~");
+            assert_eq!(project.directory(), root.to_str());
+            let second_pane = view.snapshot.selected_session().unwrap();
+            assert_eq!(Some(second_pane.working_directory.as_str()), root.to_str());
+            let second_pane = second_pane.id;
+            assert!(view.terminals.contains_key(&second_pane));
+
+            // Its last terminal closes it, pinned or not.
+            view.settings.pinned_project_ids.push(second);
+            view.close_pane(second_pane, window, cx);
+            assert!(view.snapshot.project(second).is_none());
+            assert!(!view.terminals.contains_key(&second_pane));
+            assert!(view.settings.pinned_project_ids.is_empty());
+            assert_eq!(view.snapshot.selected_project_id, Some(space));
+
+            // ⌘T in a space whose folder is gone starts in the home folder.
+            std::fs::remove_dir_all(&repository).unwrap();
+            view.open_terminal_tab_in_project(window, cx);
+            let session = view.snapshot.selected_session().unwrap();
+            assert_eq!(Some(session.working_directory.as_str()), root.to_str());
             window.remove_window();
         })
         .unwrap();
@@ -1796,66 +1889,6 @@ fn dismissing_quick_open_cancels_pending_results(cx: &mut gpui::TestAppContext) 
         .update(cx, |view, window, _| {
             assert!(view.palette_files.is_empty());
             assert!(!view.palette_loading);
-            window.remove_window();
-        })
-        .unwrap();
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[gpui::test]
-fn scratch_is_a_hidden_project_whose_tabs_follow_their_terminal(cx: &mut gpui::TestAppContext) {
-    let (root, snapshot, _, window) = open_recording_workspace(cx, "scratch");
-    let project = snapshot.selected_project_id.unwrap();
-    let home = root.join("home");
-    let elsewhere = root.join("elsewhere");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::create_dir_all(&elsewhere).unwrap();
-    window
-        .update(cx, |view, window, cx| {
-            view.home_directory = Some(home.clone());
-            view.open_scratch(window, cx);
-            let quick = view.snapshot.scratch_id().unwrap();
-            assert_eq!(view.snapshot.selected_project_id, Some(quick));
-            assert!(view.scratch_selected());
-            assert_eq!(view.visible_project_order(), vec![project]);
-            let first = view.snapshot.selected_session().unwrap().clone();
-            assert_eq!(Path::new(&first.working_directory), home);
-            assert!(
-                view.terminals[&first.id]
-                    .read(cx)
-                    .focus_handle(cx)
-                    .is_focused(window)
-            );
-
-            // Explorer and Changes follow the terminal, not a fixed folder.
-            view.handle_terminal_view_event(
-                &TerminalViewEvent::WorkingDirectoryChanged {
-                    session_id: first.id,
-                    path: elsewhere.clone(),
-                },
-                cx,
-            );
-            assert_eq!(view.project_root(), elsewhere);
-
-            // ⌘T stays in Scratch instead of asking for a folder.
-            view.open_terminal_tab_in_project(window, cx);
-            assert_eq!(view.snapshot.selected_project_id, Some(quick));
-            assert_eq!(
-                view.snapshot
-                    .project(quick)
-                    .unwrap()
-                    .terminal_sessions()
-                    .count(),
-                2
-            );
-
-            // The shortcut returns to the project it was opened from, and
-            // reopening keeps the existing tabs.
-            view.toggle_scratch(window, cx);
-            assert_eq!(view.snapshot.selected_project_id, Some(project));
-            view.toggle_scratch(window, cx);
-            assert_eq!(view.snapshot.selected_project_id, Some(quick));
-            assert_eq!(view.snapshot.terminal_sessions().count(), 4);
             window.remove_window();
         })
         .unwrap();

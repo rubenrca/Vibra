@@ -65,14 +65,16 @@ pub enum SidebarItemSnapshot {
 pub struct ProjectSnapshot {
     pub id: Uuid,
     pub name: String,
-    /// Empty only for a migrated space whose folder must be chosen by the user.
+    /// `Automatic` names the space after the folder its terminal is in;
+    /// `Manual` keeps the user's name. Absent in workspaces saved before
+    /// spaces followed their terminal, until the name is first compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_source: Option<WorkspaceTitleSource>,
+    /// Where the space is: the repository (or folder) of its selected
+    /// terminal. Empty until a migrated space without one follows its terminal.
     pub root_path: String,
     #[serde(default)]
     pub collapsed: bool,
-    /// Scratch: hidden from the project list and without a folder,
-    /// so its terminals move anywhere and the panels follow them.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub scratch: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<SessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

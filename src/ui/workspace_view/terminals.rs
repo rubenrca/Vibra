@@ -113,6 +113,7 @@ impl WorkspaceView {
             self.pane_names.remove(&session_id);
             self.agent_activity_seen.remove(&session_id);
             self.agent_notification_requests.remove(&session_id);
+            self.agent_state_since.remove(&session_id);
         }
         self.inbox.forget_closed_panes(&live_ids);
         self.work_inbox.forget_closed_discussion_panes(&live_ids);
@@ -190,7 +191,9 @@ impl WorkspaceView {
     }
 
     /// Refreshes pane-dependent surfaces and saves a changed terminal selection.
+    /// The space follows the newly selected terminal.
     pub(super) fn terminal_selection_changed(&mut self, cx: &mut Context<Self>) {
+        self.follow_spaces();
         self.sync_terminal_surface_visibility(cx);
         self.sync_diff_root(cx);
         self.refresh_project_files(cx);
@@ -233,9 +236,10 @@ impl WorkspaceView {
                 let changed = self
                     .snapshot
                     .update_session_working_directory(*session_id, path);
+                // The space takes the repository (or folder) its terminal entered.
+                let moved = self.follow_spaces();
                 if is_selected {
                     self.sync_diff_root(cx);
-                    // Unassociated legacy spaces temporarily follow their existing terminal.
                     let new_root = self.project_root();
                     if previous_files_root.as_ref() != Some(&new_root) {
                         self.expanded_directories.retain(|entry| {
@@ -245,7 +249,7 @@ impl WorkspaceView {
                         self.refresh_project_files(cx);
                     }
                 }
-                if changed {
+                if changed || moved {
                     self.persist(cx);
                 } else {
                     cx.notify();

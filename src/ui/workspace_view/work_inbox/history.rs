@@ -31,7 +31,8 @@ impl WorkspaceView {
     pub(super) fn history_project(&self) -> Option<Uuid> {
         let usable = |id: &Uuid| {
             self.snapshot
-                .listed_projects()
+                .projects
+                .iter()
                 .any(|project| project.id == *id && project.directory().is_some())
         };
         self.work_inbox
@@ -41,7 +42,8 @@ impl WorkspaceView {
             .or_else(|| self.snapshot.selected_project_id.filter(usable))
             .or_else(|| {
                 self.snapshot
-                    .listed_projects()
+                    .projects
+                    .iter()
                     .find(|project| project.directory().is_some())
                     .map(|project| project.id)
             })
@@ -98,7 +100,7 @@ impl WorkspaceView {
                     } else {
                         port.branch_graph(&root, HISTORY_LIMIT)
                     }?
-                    .context("This project is not a Git repository.")?;
+                    .context("This space is not in a Git repository.")?;
                     let graph = crate::ui::git_graph::assign_commit_lanes(&history.commits);
                     Ok(HistoryLog {
                         root,

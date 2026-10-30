@@ -1,7 +1,7 @@
 # Vibra
 
 A native macOS development workspace written in Rust with GPUI. It brings
-persistent terminals, projects, files, Git diffs, pull request review, and AI
+persistent terminals, spaces, files, Git diffs, pull request review, and AI
 agent tracking into a single window.
 
 ![Vibra](docs/vibra-workspace.png)
@@ -15,13 +15,16 @@ updates).
 
 ## Features
 
-- **Projects and terminals.** Each project is a folder with its own persistent
-  tabs and panes. Panes split in any direction and can be reordered, turned into
-  tabs, or zoomed by dragging or with shortcuts. **Scratch** (`⌥⌘T`) is a terminal
-  outside every project.
+- **Spaces and terminals.** `⌘N` opens a terminal in your home folder, in a
+  space of its own. The space follows its selected terminal: `cd` into a
+  repository and the space takes its name, branch, Explorer, and Changes (a name
+  you give it stays). Each space has its own tabs (`⌘T`) and panes, restored
+  when Vibra reopens; panes split in any direction and can be reordered, turned
+  into tabs, or zoomed by dragging or with shortcuts. A space lives only while it
+  has terminals: closing the last one closes it.
 - **Native terminal.** A built-in PTY with `libghostty-vt` emulation, GPUI/Metal
   rendering, xterm and Kitty keyboard, SGR mouse, IME, search, and OSC 8 links.
-- **Files and Git.** An Explorer confined to the project, a file viewer, and a
+- **Files and Git.** An Explorer confined to the space, a file viewer, and a
   Changes panel with staging, commit (the message can be drafted by your CLI
   agent), push, pull, a commit graph, and branch comparison. Diffs are unified or
   side by side, with syntax highlighting and per-line comments that paste into
@@ -41,7 +44,9 @@ updates).
   or an answer, or done. It reads the status the agent reports itself through the
   [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status)
   (OSC 7501) and sends a notification when one needs you while its pane is out of
-  sight.
+  sight. The **Agents** list under the spaces (drag its top edge to resize it)
+  has a card for every agent, those that need you first: its status and how
+  long it has been in it, its task, and its space and branch.
 - **AI usage.** Subscription usage for Claude Code, Codex, and Grok Build in the
   sidebar footer, read from each CLI's current session. Vibra never stores or
   modifies credentials.
@@ -74,11 +79,11 @@ pane. After installing the Codex hook, open Codex once and approve it in `/hooks
 
 | Shortcut | Action |
 | --- | --- |
-| `⇧⌘O` | Add a project |
+| `⌘N` / `⇧⌘O` | New space in the home folder / open a folder as a space |
 | `⌘T` / `⌘W` | New tab / close the pane or open review |
 | `⌘1`–`⌘9` | Go to tab 1–8 / the last tab |
-| `⌥1`–`⌥9` | Go to project 1–8 / the last project |
-| `⌃⌘[` / `⌃⌘]` | Previous / next project |
+| `⌥1`–`⌥9` | Go to space 1–8 / the last space |
+| `⌃⌘[` / `⌃⌘]` | Previous / next space |
 | `⌃⌘←` / `⌃⌘→` | Back / forward through navigation |
 | `⌘D` / `⇧⌘D` | Split right / down |
 | `⌥⌘` + arrows | Focus the neighboring pane |

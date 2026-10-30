@@ -28,7 +28,7 @@ impl WorkspaceView {
         if self.history_root().is_none() {
             return view
                 .child(history_empty(
-                    "Add a project with a Git repository to see its history.",
+                    "Open a space in a Git repository to see its history.",
                 ))
                 .into_any_element();
         }
@@ -93,7 +93,7 @@ impl WorkspaceView {
         let name = project
             .and_then(|id| self.snapshot.project(id))
             .map(|project| project.name.clone())
-            .unwrap_or_else(|| "Choose project".into());
+            .unwrap_or_else(|| "Choose space".into());
         let count = history.log.data.as_ref().map(|log| {
             let shown = log.history.commits.len();
             if log.history.truncated {

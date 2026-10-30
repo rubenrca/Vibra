@@ -48,7 +48,7 @@ impl WorkspaceView {
                 }
             };
         theme::refresh_user_themes();
-        let (settings, settings_load_error) = match settings_repository.load() {
+        let (mut settings, settings_load_error) = match settings_repository.load() {
             Ok(settings) => (settings, None),
             Err(error) => {
                 let message: SharedString = format!(
@@ -68,7 +68,21 @@ impl WorkspaceView {
             workspace_load_error.is_none() && snapshot.consolidate_project_sessions();
         let relocated =
             launch_directory.is_dir() && snapshot.relocate_root(Path::new("/"), &launch_directory);
-        let mut snapshot_changed = consolidated || relocated;
+        let home_directory = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+        // Spaces catch up with where their terminals were left; those without
+        // terminals, such as projects saved before spaces, are gone.
+        let (followed, emptied) = if workspace_load_error.is_none() {
+            let followed = snapshot.follow_space_locations(|cwd| {
+                spaces::locate_space(file_port.as_ref(), cwd, home_directory.as_deref())
+            });
+            (followed, snapshot.remove_empty_spaces(None))
+        } else {
+            (false, Vec::new())
+        };
+        settings
+            .pinned_project_ids
+            .retain(|id| !emptied.contains(id));
+        let mut snapshot_changed = consolidated || relocated || followed || !emptied.is_empty();
         if first_launch {
             let project = snapshot.add_project(&launch_directory);
             snapshot.open_tab_in_project(project, true);
@@ -274,6 +288,8 @@ impl WorkspaceView {
             pane_names: HashMap::new(),
             agent_activity_seen: HashMap::new(),
             agent_notification_requests: HashMap::new(),
+            agent_state_since: HashMap::new(),
+            _agent_clock_task: None,
             agent_hook_status,
             agent_hook_error,
             window_is_active: true,
@@ -344,7 +360,7 @@ impl WorkspaceView {
             palette_request_id: 0,
             _palette_task: None,
             _open_ide_task: None,
-            home_directory: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
+            home_directory,
             _appearance_subscription: None,
             _activation_subscription: None,
             _window_bounds_subscription: None,
@@ -362,6 +378,7 @@ impl WorkspaceView {
         view.refresh_project_files(cx);
         view.sync_git_panel_visibility(cx);
         view.start_status_poll(cx);
+        view.start_agent_clock(cx);
         view.start_usage_poll(cx);
         view.start_inbox_poll(cx);
         view

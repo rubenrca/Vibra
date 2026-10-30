@@ -43,10 +43,10 @@ pub(super) enum PaletteMode {
 
 #[derive(Debug, Clone)]
 pub(super) enum PaletteAction {
+    NewSpace,
     AddProject,
     SelectProject(Uuid),
     NewTerminalTab,
-    ToggleScratch,
     OpenIde,
     Split(PaneSplitDirection),
     EqualizePanes,
@@ -106,9 +106,9 @@ pub(super) struct RenamePrompt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ContextMenuAction {
     Rename,
+    NewSpace,
     AddProject,
     NewTab,
-    AssociateFolder,
     RevealProject,
     RemoveProject,
     ToggleProjectPin,

@@ -34,7 +34,10 @@ pub struct AppSettings {
     pub left_sidebar_width: f32,
     #[serde(default = "default_right_sidebar_width")]
     pub right_sidebar_width: f32,
-    /// Projects kept in the global sidebar’s Pinned section.
+    /// Height of the Agents list under the spaces in the left sidebar.
+    #[serde(default = "default_agents_panel_height")]
+    pub agents_panel_height: f32,
+    /// Spaces shown first, in the sidebar’s Pinned section, while they last.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_project_ids: Vec<uuid::Uuid>,
     /// Palette id (`midnight`, `nord`, or `user:stem` from ~/.vibra/themes).
@@ -101,6 +104,10 @@ pub const MIN_LEFT_SIDEBAR_WIDTH: f32 = 188.0;
 pub const MAX_LEFT_SIDEBAR_WIDTH: f32 = 420.0;
 pub const MIN_RIGHT_SIDEBAR_WIDTH: f32 = 280.0;
 pub const MAX_RIGHT_SIDEBAR_WIDTH: f32 = 720.0;
+pub const DEFAULT_AGENTS_PANEL_HEIGHT: f32 = 240.0;
+/// The heading and one agent card.
+pub const MIN_AGENTS_PANEL_HEIGHT: f32 = 104.0;
+pub const MAX_AGENTS_PANEL_HEIGHT: f32 = 2_000.0;
 pub const MIN_WINDOW_WIDTH: f32 = 900.0;
 pub const MIN_WINDOW_HEIGHT: f32 = 580.0;
 const MAX_WINDOW_DIMENSION: f32 = 10_000.0;
@@ -111,6 +118,10 @@ const fn default_left_sidebar_width() -> f32 {
 
 const fn default_right_sidebar_width() -> f32 {
     DEFAULT_RIGHT_SIDEBAR_WIDTH
+}
+
+const fn default_agents_panel_height() -> f32 {
+    DEFAULT_AGENTS_PANEL_HEIGHT
 }
 
 const fn default_window_width() -> f32 {
@@ -136,6 +147,7 @@ impl Default for AppSettings {
             right_sidebar_visible: true,
             left_sidebar_width: DEFAULT_LEFT_SIDEBAR_WIDTH,
             right_sidebar_width: DEFAULT_RIGHT_SIDEBAR_WIDTH,
+            agents_panel_height: DEFAULT_AGENTS_PANEL_HEIGHT,
             pinned_project_ids: Vec::new(),
             theme_id: default_theme_id(),
             appearance_mode: AppearanceMode::System,
@@ -184,6 +196,12 @@ impl AppSettings {
             DEFAULT_RIGHT_SIDEBAR_WIDTH,
             MIN_RIGHT_SIDEBAR_WIDTH,
             MAX_RIGHT_SIDEBAR_WIDTH,
+        );
+        self.agents_panel_height = clamp_or(
+            self.agents_panel_height,
+            DEFAULT_AGENTS_PANEL_HEIGHT,
+            MIN_AGENTS_PANEL_HEIGHT,
+            MAX_AGENTS_PANEL_HEIGHT,
         );
         self.window_width = clamp_or(
             self.window_width,

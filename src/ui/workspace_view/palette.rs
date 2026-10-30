@@ -9,7 +9,6 @@ use crate::ui::menu::{menu_border, menu_hover, menu_panel};
 use crate::ui::theme::{colors, surface_tint};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
-use super::scratch::SCRATCH_SHORTCUT;
 use super::{PaletteAction, PaletteItem, PaletteMode, RightSidebarMode, WorkspaceSection};
 
 impl super::WorkspaceView {
@@ -90,11 +89,6 @@ impl super::WorkspaceView {
             PaletteMode::Commands => [
                 ("Terminal: New tab", "⌘T", PaletteAction::NewTerminalTab),
                 (
-                    "Terminal: Open scratch",
-                    SCRATCH_SHORTCUT,
-                    PaletteAction::ToggleScratch,
-                ),
-                (
                     "Pane: Split right",
                     "⌘D",
                     PaletteAction::Split(PaneSplitDirection::Right),
@@ -120,8 +114,9 @@ impl super::WorkspaceView {
                     "⇧⌘↵",
                     PaletteAction::TogglePaneZoom,
                 ),
-                ("Project: Add folder…", "⇧⌘O", PaletteAction::AddProject),
-                ("Project: Open in IDE", "⇧⌘E", PaletteAction::OpenIde),
+                ("Space: New", "⌘N", PaletteAction::NewSpace),
+                ("Space: Open folder…", "⇧⌘O", PaletteAction::AddProject),
+                ("Space: Open in IDE", "⇧⌘E", PaletteAction::OpenIde),
                 (
                     "Workspace: Toggle panel",
                     "⌥⌘B",
@@ -174,8 +169,8 @@ impl super::WorkspaceView {
             }
         };
         if mode == PaletteMode::Commands {
-            items.extend(self.snapshot.listed_projects().map(|project| PaletteItem {
-                label: format!("Project: {}", project.name),
+            items.extend(self.snapshot.projects.iter().map(|project| PaletteItem {
+                label: format!("Space: {}", project.name),
                 detail: project.root_path.clone(),
                 action: PaletteAction::SelectProject(project.id),
             }));
@@ -202,12 +197,12 @@ impl super::WorkspaceView {
     ) {
         self.close_palette(cx);
         match action {
-            PaletteAction::AddProject => self.choose_project_folder(None, false, window, cx),
+            PaletteAction::NewSpace => self.new_space(window, cx),
+            PaletteAction::AddProject => self.open_folder_space(window, cx),
             PaletteAction::SelectProject(id) => self.select_project(id, window, cx),
             PaletteAction::NewTerminalTab => {
                 self.open_terminal_tab_in_project(window, cx);
             }
-            PaletteAction::ToggleScratch => self.open_scratch(window, cx),
             PaletteAction::OpenIde => self.open_ide(&OpenIde, window, cx),
             PaletteAction::Split(direction) => self.split_pane(direction, window, cx),
             PaletteAction::EqualizePanes => {

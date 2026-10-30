@@ -404,40 +404,118 @@ fn tabs_open_in_the_project_session_without_stealing_focus() {
     );
 }
 
+fn locate_in_folder(cwd: &Path) -> Option<(std::path::PathBuf, String)> {
+    let name = cwd.file_name()?.to_string_lossy().into_owned();
+    Some((cwd.to_path_buf(), name))
+}
+
 #[test]
-fn scratch_is_created_once_and_hidden_from_the_project_list() {
+fn spaces_follow_their_selected_terminal_unless_the_user_named_them() {
     let mut snapshot = WorkspaceSnapshot::default();
-    let project = snapshot.add_project(Path::new("/tmp/project"));
-    let quick = snapshot.ensure_scratch();
-    assert_eq!(snapshot.ensure_scratch(), quick);
-    assert_eq!(snapshot.selected_project_id, Some(project));
+    let space = snapshot.add_space(Path::new("/home/demo"), "~".into());
+    snapshot.open_tab_in_project(space, true);
+    let pane = snapshot.selected_session().unwrap().id;
+
+    snapshot.update_session_working_directory(pane, Path::new("/home/demo/Dev/app"));
+    assert!(snapshot.follow_space_locations(locate_in_folder));
+    let project = snapshot.project(space).unwrap();
+    assert_eq!(project.name, "app");
+    assert_eq!(project.directory(), Some("/home/demo/Dev/app"));
+    assert!(!snapshot.follow_space_locations(locate_in_folder));
+
+    // A folder that is gone leaves the space where it was.
+    snapshot.update_session_working_directory(pane, Path::new("/home/demo/removed"));
+    assert!(!snapshot.follow_space_locations(|_| None));
+    assert_eq!(snapshot.project(space).unwrap().name, "app");
+
+    assert!(snapshot.rename_project(space, "Work"));
+    snapshot.update_session_working_directory(pane, Path::new("/home/demo/Dev/site"));
+    assert!(snapshot.follow_space_locations(locate_in_folder));
+    let project = snapshot.project(space).unwrap();
+    assert_eq!(project.name, "Work");
+    assert_eq!(project.directory(), Some("/home/demo/Dev/site"));
+
+    assert!(snapshot.name_space_after_folder(space, "site".into()));
+    snapshot.update_session_working_directory(pane, Path::new("/home/demo/Dev/app"));
+    assert!(snapshot.follow_space_locations(locate_in_folder));
+    assert_eq!(snapshot.project(space).unwrap().name, "app");
+    assert_eq!(round_trip(&snapshot), snapshot);
+}
+
+#[test]
+fn spaces_follow_the_selected_tab() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    let space = snapshot.add_space(Path::new("/work/a"), "a".into());
+    snapshot.open_tab_in_directory(space, "/work/a".into(), true);
+    snapshot.open_tab_in_directory(space, "/work/b".into(), true);
+
+    assert!(snapshot.follow_space_locations(locate_in_folder));
+    assert_eq!(snapshot.project(space).unwrap().name, "b");
     assert_eq!(
-        snapshot.listed_projects().map(|p| p.id).collect::<Vec<_>>(),
-        vec![project]
+        snapshot.project(space).unwrap().directory(),
+        Some("/work/b")
     );
-    assert!(snapshot.project(quick).unwrap().directory().is_none());
+}
 
-    // Adding the home folder as a project creates a real one.
-    let home = snapshot.add_project(Path::new("/Users/demo"));
-    assert_ne!(home, quick);
+#[test]
+fn a_saved_scratch_terminal_becomes_a_space_that_follows_it() {
+    let mut saved = WorkspaceSnapshot::default();
+    let id = saved.add_project(Path::new("/unused"));
+    saved.open_tab_in_directory(id, "/work/notes".into(), true);
+    let mut value = serde_json::to_value(&saved).unwrap();
+    let project = &mut value["projects"][0];
+    project["name"] = "Scratch".into();
+    project["rootPath"] = "".into();
+    project["scratch"] = true.into();
+    project.as_object_mut().unwrap().remove("nameSource");
+    let mut snapshot: WorkspaceSnapshot = serde_json::from_value(value).unwrap();
+    snapshot.normalize();
 
-    let (_, session) = snapshot
-        .open_tab_in_directory(quick, "/Users/demo/Desktop".into(), true)
-        .unwrap();
+    assert!(snapshot.follow_space_locations(locate_in_folder));
+    let space = snapshot.project(id).unwrap();
+    assert_eq!(space.name, "notes");
+    assert_eq!(space.directory(), Some("/work/notes"));
+    let saved = serde_json::to_value(space).unwrap();
+    assert!(saved.get("scratch").is_none());
+}
+
+#[test]
+fn spaces_saved_before_following_keep_the_names_the_user_chose() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    let plain = snapshot.add_project(Path::new("/work/plain"));
+    let renamed = snapshot.add_project(Path::new("/work/renamed"));
+    snapshot.rename_project(renamed, "Client");
+    for id in [plain, renamed] {
+        snapshot.project_mut(id).unwrap().name_source = None;
+        snapshot.open_tab_in_directory(id, "/work/elsewhere".into(), true);
+    }
+
+    assert!(snapshot.follow_space_locations(locate_in_folder));
+    let plain = snapshot.project(plain).unwrap();
+    assert_eq!(plain.name, "elsewhere");
+    assert_eq!(plain.name_source, Some(WorkspaceTitleSource::Automatic));
+    let renamed = snapshot.project(renamed).unwrap();
+    assert_eq!(renamed.name, "Client");
+    assert_eq!(renamed.name_source, Some(WorkspaceTitleSource::Manual));
+    assert_eq!(renamed.directory(), Some("/work/elsewhere"));
+}
+
+#[test]
+fn new_spaces_never_reuse_one_and_go_away_with_their_last_terminal() {
+    let mut snapshot = WorkspaceSnapshot::default();
+    let first = snapshot.add_space(Path::new("/home/demo"), "~".into());
+    let second = snapshot.add_space(Path::new("/home/demo"), "~".into());
+    let reviewing = snapshot.add_space(Path::new("/home/demo"), "~".into());
+    assert_ne!(first, second);
+    assert_eq!(snapshot.selected_project_id, Some(reviewing));
+
+    snapshot.open_tab_in_project(first, true);
+    assert_eq!(snapshot.remove_empty_spaces(Some(reviewing)), vec![second]);
     assert_eq!(
-        snapshot.selected_session().unwrap().working_directory,
-        "/Users/demo/Desktop"
+        snapshot.projects.iter().map(|p| p.id).collect::<Vec<_>>(),
+        vec![first, reviewing]
     );
-    assert_eq!(snapshot.selected_session().unwrap().id, session);
-
-    // Removing the selected project never falls back to the hidden one.
-    snapshot.select_project(project);
-    snapshot.remove_project(project);
-    assert_eq!(snapshot.selected_project_id, Some(home));
-
-    let restored: WorkspaceSnapshot =
-        serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
-    assert_eq!(restored.scratch_id(), Some(quick));
-    let plain = serde_json::to_value(restored.project(home).unwrap()).unwrap();
-    assert!(plain.get("scratch").is_none());
+    assert_eq!(snapshot.remove_empty_spaces(None), vec![reviewing]);
+    assert_eq!(snapshot.selected_project_id, Some(first));
+    assert!(snapshot.remove_empty_spaces(None).is_empty());
 }

@@ -422,6 +422,12 @@ impl WorkspaceView {
                 }
             }
         }
+        self.track_agent_state_since(
+            pane_id,
+            current
+                .as_ref()
+                .map(|snapshot| (snapshot.state, snapshot.attention)),
+        );
         match current {
             Some(snapshot) => {
                 self.agent_activity_seen.insert(pane_id, snapshot);

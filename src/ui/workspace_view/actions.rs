@@ -21,8 +21,7 @@ impl WorkspaceView {
         self.open_terminal_tab_in_project(window, cx);
     }
 
-    /// `⌘T` / `⌘N`: a new tab in the selected project, or a folder picker
-    /// when there is no project yet.
+    /// `⌘T`: a new tab in the selected space, or a new space when there is none.
     pub(super) fn open_terminal_tab_in_project(
         &mut self,
         window: &mut Window,
@@ -30,7 +29,7 @@ impl WorkspaceView {
     ) {
         match self.snapshot.selected_project_id {
             Some(project_id) => self.open_project_tab(project_id, window, cx),
-            None => self.choose_project_folder(None, true, window, cx),
+            None => self.new_space(window, cx),
         }
     }
 
@@ -134,6 +133,7 @@ impl WorkspaceView {
     ) -> gpui::Stateful<Div> {
         body.on_action(cx.listener(Self::add_project))
             .on_action(cx.listener(Self::new_terminal_tab))
+            .on_action(cx.listener(Self::new_space_action))
             .on_action(cx.listener(Self::close_terminal))
             .on_action(cx.listener(Self::toggle_left_sidebar))
             .on_action(cx.listener(Self::toggle_right_sidebar))
@@ -189,7 +189,6 @@ impl WorkspaceView {
             .on_action(cx.listener(Self::toggle_pane_zoom))
             .on_action(cx.listener(Self::toggle_command_palette))
             .on_action(cx.listener(Self::quick_open))
-            .on_action(cx.listener(Self::toggle_scratch_action))
             .on_action(cx.listener(Self::open_ide))
             .on_action(cx.listener(Self::show_settings))
     }

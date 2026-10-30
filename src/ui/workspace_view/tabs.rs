@@ -76,8 +76,6 @@ pub(super) struct Navigation {
     back: Vec<NavLocation>,
     forward: Vec<NavLocation>,
     current: Option<NavLocation>,
-    /// Where Scratch was opened from, for its shortcut to return.
-    pub(super) scratch_origin: Option<NavLocation>,
 }
 
 impl Navigation {
@@ -253,6 +251,7 @@ impl WorkspaceView {
         if let Some(session) = self.snapshot.selected_session() {
             self.inbox.mark_pane_read(session.id);
         }
+        self.follow_spaces();
         self.sync_terminal_surface_visibility(cx);
         self.sync_diff_root(cx);
         self.sync_git_panel_visibility(cx);
@@ -273,7 +272,7 @@ impl WorkspaceView {
         let (_, session_id) = self
             .snapshot
             .open_tab_in_project(project_id, reveal)
-            .ok_or("The project has no associated folder.")?;
+            .ok_or("The space has no folder.")?;
         // The tab keeps its name while its shell runs.
         self.pane_names.insert(session_id, title.to_owned());
         self.reconcile_terminal_views(cx);

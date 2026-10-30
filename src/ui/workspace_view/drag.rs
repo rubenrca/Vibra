@@ -393,8 +393,8 @@ impl<T: Copy + PartialEq> SlotMotion<T> {
         self.update_with_sizes(slots, |_| pitch);
     }
 
-    /// Project groups include a varying number of agent rows. Their drag gap
-    /// and slide offsets must reserve the entire group, not just its header.
+    /// Items of different heights: the drag gap and slide offsets reserve
+    /// each item's full size, not a shared pitch.
     pub fn update_with_sizes(
         &mut self,
         slots: &[ReorderSlot<T>],

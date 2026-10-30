@@ -271,11 +271,7 @@ impl WorkspaceView {
     /// `gh pr checkout` in the project's folder.
     pub(super) fn checkout_pull(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some((item, root)) = self.pull_target(url) else {
-            return self.report_local(
-                url,
-                "Link this repository to a project to check it out.",
-                cx,
-            );
+            return self.report_local(url, "Open this repository in a space to check it out.", cx);
         };
         let branch = item
             .pull
@@ -308,7 +304,7 @@ impl WorkspaceView {
         let Some((item, root)) = self.pull_target(url) else {
             return self.report_local(
                 url,
-                "Link this repository to a project to open a worktree.",
+                "Open this repository in a space to open a worktree.",
                 cx,
             );
         };

@@ -256,7 +256,7 @@ impl Drop for FilesWatch {
     }
 }
 
-/// `home` marks a watch on the home folder (Scratch's usual cwd),
+/// `home` marks a watch on the home folder (where new spaces start),
 /// where `Library` and dot folders change constantly without being browsed.
 fn event_should_refresh(root: &Path, home: bool, event: &notify::Event) -> bool {
     if matches!(event.kind, EventKind::Access(_) | EventKind::Other) {

@@ -13,7 +13,8 @@ impl WorkspaceView {
     pub(crate) fn scope_inbox_to_active_project(&mut self) {
         self.work_inbox.filter.project = self.snapshot.selected_project_id.filter(|id| {
             self.snapshot
-                .listed_projects()
+                .projects
+                .iter()
                 .any(|project| project.id == *id)
         });
         self.settings.inbox.hidden_projects.clear();

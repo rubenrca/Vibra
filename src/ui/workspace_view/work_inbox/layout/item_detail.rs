@@ -764,7 +764,7 @@ impl WorkspaceView {
                     .find(|project| project.id == id)
             })
             .map(|project| project.name.as_str())
-            .unwrap_or("Choose project");
+            .unwrap_or("Choose space");
         let editing = self.work_inbox.composer_editing;
         let note = self.work_inbox.composer_note.clone();
         panel = panel.child(

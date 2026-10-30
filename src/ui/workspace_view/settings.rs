@@ -526,7 +526,7 @@ impl WorkspaceView {
             },
             SettingsToggleRow {
                 label: "Global navigation",
-                description: "Show projects and global shortcuts when the app opens.",
+                description: "Show spaces, agents, and global shortcuts when the app opens.",
                 enabled: self.settings.left_sidebar_visible,
                 divider: true,
                 id: "settings-sidebar-visible",

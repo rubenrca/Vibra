@@ -369,14 +369,13 @@ impl WorkspaceView {
                 || !self.work_inbox.filter.query.is_empty();
             list = list.child(list_empty_state(match (kind, filtered) {
                 (WorkKind::PullRequest, true) => "No pull requests match these filters.",
-                (WorkKind::PullRequest, false) => "No pull requests in your projects.",
+                (WorkKind::PullRequest, false) => "No pull requests in your spaces.",
                 (WorkKind::Issue, true) => "No issues match these filters.",
-                (WorkKind::Issue, false) => "No issues in your projects.",
+                (WorkKind::Issue, false) => "No issues in your spaces.",
             }));
         }
         // Tasks of several projects carry their project's color.
-        let projects = self.work_inbox.filter.project.is_none()
-            && self.snapshot.listed_projects().nth(1).is_some();
+        let projects = self.work_inbox.filter.project.is_none() && self.snapshot.projects.len() > 1;
         // One group needs no heading: the list reads as before.
         let grouped = groups.len() > 1;
         for (relation, items) in groups {
@@ -777,7 +776,8 @@ impl WorkspaceView {
                 let current = self.history_project();
                 for project in self
                     .snapshot
-                    .listed_projects()
+                    .projects
+                    .iter()
                     .filter(|project| project.directory().is_some())
                 {
                     let id = project.id;
@@ -884,7 +884,7 @@ impl WorkspaceView {
         }
         rows.push(menu_heading("PROJECTS").into_any_element());
         rows.push(
-            MenuRow::new("All projects")
+            MenuRow::new("All spaces")
                 .checked(
                     self.work_inbox.filter.project.is_none()
                         && preferences.hidden_projects.is_empty(),
@@ -897,7 +897,7 @@ impl WorkspaceView {
                 }))
                 .into_any_element(),
         );
-        for project in self.snapshot.listed_projects() {
+        for project in self.snapshot.projects.iter() {
             let id = project.id;
             rows.push(
                 MenuRow::new(project.name.clone())

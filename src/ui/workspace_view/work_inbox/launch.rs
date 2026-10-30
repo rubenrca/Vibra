@@ -35,7 +35,7 @@ impl WorkspaceView {
         }
         let Some(project) = self.work_inbox.target_project else {
             self.work_inbox.action_error =
-                Some("Choose a project with a folder to start the task.".into());
+                Some("Choose a space with a folder to start the task.".into());
             cx.notify();
             return;
         };
@@ -47,7 +47,7 @@ impl WorkspaceView {
             .any(|candidate| candidate.id == project && candidate.directory().is_some())
         {
             self.work_inbox.action_error =
-                Some("The project is no longer available. Choose another project.".into());
+                Some("The space is no longer available. Choose another space.".into());
             cx.notify();
             return;
         }
