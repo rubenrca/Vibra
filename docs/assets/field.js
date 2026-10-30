@@ -296,14 +296,18 @@
       if (e.pointerType === 'touch') return;
       var r = canvas.getBoundingClientRect();
       var x = e.clientX - r.left, y = e.clientY - r.top;
-      pointer.on = x >= 0 && y >= 0 && x < r.width && y < r.height ? 1 : 0;
+      var inside = x >= 0 && y >= 0 && x < r.width && y < r.height;
+      pointer.on = inside ? 1 : 0;
       pointer.x = x / CELL;
       pointer.y = y / CELL;
-      pointer.nx = x / r.width * 2 - 1;
-      pointer.ny = y / r.height * 2 - 1;
+      // Only a pointer over the field tilts the picture. Measured from elsewhere on
+      // the page it is thousands of pixels away and would push the picture off center.
+      pointer.nx = inside ? x / r.width * 2 - 1 : 0;
+      pointer.ny = inside ? y / r.height * 2 - 1 : 0;
     }, { passive: true });
     document.documentElement.addEventListener('pointerleave', function () {
       pointer.on = 0;
+      pointer.nx = pointer.ny = 0;
     });
     document.addEventListener('vibra:pulse', function (e) {
       pulse(e.detail.x, e.detail.y, e.detail.amp);
