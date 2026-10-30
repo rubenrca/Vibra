@@ -3,21 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.42</title>
-            <pubDate>Mon, 26 Oct 2026 21:12:45 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.42</link>
-            <sparkle:version>305</sparkle:version>
-            <sparkle:shortVersionString>0.3.42</sparkle:shortVersionString>
+            <title>0.3.43</title>
+            <pubDate>Thu, 29 Oct 2026 22:38:51 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.43</link>
+            <sparkle:version>309</sparkle:version>
+            <sparkle:shortVersionString>0.3.43</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Rename Review to Repository and give History, Pull requests, and Issues their own tabs.</li>
-  <li>Explore the commit graph across all branches or the current branch, with branch and tag labels, pull requests, authors, dates, and commit IDs. Select a commit to see its changes; use J and K to move between commits and Escape to close the detail.</li>
-  <li>See what each pull request is waiting for, including failing checks, requested changes, conflicts, or review. Pull request details have a compact header, a branch menu for local Git actions, full-width files with review controls, and a conversation timeline.</li>
-  <li>Keep branch lanes connected to their base in History and the workspace graph, distinguish local and remote refs, and match pull requests to local branches even when their heads have moved.</li>
-  <li>Remove the former Repository Git client tab and its stash, tag, and remote branch listings.</li>
+  <li>Replace projects with spaces. ⌘N opens a terminal in your home folder in a new space, and the space follows its selected terminal: cd into a repository and it takes that repository's name, branch, Explorer, and Changes. Rename a space to keep its name, or clear the name to follow the folder again. ⇧⌘O still opens a folder as a space.</li>
+  <li>Keep a space only while it has terminals: closing its last one closes the space, and spaces without terminals, including projects from earlier versions, are not restored. Scratch and ⌥⌘T are gone; a Scratch terminal you had becomes a space.</li>
+  <li>Show every agent in an Agents list under the spaces, with the same card as before plus its space and how long it has been in its state. Agents that need you come first. Drag the list's top edge to resize it; Vibra remembers the height.</li>
+  <li>Fix settings that failed to load, and stopped saving, when they held a Repository tab written by a development build.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.42/Vibra-0.3.42.dmg" length="15888294" type="application/octet-stream" sparkle:edSignature="oY87FeRbkz5dLK/UU4AAKhv1qFY8K3h2JVr1rR3tRed+PWeU/rIo8d/tPw0sMJTKoAqRVdXMDuk2J7A/mCFeDg=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.43/Vibra-0.3.43.dmg" length="15910617" type="application/octet-stream" sparkle:edSignature="CK6EKHcmVkwL9t7Of3YTsiYP6yRUa+OvgGyjCqI1Fgh7E+E/eliCT2EHc9IVdNL6LEyiuIB7UndHLCCb5m84CQ=="/>
         </item>
     </channel>
 </rss>
