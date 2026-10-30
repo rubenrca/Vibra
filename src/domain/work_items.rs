@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,12 +370,23 @@ pub struct PullSummary {
     pub cross_repository: bool,
 }
 
-/// The tabs of the Repository section.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The tabs of the Repository section. The aliases read the tabs saved by
+/// development builds, which named them after their task kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RepositoryTab {
     History,
+    #[default]
+    #[serde(alias = "PullRequest")]
     PullRequests,
+    #[serde(alias = "Issue")]
     Issues,
+}
+
+/// A tab this version does not know falls back to the default instead of
+/// making every setting unreadable.
+fn tab_or_default<'de, D: Deserializer<'de>>(decoder: D) -> Result<RepositoryTab, D::Error> {
+    let value = serde_json::Value::deserialize(decoder)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 impl RepositoryTab {
@@ -586,6 +597,7 @@ pub struct InboxPreferences {
     pub linked_sessions: BTreeMap<String, Vec<Uuid>>,
     pub statuses: Vec<WorkStatus>,
     /// The Repository tab on screen.
+    #[serde(deserialize_with = "tab_or_default")]
     pub tab: RepositoryTab,
     pub hidden_projects: Vec<Uuid>,
     pub time: InboxTime,
@@ -600,7 +612,7 @@ impl Default for InboxPreferences {
             seen: BTreeMap::new(),
             linked_sessions: BTreeMap::new(),
             statuses: Vec::new(),
-            tab: RepositoryTab::PullRequests,
+            tab: RepositoryTab::default(),
             hidden_projects: Vec::new(),
             time: InboxTime::All,
             list_width: 280.0,
@@ -773,6 +785,25 @@ pub(crate) fn pull_fixture() -> WorkItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_tabs_from_other_builds_never_make_the_preferences_unreadable() {
+        let read = |tab: &str| {
+            serde_json::from_str::<InboxPreferences>(&format!(
+                r#"{{"tab":{tab},"seen":{{"https://example.com/pr/1":7}},"hiddenKinds":[]}}"#
+            ))
+            .unwrap()
+        };
+        assert_eq!(read(r#""PullRequest""#).tab, RepositoryTab::PullRequests);
+        assert_eq!(read(r#""Issue""#).tab, RepositoryTab::Issues);
+        assert_eq!(read(r#""History""#).tab, RepositoryTab::History);
+        let unknown = read(r#""Repository""#);
+        assert_eq!(unknown.tab, RepositoryTab::PullRequests);
+        assert_eq!(unknown.seen["https://example.com/pr/1"], 7);
+        assert_eq!(read("null").tab, RepositoryTab::PullRequests);
+        let saved = serde_json::to_value(read(r#""PullRequest""#)).unwrap();
+        assert_eq!(saved["tab"], "PullRequests");
+    }
 
     #[test]
     fn work_inbox_filters_compose_and_new_updates_become_unread() {
