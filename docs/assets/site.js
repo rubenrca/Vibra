@@ -253,6 +253,8 @@
   var mock = document.querySelector('[data-mock]');
   var LABELS = { working: 'Working', waiting: 'Waiting', permission: 'Permission', idle: 'Idle' };
   var URGENCY = ['idle', 'working', 'waiting', 'permission'];
+  // The Agents list puts the agents that need you first, then the working ones.
+  var GROUP = { permission: 0, waiting: 0, working: 1, idle: 2 };
   var STATE_COLOR = {
     idle: 'var(--m-subtle)',
     working: 'var(--m-accent)',
@@ -263,16 +265,76 @@
     { name: 'token.rs', dir: 'src/auth', add: 29, del: 9, letter: 'M' },
     { name: 'auth_clock.rs', dir: 'tests', add: 61, del: 0, letter: 'A' }
   ];
-  var agents, files;
+  var COMMIT_MESSAGE = 'fix(auth): inject the clock into token refresh';
+  var agentList = mock.querySelector('[data-agent-list]');
+  var commitInput = mock.querySelector('[data-commit-input]');
+  var commitMessage = mock.querySelector('[data-commit-message]');
+  var commitButton = mock.querySelector('[data-commit-button]');
+  var SPACE = {};
+  all('.m-card', agentList).forEach(function (card) { SPACE[card.dataset.agent] = card.dataset.space; });
+  // `since` counts the minutes each agent has spent in its current state.
+  var agents, since, files;
 
   function setState(card, state) {
     card.dataset.state = state;
     card.querySelector('.m-state').textContent = LABELS[state];
   }
 
-  function setAgent(name, state) {
-    agents[name] = state;
-    setState(mock.querySelector('[data-agent="' + name + '"]'), state);
+  function ago(minutes) {
+    if (minutes < 1) return '<1m';
+    if (minutes < 60) return minutes + 'm';
+    return Math.floor(minutes / 60) + 'h';
+  }
+
+  function mostUrgent(states) {
+    return states.sort(function (a, b) { return URGENCY.indexOf(b) - URGENCY.indexOf(a); })[0];
+  }
+
+  // Cards slide to their new place, the most recent change first within a group.
+  function sortAgents() {
+    var cards = all('.m-card', agentList);
+    var tops = cards.map(function (card) { return card.offsetTop; });
+    cards.slice().sort(function (a, b) {
+      var x = a.dataset.agent, y = b.dataset.agent;
+      return GROUP[agents[x]] - GROUP[agents[y]] || since[x] - since[y];
+    }).forEach(function (card) { agentList.appendChild(card); });
+    if (calm) return;
+    var moved = cards.filter(function (card, i) {
+      var dy = tops[i] - card.offsetTop;
+      if (!dy) return false;
+      card.style.transition = 'none';
+      card.style.transform = 'translateY(' + dy + 'px)';
+      return true;
+    });
+    if (!moved.length) return;
+    void agentList.offsetWidth;
+    moved.forEach(function (card) {
+      card.style.transition = '';
+      card.style.transform = '';
+    });
+  }
+
+  function renderAgents() {
+    all('.m-card', agentList).forEach(function (card) {
+      var name = card.dataset.agent;
+      card.dataset.state = agents[name];
+      card.querySelector('.m-state').textContent = LABELS[agents[name]] + ' · ' + ago(since[name]);
+    });
+    sortAgents();
+    // Tabs and pane headers show their agent's state beside its mark.
+    all('[data-dot]', mock).forEach(function (dot) {
+      dot.style.setProperty('--dot', STATE_COLOR[agents[dot.dataset.dot]]);
+    });
+    // A space shows its most urgent active agent, and how many are active.
+    all('.m-space[data-space]', mock).forEach(function (row) {
+      var active = Object.keys(agents).filter(function (name) {
+        return SPACE[name] === row.dataset.space && agents[name] !== 'idle';
+      }).map(function (name) { return agents[name]; });
+      row.querySelector('[data-activity]').innerHTML = active.length
+        ? (active.length > 1 ? '<span>' + active.length + '</span>' : '') +
+          '<i style="--dot:' + STATE_COLOR[mostUrgent(active)] + '"></i>'
+        : '';
+    });
     var counts = { working: 0, waiting: 0, permission: 0 };
     Object.keys(agents).forEach(function (key) {
       if (counts[agents[key]] !== undefined) counts[agents[key]]++;
@@ -287,11 +349,12 @@
         return '<i style="background:' + group[1] + '"></i>' + group[0] + ' ' + group[2];
       }).join('<span class="m-sep">·</span>')
       : '<i style="background:var(--m-subtle)"></i>No active agents';
-    // The tab shows the most urgent state among its panes.
-    var tabState = [agents.claude, agents.codex].sort(function (a, b) {
-      return URGENCY.indexOf(b) - URGENCY.indexOf(a);
-    })[0];
-    mock.querySelector('[data-tab-dot]').style.setProperty('--dot', STATE_COLOR[tabState]);
+  }
+
+  function setAgent(name, state) {
+    agents[name] = state;
+    since[name] = 0;
+    renderAgents();
   }
 
   function renderFiles(fresh) {
@@ -299,14 +362,13 @@
     mock.querySelector('[data-files]').innerHTML = files.map(function (file) {
       add += file.add;
       del += file.del;
-      return '<div class="m-file' + (file.name === fresh ? ' is-new' : '') + '"><span class="m-ext">RS</span>' +
-        file.name + '<span class="m-dir">' + file.dir + '</span><span class="m-stat"><span class="m-add">+' + file.add +
-        '</span>' + (file.del ? '<span class="m-del">−' + file.del + '</span>' : '') + '</span><span class="m-letter' +
-        (file.letter === 'A' ? ' a' : '') + '">' + file.letter + '</span></div>';
+      return '<div class="m-file' + (file.name === fresh ? ' is-new' : '') + '"><span class="m-ficon">Rs</span>' +
+        '<span class="m-fname">' + file.name + '</span><span class="m-dir">' + file.dir + '</span>' +
+        '<span class="m-add">+' + file.add + '</span>' + (file.del ? '<span class="m-del">−' + file.del + '</span>' : '') +
+        '<span class="m-letter' + (file.letter === 'A' ? ' a' : '') + '">' + file.letter + '</span></div>';
     }).join('');
     all('[data-sum-add]', mock).forEach(function (el) { el.textContent = '+' + add; });
     all('[data-sum-del]', mock).forEach(function (el) { el.textContent = '−' + del; });
-    mock.querySelector('[data-file-count]').textContent = files.length + ' files';
     mock.querySelector('[data-file-total]').textContent = files.length;
   }
 
@@ -359,11 +421,14 @@
     claude.clear();
     codex.clear();
     shell.clear();
-    agents = { claude: 'working', codex: 'working', gemini: 'waiting' };
+    agents = { claude: 'working', codex: 'working', gemini: 'waiting', grok: 'idle' };
+    since = { claude: 1, codex: 0, gemini: 4, grok: 72 };
     files = BASE_FILES.slice();
     renderFiles();
-    Object.keys(agents).forEach(function (name) { setAgent(name, agents[name]); });
-    mock.querySelector('[data-diff]').hidden = true;
+    renderAgents();
+    commitInput.classList.remove('has-text', 'is-generating');
+    commitMessage.textContent = '';
+    commitButton.classList.remove('is-ready');
     queue = [];
     typing = [];
     spinner = null;
@@ -400,7 +465,6 @@
     at(4400, function () {
       claude.line('  <span class="t-dim">⎿  Updated with</span> <span class="t-ok">12 additions</span> <span class="t-dim">and</span> <span class="t-err">4 removals</span>');
       addFile({ name: 'session.rs', dir: 'src/auth', add: 12, del: 4, letter: 'M' });
-      mock.querySelector('[data-diff]').hidden = false;
     });
     recheck(4700);
     at(5000, function () {
@@ -418,6 +482,14 @@
       claude.line('<span class="t-dim">&gt;</span> <span class="t-caret"></span>');
       setAgent('claude', 'idle');
     });
+    // ✨ drafts the commit message, and Commit lights up once there is one.
+    at(8300, function () { commitInput.classList.add('is-generating'); });
+    at(9100, function () {
+      commitInput.classList.remove('is-generating');
+      commitInput.classList.add('has-text');
+      typing.push({ el: commitMessage, text: COMMIT_MESSAGE, start: elapsed, speed: 18 });
+    });
+    at(9100 + COMMIT_MESSAGE.length * 18 + 150, function () { commitButton.classList.add('is-ready'); });
   }
 
   var SPIN = '·✢✳✶✻✽✻✶✳✢';
@@ -446,7 +518,7 @@
   story();
   if (calm) {
     // Show the scene as it stands once the agents are done.
-    advance(9000);
+    advance(11000);
   } else {
     var frameId = 0, lastFrame = 0;
     var tickMock = function (now) {
@@ -474,9 +546,9 @@
     var START = { claude: 'working', codex: 'working', gemini: 'waiting', grok: 'idle' };
     var SCENES = [
       { toast: null },
-      { codex: 'permission', toast: ['Codex needs permission', 'vibra · Dark mode toggle'] },
+      { codex: 'permission', toast: ['Codex needs permission', 'Vibra · Dark mode toggle'] },
       { toast: null },
-      { claude: 'idle', toast: ['Claude finished', 'vibra · Fix flaky auth test'] },
+      { claude: 'idle', toast: ['Claude finished', 'Vibra · Fix flaky auth test'] },
       { codex: 'working', gemini: 'working', toast: null },
       { grok: 'working', gemini: 'idle' }
     ];
