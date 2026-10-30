@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.43 — 2026-10-29
+
+- Replace projects with spaces. ⌘N opens a terminal in your home folder in a new space, and the space follows its selected terminal: cd into a repository and it takes that repository's name, branch, Explorer, and Changes. Rename a space to keep its name, or clear the name to follow the folder again. ⇧⌘O still opens a folder as a space.
+- Keep a space only while it has terminals: closing its last one closes the space, and spaces without terminals, including projects from earlier versions, are not restored. Scratch and ⌥⌘T are gone; a Scratch terminal you had becomes a space.
+- Show every agent in an Agents list under the spaces, with the same card as before plus its space and how long it has been in its state. Agents that need you come first. Drag the list's top edge to resize it; Vibra remembers the height.
+- Fix settings that failed to load, and stopped saving, when they held a Repository tab written by a development build.
+
 ## 0.3.42 — 2026-10-26
 
 - Rename Review to Repository and give History, Pull requests, and Issues their own tabs.
