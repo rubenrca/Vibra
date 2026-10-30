@@ -100,7 +100,8 @@ pub(super) struct HistoryLog {
     pub(super) graph: Vec<GitGraphRow>,
 }
 
-/// The History tab: one project's commit graph and the commit opened below it.
+/// The History tab: one project's commit graph, or the commit opened in its
+/// place.
 #[derive(Default)]
 pub(super) struct HistoryState {
     /// The user's pick; the active project otherwise.
@@ -111,6 +112,8 @@ pub(super) struct HistoryState {
     pub(super) fetched: Option<Instant>,
     /// SHA of the commit whose changes are open.
     pub(super) selected: Option<String>,
+    /// SHA of the row the graph marks: the one J/K reached or last opened.
+    pub(super) cursor: Option<String>,
     pub(super) review: Option<gpui::Entity<crate::ui::diff_view::DiffView>>,
     pub(super) index: Option<gpui::Entity<crate::ui::diff_view::DiffFileIndexView>>,
     pub(super) _review_subscription: Option<gpui::Subscription>,

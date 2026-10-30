@@ -174,17 +174,31 @@ impl WorkspaceView {
         true
     }
 
-    /// Keys of the History tab: walk commits, close one, open it on GitHub.
+    /// Keys of the History tab: walk commits, open one and go back, step
+    /// through its files, open it on GitHub.
     fn handle_history_shortcut(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let history = &self.work_inbox.history;
+        let open = history.selected.is_some();
         match key {
             "j" | "down" => self.step_history_commit(1, cx),
             "k" | "up" => self.step_history_commit(-1, cx),
-            "escape" | "esc" if self.work_inbox.history.selected.is_some() => {
-                self.select_history_commit(None, cx)
+            "enter" | "return" if !open => {
+                let Some(sha) = history.cursor.clone() else {
+                    return false;
+                };
+                self.select_history_commit(Some(sha), cx)
+            }
+            "escape" | "esc" if open => self.select_history_commit(None, cx),
+            "]" | "[" if open => {
+                let Some(review) = history.review.clone() else {
+                    return false;
+                };
+                let delta = if key == "]" { 1 } else { -1 };
+                review.update(cx, |view, cx| view.step_file(delta, cx));
             }
             "o" => {
                 let (Some(sha), Some(repository)) = (
-                    self.work_inbox.history.selected.clone(),
+                    history.selected.clone().or_else(|| history.cursor.clone()),
                     self.history_github_repository(),
                 ) else {
                     return false;

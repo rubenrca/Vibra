@@ -852,8 +852,16 @@ fn history_links_commits_to_pull_requests_and_keeps_the_list_task(cx: &mut gpui:
             assert!(pull.number == 99 && pull.item.is_none());
             assert!(view.commit_pull(&plain).is_none());
 
-            // J walks the graph and Escape closes the open commit.
+            // J marks a row of the graph, Enter opens its commit in place of
+            // the graph, J moves the open page along, and Escape goes back
+            // with the last commit still marked.
             assert!(view.handle_inbox_key(&key("j"), window, cx));
+            assert_eq!(
+                view.work_inbox.history.cursor.as_deref(),
+                Some(head.sha.as_str())
+            );
+            assert!(view.work_inbox.history.selected.is_none());
+            assert!(view.handle_inbox_key(&key("enter"), window, cx));
             assert_eq!(
                 view.work_inbox.history.selected.as_deref(),
                 Some(head.sha.as_str())
@@ -863,8 +871,14 @@ fn history_links_commits_to_pull_requests_and_keeps_the_list_task(cx: &mut gpui:
                 view.work_inbox.history.selected.as_deref(),
                 Some(squash.sha.as_str())
             );
+            assert_eq!(view.history_position().map(|(index, _)| index), Some(1));
             assert!(view.handle_inbox_key(&key("escape"), window, cx));
             assert!(view.work_inbox.history.selected.is_none());
+            assert_eq!(
+                view.work_inbox.history.cursor.as_deref(),
+                Some(squash.sha.as_str())
+            );
+            assert!(!view.handle_inbox_key(&key("escape"), window, cx));
 
             // A commit's pull request opens in its tab, even past the filters.
             view.open_commit_pull(5, cx);

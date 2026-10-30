@@ -318,6 +318,8 @@ fn compact_message(message: &'static str) -> AnyElement {
 /// workspace on every code scroll.
 pub(crate) struct DiffFileIndexView {
     review: gpui::Entity<DiffView>,
+    /// Only the file list, for a page that already shows what is compared.
+    files_only: bool,
     _subscription: gpui::Subscription,
 }
 
@@ -326,14 +328,32 @@ impl DiffFileIndexView {
         let subscription = cx.observe(&review, |_, _, cx| cx.notify());
         Self {
             review,
+            files_only: false,
             _subscription: subscription,
         }
+    }
+
+    pub(crate) fn files_only(mut self) -> Self {
+        self.files_only = true;
+        self
     }
 }
 
 impl gpui::Render for DiffFileIndexView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.review
-            .update(cx, |review, cx| review.changes_panel(window, cx))
+        let files_only = self.files_only;
+        self.review.update(cx, |review, cx| {
+            if files_only {
+                div()
+                    .size_full()
+                    .pt_1()
+                    .flex()
+                    .flex_col()
+                    .child(review.compact_file_list(cx))
+                    .into_any_element()
+            } else {
+                review.changes_panel(window, cx)
+            }
+        })
     }
 }

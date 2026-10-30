@@ -83,6 +83,7 @@ impl WorkspaceView {
             // Another repository or scope: its commits and selection do not apply.
             history.log.invalidate();
             history.selected = None;
+            history.cursor = None;
             history.fetched = None;
         } else if !force && (history.log.loading || fresh) {
             return;
@@ -155,13 +156,29 @@ impl WorkspaceView {
             .find(|commit| commit.sha == sha)
     }
 
-    /// Open a commit's changes below the graph, or close them.
+    /// Open a commit's page in place of the graph, or go back to the graph
+    /// with that commit's row in view.
     pub(super) fn select_history_commit(&mut self, sha: Option<String>, cx: &mut Context<Self>) {
         let commit = sha
             .as_deref()
             .and_then(|sha| self.history_commit(sha))
             .cloned();
-        self.work_inbox.history.selected = commit.as_ref().map(|commit| commit.sha.clone());
+        let history = &mut self.work_inbox.history;
+        history.selected = commit.as_ref().map(|commit| commit.sha.clone());
+        if history.selected.is_some() {
+            history.cursor = history.selected.clone();
+        } else if let Some(index) = history.cursor.as_ref().and_then(|sha| {
+            history
+                .log
+                .data
+                .as_ref()?
+                .history
+                .commits
+                .iter()
+                .position(|commit| commit.sha == *sha)
+        }) {
+            history.scroll.scroll_to_item(index, ScrollStrategy::Center);
+        }
         if let (Some(commit), Some(root)) = (commit, self.history_root()) {
             self.ensure_history_review(cx);
             if let Some(review) = self.work_inbox.history.review.clone() {
@@ -175,11 +192,12 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Move the open commit up or down the graph and keep it visible.
+    /// Move down (`1`, older) or up (`-1`, newer) the graph: an open commit's
+    /// page follows, otherwise only the marked row moves. The row stays in
+    /// view for the way back.
     pub(super) fn step_history_commit(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let Some(commits) = self
-            .work_inbox
-            .history
+        let history = &self.work_inbox.history;
+        let Some(commits) = history
             .log
             .data
             .as_ref()
@@ -188,21 +206,34 @@ impl WorkspaceView {
         else {
             return;
         };
-        let current = self
-            .work_inbox
-            .history
+        let current = history
             .selected
             .as_ref()
+            .or(history.cursor.as_ref())
             .and_then(|sha| commits.iter().position(|commit| commit.sha == *sha));
         let next = current.map_or(0, |index| {
             index.saturating_add_signed(delta).min(commits.len() - 1)
         });
         let sha = commits[next].sha.clone();
-        self.select_history_commit(Some(sha), cx);
+        if history.selected.is_some() {
+            self.select_history_commit(Some(sha), cx);
+        } else {
+            self.work_inbox.history.cursor = Some(sha);
+        }
         self.work_inbox
             .history
             .scroll
-            .scroll_to_item(next, ScrollStrategy::Top);
+            .scroll_to_item(next, ScrollStrategy::Center);
+        cx.notify();
+    }
+
+    /// Where the open commit sits in the graph, and how many commits it has.
+    pub(super) fn history_position(&self) -> Option<(usize, usize)> {
+        let history = &self.work_inbox.history;
+        let commits = &history.log.data.as_ref()?.history.commits;
+        let sha = history.selected.as_ref()?;
+        let index = commits.iter().position(|commit| commit.sha == *sha)?;
+        Some((index, commits.len()))
     }
 
     /// The pull request whose branch ends at this commit (by its head, or by
@@ -320,7 +351,7 @@ impl WorkspaceView {
             view.set_embedded(cx);
             view
         });
-        let index = cx.new(|cx| DiffFileIndexView::new(review.clone(), cx));
+        let index = cx.new(|cx| DiffFileIndexView::new(review.clone(), cx).files_only());
         let subscription = cx.subscribe(&review, |this, _, event: &DiffViewEvent, cx| {
             match event {
                 DiffViewEvent::PreferencesChanged { split, wrap } => {

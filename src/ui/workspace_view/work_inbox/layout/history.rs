@@ -1,5 +1,5 @@
 //! Repository → History: the commit graph as a table, each commit's pull
-//! request, and the selected commit's changes below it.
+//! request, and the opened commit's page in its place.
 
 use super::code::{segment, segmented_control};
 use super::*;
@@ -13,12 +13,18 @@ const PULL_WIDTH: f32 = 84.0;
 const AUTHOR_WIDTH: f32 = 128.0;
 const DATE_WIDTH: f32 = 96.0;
 const SHA_WIDTH: f32 = 72.0;
-/// Share of the height the graph keeps while a commit is open below it.
-const TABLE_SHARE: f32 = 0.42;
+const FILES_WIDTH: f32 = 260.0;
 
 impl WorkspaceView {
     pub(super) fn history_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let history = &self.work_inbox.history;
+        if let Some(commit) = history
+            .selected
+            .as_deref()
+            .and_then(|sha| self.history_commit(sha))
+        {
+            return self.history_commit_page(commit, cx);
+        }
         let mut view = div()
             .flex_1()
             .min_h(px(0.0))
@@ -55,13 +61,9 @@ impl WorkspaceView {
             .unwrap_or(1);
         let graph_width = (lanes as f32 * GRAPH_LANE_WIDTH + 6.0).clamp(24.0, 240.0);
         let rows = log.history.commits.len() + usize::from(log.history.truncated);
-        let open = history.selected.is_some();
-        view = view.child(
+        view.child(
             div()
-                .when(open, |table| {
-                    table.h(gpui::relative(TABLE_SHARE)).flex_none()
-                })
-                .when(!open, |table| table.flex_1())
+                .flex_1()
                 .min_h(px(0.0))
                 .flex()
                 .flex_col()
@@ -79,11 +81,8 @@ impl WorkspaceView {
                     .min_h(px(0.0))
                     .w_full(),
                 ),
-        );
-        if let Some(sha) = history.selected.as_deref() {
-            view = view.child(self.history_commit_detail(sha, cx));
-        }
-        view.into_any_element()
+        )
+        .into_any_element()
     }
 
     /// Project, scope, size, and refresh.
@@ -246,7 +245,7 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let sha = commit.sha.clone();
-        let selected = self.work_inbox.history.selected.as_deref() == Some(sha.as_str());
+        let marked = self.work_inbox.history.cursor.as_deref() == Some(sha.as_str());
         let pull = self.commit_pull(commit).map(|pull| {
             let (color, tooltip) = match pull.item {
                 Some(item) if item.status != WorkStatus::Merged => (
@@ -276,14 +275,15 @@ impl WorkspaceView {
             .items_center()
             .overflow_hidden()
             .cursor_pointer()
-            .when(selected, |row| {
+            .when(marked, |row| {
                 row.bg(surface_tint(colors().selection, colors().background))
             })
             .hover(|row| row.bg(surface_tint(colors().hover, colors().background)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let open = this.work_inbox.history.selected.as_deref() == Some(sha.as_str());
-                this.select_history_commit((!open).then(|| sha.clone()), cx);
-            }))
+            .on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.select_history_commit(Some(sha.clone()), cx)
+                }),
+            )
             .child(DiffView::graph_column(
                 graph,
                 graph_width,
@@ -383,15 +383,145 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    /// The open commit: what it is, its pull request, and its changes.
-    fn history_commit_detail(&self, sha: &str, cx: &mut Context<Self>) -> AnyElement {
-        let Some(commit) = self.history_commit(sha) else {
-            return div().into_any_element();
+    /// The open commit in place of the graph: the way back and to its
+    /// neighbors, what it is, and its changes beside their files.
+    fn history_commit_page(&self, commit: &GitCommit, cx: &mut Context<Self>) -> AnyElement {
+        let history = &self.work_inbox.history;
+        div()
+            .flex_1()
+            .min_h(px(0.0))
+            .flex()
+            .flex_col()
+            .child(self.history_commit_bar(commit, cx))
+            .child(self.history_commit_header(commit))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .when_some(history.index.clone(), |row, index| {
+                        row.child(
+                            div()
+                                .w(px(FILES_WIDTH))
+                                .flex_none()
+                                .h_full()
+                                .border_r_1()
+                                .border_color(colors().border_subtle)
+                                .bg(surface(colors().sidebar))
+                                .child(index),
+                        )
+                    })
+                    .when_some(history.review.clone(), |row, review| {
+                        row.child(div().flex_1().min_w(px(0.0)).h_full().child(review))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// Back to the graph, the newer and older commit, and the commit's pull
+    /// request and GitHub page.
+    fn history_commit_bar(&self, commit: &GitCommit, cx: &mut Context<Self>) -> impl IntoElement {
+        let position = self.history_position();
+        let newer = position.is_some_and(|(index, _)| index > 0);
+        let older = position.is_some_and(|(index, total)| index + 1 < total);
+        let step = |id: &'static str, icon: &'static str, label: &'static str, enabled: bool| {
+            icon_button(id, icon, label)
+                .when(!enabled, |button| button.opacity(0.4).cursor_default())
         };
         let pull = self
             .commit_pull(commit)
             .map(|pull| (pull.number, pull.merged));
-        let repository = self.history_github_repository();
+        let url = self
+            .history_github_repository()
+            .map(|repository| format!("https://github.com/{repository}/commit/{}", commit.sha));
+        div()
+            .h(px(40.0))
+            .flex_none()
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .child(
+                quiet_button("history-back", "← History")
+                    .tooltip(|_, cx| sidebar_tooltip("Back to history (Esc)", cx))
+                    .on_click(cx.listener(|this, _, _, cx| this.select_history_commit(None, cx))),
+            )
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(16.0))
+                    .mx_1()
+                    .flex_none()
+                    .bg(colors().border_subtle),
+            )
+            .child(
+                step(
+                    "history-newer",
+                    "chrome-icons/chevron-up.svg",
+                    "Newer commit (K)",
+                    newer,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if newer {
+                        this.step_history_commit(-1, cx)
+                    }
+                })),
+            )
+            .child(
+                step(
+                    "history-older",
+                    "chrome-icons/chevron-down.svg",
+                    "Older commit (J)",
+                    older,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if older {
+                        this.step_history_commit(1, cx)
+                    }
+                })),
+            )
+            .when_some(position, |bar, (index, total)| {
+                bar.child(
+                    div()
+                        .flex_none()
+                        .ml_1()
+                        .text_size(px(11.5))
+                        .text_color(colors().subtle)
+                        .child(format!("{} of {total}", index + 1)),
+                )
+            })
+            .child(div().flex_1())
+            .when_some(pull, |bar, (number, merged)| {
+                bar.child(
+                    super::item_detail::header_button(
+                        "history-open-pull",
+                        Some(if merged {
+                            "chrome-icons/git-merge.svg"
+                        } else {
+                            "chrome-icons/git-pull-request.svg"
+                        }),
+                        format!("Pull request #{number}"),
+                        false,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_commit_pull(number, cx))),
+                )
+            })
+            .when_some(url, |bar, url| {
+                bar.child(
+                    icon_button(
+                        "history-commit-external",
+                        "chrome-icons/open-external.svg",
+                        "Open on GitHub (O)",
+                    )
+                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                )
+            })
+    }
+
+    /// The commit's subject, author, date, SHA, and refs.
+    fn history_commit_header(&self, commit: &GitCommit) -> impl IntoElement {
         let refs = self
             .work_inbox
             .history
@@ -407,152 +537,83 @@ impl WorkspaceView {
             })
             .unwrap_or_default();
         let full_sha = commit.sha.clone();
-        let history = &self.work_inbox.history;
-        let dot = || div().text_color(colors().subtle).child("·");
+        let dot = || div().flex_none().child("·");
         div()
-            .flex_1()
-            .min_h(px(0.0))
+            .flex_none()
+            .px(px(20.0))
+            .pt(px(14.0))
+            .pb(px(12.0))
             .flex()
             .flex_col()
-            .border_t_1()
+            .gap(px(6.0))
+            .border_b_1()
             .border_color(colors().border_subtle)
             .child(
                 div()
-                    .flex_none()
-                    .px_3()
-                    .py(px(10.0))
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(colors().border_subtle)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(14.0))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(commit.subject.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .items_center()
-                                    .gap(px(6.0))
-                                    .text_size(px(12.0))
-                                    .text_color(colors().subtle)
-                                    .child(div().flex_none().child(commit.author.clone()))
-                                    .child(dot())
-                                    .child(div().flex_none().child(format_short_date(&commit.date)))
-                                    .child(dot())
-                                    .child(
-                                        div()
-                                            .id("history-copy-sha")
-                                            .flex_none()
-                                            .h(px(20.0))
-                                            .px(px(5.0))
-                                            .rounded(px(4.0))
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.0))
-                                            .font_family(MONO_FONT)
-                                            .text_size(px(11.5))
-                                            .cursor_pointer()
-                                            .hover(|chip| {
-                                                chip.bg(surface_tint(
-                                                    colors().hover,
-                                                    colors().background,
-                                                ))
-                                            })
-                                            .tooltip(|_, cx| sidebar_tooltip("Copy SHA", cx))
-                                            .on_click(move |_, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    full_sha.clone(),
-                                                ))
-                                            })
-                                            .child(commit.short_sha.clone())
-                                            .child(
-                                                svg()
-                                                    .path("chrome-icons/copy.svg")
-                                                    .size(px(10.0))
-                                                    .text_color(colors().subtle),
-                                            ),
-                                    )
-                                    .children(refs.iter().enumerate().map(|(index, name)| {
-                                        ref_chip("detail", index, name).into_any_element()
-                                    })),
-                            ),
-                    )
-                    .when_some(pull, |row, (number, merged)| {
-                        row.child(
-                            super::item_detail::header_button(
-                                "history-open-pull",
-                                Some(if merged {
-                                    "chrome-icons/git-merge.svg"
-                                } else {
-                                    "chrome-icons/git-pull-request.svg"
-                                }),
-                                format!("Pull request #{number}"),
-                                false,
-                            )
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.open_commit_pull(number, cx)
-                                }),
-                            ),
-                        )
-                    })
-                    .when_some(repository, |row, repository| {
-                        let url = format!("https://github.com/{repository}/commit/{sha}");
-                        row.child(
-                            icon_button(
-                                "history-commit-external",
-                                "chrome-icons/open-external.svg",
-                                "Open on GitHub (O)",
-                            )
-                            .on_click(move |_, _, cx| cx.open_url(&url)),
-                        )
-                    })
-                    .child(
-                        icon_button(
-                            "history-close-commit",
-                            "chrome-icons/close.svg",
-                            "Close (Esc)",
-                        )
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.select_history_commit(None, cx)),
-                        ),
-                    ),
+                    .text_size(px(16.0))
+                    .line_height(px(22.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(colors().foreground)
+                    .child(commit.subject.clone()),
             )
             .child(
                 div()
-                    .flex_1()
-                    .min_h(px(0.0))
                     .flex()
-                    .when_some(history.index.clone(), |row, index| {
-                        row.child(
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(colors().subtle)
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(colors().muted)
+                            .child(commit.author.clone()),
+                    )
+                    .child(dot())
+                    .child(div().flex_none().child(format_short_date(&commit.date)))
+                    .child(dot())
+                    .child(
+                        div()
+                            .id("history-copy-sha")
+                            .flex_none()
+                            .h(px(20.0))
+                            .px(px(5.0))
+                            .rounded(px(4.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .font_family(MONO_FONT)
+                            .text_size(px(11.5))
+                            .cursor_pointer()
+                            .hover(|chip| {
+                                chip.bg(surface_tint(colors().hover, colors().background))
+                            })
+                            .tooltip(|_, cx| sidebar_tooltip("Copy SHA", cx))
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(full_sha.clone()))
+                            })
+                            .child(commit.short_sha.clone())
+                            .child(
+                                svg()
+                                    .path("chrome-icons/copy.svg")
+                                    .size(px(10.0))
+                                    .text_color(colors().subtle),
+                            ),
+                    )
+                    .children(
+                        refs.iter()
+                            .enumerate()
+                            .map(|(index, name)| ref_chip("detail", index, name)),
+                    )
+                    .when(commit.parents.len() > 1, |row| {
+                        row.child(dot()).child(
                             div()
-                                .w(px(260.0))
                                 .flex_none()
-                                .h_full()
-                                .border_r_1()
-                                .border_color(colors().border_subtle)
-                                .bg(surface(colors().sidebar))
-                                .child(index),
+                                .child("Merge commit · compared with first parent"),
                         )
-                    })
-                    .when_some(history.review.clone(), |row, review| {
-                        row.child(div().flex_1().min_w(px(0.0)).h_full().child(review))
                     }),
             )
-            .into_any_element()
     }
 }
 
