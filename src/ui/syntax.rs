@@ -1,7 +1,8 @@
-//! Lightweight, line-oriented syntax highlighting for the Diff panel.
+//! Lightweight, line-oriented syntax highlighting for diffs and the file viewer.
 //!
 //! Enough to make code read like an IDE (keywords, strings, comments, numbers,
-//! types, functions) for the languages Vibra users hit most.
+//! types, functions, keys, tags) for the languages Vibra users hit most, plus
+//! Markdown prose whose fenced code is highlighted in its own language.
 
 use std::ops::Range;
 
@@ -18,6 +19,17 @@ pub enum Language {
     Python,
     Swift,
     Go,
+    /// C, C++, and Objective-C.
+    C,
+    /// Java and the JVM languages close enough to share its keywords.
+    Java,
+    Kotlin,
+    CSharp,
+    Ruby,
+    Php,
+    Sql,
+    Lua,
+    Dockerfile,
     Json,
     Toml,
     Markdown,
@@ -41,6 +53,14 @@ pub enum SyntaxKind {
     Constant,
     Punctuation,
     Macro,
+    /// Object, table, and mapping keys.
+    Property,
+    /// Markup element names.
+    Tag,
+    Heading,
+    Strong,
+    Emphasis,
+    Link,
     Default,
 }
 
@@ -53,7 +73,8 @@ pub struct SyntaxSpan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Code,
-    BlockComment,
+    /// Inside a block comment, until its closing delimiter.
+    BlockComment(&'static [u8]),
     String(StringDelimiter),
 }
 
@@ -73,11 +94,23 @@ impl StringDelimiter {
     }
 }
 
+/// An open Markdown code fence: its marker and the highlighter of its code.
+#[derive(Debug, Clone)]
+struct Fence {
+    marker: u8,
+    width: usize,
+    code: Box<Highlighter>,
+}
+
 /// Multi-line state so block comments / strings survive across hunk lines.
 #[derive(Debug, Clone)]
 pub struct Highlighter {
     language: Language,
     mode: Mode,
+    /// Markup: inside a tag's angle brackets, which may span lines.
+    in_tag: bool,
+    /// Markdown: the fenced code block being read.
+    fence: Option<Fence>,
 }
 
 impl Highlighter {
@@ -85,6 +118,8 @@ impl Highlighter {
         Self {
             language,
             mode: Mode::Code,
+            in_tag: false,
+            fence: None,
         }
     }
 
@@ -93,36 +128,27 @@ impl Highlighter {
     }
 
     pub fn highlight_line(&mut self, line: &str) -> Vec<SyntaxSpan> {
-        if matches!(self.language, Language::Plain | Language::Markdown) {
-            return Vec::new();
+        match self.language {
+            Language::Plain => return Vec::new(),
+            Language::Markdown => return self.highlight_markdown(line),
+            Language::Html => return self.highlight_markup(line),
+            _ => {}
         }
         let bytes = line.as_bytes();
         let mut spans = Vec::new();
         let mut i = 0;
         let mut code_start = 0usize;
+        if self.mode == Mode::Code
+            && let Some(end) = self.leading_key(line, &mut spans)
+        {
+            i = end;
+            code_start = end;
+        }
 
         while i < bytes.len() {
             match self.mode {
-                Mode::BlockComment => {
-                    let start = i;
-                    let mut closed = false;
-                    while i + 1 < bytes.len() {
-                        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                            i += 2;
-                            closed = true;
-                            break;
-                        }
-                        i += 1;
-                    }
-                    if !closed {
-                        i = bytes.len();
-                    } else {
-                        self.mode = Mode::Code;
-                    }
-                    spans.push(SyntaxSpan {
-                        range: start..i,
-                        kind: SyntaxKind::Comment,
-                    });
+                Mode::BlockComment(close) => {
+                    i = self.close_block_comment(bytes, i, i, close, &mut spans);
                     code_start = i;
                 }
                 Mode::String(delimiter) => {
@@ -139,9 +165,7 @@ impl Highlighter {
                     }
                 }
                 Mode::Code => {
-                    if (self.c_comments() && bytes[i..].starts_with(b"//"))
-                        || (self.line_comment_hash() && bytes[i] == b'#')
-                    {
+                    if self.line_comment_at(bytes, i) {
                         flush_code(line, code_start, i, self.language, &mut spans);
                         spans.push(SyntaxSpan {
                             range: i..bytes.len(),
@@ -149,10 +173,11 @@ impl Highlighter {
                         });
                         return spans;
                     }
-                    // Block comment /*
-                    if self.c_comments() && bytes[i..].starts_with(b"/*") {
+                    if let Some((open, close)) = self.block_comment_at(bytes, i) {
                         flush_code(line, code_start, i, self.language, &mut spans);
-                        self.mode = Mode::BlockComment;
+                        self.mode = Mode::BlockComment(close);
+                        i = self.close_block_comment(bytes, i, i + open, close, &mut spans);
+                        code_start = i;
                         continue;
                     }
                     if let Some((delimiter, content_start)) = self.string_opener(bytes, i) {
@@ -161,7 +186,11 @@ impl Highlighter {
                         let (end, closed) = delimiter.scan_end(bytes, content_start);
                         spans.push(SyntaxSpan {
                             range: start..end,
-                            kind: SyntaxKind::String,
+                            kind: if closed && self.is_json_key(bytes, end) {
+                                SyntaxKind::Property
+                            } else {
+                                SyntaxKind::String
+                            },
                         });
                         i = end;
                         if closed {
@@ -183,6 +212,30 @@ impl Highlighter {
         spans
     }
 
+    /// Color a block comment from `start`, searching for `close` from `from`;
+    /// returns where code resumes (the line's end while the comment is open).
+    fn close_block_comment(
+        &mut self,
+        bytes: &[u8],
+        start: usize,
+        from: usize,
+        close: &'static [u8],
+        spans: &mut Vec<SyntaxSpan>,
+    ) -> usize {
+        let end = match find(bytes, from, close) {
+            Some(at) => {
+                self.mode = Mode::Code;
+                at + close.len()
+            }
+            None => bytes.len(),
+        };
+        spans.push(SyntaxSpan {
+            range: start..end,
+            kind: SyntaxKind::Comment,
+        });
+        end
+    }
+
     fn string_opener(&self, bytes: &[u8], i: usize) -> Option<(StringDelimiter, usize)> {
         if self.language == Language::Rust
             && bytes[i] == b'r'
@@ -194,8 +247,40 @@ impl Highlighter {
             .then_some((StringDelimiter::Quoted(bytes[i]), i + 1))
     }
 
-    fn c_comments(&self) -> bool {
-        matches!(
+    fn line_comment_at(&self, bytes: &[u8], i: usize) -> bool {
+        let rest = &bytes[i..];
+        match self.language {
+            Language::Rust
+            | Language::JavaScript
+            | Language::TypeScript
+            | Language::Swift
+            | Language::Go
+            | Language::Css
+            | Language::C
+            | Language::Java
+            | Language::Kotlin
+            | Language::CSharp => rest.starts_with(b"//"),
+            Language::Php => rest.starts_with(b"//") || rest[0] == b'#',
+            Language::Python
+            | Language::Shell
+            | Language::Toml
+            | Language::Yaml
+            | Language::Ruby
+            | Language::Dockerfile => {
+                // `$#` and `${#name}` are shell expansions, not comments.
+                rest[0] == b'#'
+                    && !(self.language == Language::Shell
+                        && i > 0
+                        && matches!(bytes[i - 1], b'$' | b'{'))
+            }
+            Language::Sql | Language::Lua => rest.starts_with(b"--"),
+            Language::Json | Language::Markdown | Language::Html | Language::Plain => false,
+        }
+    }
+
+    /// Length of the opener and the closer of a block comment starting at `i`.
+    fn block_comment_at(&self, bytes: &[u8], i: usize) -> Option<(usize, &'static [u8])> {
+        let c_style = matches!(
             self.language,
             Language::Rust
                 | Language::JavaScript
@@ -203,14 +288,454 @@ impl Highlighter {
                 | Language::Swift
                 | Language::Go
                 | Language::Css
-        )
+                | Language::C
+                | Language::Java
+                | Language::Kotlin
+                | Language::CSharp
+                | Language::Php
+                | Language::Sql
+        );
+        (c_style && bytes[i..].starts_with(b"/*")).then_some((2, b"*/".as_slice()))
     }
 
-    fn line_comment_hash(&self) -> bool {
-        matches!(
-            self.language,
-            Language::Python | Language::Shell | Language::Toml | Language::Yaml
-        )
+    /// A JSON string followed by `:` is a key.
+    fn is_json_key(&self, bytes: &[u8], end: usize) -> bool {
+        self.language == Language::Json && next_non_blank(bytes, end) == Some(b':')
+    }
+
+    /// Keys and table headers at the start of a configuration line, before
+    /// the general scan colors the value: YAML `key:` (also after `- `),
+    /// TOML `key =` and `[table]`.
+    fn leading_key(&self, line: &str, spans: &mut Vec<SyntaxSpan>) -> Option<usize> {
+        let bytes = line.as_bytes();
+        let mut start = bytes.iter().take_while(|b| b.is_ascii_whitespace()).count();
+        match self.language {
+            Language::Yaml => {
+                while bytes[start..].starts_with(b"- ") {
+                    start += 2;
+                    start += bytes[start..]
+                        .iter()
+                        .take_while(|b| b.is_ascii_whitespace())
+                        .count();
+                }
+                let end = yaml_key_end(bytes, start)?;
+                spans.push(SyntaxSpan {
+                    range: start..end,
+                    kind: SyntaxKind::Property,
+                });
+                spans.push(SyntaxSpan {
+                    range: end..end + 1,
+                    kind: SyntaxKind::Punctuation,
+                });
+                Some(end + 1)
+            }
+            Language::Toml => {
+                if bytes.get(start) == Some(&b'[') {
+                    let close = find(bytes, start, b"]")?;
+                    let end = if bytes.get(close + 1) == Some(&b']') {
+                        close + 2
+                    } else {
+                        close + 1
+                    };
+                    spans.push(SyntaxSpan {
+                        range: start..end,
+                        kind: SyntaxKind::Type,
+                    });
+                    return Some(end);
+                }
+                let key = bytes[start..]
+                    .iter()
+                    .take_while(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'"')
+                    })
+                    .count();
+                let end = start + key;
+                (key > 0 && next_non_blank(bytes, end) == Some(b'=')).then(|| {
+                    spans.push(SyntaxSpan {
+                        range: start..end,
+                        kind: SyntaxKind::Property,
+                    });
+                    end
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Markdown structure and inline marks; fenced code takes the colors of
+    /// the language its fence names.
+    fn highlight_markdown(&mut self, line: &str) -> Vec<SyntaxSpan> {
+        let bytes = line.as_bytes();
+        let indent = bytes.iter().take_while(|b| **b == b' ').count();
+        let trimmed = &line[indent..];
+        let fence = trimmed
+            .bytes()
+            .next()
+            .filter(|marker| matches!(marker, b'`' | b'~'))
+            .map(|marker| (marker, trimmed.bytes().take_while(|b| *b == marker).count()))
+            .filter(|(_, width)| *width >= 3);
+
+        if let Some(open) = &mut self.fence {
+            if fence.is_some_and(|(marker, width)| {
+                marker == open.marker && width >= open.width && trimmed[width..].trim().is_empty()
+            }) {
+                self.fence = None;
+                return vec![SyntaxSpan {
+                    range: indent..line.len(),
+                    kind: SyntaxKind::Punctuation,
+                }];
+            }
+            return open.code.highlight_line(line);
+        }
+        if let Some((marker, width)) = fence {
+            let tag = trimmed[width..]
+                .trim()
+                .split(|c: char| c.is_whitespace() || c == ',' || c == '{')
+                .next()
+                .unwrap_or("");
+            self.fence = Some(Fence {
+                marker,
+                width,
+                code: Box::new(Highlighter::new(language_from_fence(tag))),
+            });
+            let mut spans = vec![SyntaxSpan {
+                range: indent..indent + width,
+                kind: SyntaxKind::Punctuation,
+            }];
+            let tag_start =
+                indent + width + (trimmed[width..].len() - trimmed[width..].trim_start().len());
+            if !tag.is_empty() {
+                spans.push(SyntaxSpan {
+                    range: tag_start..tag_start + tag.len(),
+                    kind: SyntaxKind::Attribute,
+                });
+            }
+            return spans;
+        }
+
+        let mut spans = Vec::new();
+        let heading = trimmed.bytes().take_while(|b| *b == b'#').count();
+        if (1..=6).contains(&heading)
+            && trimmed[heading..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+        {
+            spans.push(SyntaxSpan {
+                range: indent..line.len(),
+                kind: SyntaxKind::Heading,
+            });
+            return spans;
+        }
+        let rule = trimmed.trim_end();
+        if [b'-', b'*', b'_'].iter().any(|mark| {
+            rule.bytes().all(|c| c == b' ' || c == *mark)
+                && rule.bytes().filter(|c| c == mark).count() >= 3
+        }) {
+            spans.push(SyntaxSpan {
+                range: indent..line.len(),
+                kind: SyntaxKind::Punctuation,
+            });
+            return spans;
+        }
+        if trimmed.starts_with('>') {
+            spans.push(SyntaxSpan {
+                range: indent..indent + 1,
+                kind: SyntaxKind::Keyword,
+            });
+            spans.push(SyntaxSpan {
+                range: indent + 1..line.len(),
+                kind: SyntaxKind::Comment,
+            });
+            return spans;
+        }
+        let mut start = indent;
+        let marker = list_marker(trimmed);
+        if marker > 0 {
+            spans.push(SyntaxSpan {
+                range: indent..indent + marker,
+                kind: SyntaxKind::Keyword,
+            });
+            start += marker;
+            // Task lists: `- [ ]` and `- [x]`.
+            let rest = &line[start..];
+            let after_blank = rest.len() - rest.trim_start().len();
+            let task = &rest[after_blank..];
+            if task.len() >= 3
+                && task.as_bytes()[0] == b'['
+                && task.as_bytes()[2] == b']'
+                && matches!(task.as_bytes()[1], b' ' | b'x' | b'X')
+            {
+                spans.push(SyntaxSpan {
+                    range: start + after_blank..start + after_blank + 3,
+                    kind: SyntaxKind::Constant,
+                });
+                start += after_blank + 3;
+            }
+        }
+        markdown_inline(line, start, &mut spans);
+        spans
+    }
+
+    /// HTML and XML: tags, attributes, values, comments, and entities. Text
+    /// between tags stays plain.
+    fn highlight_markup(&mut self, line: &str) -> Vec<SyntaxSpan> {
+        let bytes = line.as_bytes();
+        let mut spans = Vec::new();
+        let mut i = 0;
+        let push = |spans: &mut Vec<SyntaxSpan>, range: Range<usize>, kind| {
+            spans.push(SyntaxSpan { range, kind });
+        };
+        while i < bytes.len() {
+            if let Mode::BlockComment(close) = self.mode {
+                i = self.close_block_comment(bytes, i, i, close, &mut spans);
+                continue;
+            }
+            if let Mode::String(delimiter) = self.mode {
+                let start = i;
+                let (end, closed) = delimiter.scan_end(bytes, i);
+                push(&mut spans, start..end, SyntaxKind::String);
+                i = end;
+                if closed {
+                    self.mode = Mode::Code;
+                }
+                continue;
+            }
+            let b = bytes[i];
+            if self.in_tag {
+                match b {
+                    b'>' | b'/' | b'?' => {
+                        if b == b'>' {
+                            self.in_tag = false;
+                        }
+                        push(&mut spans, i..i + 1, SyntaxKind::Punctuation);
+                        i += 1;
+                    }
+                    b'"' | b'\'' => {
+                        let (end, closed) = scan_string_end(bytes, i + 1, b);
+                        push(&mut spans, i..end, SyntaxKind::String);
+                        if !closed {
+                            self.mode = Mode::String(StringDelimiter::Quoted(b));
+                        }
+                        i = end;
+                    }
+                    b'=' => {
+                        push(&mut spans, i..i + 1, SyntaxKind::Operator);
+                        i += 1;
+                    }
+                    _ if is_markup_name(b) => {
+                        let end = i + bytes[i..]
+                            .iter()
+                            .take_while(|b| is_markup_name(**b))
+                            .count();
+                        push(&mut spans, i..end, SyntaxKind::Attribute);
+                        i = end;
+                    }
+                    _ => i += 1,
+                }
+                continue;
+            }
+            if bytes[i..].starts_with(b"<!--") {
+                self.mode = Mode::BlockComment(b"-->");
+                i = self.close_block_comment(bytes, i, i + 4, b"-->", &mut spans);
+                continue;
+            }
+            if b == b'<'
+                && bytes.get(i + 1).is_some_and(|next| {
+                    next.is_ascii_alphabetic() || matches!(next, b'/' | b'!' | b'?')
+                })
+            {
+                let start = i;
+                i += 1;
+                if matches!(bytes[i], b'/' | b'!' | b'?') {
+                    i += 1;
+                }
+                push(&mut spans, start..i, SyntaxKind::Punctuation);
+                let name = bytes[i..]
+                    .iter()
+                    .take_while(|b| is_markup_name(**b))
+                    .count();
+                if name > 0 {
+                    push(&mut spans, i..i + name, SyntaxKind::Tag);
+                    i += name;
+                }
+                self.in_tag = true;
+                continue;
+            }
+            if b == b'&' {
+                let name = bytes[i + 1..]
+                    .iter()
+                    .take_while(|b| b.is_ascii_alphanumeric() || **b == b'#')
+                    .count();
+                if name > 0 && bytes.get(i + 1 + name) == Some(&b';') {
+                    push(&mut spans, i..i + name + 2, SyntaxKind::Constant);
+                    i += name + 2;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        spans
+    }
+}
+
+fn is_markup_name(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.' | b'@')
+}
+
+fn find(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    bytes
+        .get(from..)?
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|at| from + at)
+}
+
+fn next_non_blank(bytes: &[u8], from: usize) -> Option<u8> {
+    bytes
+        .get(from..)?
+        .iter()
+        .copied()
+        .find(|b| !b.is_ascii_whitespace())
+}
+
+/// End of a YAML mapping key starting at `start`: a quoted key, or a bare
+/// one without blanks, followed by `:` and then a blank or the line's end.
+fn yaml_key_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let first = *bytes.get(start)?;
+    let end = match first {
+        b'"' | b'\'' => match scan_string_end(bytes, start + 1, first) {
+            (end, true) => end,
+            _ => return None,
+        },
+        b'#' | b'[' | b'{' | b'&' | b'*' | b'!' | b'|' | b'>' | b'%' | b'@' | b'`' => return None,
+        _ => {
+            let len = bytes[start..]
+                .iter()
+                .take_while(|b| !matches!(b, b':' | b'#' | b' ' | b'\t'))
+                .count();
+            start + len
+        }
+    };
+    let colon =
+        bytes.get(end) == Some(&b':') && bytes.get(end + 1).is_none_or(|b| b.is_ascii_whitespace());
+    (end > start && colon).then_some(end)
+}
+
+/// Width of a list marker (`- `, `* `, `+ `, `1. `, `1) `) at the start of `text`.
+fn list_marker(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && matches!(bytes[0], b'-' | b'*' | b'+') && bytes[1] == b' ' {
+        return 1;
+    }
+    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    if (1..=9).contains(&digits)
+        && matches!(bytes.get(digits), Some(b'.' | b')'))
+        && bytes.get(digits + 1) == Some(&b' ')
+    {
+        return digits + 1;
+    }
+    0
+}
+
+/// Inline Markdown from `start`: code, strong, emphasis, links, autolinks,
+/// and HTML comments. Every mark is ASCII, so ranges stay on char boundaries.
+fn markdown_inline(line: &str, start: usize, spans: &mut Vec<SyntaxSpan>) {
+    let bytes = line.as_bytes();
+    let mut i = start;
+    let push = |spans: &mut Vec<SyntaxSpan>, range: Range<usize>, kind| {
+        spans.push(SyntaxSpan { range, kind });
+    };
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'`' {
+            let ticks = bytes[i..].iter().take_while(|b| **b == b'`').count();
+            let fence = &bytes[i..i + ticks];
+            if let Some(close) = find(bytes, i + ticks, fence) {
+                push(spans, i..close + ticks, SyntaxKind::String);
+                i = close + ticks;
+                continue;
+            }
+            i += ticks;
+            continue;
+        }
+        if (bytes[i..].starts_with(b"**") || bytes[i..].starts_with(b"__"))
+            && let Some(close) = find(bytes, i + 2, &bytes[i..i + 2])
+            && close > i + 2
+        {
+            push(spans, i..close + 2, SyntaxKind::Strong);
+            i = close + 2;
+            continue;
+        }
+        if matches!(b, b'*' | b'_')
+            && bytes
+                .get(i + 1)
+                .is_some_and(|next| !next.is_ascii_whitespace() && *next != b)
+            && (b == b'*' || i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+            && let Some(close) = find(bytes, i + 1, &[b])
+            && !bytes[close - 1].is_ascii_whitespace()
+        {
+            push(spans, i..close + 1, SyntaxKind::Emphasis);
+            i = close + 1;
+            continue;
+        }
+        if b == b'['
+            && let Some(close) = find(bytes, i + 1, b"]")
+        {
+            if bytes.get(close + 1) == Some(&b'(')
+                && let Some(end) = find(bytes, close + 2, b")")
+            {
+                push(spans, i..close + 1, SyntaxKind::Link);
+                push(spans, close + 1..end + 1, SyntaxKind::Comment);
+                i = end + 1;
+                continue;
+            }
+            if bytes.get(close + 1) == Some(&b':') {
+                // Reference definition: `[label]: url`.
+                push(spans, i..close + 2, SyntaxKind::Link);
+                push(spans, close + 2..bytes.len(), SyntaxKind::Comment);
+                return;
+            }
+        }
+        if bytes[i..].starts_with(b"<!--") {
+            let end = find(bytes, i + 4, b"-->").map_or(bytes.len(), |at| at + 3);
+            push(spans, i..end, SyntaxKind::Comment);
+            i = end;
+            continue;
+        }
+        if (bytes[i..].starts_with(b"https://") || bytes[i..].starts_with(b"http://"))
+            && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+        {
+            let end = i + bytes[i..]
+                .iter()
+                .take_while(|b| !b.is_ascii_whitespace() && !matches!(b, b')' | b'>' | b'"'))
+                .count();
+            push(spans, i..end, SyntaxKind::Link);
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+}
+
+/// The language a Markdown fence names (`rust`, `ts`, `sh`, …).
+pub fn language_from_fence(tag: &str) -> Language {
+    match tag.to_ascii_lowercase().as_str() {
+        "" => Language::Plain,
+        "rust" => Language::Rust,
+        "javascript" | "node" => Language::JavaScript,
+        "typescript" => Language::TypeScript,
+        "python" | "python3" => Language::Python,
+        "golang" => Language::Go,
+        "shell" | "console" | "shellsession" | "sh-session" => Language::Shell,
+        "c++" | "objective-c" | "objc" => Language::C,
+        "kotlin" => Language::Kotlin,
+        "csharp" | "c#" => Language::CSharp,
+        "ruby" => Language::Ruby,
+        "docker" => Language::Dockerfile,
+        "markdown" => Language::Markdown,
+        "xml" | "svg" | "vue" | "svelte" => Language::Html,
+        tag => language_from_path(&format!("snippet.{tag}")),
     }
 }
 
@@ -219,6 +744,16 @@ fn is_string_quote(b: u8, language: Language, bytes: &[u8], i: usize) -> bool {
         return true;
     }
     if b != b'\'' {
+        return false;
+    }
+    // An apostrophe inside a word (`don't`) is prose in configuration and
+    // shell files, where an opened string would color the following lines.
+    if matches!(
+        language,
+        Language::Yaml | Language::Toml | Language::Shell | Language::Dockerfile
+    ) && i > 0
+        && bytes[i - 1].is_ascii_alphanumeric()
+    {
         return false;
     }
     // Rust lifetime `'a` / `'static` — not a char/string.
@@ -306,6 +841,47 @@ fn flush_code(
         let b = bytes[i];
         if b.is_ascii_whitespace() {
             i += 1;
+            continue;
+        }
+        // `#include` / `#define` in C, `#[derive` / `#![allow` in Rust.
+        if b == b'#' && matches!(language, Language::C | Language::Rust) {
+            let s = i;
+            i += 1;
+            if language == Language::Rust {
+                if bytes.get(i) == Some(&b'!') {
+                    i += 1;
+                }
+                if bytes.get(i) != Some(&b'[') {
+                    continue;
+                }
+                i += 1;
+            }
+            while i < end && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            spans.push(SyntaxSpan {
+                range: s..i,
+                kind: if language == Language::C {
+                    SyntaxKind::Macro
+                } else {
+                    SyntaxKind::Attribute
+                },
+            });
+            continue;
+        }
+        // Decorators and annotations: `@Override`, `@media`, `@property`.
+        if b == b'@' {
+            let s = i;
+            i += 1;
+            while i < end
+                && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'-' | b'.'))
+            {
+                i += 1;
+            }
+            spans.push(SyntaxSpan {
+                range: s..i,
+                kind: SyntaxKind::Attribute,
+            });
             continue;
         }
         // Number
@@ -401,15 +977,11 @@ fn flush_code(
         }
         if matches!(
             b,
-            b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';' | b'.' | b'@'
+            b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';' | b'.'
         ) {
             spans.push(SyntaxSpan {
                 range: i..i + 1,
-                kind: if b == b'@' {
-                    SyntaxKind::Attribute
-                } else {
-                    SyntaxKind::Punctuation
-                },
+                kind: SyntaxKind::Punctuation,
             });
             i += 1;
             continue;
@@ -445,19 +1017,31 @@ fn classify_ident(word: &str, language: Language, is_macro: bool, after: AfterId
     if is_literal_constant(word, language) {
         return SyntaxKind::Constant;
     }
-    if word.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-        return SyntaxKind::Type;
+    match language {
+        // Plain YAML scalars are text; Dockerfile arguments are shell words.
+        Language::Yaml => return SyntaxKind::String,
+        Language::Dockerfile => return SyntaxKind::Default,
+        // `$name` and `${name}` expand variables.
+        Language::Shell | Language::Php if word.starts_with('$') => {
+            return SyntaxKind::Constant;
+        }
+        _ => {}
     }
-    if matches!(after, AfterIdent::Call) {
-        return SyntaxKind::Function;
-    }
+    // `MAX_LEN` reads as a constant before its capital makes it a type.
     if word.len() > 1
         && word
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
         && word.chars().any(|c| c.is_ascii_uppercase())
+        && language != Language::Sql
     {
         return SyntaxKind::Constant;
+    }
+    if word.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+        return SyntaxKind::Type;
+    }
+    if matches!(after, AfterIdent::Call) {
+        return SyntaxKind::Function;
     }
     SyntaxKind::Default
 }
@@ -468,6 +1052,9 @@ fn is_literal_constant(word: &str, language: Language) -> bool {
         "true" | "false" | "null" | "undefined" | "None" | "nil"
     ) || (language == Language::Python && matches!(word, "True" | "False"))
         || (language == Language::Rust && matches!(word, "Some" | "Ok" | "Err"))
+        || (language == Language::Yaml
+            && matches!(word, "yes" | "no" | "on" | "off" | "True" | "False"))
+        || (language == Language::C && matches!(word, "NULL" | "nullptr" | "YES" | "NO"))
 }
 
 fn is_keyword(word: &str, language: Language) -> bool {
@@ -479,6 +1066,17 @@ fn is_keyword(word: &str, language: Language) -> bool {
         Language::Go => GO_KEYWORDS.contains(&word),
         Language::Shell => SHELL_KEYWORDS.contains(&word),
         Language::Css => CSS_KEYWORDS.contains(&word),
+        Language::C => C_KEYWORDS.contains(&word),
+        Language::Java => JAVA_KEYWORDS.contains(&word),
+        Language::Kotlin => KOTLIN_KEYWORDS.contains(&word),
+        Language::CSharp => CSHARP_KEYWORDS.contains(&word),
+        Language::Ruby => RUBY_KEYWORDS.contains(&word),
+        Language::Php => PHP_KEYWORDS.contains(&word.to_ascii_lowercase().as_str()),
+        Language::Lua => LUA_KEYWORDS.contains(&word),
+        // SQL is case-insensitive; Dockerfile instructions are uppercase by
+        // convention, so lowercase shell words after them stay plain.
+        Language::Sql => SQL_KEYWORDS.contains(&word.to_ascii_uppercase().as_str()),
+        Language::Dockerfile => DOCKERFILE_KEYWORDS.contains(&word),
         Language::Json | Language::Toml | Language::Yaml => {
             matches!(word, "true" | "false" | "null")
         }
@@ -487,7 +1085,29 @@ fn is_keyword(word: &str, language: Language) -> bool {
 }
 
 pub fn language_from_path(path: &str) -> Language {
-    let ext = std::path::Path::new(path)
+    let path = std::path::Path::new(path);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Files known by name rather than extension.
+    match name.as_str() {
+        "dockerfile" | "containerfile" => return Language::Dockerfile,
+        name if name.starts_with("dockerfile.") || name.ends_with(".dockerfile") => {
+            return Language::Dockerfile;
+        }
+        "makefile" | "gnumakefile" | "justfile" | ".gitignore" | ".dockerignore" | ".env"
+        | ".bashrc" | ".zshrc" | ".profile" | ".bash_profile" | ".zprofile" | ".npmrc"
+        | ".editorconfig" => return Language::Shell,
+        name if name.starts_with(".env.") => return Language::Shell,
+        "gemfile" | "rakefile" | "podfile" | "fastfile" | "brewfile" | "vagrantfile" => {
+            return Language::Ruby;
+        }
+        "cargo.lock" | "uv.lock" | "poetry.lock" => return Language::Toml,
+        _ => {}
+    }
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -496,15 +1116,25 @@ pub fn language_from_path(path: &str) -> Language {
         "rs" => Language::Rust,
         "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
         "ts" | "tsx" | "mts" | "cts" => Language::TypeScript,
-        "py" | "pyi" => Language::Python,
+        "py" | "pyi" | "pyw" => Language::Python,
         "swift" => Language::Swift,
         "go" => Language::Go,
-        "json" | "jsonc" => Language::Json,
-        "toml" => Language::Toml,
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "ipp" | "m" | "mm" | "ino"
+        | "cu" | "metal" => Language::C,
+        "java" | "groovy" | "gradle" | "scala" | "sc" | "dart" => Language::Java,
+        "kt" | "kts" => Language::Kotlin,
+        "cs" => Language::CSharp,
+        "rb" | "rake" | "gemspec" | "ru" | "erb" => Language::Ruby,
+        "php" | "phtml" => Language::Php,
+        "sql" | "psql" | "pgsql" | "mysql" => Language::Sql,
+        "lua" => Language::Lua,
+        "json" | "jsonc" | "json5" | "jsonl" | "geojson" | "webmanifest" => Language::Json,
+        "toml" | "ini" | "cfg" | "conf" | "properties" => Language::Toml,
         "md" | "mdx" | "markdown" => Language::Markdown,
-        "sh" | "bash" | "zsh" | "fish" => Language::Shell,
-        "css" | "scss" | "less" => Language::Css,
-        "html" | "htm" | "xml" | "svg" => Language::Html,
+        "sh" | "bash" | "zsh" | "fish" | "env" | "mk" | "make" => Language::Shell,
+        "css" | "scss" | "sass" | "less" => Language::Css,
+        "html" | "htm" | "xhtml" | "xml" | "svg" | "plist" | "xsd" | "xsl" | "vue" | "svelte"
+        | "astro" | "storyboard" | "xib" => Language::Html,
         "yml" | "yaml" => Language::Yaml,
         _ => Language::Plain,
     }
@@ -539,7 +1169,27 @@ impl SyntaxKind {
             Self::Function => theme.accent,
             Self::Operator => mix(theme.muted, theme.accent, 0.22),
             Self::Punctuation => theme.muted,
-            Self::Default => theme.foreground,
+            Self::Property => mix(
+                theme.accent,
+                rgb(if dark { 0x7dd3fc } else { 0x0369a1 }),
+                0.55,
+            ),
+            Self::Tag => mix(
+                theme.danger,
+                rgb(if dark { 0xf472b6 } else { 0xbe185d }),
+                0.45,
+            ),
+            Self::Heading => mix(
+                theme.accent,
+                rgb(if dark { 0x93c5fd } else { 0x1d4ed8 }),
+                0.35,
+            ),
+            Self::Link => mix(
+                theme.accent,
+                rgb(if dark { 0x67e8f9 } else { 0x0e7490 }),
+                0.4,
+            ),
+            Self::Strong | Self::Emphasis | Self::Default => theme.foreground,
         }
     }
 
@@ -549,8 +1199,9 @@ impl SyntaxKind {
             ..Default::default()
         };
         match self {
-            Self::Comment => style.font_style = Some(FontStyle::Italic),
+            Self::Comment | Self::Emphasis => style.font_style = Some(FontStyle::Italic),
             Self::Keyword | Self::Macro => style.font_weight = Some(FontWeight::MEDIUM),
+            Self::Heading | Self::Strong => style.font_weight = Some(FontWeight::BOLD),
             _ => {}
         }
         style
@@ -733,6 +1384,562 @@ const CSS_KEYWORDS: &[&str] = &[
     "clamp",
 ];
 
+const C_KEYWORDS: &[&str] = &[
+    "auto",
+    "bool",
+    "break",
+    "case",
+    "catch",
+    "char",
+    "class",
+    "const",
+    "constexpr",
+    "continue",
+    "decltype",
+    "default",
+    "delete",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "explicit",
+    "extern",
+    "false",
+    "final",
+    "float",
+    "for",
+    "friend",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "mutable",
+    "namespace",
+    "new",
+    "noexcept",
+    "operator",
+    "override",
+    "private",
+    "protected",
+    "public",
+    "register",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "static_cast",
+    "dynamic_cast",
+    "reinterpret_cast",
+    "const_cast",
+    "struct",
+    "switch",
+    "template",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typedef",
+    "typename",
+    "union",
+    "unsigned",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "while",
+    "concept",
+    "requires",
+    "co_await",
+    "co_return",
+    "co_yield",
+    "self",
+    "super",
+    "id",
+    "instancetype",
+];
+
+const JAVA_KEYWORDS: &[&str] = &[
+    "abstract",
+    "assert",
+    "boolean",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "class",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extends",
+    "final",
+    "finally",
+    "float",
+    "for",
+    "if",
+    "implements",
+    "import",
+    "instanceof",
+    "int",
+    "interface",
+    "long",
+    "native",
+    "new",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "record",
+    "return",
+    "sealed",
+    "permits",
+    "short",
+    "static",
+    "super",
+    "switch",
+    "synchronized",
+    "this",
+    "throw",
+    "throws",
+    "transient",
+    "try",
+    "var",
+    "void",
+    "volatile",
+    "while",
+    "yield",
+    "def",
+    "val",
+    "object",
+    "trait",
+    "async",
+    "await",
+    "late",
+    "required",
+    "dynamic",
+    "extension",
+    "mixin",
+    "with",
+];
+
+const KOTLIN_KEYWORDS: &[&str] = &[
+    "abstract",
+    "annotation",
+    "as",
+    "break",
+    "by",
+    "catch",
+    "class",
+    "companion",
+    "const",
+    "constructor",
+    "continue",
+    "crossinline",
+    "data",
+    "do",
+    "else",
+    "enum",
+    "external",
+    "final",
+    "finally",
+    "for",
+    "fun",
+    "get",
+    "if",
+    "import",
+    "in",
+    "infix",
+    "init",
+    "inline",
+    "inner",
+    "interface",
+    "internal",
+    "is",
+    "lateinit",
+    "noinline",
+    "object",
+    "open",
+    "operator",
+    "out",
+    "override",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "reified",
+    "return",
+    "sealed",
+    "set",
+    "super",
+    "suspend",
+    "tailrec",
+    "this",
+    "throw",
+    "try",
+    "typealias",
+    "val",
+    "var",
+    "vararg",
+    "when",
+    "where",
+    "while",
+];
+
+const CSHARP_KEYWORDS: &[&str] = &[
+    "abstract",
+    "as",
+    "async",
+    "await",
+    "base",
+    "bool",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "checked",
+    "class",
+    "const",
+    "continue",
+    "decimal",
+    "default",
+    "delegate",
+    "do",
+    "double",
+    "dynamic",
+    "else",
+    "enum",
+    "event",
+    "explicit",
+    "extern",
+    "finally",
+    "fixed",
+    "float",
+    "for",
+    "foreach",
+    "get",
+    "goto",
+    "if",
+    "implicit",
+    "in",
+    "init",
+    "int",
+    "interface",
+    "internal",
+    "is",
+    "lock",
+    "long",
+    "nameof",
+    "namespace",
+    "new",
+    "object",
+    "operator",
+    "out",
+    "override",
+    "params",
+    "partial",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "record",
+    "ref",
+    "return",
+    "sbyte",
+    "sealed",
+    "set",
+    "short",
+    "sizeof",
+    "stackalloc",
+    "static",
+    "string",
+    "struct",
+    "switch",
+    "this",
+    "throw",
+    "try",
+    "typeof",
+    "uint",
+    "ulong",
+    "unchecked",
+    "unsafe",
+    "ushort",
+    "using",
+    "var",
+    "virtual",
+    "void",
+    "volatile",
+    "where",
+    "while",
+    "yield",
+];
+
+const RUBY_KEYWORDS: &[&str] = &[
+    "alias",
+    "and",
+    "begin",
+    "break",
+    "case",
+    "class",
+    "def",
+    "defined",
+    "do",
+    "else",
+    "elsif",
+    "end",
+    "ensure",
+    "for",
+    "if",
+    "in",
+    "module",
+    "next",
+    "not",
+    "or",
+    "redo",
+    "rescue",
+    "retry",
+    "return",
+    "self",
+    "super",
+    "then",
+    "undef",
+    "unless",
+    "until",
+    "when",
+    "while",
+    "yield",
+    "require",
+    "require_relative",
+    "attr_accessor",
+    "attr_reader",
+    "attr_writer",
+    "private",
+    "protected",
+    "public",
+    "include",
+    "extend",
+    "raise",
+    "lambda",
+    "proc",
+];
+
+const PHP_KEYWORDS: &[&str] = &[
+    "abstract",
+    "and",
+    "array",
+    "as",
+    "break",
+    "callable",
+    "case",
+    "catch",
+    "class",
+    "clone",
+    "const",
+    "continue",
+    "declare",
+    "default",
+    "do",
+    "echo",
+    "else",
+    "elseif",
+    "empty",
+    "enum",
+    "extends",
+    "final",
+    "finally",
+    "fn",
+    "for",
+    "foreach",
+    "function",
+    "global",
+    "if",
+    "implements",
+    "include",
+    "include_once",
+    "instanceof",
+    "interface",
+    "isset",
+    "list",
+    "match",
+    "namespace",
+    "new",
+    "or",
+    "print",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "require",
+    "require_once",
+    "return",
+    "static",
+    "switch",
+    "throw",
+    "trait",
+    "try",
+    "unset",
+    "use",
+    "var",
+    "while",
+    "xor",
+    "yield",
+];
+
+const LUA_KEYWORDS: &[&str] = &[
+    "and", "break", "do", "else", "elseif", "end", "for", "function", "goto", "if", "in", "local",
+    "not", "or", "repeat", "return", "then", "until", "while", "require", "self",
+];
+
+/// Uppercase: SQL compares case-insensitively.
+const SQL_KEYWORDS: &[&str] = &[
+    "ADD",
+    "ALL",
+    "ALTER",
+    "AND",
+    "AS",
+    "ASC",
+    "BEGIN",
+    "BETWEEN",
+    "BIGINT",
+    "BIGSERIAL",
+    "BOOL",
+    "BOOLEAN",
+    "BY",
+    "CASCADE",
+    "CASE",
+    "CHAR",
+    "CHECK",
+    "COLUMN",
+    "COMMIT",
+    "CONSTRAINT",
+    "CREATE",
+    "CROSS",
+    "DATE",
+    "DECIMAL",
+    "DEFAULT",
+    "DELETE",
+    "DESC",
+    "DISTINCT",
+    "DO",
+    "DOUBLE",
+    "DROP",
+    "ELSE",
+    "ENABLE",
+    "END",
+    "EXECUTE",
+    "EXISTS",
+    "EXTENSION",
+    "FALSE",
+    "FLOAT",
+    "FOR",
+    "FOREIGN",
+    "FROM",
+    "FULL",
+    "FUNCTION",
+    "GRANT",
+    "GROUP",
+    "HAVING",
+    "IF",
+    "ILIKE",
+    "IN",
+    "INDEX",
+    "INNER",
+    "INSERT",
+    "INT",
+    "INTEGER",
+    "INTO",
+    "IS",
+    "JOIN",
+    "JSON",
+    "JSONB",
+    "KEY",
+    "LANGUAGE",
+    "LEFT",
+    "LEVEL",
+    "LIKE",
+    "LIMIT",
+    "NOT",
+    "NULL",
+    "NUMERIC",
+    "OFFSET",
+    "ON",
+    "OR",
+    "ORDER",
+    "OUTER",
+    "POLICY",
+    "PRECISION",
+    "PRIMARY",
+    "PROCEDURE",
+    "REAL",
+    "RECURSIVE",
+    "REFERENCES",
+    "RENAME",
+    "REPLACE",
+    "RETURNING",
+    "RETURNS",
+    "REVOKE",
+    "RIGHT",
+    "ROLLBACK",
+    "ROW",
+    "SCHEMA",
+    "SECURITY",
+    "SELECT",
+    "SERIAL",
+    "SET",
+    "SMALLINT",
+    "TABLE",
+    "TEXT",
+    "THEN",
+    "TIME",
+    "TIMESTAMP",
+    "TIMESTAMPTZ",
+    "TO",
+    "TRANSACTION",
+    "TRIGGER",
+    "TRUE",
+    "TYPE",
+    "UNION",
+    "UNIQUE",
+    "UPDATE",
+    "USING",
+    "UUID",
+    "VALUES",
+    "VARCHAR",
+    "VIEW",
+    "WHEN",
+    "WHERE",
+    "WITH",
+];
+
+const DOCKERFILE_KEYWORDS: &[&str] = &[
+    "ADD",
+    "ARG",
+    "AS",
+    "CMD",
+    "COPY",
+    "ENTRYPOINT",
+    "ENV",
+    "EXPOSE",
+    "FROM",
+    "HEALTHCHECK",
+    "LABEL",
+    "MAINTAINER",
+    "ONBUILD",
+    "RUN",
+    "SHELL",
+    "STOPSIGNAL",
+    "USER",
+    "VOLUME",
+    "WORKDIR",
+];
+
 /// Expand tabs to spaces so diff columns line up like an editor (width 4).
 pub fn expand_tabs(text: &str) -> String {
     const TAB_WIDTH: usize = 4;
@@ -749,6 +1956,24 @@ pub fn expand_tabs(text: &str) -> String {
         }
     }
     out
+}
+
+/// Highlight a multi-line snippet as one sequence, with byte ranges into
+/// `code` (lines split on `\n`), ready for a `StyledText`.
+pub fn highlight_code(code: &str, language: Language) -> Vec<(Range<usize>, HighlightStyle)> {
+    let mut highlighter = Highlighter::new(language);
+    let mut runs = Vec::new();
+    let mut offset = 0;
+    for line in code.split('\n') {
+        for span in highlighter.highlight_line(line) {
+            runs.push((
+                offset + span.range.start..offset + span.range.end,
+                span.kind.highlight_style(),
+            ));
+        }
+        offset += line.len() + 1;
+    }
+    runs
 }
 
 /// Highlight every text row of a diff in order (preserves multi-line comment/string state).
@@ -906,6 +2131,219 @@ mod tests {
                 .iter()
                 .any(|span| span.kind == SyntaxKind::Operator)
         );
+    }
+
+    fn kinds_of<'a>(line: &'a str, spans: &[SyntaxSpan]) -> Vec<(&'a str, SyntaxKind)> {
+        spans
+            .iter()
+            .map(|span| (line_slice(line, &span.range), span.kind))
+            .collect()
+    }
+
+    fn has(line: &str, spans: &[SyntaxSpan], text: &str, kind: SyntaxKind) -> bool {
+        kinds_of(line, spans).contains(&(text, kind))
+    }
+
+    #[test]
+    fn markdown_structure_and_inline_marks() {
+        let mut h = Highlighter::new(Language::Markdown);
+        let heading = "## Install Vibra";
+        assert!(has(
+            heading,
+            &h.highlight_line(heading),
+            heading,
+            SyntaxKind::Heading
+        ));
+        let item = "- Run `cargo build` with **care** and *patience*, see [docs](https://x.dev).";
+        let spans = h.highlight_line(item);
+        assert!(has(item, &spans, "-", SyntaxKind::Keyword));
+        assert!(has(item, &spans, "`cargo build`", SyntaxKind::String));
+        assert!(has(item, &spans, "**care**", SyntaxKind::Strong));
+        assert!(has(item, &spans, "*patience*", SyntaxKind::Emphasis));
+        assert!(has(item, &spans, "[docs]", SyntaxKind::Link));
+        // snake_case words are not emphasis.
+        let prose = "call snake_case_name here";
+        assert!(h.highlight_line(prose).is_empty());
+        let quote = "> Note: careful";
+        assert!(has(
+            quote,
+            &h.highlight_line(quote),
+            " Note: careful",
+            SyntaxKind::Comment
+        ));
+    }
+
+    #[test]
+    fn markdown_fences_highlight_their_language_until_closed() {
+        let mut h = Highlighter::new(Language::Markdown);
+        let open = "```rust";
+        let spans = h.highlight_line(open);
+        assert!(has(open, &spans, "rust", SyntaxKind::Attribute));
+        let code = "let total = 1;";
+        assert!(has(
+            code,
+            &h.highlight_line(code),
+            "let",
+            SyntaxKind::Keyword
+        ));
+        assert!(has(
+            "```",
+            &h.highlight_line("```"),
+            "```",
+            SyntaxKind::Punctuation
+        ));
+        // Back to prose: `let` is just a word again.
+        assert!(h.highlight_line(code).is_empty());
+    }
+
+    #[test]
+    fn configuration_keys_read_as_properties() {
+        let mut json = Highlighter::new(Language::Json);
+        let line = r#"  "name": "vibra", "port": 8080"#;
+        let spans = json.highlight_line(line);
+        assert!(has(line, &spans, r#""name""#, SyntaxKind::Property));
+        assert!(has(line, &spans, r#""vibra""#, SyntaxKind::String));
+        assert!(has(line, &spans, r#""port""#, SyntaxKind::Property));
+
+        let mut yaml = Highlighter::new(Language::Yaml);
+        let line = "  - name: Build the app # note";
+        let spans = yaml.highlight_line(line);
+        assert!(has(line, &spans, "name", SyntaxKind::Property));
+        assert!(has(line, &spans, "Build", SyntaxKind::String));
+        assert!(has(line, &spans, "# note", SyntaxKind::Comment));
+        // An apostrophe in prose does not open a string for the next lines.
+        let prose = "description: Don't stop";
+        yaml.highlight_line(prose);
+        let next = "version: 2";
+        assert!(has(
+            next,
+            &yaml.highlight_line(next),
+            "version",
+            SyntaxKind::Property
+        ));
+
+        let mut toml = Highlighter::new(Language::Toml);
+        let table = "[dependencies]";
+        assert!(has(
+            table,
+            &toml.highlight_line(table),
+            table,
+            SyntaxKind::Type
+        ));
+        let line = r#"serde = { version = "1.0" }"#;
+        assert!(has(
+            line,
+            &toml.highlight_line(line),
+            "serde",
+            SyntaxKind::Property
+        ));
+    }
+
+    #[test]
+    fn markup_tags_attributes_and_comments() {
+        let mut h = Highlighter::new(Language::Html);
+        let line = r#"<a href="/docs" class='x'>Don't &amp; go</a> <!-- open"#;
+        let spans = h.highlight_line(line);
+        assert!(has(line, &spans, "a", SyntaxKind::Tag));
+        assert!(has(line, &spans, "href", SyntaxKind::Attribute));
+        assert!(has(line, &spans, r#""/docs""#, SyntaxKind::String));
+        assert!(has(line, &spans, "'x'", SyntaxKind::String));
+        assert!(has(line, &spans, "&amp;", SyntaxKind::Constant));
+        // Text between tags stays plain, apostrophes included.
+        assert!(
+            !kinds_of(line, &spans)
+                .iter()
+                .any(|(text, _)| text.contains("Don"))
+        );
+        let next = "still a comment -->";
+        assert!(has(
+            next,
+            &h.highlight_line(next),
+            next,
+            SyntaxKind::Comment
+        ));
+    }
+
+    #[test]
+    fn more_languages_by_extension_and_name() {
+        assert_eq!(language_from_path("src/main.cpp"), Language::C);
+        assert_eq!(language_from_path("App.kt"), Language::Kotlin);
+        assert_eq!(language_from_path("db/schema.sql"), Language::Sql);
+        assert_eq!(language_from_path("Dockerfile"), Language::Dockerfile);
+        assert_eq!(language_from_path("Gemfile"), Language::Ruby);
+        assert_eq!(language_from_path(".env.local"), Language::Shell);
+
+        let mut c = Highlighter::new(Language::C);
+        let line = "#include <stdio.h> // io";
+        let spans = c.highlight_line(line);
+        assert!(has(line, &spans, "#include", SyntaxKind::Macro));
+        assert!(has(line, &spans, "// io", SyntaxKind::Comment));
+
+        let mut sql = Highlighter::new(Language::Sql);
+        let line = "select id from users -- all";
+        let spans = sql.highlight_line(line);
+        assert!(has(line, &spans, "select", SyntaxKind::Keyword));
+        assert!(has(line, &spans, "-- all", SyntaxKind::Comment));
+
+        let mut rust = Highlighter::new(Language::Rust);
+        let line = "#[derive(Debug)] const MAX_LEN: usize = 4;";
+        let spans = rust.highlight_line(line);
+        assert!(has(line, &spans, "#[derive", SyntaxKind::Attribute));
+        assert!(has(line, &spans, "MAX_LEN", SyntaxKind::Constant));
+    }
+
+    #[test]
+    fn every_language_keeps_spans_on_char_boundaries() {
+        let languages = [
+            Language::Rust,
+            Language::JavaScript,
+            Language::TypeScript,
+            Language::Python,
+            Language::Swift,
+            Language::Go,
+            Language::C,
+            Language::Java,
+            Language::Kotlin,
+            Language::CSharp,
+            Language::Ruby,
+            Language::Php,
+            Language::Sql,
+            Language::Lua,
+            Language::Dockerfile,
+            Language::Json,
+            Language::Toml,
+            Language::Markdown,
+            Language::Shell,
+            Language::Css,
+            Language::Html,
+            Language::Yaml,
+        ];
+        let lines = [
+            "café: «ñandú» # comentário",
+            "- [x] **négrita** _énfasis_ `código` [enlace](https://ejemplo.es/ñ)",
+            "<élément attr=\"valör\">texto &eacute; ☃</élément>",
+            "\"clé\": \"日本語\", 'unclosed ü",
+            "#[attr] /* 注释 */ let s = r#\"raw ☃\"#; -- ✓",
+            "```ñ",
+            "  ☃ ☃ ☃",
+            "[[tabla]] ü = 'ö'",
+            "```",
+        ];
+        for language in languages {
+            let mut highlighter = Highlighter::new(language);
+            for line in lines {
+                for span in highlighter.highlight_line(line) {
+                    assert!(
+                        span.range.start <= span.range.end
+                            && span.range.end <= line.len()
+                            && line.is_char_boundary(span.range.start)
+                            && line.is_char_boundary(span.range.end),
+                        "{language:?} split {line:?} at {:?}",
+                        span.range
+                    );
+                }
+            }
+        }
     }
 
     fn line_slice<'a>(line: &'a str, range: &Range<usize>) -> &'a str {

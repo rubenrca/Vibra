@@ -2,7 +2,7 @@
 
 use super::{DiffView, GitPanelMode, elapsed_label};
 use crate::ui::diff_rows::DiffLayout;
-use crate::ui::theme::{colors, floating_surface};
+use crate::ui::theme::{colors, floating_surface, mix, surface_tint};
 use gpui::{
     Context, DispatchPhase, Div, IntoElement, ScrollWheelEvent, Stateful, Window, canvas, div,
     list, prelude::*, px,
@@ -181,7 +181,13 @@ impl DiffView {
                     .items_center()
                     .p(px(2.0))
                     .gap(px(2.0))
-                    .rounded(px(6.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .bg(surface_tint(
+                        mix(colors().background, colors().foreground, 0.03),
+                        colors().background,
+                    ))
                     .child(Self::segment_button(
                         "diff-layout-unified",
                         "chrome-icons/diff-unified.svg",
@@ -196,6 +202,14 @@ impl DiffView {
                         split,
                         cx.listener(|this, _, _, cx| this.set_layout(DiffLayout::Split, cx)),
                     )),
+            )
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(14.0))
+                    .mx(px(4.0))
+                    .flex_none()
+                    .bg(colors().border_subtle),
             )
             .child(Self::segment_button(
                 "diff-wrap",
@@ -324,15 +338,20 @@ impl DiffView {
         div()
             .id(id)
             .flex_none()
-            .h(px(22.0))
+            .h(px(20.0))
             .px(px(7.0))
             .flex()
             .items_center()
             .gap(px(4.0))
             .rounded(px(5.0))
-            .when(active, |button| button.bg(colors().selection))
             .cursor_pointer()
-            .hover(|button| button.bg(colors().hover))
+            .map(|button| {
+                if active {
+                    button.bg(colors().selection)
+                } else {
+                    button.hover(|button| button.bg(colors().hover))
+                }
+            })
             .text_size(px(10.5))
             .text_color(if active {
                 colors().foreground
@@ -399,7 +418,7 @@ impl DiffView {
                     .left_0()
                     .right_0()
                     .bg(floating_surface(colors().panel))
-                    .child(self.file_header(&change, true, cx)),
+                    .child(self.file_header(&change, None, cx)),
             )
         });
         let view = cx.entity().downgrade();

@@ -1,7 +1,10 @@
+use std::ops::Range;
+
 use gpui::SharedString;
 
 use crate::ports::git::{GitDiff, GitDiffRow, GitDiffRowKind, GitDiffSources};
 use crate::ui::diff_rows::ContextFold;
+use crate::ui::diff_words;
 use crate::ui::syntax::{Highlighter, SyntaxSpan, expand_tabs, highlight_diff_rows};
 
 /// Prepared, immutable data consumed by the GPUI diff renderer.
@@ -12,6 +15,9 @@ use crate::ui::syntax::{Highlighter, SyntaxSpan, expand_tabs, highlight_diff_row
 pub struct DiffDocument {
     pub diff: GitDiff,
     pub highlights: Vec<Vec<SyntaxSpan>>,
+    /// Byte ranges of each changed row that differ from its paired line on
+    /// the other side (word-level emphasis); empty for every other row.
+    pub emphasis: Vec<Vec<Range<usize>>>,
     /// Expanded text is shared by measurement and paint, without per-frame copies.
     pub display_lines: Vec<SharedString>,
     /// Character columns of the widest code row; drives horizontal scrolling.
@@ -59,6 +65,8 @@ impl DiffDocument {
             }
             None => highlight_diff_rows(&diff.path, &diff.rows, &texts),
         };
+        let texts: Vec<&str> = display_lines.iter().map(SharedString::as_ref).collect();
+        let emphasis = diff_words::emphasis(&diff.rows, &texts);
         let widest_columns = display_lines
             .iter()
             .zip(&diff.rows)
@@ -77,6 +85,7 @@ impl DiffDocument {
         Self {
             diff,
             highlights,
+            emphasis,
             display_lines,
             widest_columns,
             max_line_number,

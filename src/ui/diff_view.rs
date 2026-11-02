@@ -64,14 +64,24 @@ const HISTORY_DATE_WIDTH: f32 = 88.0;
 const HISTORY_SHA_WIDTH: f32 = 64.0;
 const HISTORY_PAGE: usize = 250;
 
-const FILE_HEADER_HEIGHT: f32 = 32.0;
+const FILE_HEADER_HEIGHT: f32 = 38.0;
 const SECTION_HEIGHT: f32 = 32.0;
+/// Every file is a card inset from the list edges, with a gap below it.
+const CARD_INSET: f32 = 12.0;
+const CARD_GAP: f32 = 8.0;
+const CARD_RADIUS: f32 = 8.0;
+/// Card side borders, which also narrow the code plane.
+const CARD_BORDERS: f32 = 2.0;
+/// Room under a card's last row so its square fill clears the rounded corners.
+const CARD_FOOTER: f32 = 6.0;
+/// Colored edge that marks an added or removed line.
+const CHANGE_BAR_WIDTH: f32 = 3.0;
 /// Row height at the default code size; other sizes keep the proportion.
 const BASE_DIFF_FONT_SIZE: f32 = 12.0;
 const BASE_DIFF_ROW_HEIGHT: f32 = 20.0;
 const COMMENT_ACTION_WIDTH: f32 = 20.0;
 const SPLIT_DIVIDER_WIDTH: f32 = 1.0;
-const CODE_PADDING_LEFT: f32 = 8.0;
+const CODE_PADDING_LEFT: f32 = 4.0;
 /// Breathing room after the widest line when scrolled fully right.
 const CODE_PADDING_RIGHT: f32 = 24.0;
 const COMMENT_BUTTON_SIZE: f32 = 16.0;
@@ -158,6 +168,11 @@ impl RowMetrics {
     fn gutter_width(&self, max_line_number: usize) -> f32 {
         let digits = max_line_number.max(1).to_string().len().max(3) as f32;
         (digits * self.char_width * 0.9 + 28.0).ceil()
+    }
+
+    /// Column holding a changed line's `+` or `−`, between number and code.
+    fn sign_width(&self) -> f32 {
+        (self.char_width + 10.0).ceil()
     }
 
     /// Analytic height of one body row without wrapping (drives the fold tween).

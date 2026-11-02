@@ -3,6 +3,7 @@ pub mod dialog;
 mod diff_document;
 mod diff_rows;
 pub mod diff_view;
+mod diff_words;
 mod file_view;
 mod git_graph;
 pub mod idle;

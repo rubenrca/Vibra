@@ -214,8 +214,11 @@ impl Render for FileView {
                     ),
             )
             .when_some(document, |view, document| {
-                let width = (document.columns as f32 * font_size * 0.65 + 80.0).max(320.0);
                 let count = document.lines.len();
+                // Numbers get the room their largest value needs, like the diff gutter.
+                let digits = count.max(1).to_string().len().max(3) as f32;
+                let gutter = (digits * font_size * 0.62 + 24.0).ceil();
+                let width = (document.columns as f32 * font_size * 0.65 + gutter + 48.0).max(320.0);
                 view.child(
                     div()
                         .id("file-horizontal-scroll")
@@ -239,16 +242,18 @@ impl Render for FileView {
                                                 .text_size(px(font_size))
                                                 .child(
                                                     div()
-                                                        .w(px(56.0))
+                                                        .w(px(gutter))
                                                         .flex_none()
-                                                        .pr(px(12.0))
+                                                        .pr(px(14.0))
                                                         .text_right()
+                                                        .text_size(px(font_size - 1.0))
                                                         .text_color(colors().subtle)
                                                         .child((index + 1).to_string()),
                                                 )
                                                 .child(
                                                     div()
                                                         .flex_1()
+                                                        .pl(px(6.0))
                                                         .whitespace_nowrap()
                                                         .text_color(colors().foreground)
                                                         .child(

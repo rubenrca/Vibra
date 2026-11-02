@@ -1,11 +1,12 @@
 //! CommonMark rendered as native text. Remote HTML is never executed.
 
-use crate::ui::theme::{MONO_FONT, colors, surface_tint};
+use crate::ui::syntax::{Language, highlight_code, language_from_fence};
+use crate::ui::theme::{MONO_FONT, colors, mix, surface_tint};
 use gpui::{
     AnyElement, FontStyle, FontWeight, HighlightStyle, InteractiveText, SharedString, StyledText,
     div, prelude::*, px,
 };
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -29,6 +30,7 @@ fn blocks(text: &str) -> Vec<Block> {
     let mut link: Option<String> = None;
     let mut lists: Vec<Option<u64>> = Vec::new();
     let mut quote_depth = 0usize;
+    let mut code_language: Option<Language> = None;
     let flush = |output: &mut Vec<Block>, block: &mut Block| {
         if !block.text.is_empty() || block.rule {
             output.push(std::mem::take(block));
@@ -44,10 +46,28 @@ fn blocks(text: &str) -> Vec<Block> {
                 block.heading = level as u8;
                 block.quote = quote_depth > 0;
             }
-            Event::Start(Tag::CodeBlock(_)) => {
+            Event::Start(Tag::CodeBlock(kind)) => {
                 flush(&mut output, &mut block);
                 block.code = true;
                 block.quote = quote_depth > 0;
+                code_language = Some(match kind {
+                    CodeBlockKind::Fenced(info) => language_from_fence(
+                        info.split(|c: char| c.is_whitespace() || c == ',' || c == '{')
+                            .next()
+                            .unwrap_or(""),
+                    ),
+                    CodeBlockKind::Indented => Language::Plain,
+                });
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                // The closing newline would paint an empty last line.
+                let code = block.text.trim_end_matches('\n').len();
+                block.text.truncate(code);
+                block.runs =
+                    highlight_code(&block.text, code_language.take().unwrap_or(Language::Plain));
+                block.links.clear();
+                flush(&mut output, &mut block);
+                item_prefix = false;
             }
             Event::Start(Tag::Paragraph) => {
                 if !item_prefix {
@@ -153,11 +173,7 @@ fn blocks(text: &str) -> Vec<Block> {
             }
             Event::End(TagEnd::TableCell) => block.text.push_str("    "),
             Event::End(
-                TagEnd::Paragraph
-                | TagEnd::Heading(_)
-                | TagEnd::CodeBlock
-                | TagEnd::Item
-                | TagEnd::TableRow,
+                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::TableRow,
             ) => {
                 flush(&mut output, &mut block);
                 item_prefix = false;
@@ -221,11 +237,18 @@ fn render_markdown(id: &str, text: &str, prose: bool) -> AnyElement {
                         .mt_2()
                 })
                 .when(block.code, |row| {
-                    row.p_3()
+                    row.px_3()
+                        .py(px(10.0))
                         .font_family(MONO_FONT)
                         .text_size(px(12.0))
-                        .rounded(px(6.0))
-                        .bg(surface_tint(colors().elevated, colors().background))
+                        .line_height(px(19.0))
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(colors().border_subtle)
+                        .bg(surface_tint(
+                            mix(colors().background, colors().foreground, 0.035),
+                            colors().background,
+                        ))
                 })
                 .when(block.quote, |row| {
                     row.pl_3()
@@ -254,6 +277,16 @@ mod tests {
                 .iter()
                 .any(|(_, style)| style.background_color.is_some())
         );
+    }
+
+    #[test]
+    fn fenced_code_is_highlighted_in_its_language_without_a_trailing_line() {
+        let parsed = blocks("```rust\nlet total = 1;\n```\n");
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].code);
+        assert_eq!(parsed[0].text, "let total = 1;");
+        let keyword = crate::ui::syntax::SyntaxKind::Keyword.highlight_style();
+        assert!(parsed[0].runs.contains(&(0..3, keyword)));
     }
 
     #[test]
