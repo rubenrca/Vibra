@@ -10,13 +10,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, Bounds, Context, Corner, Div, Hsla, MouseButton,
-    PathBuilder, Pixels, Point, Rgba, SharedString, Stateful, Task, Timer, Window, canvas, div,
-    point, prelude::*, px, relative, svg,
+    Animation, AnimationExt, AnyElement, Bounds, Context, Corner, Div, Font, FontFeatures,
+    FontStyle, FontWeight, Hsla, MouseButton, PathBuilder, Pixels, Point, Rgba, SharedString,
+    Stateful, Task, Timer, Transformation, Window, canvas, div, ease_out_quint, percentage, point,
+    prelude::*, px, relative, svg,
 };
 
 use crate::domain::usage::{
-    ProviderUsage, UsageSnapshot, now_timestamp, reset_label, resource_label, timestamp,
+    ProviderUsage, UsageSnapshot, now_timestamp, plan_label, reset_label, resource_label, timestamp,
 };
 use crate::infrastructure::clock::local_utc_offset;
 use crate::infrastructure::usage::UsageMonitor;
@@ -45,6 +46,11 @@ const HOVER_CARD_ENTER: Duration = Duration::from_millis(100);
 const HOVER_COUNT_UP: Duration = Duration::from_millis(400);
 /// …and glide to the next provider's values when the pointer moves on.
 const HOVER_SWITCH: Duration = Duration::from_millis(240);
+/// The modal fades in while rising this far into place, like other dialogs.
+const MODAL_RISE: f32 = 6.0;
+const MODAL_ENTER: Duration = Duration::from_millis(200);
+/// One turn of the refresh icon while quotas are being checked.
+const REFRESH_SPIN: Duration = Duration::from_millis(900);
 
 #[derive(Default)]
 pub(super) struct UsageState {
@@ -170,7 +176,7 @@ impl UsageState {
         UsageCard {
             id: id.to_owned(),
             name: provider.display_name.clone(),
-            plan: provider.plan.clone(),
+            plan: provider.plan.as_deref().map(plan_label),
             stale: self.provider_stale(id, provider, now),
             rows,
             warnings,
@@ -389,7 +395,8 @@ impl WorkspaceView {
         // It rises from its anchor, so only the room above limits its height.
         let available: f32 = self.usage.anchor.y.into();
         let snapshot = &self.usage.snapshot;
-        let refresh_tooltip = if self.usage.loading {
+        let loading = self.usage.loading;
+        let refresh_tooltip = if loading {
             "Checking quotas…"
         } else {
             "Refresh usage · May request Keychain access"
@@ -398,8 +405,7 @@ impl WorkspaceView {
             .id("usage-provider-list")
             .min_h(px(0.0))
             .overflow_y_scroll()
-            .px(px(14.0))
-            .pb(px(14.0))
+            .p(px(14.0))
             .flex()
             .flex_col()
             .gap(px(14.0))
@@ -409,15 +415,11 @@ impl WorkspaceView {
             .when(
                 snapshot.providers.is_empty() && self.usage.error.is_none(),
                 |content| {
-                    content.child(
-                        div()
-                            .text_color(colors().muted)
-                            .child(if self.usage.loading {
-                                "Checking quotas…"
-                            } else {
-                                "Sign in with Claude Code, Codex, or Grok Build and click Refresh."
-                            }),
-                    )
+                    content.child(div().text_color(colors().muted).child(if loading {
+                        "Checking quotas…"
+                    } else {
+                        "Sign in with Claude Code, Codex, or Grok Build and click Refresh."
+                    }))
                 },
             )
             .children(
@@ -436,10 +438,78 @@ impl WorkspaceView {
                     .iter()
                     .filter(|error| !snapshot.providers.contains_key(&error.provider_id))
                     .map(|error| {
-                        div()
-                            .text_color(colors().warning)
-                            .child(format!("{}: {}", error.provider_id, error.message))
+                        div().text_color(colors().warning).child(format!(
+                            "{}: {}",
+                            provider_name(&error.provider_id),
+                            error.message
+                        ))
                     }),
+            );
+
+        let header = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .pl(px(14.0))
+            .pr(px(8.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(colors().border_subtle)
+            .child(
+                div()
+                    .id("usage-title")
+                    .flex_1()
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .tooltip(|_, cx| {
+                        sidebar_tooltip("Subscription usage · Refreshes every 5 min", cx)
+                    })
+                    .child("Usage"),
+            )
+            .child(
+                div()
+                    .id("usage-refresh")
+                    .group("usage-refresh")
+                    .size(px(26.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .when(!loading, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|button| button.bg(menu_hover()))
+                    })
+                    .tooltip(move |_, cx| sidebar_tooltip(refresh_tooltip, cx))
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_usage(true, cx)))
+                    .child(refresh_icon(loading)),
+            );
+
+        let panel = menu_panel()
+            .id("usage-modal")
+            .p(px(0.0))
+            .rounded(px(12.0))
+            .shadow(dialog_shadow())
+            .w(px(380.0))
+            .max_h(px((available - MENU_EDGE_MARGIN).max(100.0)))
+            .text_size(px(12.0))
+            .text_color(colors().foreground)
+            .overflow_hidden()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .child(header)
+            .child(content)
+            // Settles into place like the other dialogs; the anchor never sees it move.
+            .with_animation(
+                "usage-modal-enter",
+                Animation::new(MODAL_ENTER).with_easing(ease_out_quint()),
+                |panel, delta| {
+                    panel
+                        .opacity(delta)
+                        .relative()
+                        .top(px(MODAL_RISE * (1.0 - delta)))
+                },
             );
 
         Some(
@@ -459,74 +529,7 @@ impl WorkspaceView {
                         .anchor(Corner::BottomLeft)
                         .position(self.usage.anchor)
                         .snap_to_window_with_margin(px(MENU_EDGE_MARGIN))
-                        .child(
-                    menu_panel()
-                        .id("usage-modal")
-                        .p(px(0.0))
-                        .rounded(px(12.0))
-                        .shadow(dialog_shadow())
-                        .w(px(380.0))
-                        .max_h(px((available - MENU_EDGE_MARGIN).max(100.0)))
-                        .text_size(px(11.0))
-                        .text_color(colors().foreground)
-                        .overflow_hidden()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            div()
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap(px(10.0))
-                                .px(px(14.0))
-                                .py(px(10.0))
-                                .child(
-                                    div()
-                                        .id("usage-title")
-                                        .flex_1()
-                                        .text_size(px(12.0))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(colors().muted)
-                                        .tooltip(|_, cx| {
-                                            sidebar_tooltip(
-                                                "Subscription usage · Refreshes every 5 min",
-                                                cx,
-                                            )
-                                        })
-                                        .child("Usage"),
-                                )
-                                .child(
-                                    div()
-                                        .id("usage-refresh")
-                                        .group("usage-refresh")
-                                        .size(px(24.0))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(px(5.0))
-                                        .cursor_pointer()
-                                        .text_color(colors().muted)
-                                        .hover(|button| button.bg(menu_hover()))
-                                        .tooltip(move |_, cx| sidebar_tooltip(refresh_tooltip, cx))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.refresh_usage(true, cx)
-                                        }))
-                                        .when(self.usage.loading, |button| button.child("…"))
-                                        .when(!self.usage.loading, |button| {
-                                            button.child(
-                                                svg()
-                                                    .path("chrome-icons/refresh.svg")
-                                                    .size(px(13.0))
-                                                    .text_color(colors().muted)
-                                                    .group_hover("usage-refresh", |icon| {
-                                                        icon.text_color(colors().foreground)
-                                                    }),
-                                            )
-                                        }),
-                                ),
-                        )
-                        .child(content),
-                        ),
+                        .child(panel),
                 )
                 .into_any_element(),
         )
@@ -740,6 +743,7 @@ impl HoverMotion {
     fn frame(&self, card: &UsageCard, now: Instant) -> CardFrame {
         let progress = self.progress(now);
         CardFrame {
+            id: card.id.clone(),
             name: card.name.clone(),
             rows: card
                 .rows
@@ -761,6 +765,7 @@ fn elapsed_share(start: Instant, now: Instant, duration: Duration) -> f32 {
 /// The hover card as drawn at one instant.
 #[derive(Clone, Debug, PartialEq)]
 struct CardFrame {
+    id: String,
     name: String,
     rows: Vec<QuotaFrame>,
 }
@@ -852,9 +857,41 @@ fn crossfade(text: String, previous: Option<String>, progress: f32) -> Div {
         })
 }
 
-/// The hover card at `now`: provider name, then each quota as label and value
-/// over its bar and reset time. It fades and rises in as it opens, counts its
-/// quotas up, and glides between providers.
+/// `id`'s mark fading in over `previous`'s while `progress` runs to 1.
+fn mark_crossfade(id: &str, previous: Option<&str>, progress: f32) -> Div {
+    let previous = previous.filter(|previous| *previous != id && progress < 1.0);
+    let fading = previous.is_some();
+    let mark = |id: &str| {
+        svg()
+            .path(provider_mark(id))
+            .size_full()
+            .text_color(colors().foreground)
+    };
+    div()
+        .relative()
+        .size(px(14.0))
+        .flex_none()
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .when(fading, |current| current.opacity(progress))
+                .child(mark(id)),
+        )
+        .when_some(previous, |marks, previous| {
+            marks.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .opacity(1.0 - progress)
+                    .child(mark(previous)),
+            )
+        })
+}
+
+/// The hover card at `now`: provider mark and name, then each quota as label
+/// and value over its bar and reset time. It fades and rises in as it opens,
+/// counts its quotas up, and glides between providers.
 fn usage_hover_content(
     card: &UsageCard,
     motion: &HoverMotion,
@@ -875,6 +912,7 @@ fn usage_hover_content(
         .p(px(14.0))
         .gap(px(14.0))
         .rounded(px(12.0))
+        .shadow(dialog_shadow())
         .text_size(px(13.0))
         .text_color(colors().foreground)
         .child(
@@ -882,11 +920,16 @@ fn usage_hover_content(
                 .flex()
                 .items_center()
                 .gap(px(8.0))
+                .child(mark_crossfade(
+                    &card.id,
+                    from.map(|from| from.id.as_str()),
+                    progress,
+                ))
                 .child(
                     div()
                         .min_w(px(0.0))
                         .flex_1()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::SEMIBOLD)
                         .child(crossfade(
                             card.name.clone(),
                             from.map(|from| from.name.clone()),
@@ -932,10 +975,10 @@ fn usage_hover_content(
                                 .child(row.label),
                         )
                         .child(
-                            div()
+                            tabular(div())
                                 .flex_none()
                                 .when(row.emphasized, |value| {
-                                    value.font_weight(gpui::FontWeight::SEMIBOLD)
+                                    value.font_weight(FontWeight::SEMIBOLD)
                                 })
                                 .child(row.value),
                         ),
@@ -983,15 +1026,15 @@ fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
                 .id(SharedString::from(format!("usage-provider-{}", card.id)))
                 .flex()
                 .items_center()
-                .gap(px(7.0))
-                .text_size(px(12.0))
+                .gap(px(8.0))
+                .text_size(px(13.0))
                 .when(!header_tooltip.is_empty(), |header| {
                     header.tooltip(move |_, cx| sidebar_tooltip(header_tooltip.clone(), cx))
                 })
                 .child(
                     svg()
                         .path(provider_mark(&card.id))
-                        .size(px(13.0))
+                        .size(px(14.0))
                         .flex_none()
                         .text_color(colors().foreground),
                 )
@@ -1000,7 +1043,7 @@ fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
                         .min_w(px(0.0))
                         .flex_1()
                         .truncate()
-                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .font_weight(FontWeight::MEDIUM)
                         .child(card.name.clone()),
                 )
                 .when_some(card.plan.clone(), |header, plan| {
@@ -1008,7 +1051,7 @@ fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
                         div()
                             .max_w(px(100.0))
                             .truncate()
-                            .text_size(px(10.0))
+                            .text_size(px(11.0))
                             .text_color(colors().subtle)
                             .child(plan),
                     )
@@ -1016,7 +1059,7 @@ fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
                 .when(card.stale, |header| {
                     header.child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(px(11.0))
                             .text_color(colors().warning)
                             .child("Outdated"),
                     )
@@ -1033,7 +1076,7 @@ fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(5.0))
+                .gap(px(6.0))
                 .child(
                     div()
                         .flex()
@@ -1051,11 +1094,19 @@ fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
                                 .min_w(px(0.0))
                                 .flex_1()
                                 .truncate()
-                                .text_size(px(10.0))
+                                .text_size(px(11.0))
                                 .text_color(colors().subtle)
                                 .when_some(row.reset.clone(), |label, reset| label.child(reset)),
                         )
-                        .child(div().flex_none().child(row.value.clone())),
+                        .child(
+                            tabular(div())
+                                .flex_none()
+                                // Quotas close to blocking work stand out, as in the hover card.
+                                .when(!card.stale && quota_alert(row.percent).is_some(), |value| {
+                                    value.font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .child(row.value.clone()),
+                        ),
                 )
                 .when_some(row.percent, |row, percent| {
                     row.child(quota_bar(percent, card.bar_color(percent), 3.0))
@@ -1066,6 +1117,47 @@ fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
                 .iter()
                 .map(|warning| div().text_color(colors().warning).child(warning.clone())),
         )
+}
+
+/// The interface font with tabular figures, so values hold their width as
+/// they count up and line up from one quota to the next.
+fn tabular(element: Div) -> Div {
+    element.font(Font {
+        family: ".SystemUIFont".into(),
+        features: FontFeatures(Arc::new(vec![("tnum".into(), 1)])),
+        fallbacks: None,
+        weight: FontWeight::NORMAL,
+        style: FontStyle::Normal,
+    })
+}
+
+/// The refresh glyph, turning while quotas are being checked.
+fn refresh_icon(loading: bool) -> AnyElement {
+    let icon = svg()
+        .path("chrome-icons/refresh.svg")
+        .size(px(13.0))
+        .text_color(colors().muted)
+        .group_hover("usage-refresh", |icon| icon.text_color(colors().foreground));
+    if loading {
+        icon.with_animation(
+            "usage-refresh-spin",
+            Animation::new(REFRESH_SPIN).repeat(),
+            |icon, delta| icon.with_transformation(Transformation::rotate(percentage(delta))),
+        )
+        .into_any_element()
+    } else {
+        icon.into_any_element()
+    }
+}
+
+/// A provider's name when it only reported a failure, without a reading to carry one.
+fn provider_name(id: &str) -> &str {
+    match id {
+        "claude" => "Claude",
+        "codex" => "Codex",
+        "grok" => "Grok",
+        _ => id,
+    }
 }
 
 #[cfg(test)]
@@ -1110,7 +1202,7 @@ mod tests {
                 row("Credits", "40 credits", None, None),
             ]
         );
-        assert_eq!(card.plan.as_deref(), Some("plus"));
+        assert_eq!(card.plan.as_deref(), Some("Plus"));
         assert!(!card.stale);
         assert!(card.warnings.is_empty());
         assert_eq!(card.status.as_deref(), Some("Updated 3 min ago"));

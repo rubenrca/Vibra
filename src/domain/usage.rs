@@ -149,6 +149,22 @@ pub fn resource_label(key: &str) -> &str {
     }
 }
 
+/// A plan as providers report it, in title case: "max" reads "Max" and
+/// "team_premium" reads "Team Premium".
+pub fn plan_label(plan: &str) -> String {
+    plan.split(['_', '-', ' '])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect::<String>())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn now_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -288,6 +304,15 @@ mod tests {
             reset_label("not a date", now, west),
             "Reset date unavailable"
         );
+    }
+
+    #[test]
+    fn plans_read_in_title_case() {
+        assert_eq!(plan_label("max"), "Max");
+        assert_eq!(plan_label("plus"), "Plus");
+        assert_eq!(plan_label("team_premium"), "Team Premium");
+        assert_eq!(plan_label("Pro"), "Pro");
+        assert_eq!(plan_label(""), "");
     }
 
     #[test]
