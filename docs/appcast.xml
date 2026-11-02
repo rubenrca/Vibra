@@ -3,21 +3,21 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.44</title>
-            <pubDate>Mon, 02 Nov 2026 12:31:34 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.44</link>
-            <sparkle:version>317</sparkle:version>
-            <sparkle:shortVersionString>0.3.44</sparkle:shortVersionString>
+            <title>0.3.45</title>
+            <pubDate>Mon, 02 Nov 2026 13:37:19 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.45</link>
+            <sparkle:version>324</sparkle:version>
+            <sparkle:shortVersionString>0.3.45</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Show every file in a diff as a card: a header with the folder muted before the file name, a New, Deleted, Renamed, or Conflict label, and its line counts with a diffstat. Changed lines carry a colored edge and a + or − column, and the words that changed within a line get a stronger tint unless the whole line was rewritten. Folds keep their arrows in the gutter, and hunk headers show the enclosing scope.</li>
-  <li>Highlight Markdown, with fenced code colored in its own language, keys in JSON, YAML, and TOML, HTML and XML tags and attributes, and C, C++, Java, Kotlin, C#, Ruby, PHP, SQL, Lua, and Dockerfiles. Code blocks in pull request descriptions and comments are highlighted too.</li>
-  <li>Open a commit from Repository → History as a full page with a back button, newer and older navigation, its pull request and GitHub links, and its changes beside a file list. J and K select a row of the graph and Enter opens it; on the page, J and K step through commits, ] and [ through files, and Esc goes back.</li>
-  <li>Give the command palette, prompts, and the terminal's paste and clipboard confirmations one dialog style, with focus rings, shortcuts drawn as keycaps, and actions you can click.</li>
-  <li>Shorten the Spaces and Agents empty states to one line.</li>
+  <li>Keep text readable on hovered and selected rows in every palette, and give primary buttons and accent chips labels with at least 4.5:1 contrast. Light palettes such as Tokyo Night, Ayu, Everforest, Nord, Solarized, and Rosé Pine get a slightly deeper accent.</li>
+  <li>Fade dimmed terminal text toward its background, so it no longer looks heavier than normal text on light palettes.</li>
+  <li>Turn the IDE button into a split button beside the right panel toggle: its icon opens the folder in the IDE you last picked, and the chevron lists the installed IDEs. The file search button in the Workspace header is gone; ⌘P still opens the finder.</li>
+  <li>Refine the quota hover card and modal: figures keep their width as they count, quotas near their limit read in semibold, the hover card shows each provider's mark, and the refresh icon turns while quotas are checked.</li>
+  <li>Fix a clicked space opening a reorder gap on the next drag, such as resizing Agents or dropping a file from Finder.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.44/Vibra-0.3.44.dmg" length="16030219" type="application/octet-stream" sparkle:edSignature="0ZLQCEOc8OOXRKzjIdEKz9O+IcRGGvVyGfwdDgBV1X29bcVukUaPYPqzOApbyH+kkvNeMxFC3EMkm1ZuD0LACQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.45/Vibra-0.3.45.dmg" length="16171642" type="application/octet-stream" sparkle:edSignature="uoOUBTogX34GmAWVpqwUzy7KFWAKIHDjjQntDaiQo0qlks2LioKbHCqJI4/4VqaNqXCN2m+c4JblFO5YCcCwDA=="/>
         </item>
     </channel>
 </rss>
