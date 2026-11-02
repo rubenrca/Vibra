@@ -313,50 +313,39 @@ impl WorkspaceView {
                             })
                             .when(space_count == 0, |list| {
                                 list.child(
-                            div()
-                                .id("global-empty-projects")
-                                .mt_1()
-                                .p_3()
-                                .rounded(px(8.0))
-                                .border_1()
-                                .border_dashed()
-                                .border_color(colors().border_subtle)
-                                .flex()
-                                .flex_col()
-                                .gap(px(8.0))
-                                .cursor_pointer()
-                                .hover(|card| {
-                                    card.bg(surface_tint(colors().hover, colors().sidebar))
-                                })
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.new_space(window, cx)),
-                                )
-                                .child(
                                     div()
+                                        .id("global-empty-projects")
+                                        .mt_1()
+                                        .px_3()
+                                        .py_2()
+                                        .rounded(px(8.0))
+                                        .border_1()
+                                        .border_dashed()
+                                        .border_color(colors().border_subtle)
                                         .flex()
-                                        .items_center()
+                                        .flex_col()
+                                        .cursor_pointer()
+                                        .hover(|card| {
+                                            card.bg(surface_tint(colors().hover, colors().sidebar))
+                                        })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.new_space(window, cx)
+                                        }))
                                         .child(
                                             div()
-                                                .flex_1()
-                                                .text_size(px(12.5))
-                                                .font_weight(gpui::FontWeight::MEDIUM)
-                                                .text_color(colors().foreground)
-                                                .child("Open a space"),
-                                        )
-                                        .child(keycap("⌘N")),
+                                                .flex()
+                                                .items_center()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .text_size(px(12.5))
+                                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                                        .text_color(colors().foreground)
+                                                        .child("Open a space"),
+                                                )
+                                                .child(keycap("⌘N")),
+                                        ),
                                 )
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .line_height(px(17.0))
-                                        .text_color(colors().subtle)
-                                        .child(concat!(
-                                            "A space starts in your home folder and follows ",
-                                            "its terminal: cd into a repository and it takes ",
-                                            "that repository's name, branch, and files.",
-                                        )),
-                                ),
-                        )
                             }),
                     )
                     .child(self.agents_section(cx)),

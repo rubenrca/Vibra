@@ -366,10 +366,7 @@ impl WorkspaceView {
                                 .text_size(px(12.0))
                                 .line_height(px(17.0))
                                 .text_color(colors().subtle)
-                                .child(concat!(
-                                    "No agents running. Agents show up here ",
-                                    "when you start one in a terminal.",
-                                )),
+                                .child("No agents running"),
                         )
                     })
                     .children(cards),
