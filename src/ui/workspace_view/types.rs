@@ -62,6 +62,8 @@ pub(super) enum PaletteAction {
 pub(super) struct PaletteItem {
     pub(super) label: String,
     pub(super) detail: String,
+    /// Keyboard shortcut drawn as keycaps, empty when the command has none.
+    pub(super) shortcut: &'static str,
     pub(super) action: PaletteAction,
 }
 

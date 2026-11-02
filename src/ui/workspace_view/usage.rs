@@ -20,6 +20,7 @@ use crate::domain::usage::{
 };
 use crate::infrastructure::clock::local_utc_offset;
 use crate::infrastructure::usage::UsageMonitor;
+use crate::ui::dialog::dialog_shadow;
 use crate::ui::menu::{menu_hover, menu_panel};
 use crate::ui::theme::{colors, mix};
 
@@ -462,6 +463,8 @@ impl WorkspaceView {
                     menu_panel()
                         .id("usage-modal")
                         .p(px(0.0))
+                        .rounded(px(12.0))
+                        .shadow(dialog_shadow())
                         .w(px(380.0))
                         .max_h(px((available - MENU_EDGE_MARGIN).max(100.0)))
                         .text_size(px(11.0))

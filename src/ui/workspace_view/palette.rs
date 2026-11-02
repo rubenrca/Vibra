@@ -4,8 +4,13 @@ use gpui::{
     AnyElement, Context, MouseButton, SharedString, Window, div, prelude::*, px, relative, svg,
 };
 
+use crate::ui::dialog::{
+    CONTROL_RADIUS, caret, dialog_footer, dialog_panel, dialog_scrim, fade_in, key_hint, keycap,
+    rise_in, shortcut_keys,
+};
+
 use crate::domain::workspace::PaneSplitDirection;
-use crate::ui::menu::{menu_border, menu_hover, menu_panel};
+use crate::ui::menu::{menu_border, menu_hover};
 use crate::ui::theme::{colors, surface_tint};
 use crate::{OpenIde, QuickOpen, ToggleCommandPalette};
 
@@ -125,15 +130,21 @@ impl super::WorkspaceView {
                 ("Workspace: Explorer", "", PaletteAction::ShowFiles),
                 (
                     "Repository: Open",
-                    "History, pull requests, issues, and agent activity",
+                    "",
                     PaletteAction::ShowSection(WorkspaceSection::Inbox),
                 ),
                 ("Settings: Open", "⌘,", PaletteAction::ShowSettings),
             ]
             .into_iter()
-            .map(|(label, detail, action)| PaletteItem {
+            .map(|(label, shortcut, action)| PaletteItem {
                 label: label.into(),
-                detail: detail.into(),
+                detail: match action {
+                    PaletteAction::ShowSection(WorkspaceSection::Inbox) => {
+                        "History, pull requests, issues, and agent activity".into()
+                    }
+                    _ => String::new(),
+                },
+                shortcut,
                 action,
             })
             .collect(),
@@ -157,10 +168,8 @@ impl super::WorkspaceView {
                         }
                         Some(PaletteItem {
                             label,
-                            detail: path
-                                .extension()
-                                .map(|extension| extension.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
+                            detail: String::new(),
+                            shortcut: "",
                             action: PaletteAction::OpenFile(path.clone()),
                         })
                     })
@@ -172,6 +181,7 @@ impl super::WorkspaceView {
             items.extend(self.snapshot.projects.iter().map(|project| PaletteItem {
                 label: format!("Space: {}", project.name),
                 detail: project.root_path.clone(),
+                shortcut: "",
                 action: PaletteAction::SelectProject(project.id),
             }));
         }
@@ -241,170 +251,242 @@ impl super::WorkspaceView {
         };
         let selected = self.palette_selected.min(items.len().saturating_sub(1));
         let query = self.palette_query.clone();
-        let placeholder = match mode {
-            PaletteMode::Commands => "Search commands…",
-            PaletteMode::Files => "Open file…",
+        let (placeholder, run_label) = match mode {
+            PaletteMode::Commands => ("Search commands…", "Run"),
+            PaletteMode::Files => ("Open file…", "Open"),
         };
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_start()
-                .justify_center()
-                .pt(px(86.0))
-                .bg(colors().overlay())
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.close_palette(cx);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }),
-                )
-                .child(
-                    menu_panel()
-                        .w(px(560.0))
-                        .max_w_full()
-                        .max_h(px(460.0))
-                        .mx_4()
-                        .p_0()
-                        .overflow_hidden()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
+        let search = div()
+            .h(px(54.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .px(px(18.0))
+            .border_b_1()
+            .border_color(menu_border())
+            .child(
+                svg()
+                    .path("chrome-icons/search.svg")
+                    .size(px(17.0))
+                    .flex_none()
+                    .text_color(colors().muted),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .items_center()
+                    .text_size(px(15.0))
+                    .when(!query.is_empty(), |field| {
+                        field.child(
                             div()
-                                .h(px(48.0))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .px_4()
-                                .border_b_1()
-                                .border_color(menu_border())
-                                .child(
-                                    svg()
-                                        .path("chrome-icons/search.svg")
-                                        .size(px(16.0))
-                                        .flex_none()
-                                        .text_color(colors().muted),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.0))
-                                        .truncate()
-                                        .text_size(px(13.0))
-                                        .text_color(if query.is_empty() {
-                                            colors().subtle
-                                        } else {
-                                            colors().foreground
-                                        })
-                                        .child(if query.is_empty() {
-                                            placeholder.to_owned()
-                                        } else {
-                                            query
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .text_xs()
-                                        .text_color(colors().subtle)
-                                        .child("esc"),
-                                ),
+                                .min_w(px(0.0))
+                                .truncate()
+                                .mr(px(1.0))
+                                .text_color(colors().foreground)
+                                .child(query.clone()),
                         )
-                        .child(
+                    })
+                    .child(caret(18.0))
+                    .when(query.is_empty(), |field| {
+                        field.child(
                             div()
-                                .id("palette-results")
-                                .flex_1()
-                                .min_h(px(0.0))
-                                .overflow_y_scroll()
-                                .py_2()
-                                .children(items.into_iter().enumerate().map(|(index, item)| {
-                                    let active = index == selected;
-                                    let action = item.action.clone();
-                                    div()
-                                        .id(SharedString::from(format!("palette-item-{index}")))
-                                        .h(px(38.0))
-                                        .mx_2()
-                                        .px_3()
-                                        .rounded(px(6.0))
-                                        .flex()
-                                        .items_center()
-                                        .gap_3()
-                                        .cursor_pointer()
-                                        .when(active, |row| {
-                                            row.bg(surface_tint(
-                                                colors().selection,
-                                                colors().elevated,
-                                            ))
-                                        })
-                                        .when(!active, |row| row.hover(|row| row.bg(menu_hover())))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.execute_palette_action(action.clone(), window, cx);
-                                        }))
-                                        .child(
-                                            div()
-                                                .size(px(18.0))
-                                                .flex_none()
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .text_color(if active {
-                                                    colors().muted
-                                                } else {
-                                                    colors().subtle
-                                                })
-                                                .child(if active { "›" } else { "·" }),
-                                        )
-                                        .child(
-                                            div()
-                                                .min_w(px(0.0))
-                                                .flex_1()
-                                                .truncate()
-                                                .text_size(px(13.0))
-                                                .text_color(colors().foreground)
-                                                .child(item.label),
-                                        )
-                                        .child(
-                                            div()
-                                                .max_w(relative(0.4))
-                                                .flex_none()
-                                                .truncate()
-                                                .text_size(px(11.0))
-                                                .text_color(colors().subtle)
-                                                .child(item.detail),
-                                        )
-                                })),
-                        )
-                        .when(empty, |palette| {
-                            palette.child(
-                                div()
-                                    .h(px(80.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_sm()
-                                    .text_color(colors().subtle)
-                                    .child(empty_message),
-                            )
-                        })
-                        .child(
-                            div()
-                                .h(px(28.0))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_end()
-                                .px_3()
-                                .border_t_1()
-                                .border_color(menu_border())
-                                .text_xs()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .ml(px(1.0))
                                 .text_color(colors().subtle)
-                                .child("↑↓ navigate · ↵ run"),
+                                .child(placeholder),
+                        )
+                    }),
+            )
+            .child(keycap("esc"));
+        let results = div()
+            .id("palette-results")
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .p(px(6.0))
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .children(items.into_iter().enumerate().map(|(index, item)| {
+                let active = index == selected;
+                let icon = palette_icon(&item.action);
+                let action = item.action.clone();
+                div()
+                    .id(SharedString::from(format!("palette-item-{index}")))
+                    .h(px(38.0))
+                    .flex_none()
+                    .px(px(10.0))
+                    .rounded(px(CONTROL_RADIUS))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.0))
+                    .cursor_pointer()
+                    .when(active, |row| {
+                        row.bg(surface_tint(colors().selection, colors().elevated))
+                    })
+                    .when(!active, |row| row.hover(|row| row.bg(menu_hover())))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.execute_palette_action(action.clone(), window, cx);
+                    }))
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size(px(15.0))
+                            .flex_none()
+                            .text_color(if active {
+                                colors().foreground
+                            } else {
+                                colors().muted
+                            }),
+                    )
+                    .child(palette_label(mode, &item.label))
+                    .when(!item.detail.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .max_w(relative(0.42))
+                                .flex_none()
+                                .truncate()
+                                .text_size(px(11.5))
+                                .text_color(colors().subtle)
+                                .child(item.detail),
+                        )
+                    })
+                    .when(!item.shortcut.is_empty(), |row| {
+                        row.child(shortcut_keys(item.shortcut))
+                    })
+            }));
+        let panel = dialog_panel()
+            .w(px(620.0))
+            .max_h(px(480.0))
+            .overflow_hidden()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(search)
+            .when(!empty, |panel| panel.child(results))
+            .when(empty, |panel| {
+                panel.child(
+                    div()
+                        .h(px(120.0))
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(10.0))
+                        .child(
+                            svg()
+                                .path("chrome-icons/search.svg")
+                                .size(px(20.0))
+                                .text_color(colors().subtle),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(colors().muted)
+                                .child(empty_message),
                         ),
                 )
-                .into_any_element(),
+            })
+            .child(
+                dialog_footer()
+                    .py(px(9.0))
+                    .justify_end()
+                    .gap(px(16.0))
+                    .child(key_hint(&["↑", "↓"], "Navigate"))
+                    .child(key_hint(&["↵"], run_label)),
+            );
+        Some(
+            fade_in(
+                "palette-scrim",
+                dialog_scrim()
+                    .items_start()
+                    .pt(px(86.0))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.close_palette(cx);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .child(rise_in("palette-panel", panel)),
+            )
+            .into_any_element(),
         )
     }
+}
+
+fn palette_icon(action: &PaletteAction) -> &'static str {
+    match action {
+        PaletteAction::NewSpace => "chrome-icons/plus.svg",
+        PaletteAction::AddProject => "chrome-icons/folder-open.svg",
+        PaletteAction::SelectProject(_) => "chrome-icons/folder.svg",
+        PaletteAction::NewTerminalTab => "chrome-icons/terminal.svg",
+        PaletteAction::OpenIde => "chrome-icons/open-external.svg",
+        PaletteAction::Split(_) => "chrome-icons/split-view.svg",
+        PaletteAction::EqualizePanes => "chrome-icons/rows.svg",
+        PaletteAction::TogglePaneZoom => "chrome-icons/maximize.svg",
+        PaletteAction::ToggleWorkspacePanel => "chrome-icons/panel-right.svg",
+        PaletteAction::ShowFiles => "chrome-icons/files.svg",
+        PaletteAction::ShowSection(_) => "chrome-icons/repository.svg",
+        PaletteAction::ShowSettings => "chrome-icons/settings.svg",
+        PaletteAction::OpenFile(_) => "file-icons/file.svg",
+    }
+}
+
+/// Commands lead with a muted category (`Pane:`) before what they do; files
+/// lead with their name and trail the folder that holds them.
+fn palette_label(mode: PaletteMode, label: &str) -> gpui::Div {
+    let (lead, lead_color, rest, rest_color) = match mode {
+        PaletteMode::Commands => match label.split_once(": ") {
+            Some((category, title)) => (
+                format!("{category}:"),
+                colors().subtle,
+                title.to_owned(),
+                colors().foreground,
+            ),
+            None => (
+                label.to_owned(),
+                colors().foreground,
+                String::new(),
+                colors().subtle,
+            ),
+        },
+        PaletteMode::Files => match label.rsplit_once('/') {
+            Some((folder, name)) => (
+                name.to_owned(),
+                colors().foreground,
+                folder.to_owned(),
+                colors().subtle,
+            ),
+            None => (
+                label.to_owned(),
+                colors().foreground,
+                String::new(),
+                colors().subtle,
+            ),
+        },
+    };
+    let files = mode == PaletteMode::Files;
+    div()
+        .min_w(px(0.0))
+        .flex_1()
+        .flex()
+        .items_center()
+        .gap(px(if files { 8.0 } else { 5.0 }))
+        .overflow_hidden()
+        .text_size(px(13.0))
+        .child(div().flex_none().text_color(lead_color).child(lead))
+        .when(!rest.is_empty(), |label| {
+            label.child(
+                div()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .when(files, |folder| folder.text_size(px(12.0)))
+                    .text_color(rest_color)
+                    .child(rest),
+            )
+        })
 }

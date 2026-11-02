@@ -160,10 +160,11 @@ impl TerminalConfirmation {
         preview
     }
 
-    fn hint(&self) -> &'static str {
+    /// Labels for the dismiss and accept buttons, bound to Esc and Return.
+    fn actions(&self) -> (&'static str, &'static str) {
         match self {
-            Self::Paste { .. } => "↵ paste    esc cancel",
-            Self::ClipboardRead { .. } => "↵ allow    esc deny",
+            Self::Paste { .. } => ("Cancel", "Paste"),
+            Self::ClipboardRead { .. } => ("Deny", "Allow"),
         }
     }
 

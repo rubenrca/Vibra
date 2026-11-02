@@ -8,8 +8,12 @@ use gpui::{
 
 use crate::domain::workspace::PaneSplitDirection;
 use crate::ui::agent_marks::agent_compact_badge;
+use crate::ui::dialog::{
+    DialogButton, dialog_button, dialog_field, dialog_footer, dialog_header, dialog_panel,
+    dialog_scrim, fade_in, rise_in,
+};
 use crate::ui::menu::{MenuRow, menu_panel, menu_panel_height, menu_separator};
-use crate::ui::theme::{MONO_FONT, colors, popover_surface, surface_tint};
+use crate::ui::theme::{MONO_FONT, colors};
 
 use super::{
     ContextMenuAction, ContextMenuAnchor, ContextMenuKind, ContextMenuState, RenamePrompt,
@@ -470,116 +474,105 @@ impl WorkspaceView {
 
     pub(super) fn rename_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prompt = self.rename_prompt.clone()?;
-        let title = match prompt.kind {
-            RenamePromptKind::Pane { .. } => "Rename pane",
-            RenamePromptKind::Project { .. } => "Rename space",
-            RenamePromptKind::NewFile { .. } => "New file",
-            RenamePromptKind::NewFolder { .. } => "New folder",
-        };
-        let value = if prompt.value.is_empty() {
-            match prompt.kind {
-                RenamePromptKind::Project { .. } => {
-                    "Leave empty to use the folder's name".to_owned()
-                }
-                _ => "Enter a name…".to_owned(),
-            }
-        } else {
-            prompt.value
-        };
+        let (icon, title, placeholder, action, detail): (_, _, _, _, Option<SharedString>) =
+            match &prompt.kind {
+                RenamePromptKind::Pane { .. } => (
+                    "chrome-icons/pencil.svg",
+                    "Rename pane",
+                    "Pane name",
+                    "Rename",
+                    None,
+                ),
+                RenamePromptKind::Project { .. } => (
+                    "chrome-icons/pencil.svg",
+                    "Rename space",
+                    "Space name",
+                    "Rename",
+                    Some("Leave empty to use the folder's name".into()),
+                ),
+                RenamePromptKind::NewFile { directory } => (
+                    "chrome-icons/file-plus.svg",
+                    "New file",
+                    "File name",
+                    "Create",
+                    Some(format!("In {}", self.entry_location(directory)).into()),
+                ),
+                RenamePromptKind::NewFolder { directory } => (
+                    "chrome-icons/folder-plus.svg",
+                    "New folder",
+                    "Folder name",
+                    "Create",
+                    Some(format!("In {}", self.entry_location(directory)).into()),
+                ),
+            };
+        let mono = matches!(
+            prompt.kind,
+            RenamePromptKind::NewFile { .. } | RenamePromptKind::NewFolder { .. }
+        );
+        let panel = dialog_panel()
+            .w(px(440.0))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
+            .child(
+                div()
+                    .p(px(20.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.0))
+                    .child(dialog_header(icon, colors().accent, title, detail))
+                    .child(dialog_field(&prompt.value, placeholder, mono)),
+            )
+            .child(
+                dialog_footer()
+                    .justify_end()
+                    .child(
+                        dialog_button(
+                            "cancel-rename-prompt",
+                            "Cancel",
+                            "esc",
+                            DialogButton::Secondary,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.rename_prompt = None;
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        dialog_button("confirm-rename-prompt", action, "↵", DialogButton::Primary)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirm_rename_prompt(cx);
+                            })),
+                    ),
+            );
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(colors().overlay())
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.rename_prompt = None;
-                        cx.notify();
-                    }),
-                )
-                .child(
-                    div()
-                        .w(px(420.0))
-                        .max_w_full()
-                        .mx_4()
-                        .p_4()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(colors().border_subtle)
-                        .bg(popover_surface())
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(colors().foreground)
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .h(px(34.0))
-                                .px_3()
-                                .rounded(px(5.0))
-                                .border_1()
-                                .border_color(colors().border_subtle)
-                                .bg(surface_tint(colors().terminal, colors().sidebar))
-                                .flex()
-                                .items_center()
-                                .font_family(MONO_FONT)
-                                .text_size(px(11.0))
-                                .text_color(if value == "Enter a name…" {
-                                    colors().subtle
-                                } else {
-                                    colors().foreground
-                                })
-                                .child(div().min_w(px(0.0)).flex_1().truncate().child(value)),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(colors().subtle)
-                                        .child("↵ confirm · esc cancel"),
-                                )
-                                .child(
-                                    div()
-                                        .id("confirm-rename-prompt")
-                                        .px_3()
-                                        .py_1()
-                                        .rounded(px(5.0))
-                                        .border_1()
-                                        .border_color(colors().border_subtle)
-                                        .cursor_pointer()
-                                        .bg(surface_tint(colors().selection, colors().sidebar))
-                                        .text_xs()
-                                        .text_color(colors().foreground)
-                                        .hover(|button| {
-                                            button
-                                                .bg(surface_tint(colors().hover, colors().sidebar))
-                                        })
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.confirm_rename_prompt(cx);
-                                        }))
-                                        .child("Confirm"),
-                                ),
-                        ),
-                )
-                .into_any_element(),
+            fade_in(
+                "rename-scrim",
+                dialog_scrim()
+                    .items_center()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.rename_prompt = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(rise_in("rename-panel", panel)),
+            )
+            .into_any_element(),
         )
+    }
+
+    /// Where a new file or folder will land, relative to the space when it can be.
+    fn entry_location(&self, directory: &Path) -> String {
+        let root = self.project_root();
+        match directory.strip_prefix(&root) {
+            Ok(relative) if !relative.as_os_str().is_empty() => relative.display().to_string(),
+            _ => directory
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| directory.display().to_string()),
+        }
     }
 }
 

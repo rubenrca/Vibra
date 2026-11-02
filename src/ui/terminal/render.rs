@@ -6,6 +6,11 @@ use gpui::{
 };
 use std::ops::Range;
 
+use crate::ui::dialog::{
+    CONTROL_RADIUS, DialogButton, dialog_button, dialog_footer, dialog_header, dialog_panel,
+    dialog_scrim, fade_in, rise_in,
+};
+
 #[derive(Debug)]
 pub(crate) struct TerminalBackgroundRun {
     pub(crate) row: usize,
@@ -190,49 +195,91 @@ fn search_overlay(
         )
 }
 
-fn confirmation_overlay(confirmation: TerminalConfirmation) -> impl IntoElement {
+fn confirmation_overlay(
+    confirmation: TerminalConfirmation,
+    cx: &mut Context<TerminalView>,
+) -> impl IntoElement {
     let title = confirmation.title();
     let preview = confirmation.preview();
-    let hint = confirmation.hint();
+    let (cancel, accept) = confirmation.actions();
     let warning = confirmation.warning();
-    div()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(colors().overlay())
+    let (icon, tone) = if warning.is_some() {
+        ("chrome-icons/shield.svg", colors().warning)
+    } else {
+        ("chrome-icons/copy.svg", colors().accent)
+    };
+    let danger = Hsla::from(colors().danger);
+    let panel = dialog_panel()
+        .w(px(480.0))
+        // Keep clicks on the dialog from reaching the terminal underneath.
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             div()
-                .w(px(480.0))
-                .max_w_full()
-                .mx_4()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(colors().border_subtle)
-                .bg(popover_surface())
-                .shadow_lg()
+                .p(px(20.0))
                 .flex()
                 .flex_col()
-                .gap_2()
-                .child(div().text_sm().text_color(colors().foreground).child(title))
-                .when_some(warning, |dialog, warning| {
-                    dialog.child(div().text_xs().text_color(colors().danger).child(warning))
+                .gap(px(14.0))
+                .child(dialog_header(icon, tone, title, None))
+                .when_some(warning, |body, warning| {
+                    body.child(
+                        div()
+                            .px(px(12.0))
+                            .py(px(9.0))
+                            .rounded(px(CONTROL_RADIUS))
+                            .border_1()
+                            .border_color(danger.opacity(0.28))
+                            .bg(danger.opacity(0.08))
+                            .text_size(px(12.0))
+                            .line_height(px(17.0))
+                            .text_color(colors().danger)
+                            .child(warning),
+                    )
                 })
                 .child(
                     div()
-                        .px_2()
-                        .py_2()
-                        .rounded_sm()
-                        .bg(surface_tint(colors().terminal, colors().sidebar))
-                        .text_xs()
-                        .text_color(colors().muted)
+                        .max_h(px(104.0))
                         .overflow_hidden()
+                        .px(px(12.0))
+                        .py(px(10.0))
+                        .rounded(px(CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(colors().border_subtle)
+                        .bg(Hsla::from(colors().foreground).opacity(0.04))
+                        .font_family(MONO_FONT)
+                        .text_size(px(11.5))
+                        .line_height(px(17.0))
+                        .text_color(colors().muted)
                         .child(preview),
-                )
-                .child(div().text_xs().text_color(colors().muted).child(hint)),
+                ),
         )
+        .child(
+            dialog_footer()
+                .justify_end()
+                .child(
+                    dialog_button(
+                        "terminal-confirmation-cancel",
+                        cancel,
+                        "esc",
+                        DialogButton::Secondary,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel_pending_action(cx))),
+                )
+                .child(
+                    dialog_button(
+                        "terminal-confirmation-accept",
+                        accept,
+                        "↵",
+                        DialogButton::Primary,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.confirm_pending_action(cx))),
+                ),
+        );
+    fade_in(
+        "terminal-confirmation-scrim",
+        dialog_scrim()
+            .items_center()
+            .child(rise_in("terminal-confirmation-panel", panel)),
+    )
 }
 
 impl Render for TerminalView {
@@ -444,7 +491,7 @@ impl Render for TerminalView {
                 ))
             })
             .when_some(pending_confirmation, |terminal, confirmation| {
-                terminal.child(confirmation_overlay(confirmation))
+                terminal.child(confirmation_overlay(confirmation, cx))
             })
             .when_some(error, |terminal, error| {
                 terminal.child(

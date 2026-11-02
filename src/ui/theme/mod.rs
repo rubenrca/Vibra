@@ -157,7 +157,7 @@ impl Theme {
 
     pub fn overlay(self) -> Rgba {
         let mut color = mix(self.background, rgb(0x000000), 0.4);
-        color.a = if self.is_dark() { 0.24 } else { 0.16 };
+        color.a = if self.is_dark() { 0.36 } else { 0.20 };
         color
     }
 

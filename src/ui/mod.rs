@@ -1,4 +1,5 @@
 pub mod agent_marks;
+pub mod dialog;
 mod diff_document;
 mod diff_rows;
 pub mod diff_view;
