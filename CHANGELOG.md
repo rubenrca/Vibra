@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.44 — 2026-11-02
+
+- Show every file in a diff as a card: a header with the folder muted before the file name, a New, Deleted, Renamed, or Conflict label, and its line counts with a diffstat. Changed lines carry a colored edge and a + or − column, and the words that changed within a line get a stronger tint unless the whole line was rewritten. Folds keep their arrows in the gutter, and hunk headers show the enclosing scope.
+- Highlight Markdown, with fenced code colored in its own language, keys in JSON, YAML, and TOML, HTML and XML tags and attributes, and C, C++, Java, Kotlin, C#, Ruby, PHP, SQL, Lua, and Dockerfiles. Code blocks in pull request descriptions and comments are highlighted too.
+- Open a commit from Repository → History as a full page with a back button, newer and older navigation, its pull request and GitHub links, and its changes beside a file list. J and K select a row of the graph and Enter opens it; on the page, J and K step through commits, ] and [ through files, and Esc goes back.
+- Give the command palette, prompts, and the terminal's paste and clipboard confirmations one dialog style, with focus rings, shortcuts drawn as keycaps, and actions you can click.
+- Shorten the Spaces and Agents empty states to one line.
+
 ## 0.3.43 — 2026-10-29
 
 - Replace projects with spaces. ⌘N opens a terminal in your home folder in a new space, and the space follows its selected terminal: cd into a repository and it takes that repository's name, branch, Explorer, and Changes. Rename a space to keep its name, or clear the name to follow the folder again. ⇧⌘O still opens a folder as a space.
