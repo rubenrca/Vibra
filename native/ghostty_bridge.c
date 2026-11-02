@@ -300,15 +300,17 @@ int vg_snapshot(void *p, VgInfo *info, VgPaint paint, void *userdata, int force)
             if (style.bold && style.fg_color.tag == GHOSTTY_STYLE_COLOR_PALETTE &&
                 style.fg_color.value.palette < 8)
                 fg = colors.palette[style.fg_color.value.palette + 8];
-            if (style.faint) {
-                fg.r = fg.r * 66 / 100;
-                fg.g = fg.g * 66 / 100;
-                fg.b = fg.b * 66 / 100;
-            }
             if (style.inverse != reverse) {
                 GhosttyColorRgb tmp = fg;
                 fg = bg;
                 bg = tmp;
+            }
+            /* Fade toward the cell background, not black: darkening would make
+             * faint text heavier than normal text on light palettes. */
+            if (style.faint) {
+                fg.r = (uint8_t)((fg.r * 66 + bg.r * 34) / 100);
+                fg.g = (uint8_t)((fg.g * 66 + bg.g * 34) / 100);
+                fg.b = (uint8_t)((fg.b * 66 + bg.b * 34) / 100);
             }
             GhosttyColorRgb ul = fg;
             if (style.underline_color.tag == GHOSTTY_STYLE_COLOR_RGB)

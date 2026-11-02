@@ -242,7 +242,7 @@ pub(crate) fn midnight_dark() -> Theme {
 
 pub(crate) fn midnight_light() -> Theme {
     let mut theme = product_theme(
-        seed(0xfafafa, 0x202020, 0x3b6fd4, 0xc23b3b, 0x2f9e5b, 0xb07920),
+        seed(0xfafafa, 0x202020, 0x3b6fd4, 0xc23b3b, 0x219452, 0xad761c),
         ProductChrome {
             sidebar: 0xf4f4f4,
             panel: 0xffffff,
@@ -250,7 +250,7 @@ pub(crate) fn midnight_light() -> Theme {
             hover: 0xededed,
             selection: 0xe4e4e4,
             muted: 0x616161,
-            subtle: 0x858585,
+            subtle: 0x818181,
             gutter: 0xeeeef1,
             folder: 0x6a6a88,
             indent_guide: 0x9a9aa855,
@@ -273,8 +273,8 @@ pub(crate) fn moss_dark() -> Theme {
                 elevated: 0x1f2d26,
                 hover: 0x25362e,
                 selection: 0x2c4036,
-                muted: 0x8eaa98,
-                subtle: 0x6a8474,
+                muted: 0x91ad9b,
+                subtle: 0x728c7c,
                 gutter: 0x141c18,
                 folder: 0x7a9a88,
                 indent_guide: 0x3a4a4255,
@@ -298,7 +298,7 @@ fn moss_light() -> Theme {
                 hover: 0xdcebe2,
                 selection: 0xcfe0d5,
                 muted: 0x4a6656,
-                subtle: 0x728d80,
+                subtle: 0x678275,
                 gutter: 0xeaf3ed,
                 folder: 0x4a7a60,
                 indent_guide: 0x7a9a8855,
@@ -322,8 +322,8 @@ fn harbor_dark() -> Theme {
                 elevated: 0x1f2734,
                 hover: 0x253040,
                 selection: 0x2c3a4d,
-                muted: 0x8ea0b8,
-                subtle: 0x6a7c94,
+                muted: 0x92a4bc,
+                subtle: 0x73859d,
                 gutter: 0x131820,
                 folder: 0x7a90aa,
                 indent_guide: 0x3a4a5a55,
@@ -347,7 +347,7 @@ fn harbor_light() -> Theme {
                 hover: 0xd8e3ef,
                 selection: 0xc9d8ea,
                 muted: 0x4a5c74,
-                subtle: 0x74869d,
+                subtle: 0x687a90,
                 gutter: 0xe8eef5,
                 folder: 0x4a6a90,
                 indent_guide: 0x7a90aa55,
@@ -371,8 +371,8 @@ fn cinder_dark() -> Theme {
                 elevated: 0x2c241f,
                 hover: 0x352c26,
                 selection: 0x40352d,
-                muted: 0xb09a88,
-                subtle: 0x847466,
+                muted: 0xb29c8a,
+                subtle: 0x8e7e70,
                 gutter: 0x1c1614,
                 folder: 0xa08878,
                 indent_guide: 0x4a3a3255,
@@ -388,7 +388,7 @@ fn cinder_dark() -> Theme {
 fn cinder_light() -> Theme {
     let theme = with_diff_surfaces(
         product_theme(
-            seed(0xfaf4ef, 0x2a1e18, 0xc4602f, 0xc23b34, 0x2f8a4c, 0xa07018),
+            seed(0xfaf4ef, 0x2a1e18, 0xb55320, 0xc23b34, 0x2a8648, 0x9c6c11),
             ProductChrome {
                 sidebar: 0xf2e6dc,
                 panel: 0xffffff,
@@ -396,7 +396,7 @@ fn cinder_light() -> Theme {
                 hover: 0xeadcd0,
                 selection: 0xe0d0c0,
                 muted: 0x6a5244,
-                subtle: 0x9a8070,
+                subtle: 0x8a7061,
                 gutter: 0xf5ece4,
                 folder: 0x8a6a50,
                 indent_guide: 0xa0887855,
@@ -420,8 +420,8 @@ fn violet_dark() -> Theme {
                 elevated: 0x252032,
                 hover: 0x2c273c,
                 selection: 0x352f48,
-                muted: 0xa090c0,
-                subtle: 0x786c98,
+                muted: 0xa393c3,
+                subtle: 0x8276a2,
                 gutter: 0x17131f,
                 folder: 0x9080b0,
                 indent_guide: 0x4a3a6055,
@@ -437,7 +437,7 @@ fn violet_dark() -> Theme {
 fn violet_light() -> Theme {
     let theme = with_diff_surfaces(
         product_theme(
-            seed(0xf5f2fb, 0x221a30, 0x6a48b8, 0xb83a58, 0x1f8a4c, 0x9a6f18),
+            seed(0xf5f2fb, 0x221a30, 0x6a48b8, 0xb83a58, 0x128345, 0x956a0f),
             ProductChrome {
                 sidebar: 0xeae4f5,
                 panel: 0xffffff,
@@ -445,7 +445,7 @@ fn violet_light() -> Theme {
                 hover: 0xe0d8f0,
                 selection: 0xd4c8ea,
                 muted: 0x5a4c78,
-                subtle: 0x8a7ca8,
+                subtle: 0x796b96,
                 gutter: 0xeee8f6,
                 folder: 0x6a5890,
                 indent_guide: 0x9080b055,
@@ -469,8 +469,8 @@ fn bloom_dark() -> Theme {
                 elevated: 0x2f2430,
                 hover: 0x382c39,
                 selection: 0x443644,
-                muted: 0xb898b0,
-                subtle: 0x8a7088,
+                muted: 0xbb9bb3,
+                subtle: 0x977d95,
                 gutter: 0x1c161c,
                 folder: 0xa080a0,
                 indent_guide: 0x4a3a4a55,
@@ -486,7 +486,7 @@ fn bloom_dark() -> Theme {
 fn bloom_light() -> Theme {
     let theme = with_diff_surfaces(
         product_theme(
-            seed(0xfbf4f9, 0x3a1840, 0xc02670, 0xbd3936, 0x1f8a4c, 0x9a6f18),
+            seed(0xfbf4f9, 0x3a1840, 0xc02670, 0xbd3936, 0x148446, 0x966b11),
             ProductChrome {
                 sidebar: 0xf3e4ef,
                 panel: 0xffffff,
@@ -494,7 +494,7 @@ fn bloom_light() -> Theme {
                 hover: 0xead6e4,
                 selection: 0xe0c8da,
                 muted: 0x7a4068,
-                subtle: 0xa07090,
+                subtle: 0x936484,
                 gutter: 0xf6eaf2,
                 folder: 0x8a5080,
                 indent_guide: 0xa080a055,

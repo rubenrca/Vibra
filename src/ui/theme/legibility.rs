@@ -19,20 +19,41 @@ const SUBTLE: f32 = 3.0;
 const SIGNAL: f32 = 3.0;
 /// Diff counts and line numbers drawn over their own tinted rows.
 const DIFF_TEXT: f32 = 4.5;
+/// Labels and icons painted in the background color on accent fills.
+const ON_ACCENT: f32 = 4.5;
 /// OKLab distance (×100) that keeps a selected row apart from a hovered one.
 const SELECTION_SEPARATION: f32 = 2.5;
 
+/// Every surface text sits on, including hovered and selected rows.
+fn text_surfaces(theme: &Theme) -> [Rgba; 6] {
+    [
+        theme.background,
+        theme.sidebar,
+        theme.panel,
+        theme.elevated,
+        theme.hover,
+        theme.selection,
+    ]
+}
+
 /// Raise each text and signal role to its floor without touching surfaces.
 pub(super) fn legible(mut theme: Theme) -> Theme {
-    let surfaces = [theme.background, theme.sidebar, theme.panel, theme.elevated];
+    theme.selection = separate_selection(theme.selection, theme.hover, theme.accent);
+    let surfaces = text_surfaces(&theme);
     let lighten = theme.is_dark();
     let floor = |color: Rgba, min: f32| ensure_contrast(color, &surfaces, min, lighten);
 
     theme.foreground = floor(theme.foreground, FOREGROUND);
     theme.muted = floor(theme.muted, MUTED);
     theme.subtle = floor(theme.subtle, SUBTLE);
+    // Primary buttons and chips print their label in the background color.
+    theme.accent = ensure_contrast(
+        floor(theme.accent, SIGNAL),
+        &[theme.background],
+        ON_ACCENT,
+        lighten,
+    );
     for color in [
-        &mut theme.accent,
         &mut theme.success,
         &mut theme.danger,
         &mut theme.warning,
@@ -57,7 +78,6 @@ pub(super) fn legible(mut theme: Theme) -> Theme {
         DIFF_TEXT,
         lighten,
     );
-    theme.selection = separate_selection(theme.selection, theme.hover, theme.accent);
     theme
 }
 
@@ -254,7 +274,7 @@ mod tests {
     fn every_built_in_palette_meets_its_floors() {
         for family in built_in_themes() {
             for theme in [family.light, family.dark] {
-                let surfaces = [theme.background, theme.sidebar, theme.panel, theme.elevated];
+                let surfaces = text_surfaces(&theme);
                 let worst = |color: Rgba| {
                     surfaces
                         .iter()
@@ -271,6 +291,10 @@ mod tests {
                 for color in [theme.accent, theme.success, theme.danger, theme.warning] {
                     assert!(worst(color) >= SIGNAL - 0.01, "{id} signal");
                 }
+                assert!(
+                    contrast_ratio(theme.background, theme.accent) >= ON_ACCENT - 0.01,
+                    "{id} label on accent"
+                );
                 let added_row = composite(theme.diff_added_bg, theme.background);
                 assert!(
                     contrast_ratio(theme.diff_added, added_row) >= DIFF_TEXT - 0.01,
