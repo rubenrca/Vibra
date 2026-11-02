@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.45 — 2026-11-02
+
+- Keep text readable on hovered and selected rows in every palette, and give primary buttons and accent chips labels with at least 4.5:1 contrast. Light palettes such as Tokyo Night, Ayu, Everforest, Nord, Solarized, and Rosé Pine get a slightly deeper accent.
+- Fade dimmed terminal text toward its background, so it no longer looks heavier than normal text on light palettes.
+- Turn the IDE button into a split button beside the right panel toggle: its icon opens the folder in the IDE you last picked, and the chevron lists the installed IDEs. The file search button in the Workspace header is gone; ⌘P still opens the finder.
+- Refine the quota hover card and modal: figures keep their width as they count, quotas near their limit read in semibold, the hover card shows each provider's mark, and the refresh icon turns while quotas are checked.
+- Fix a clicked space opening a reorder gap on the next drag, such as resizing Agents or dropping a file from Finder.
+
 ## 0.3.44 — 2026-11-02
 
 - Show every file in a diff as a card: a header with the folder muted before the file name, a New, Deleted, Renamed, or Conflict label, and its line counts with a diffstat. Changed lines carry a colored edge and a + or − column, and the words that changed within a line get a stronger tint unless the whole line was rewritten. Folds keep their arrows in the gutter, and hunk headers show the enclosing scope.
