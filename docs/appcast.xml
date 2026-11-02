@@ -3,20 +3,21 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.43</title>
-            <pubDate>Thu, 29 Oct 2026 22:38:51 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.43</link>
-            <sparkle:version>309</sparkle:version>
-            <sparkle:shortVersionString>0.3.43</sparkle:shortVersionString>
+            <title>0.3.44</title>
+            <pubDate>Mon, 02 Nov 2026 12:31:34 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.44</link>
+            <sparkle:version>317</sparkle:version>
+            <sparkle:shortVersionString>0.3.44</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Replace projects with spaces. ⌘N opens a terminal in your home folder in a new space, and the space follows its selected terminal: cd into a repository and it takes that repository's name, branch, Explorer, and Changes. Rename a space to keep its name, or clear the name to follow the folder again. ⇧⌘O still opens a folder as a space.</li>
-  <li>Keep a space only while it has terminals: closing its last one closes the space, and spaces without terminals, including projects from earlier versions, are not restored. Scratch and ⌥⌘T are gone; a Scratch terminal you had becomes a space.</li>
-  <li>Show every agent in an Agents list under the spaces, with the same card as before plus its space and how long it has been in its state. Agents that need you come first. Drag the list's top edge to resize it; Vibra remembers the height.</li>
-  <li>Fix settings that failed to load, and stopped saving, when they held a Repository tab written by a development build.</li>
+  <li>Show every file in a diff as a card: a header with the folder muted before the file name, a New, Deleted, Renamed, or Conflict label, and its line counts with a diffstat. Changed lines carry a colored edge and a + or − column, and the words that changed within a line get a stronger tint unless the whole line was rewritten. Folds keep their arrows in the gutter, and hunk headers show the enclosing scope.</li>
+  <li>Highlight Markdown, with fenced code colored in its own language, keys in JSON, YAML, and TOML, HTML and XML tags and attributes, and C, C++, Java, Kotlin, C#, Ruby, PHP, SQL, Lua, and Dockerfiles. Code blocks in pull request descriptions and comments are highlighted too.</li>
+  <li>Open a commit from Repository → History as a full page with a back button, newer and older navigation, its pull request and GitHub links, and its changes beside a file list. J and K select a row of the graph and Enter opens it; on the page, J and K step through commits, ] and [ through files, and Esc goes back.</li>
+  <li>Give the command palette, prompts, and the terminal's paste and clipboard confirmations one dialog style, with focus rings, shortcuts drawn as keycaps, and actions you can click.</li>
+  <li>Shorten the Spaces and Agents empty states to one line.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.43/Vibra-0.3.43.dmg" length="15910617" type="application/octet-stream" sparkle:edSignature="CK6EKHcmVkwL9t7Of3YTsiYP6yRUa+OvgGyjCqI1Fgh7E+E/eliCT2EHc9IVdNL6LEyiuIB7UndHLCCb5m84CQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.44/Vibra-0.3.44.dmg" length="16030219" type="application/octet-stream" sparkle:edSignature="0ZLQCEOc8OOXRKzjIdEKz9O+IcRGGvVyGfwdDgBV1X29bcVukUaPYPqzOApbyH+kkvNeMxFC3EMkm1ZuD0LACQ=="/>
         </item>
     </channel>
 </rss>
