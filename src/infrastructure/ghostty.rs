@@ -764,14 +764,9 @@ impl TerminalHandle for GhosttyTerminal {
     }
     fn recent_text(&self, lines: usize) -> Option<String> {
         let e = self.engine.lock().ok()?;
-        let mut n = 0;
-        let p = unsafe { vg_recent_text(e.p(), &mut n, lines.max(1)) };
-        if p.is_null() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(unsafe { bytes(p, n) }).into_owned();
-        unsafe { vg_buffer_free(p, n) };
-        Some(text)
+        let (mut p, mut n) = (std::ptr::null_mut(), 0);
+        let status = unsafe { vg_recent_text(e.p(), &mut p, &mut n, lines.max(1)) };
+        unsafe { take_text(status, p, n) }
     }
     fn clear_selection(&self) {
         let _ = self.engine.update(|engine| {

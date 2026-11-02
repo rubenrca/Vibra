@@ -652,63 +652,63 @@ int vg_search(void *p, const uint8_t *s, size_t n, int previous) {
     return result;
 }
 
-uint8_t *vg_text(void *p, size_t *len, int selection) {
+int vg_text(void *p, uint8_t **out, size_t *len, int selection) {
     VgTerminal *v = p;
-    uint8_t *out = NULL;
+    *out = NULL;
     *len = 0;
+    GhosttyResult r;
     if (selection) {
         GhosttyTerminalSelectionFormatOptions options =
             GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
         options.trim = true;
         options.unwrap = true;
-        if (ghostty_terminal_selection_format_alloc(v->term, NULL, options, &out, len) !=
-            GHOSTTY_SUCCESS)
-            return NULL;
+        r = ghostty_terminal_selection_format_alloc(v->term, NULL, options, out, len);
     } else {
         GhosttyFormatterTerminalOptions options =
             GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
         options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
         options.trim = true;
         GhosttyFormatter f = NULL;
-        if (ghostty_formatter_terminal_new(NULL, &f, v->term, options) != GHOSTTY_SUCCESS)
-            return NULL;
-        GhosttyResult r = ghostty_formatter_format_alloc(f, NULL, &out, len);
+        TRY(ghostty_formatter_terminal_new(NULL, &f, v->term, options));
+        r = ghostty_formatter_format_alloc(f, NULL, out, len);
         ghostty_formatter_free(f);
-        if (r != GHOSTTY_SUCCESS)
-            return NULL;
     }
-    return out;
+    if (r != GHOSTTY_SUCCESS) {
+        *out = NULL;
+        *len = 0;
+    }
+    return (int)r;
 }
 
 void vg_buffer_free(uint8_t *p, size_t n) {
     ghostty_free(NULL, p, n);
 }
 
-uint8_t *vg_recent_text(void *p, size_t *len, size_t lines) {
+int vg_recent_text(void *p, uint8_t **out, size_t *len, size_t lines) {
     VgTerminal *v = p;
     size_t total = 0;
     uint16_t cols = 0;
+    *out = NULL;
     *len = 0;
-    if (ghostty_terminal_get(v->term, GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total) !=
-            GHOSTTY_SUCCESS ||
-        ghostty_terminal_get(v->term, GHOSTTY_TERMINAL_DATA_COLS, &cols) != GHOSTTY_SUCCESS ||
-        !total || !cols)
-        return NULL;
+    TRY(ghostty_terminal_get(v->term, GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total));
+    TRY(ghostty_terminal_get(v->term, GHOSTTY_TERMINAL_DATA_COLS, &cols));
+    if (!total || !cols)
+        return GHOSTTY_NO_VALUE;
     GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
     GhosttyPoint first = {.tag = GHOSTTY_POINT_TAG_SCREEN,
         .value = {.coordinate = {.x = 0, .y = (uint32_t)(total > lines ? total - lines : 0)}}};
     GhosttyPoint last = {.tag = GHOSTTY_POINT_TAG_SCREEN,
         .value = {.coordinate = {.x = cols - 1, .y = (uint32_t)(total - 1)}}};
-    if (ghostty_terminal_grid_ref(v->term, first, &selection.start) != GHOSTTY_SUCCESS ||
-        ghostty_terminal_grid_ref(v->term, last, &selection.end) != GHOSTTY_SUCCESS)
-        return NULL;
+    TRY(ghostty_terminal_grid_ref(v->term, first, &selection.start));
+    TRY(ghostty_terminal_grid_ref(v->term, last, &selection.end));
     GhosttyTerminalSelectionFormatOptions options =
         GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
     options.trim = true;
     options.selection = &selection;
-    uint8_t *out = NULL;
-    if (ghostty_terminal_selection_format_alloc(v->term, NULL, options, &out, len) !=
-        GHOSTTY_SUCCESS)
-        return NULL;
-    return out;
+    GhosttyResult r = ghostty_terminal_selection_format_alloc(v->term, NULL, options, out, len);
+    if (r != GHOSTTY_SUCCESS) {
+        *out = NULL;
+        *len = 0;
+    }
+    return (int)r;
 }

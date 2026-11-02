@@ -69,9 +69,14 @@ unsafe extern "C" {
         previous: i32,
         continuation: i32,
     ) -> i32;
-    pub(super) fn vg_text(p: *mut c_void, n: *mut usize, selection: i32) -> *mut u8;
+    pub(super) fn vg_text(p: *mut c_void, out: *mut *mut u8, n: *mut usize, selection: i32) -> i32;
     pub(super) fn vg_buffer_free(p: *mut u8, n: usize);
-    pub(super) fn vg_recent_text(p: *mut c_void, n: *mut usize, lines: usize) -> *mut u8;
+    pub(super) fn vg_recent_text(
+        p: *mut c_void,
+        out: *mut *mut u8,
+        n: *mut usize,
+        lines: usize,
+    ) -> i32;
 }
 pub(super) fn checked(code: i32) -> Result<()> {
     if code != 0 {
@@ -84,6 +89,18 @@ pub(super) struct Callbacks {
     pub(super) replies: VecDeque<u8>,
     /// OSC 9;4 states parsed during the last feed, drained by the PTY worker.
     pub(super) progress: Vec<u8>,
+}
+/// Takes ownership of a text buffer from `vg_text`/`vg_recent_text`. Empty
+/// text succeeds with a null buffer, so only the status signals failure.
+pub(super) unsafe fn take_text(status: i32, p: *mut u8, n: usize) -> Option<String> {
+    if status != 0 {
+        return None;
+    }
+    let text = String::from_utf8_lossy(unsafe { bytes(p, n) }).into_owned();
+    if !p.is_null() {
+        unsafe { vg_buffer_free(p, n) };
+    }
+    Some(text)
 }
 pub(super) unsafe fn bytes<'a>(p: *const u8, n: usize) -> &'a [u8] {
     if n == 0 {
@@ -421,14 +438,9 @@ impl Engine {
         })
     }
     pub(super) fn text(&self, selection: bool) -> Option<String> {
-        let mut n = 0;
-        let p = unsafe { vg_text(self.p(), &mut n, selection.into()) };
-        if p.is_null() {
-            return None;
-        }
-        let s = String::from_utf8_lossy(unsafe { bytes(p, n) }).into_owned();
-        unsafe { vg_buffer_free(p, n) };
-        Some(s)
+        let (mut p, mut n) = (std::ptr::null_mut(), 0);
+        let status = unsafe { vg_text(self.p(), &mut p, &mut n, selection.into()) };
+        unsafe { take_text(status, p, n) }
     }
     #[cfg(test)]
     pub(super) fn select(

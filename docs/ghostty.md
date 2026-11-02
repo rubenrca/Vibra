@@ -9,7 +9,7 @@ Ghostty es el motor único de la aplicación. Se retiraron el adaptador Alacritt
 cargo run --locked
 ```
 
-El script prepara Zig 0.16.0 con SHA256 verificado y Ghostty `492300cad104195411d12217dd22f1cd05f31376`. Todo queda en `.build/ghostty/`, sin instalaciones globales. Para utilizar un Zig existente, definir `ZIG=/ruta/a/zig`. Cargo enlaza el archivo estático; la aplicación distribuida no requiere Zig ni la aplicación Ghostty.
+El script prepara Zig 0.17.0 con SHA256 verificado y Ghostty `7b267cd9ac7863b0bd72e808daa021381e72dc21`. Todo queda en `.build/ghostty/`, sin instalaciones globales. Para utilizar un Zig existente, definir `ZIG=/ruta/a/zig`. Cargo enlaza el archivo estático; la aplicación distribuida no requiere Zig ni la aplicación Ghostty.
 
 Ya no hace falta `--features ghostty` y se retiró `VIBRA_TERMINAL_BACKEND`. Las sesiones existentes en un proceso abierto continúan usando su binario hasta reiniciar Vibra.
 
