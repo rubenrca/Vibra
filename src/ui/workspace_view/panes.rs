@@ -852,6 +852,22 @@ impl super::WorkspaceView {
         }
     }
 
+    /// A press that ends without a drag was a click, so the row it marked as a
+    /// reorder source is not moving. Runs in the capture phase because a
+    /// row's click handler stops the release before it reaches the root, and a
+    /// stale source would make the next drag of any kind (resizing Agents, a
+    /// file from Finder) open a reorder gap in its list.
+    pub(super) fn forget_unstarted_reorder(
+        &mut self,
+        _: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !cx.has_active_drag() && self.reorder_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
     pub(super) fn finish_pane_resize(
         &mut self,
         _: &MouseUpEvent,

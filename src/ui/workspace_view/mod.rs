@@ -644,6 +644,7 @@ impl Render for WorkspaceView {
         let mut body = self
             .bind_workspace_actions(div().id("vibra-root").track_focus(&self.focus_handle), cx)
             .capture_key_down(cx.listener(Self::on_workspace_key_down))
+            .capture_any_mouse_up(cx.listener(Self::forget_unstarted_reorder))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_pane_resize))
             .size_full()
             .relative()

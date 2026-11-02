@@ -1894,3 +1894,53 @@ fn dismissing_quick_open_cancels_pending_results(cx: &mut gpui::TestAppContext) 
         .unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[gpui::test]
+fn clicking_a_space_leaves_nothing_to_reorder_when_agents_is_resized(
+    cx: &mut gpui::TestAppContext,
+) {
+    use gpui::{Modifiers, MouseButton, point, px};
+
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "space-click-resize");
+    let space = snapshot.selected_project_id.unwrap();
+    let row: &'static str = Box::leak(format!("space-row-{space}").into_boxed_str());
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), cx);
+    cx.run_until_parked();
+
+    // The row's click handler stops the release, which used to leave the
+    // space marked as a reorder source.
+    let row = cx.debug_bounds(row).expect("the space row is drawn");
+    cx.simulate_click(row.center(), Modifiers::none());
+    window
+        .update(&mut cx, |view, _, _| assert!(view.reorder_drag.is_none()))
+        .unwrap();
+
+    let handle = cx
+        .debug_bounds("agents-resize-handle")
+        .expect("the Agents resize handle is drawn");
+    let start = handle.center();
+    let height = window
+        .update(&mut cx, |view, _, _| view.settings.agents_panel_height)
+        .unwrap();
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    for step in 1..=3 {
+        let pointer = point(start.x, start.y - px(12.0 * step as f32));
+        cx.simulate_mouse_move(pointer, MouseButton::Left, Modifiers::none());
+    }
+    window
+        .update(&mut cx, |view, _, cx| {
+            assert!(cx.has_active_drag(), "Agents is being resized");
+            assert!(view.settings.agents_panel_height > height);
+            assert!(view.reorder_drag.is_none(), "no space is moving");
+        })
+        .unwrap();
+    cx.simulate_mouse_up(
+        point(start.x, start.y - px(36.0)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    window
+        .update(&mut cx, |_, window, _| window.remove_window())
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}

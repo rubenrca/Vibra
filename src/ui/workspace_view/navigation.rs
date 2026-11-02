@@ -171,11 +171,14 @@ impl WorkspaceView {
             .size_full()
             .flex()
             .flex_col()
+            // The line under Repository matches the one above Agents.
             .child(
                 div()
                     .px(px(SIDEBAR_ROW_INSET))
                     .pt(px(10.0))
-                    .pb(px(4.0))
+                    .pb(px(8.0))
+                    .border_b_1()
+                    .border_color(colors().border_subtle)
                     .flex()
                     .flex_col()
                     .gap(px(3.0))

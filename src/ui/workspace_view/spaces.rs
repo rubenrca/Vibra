@@ -306,6 +306,7 @@ impl WorkspaceView {
             .child(
                 div()
                     .id("agents-resize-handle")
+                    .debug_selector(|| "agents-resize-handle".into())
                     .absolute()
                     .left_0()
                     .right_0()

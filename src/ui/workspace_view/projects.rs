@@ -367,6 +367,7 @@ impl WorkspaceView {
         };
         div()
             .id(SharedString::from(format!("project-{id}")))
+            .debug_selector(move || format!("space-row-{id}"))
             .group("global-project")
             .relative()
             .w(px(row_width))
