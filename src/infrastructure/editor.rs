@@ -50,6 +50,20 @@ fn installed_editors_with(mut is_registered: impl FnMut(&str) -> bool) -> Vec<In
         .collect()
 }
 
+/// The supported editor a saved bundle identifier names, without checking
+/// that it is still installed.
+pub fn supported_editor(bundle_identifier: &str) -> Option<InstalledEditor> {
+    EDITORS.iter().find_map(|(name, bundle_ids)| {
+        bundle_ids
+            .iter()
+            .find(|candidate| **candidate == bundle_identifier)
+            .map(|bundle_identifier| InstalledEditor {
+                name,
+                bundle_identifier,
+            })
+    })
+}
+
 pub fn open_in_editor(path: &Path, editor: &InstalledEditor) -> Result<()> {
     if !path.exists() {
         bail!("Nothing to open at {}", path.display());
@@ -135,5 +149,13 @@ mod tests {
         assert_eq!(editors.len(), 1);
         assert_eq!(editors[0].name, "Sublime Text");
         assert_eq!(editors[0].bundle_identifier, "com.sublimetext.4");
+    }
+
+    #[test]
+    fn saved_bundle_identifiers_resolve_to_their_editor() {
+        let windsurf = supported_editor("com.codeium.windsurf").unwrap();
+        assert_eq!(windsurf.name, "Windsurf");
+        assert_eq!(windsurf.bundle_identifier, "com.codeium.windsurf");
+        assert_eq!(supported_editor("com.example.unknown"), None);
     }
 }

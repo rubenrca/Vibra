@@ -13,8 +13,8 @@ use crate::ui::menu::{menu_heading, menu_hover, menu_panel};
 use crate::ui::theme::{colors, surface, surface_tint};
 
 use super::{
-    PaletteMode, RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT,
-    TITLEBAR_RIGHT_CHROME_COLLAPSED, WorkspaceSection, sidebar_tooltip,
+    RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT, TITLEBAR_RIGHT_CHROME_COLLAPSED,
+    WorkspaceSection, sidebar_tooltip,
 };
 
 /// Room for the traffic lights: 14 px inset, three 14 px buttons, 20 px pitch.
@@ -22,6 +22,18 @@ const TRAFFIC_LIGHTS_INSET: f32 = 80.0;
 pub(super) const TITLEBAR_BUTTON_SIZE: f32 = 28.0;
 pub(super) const TITLEBAR_BUTTON_GAP: f32 = 2.0;
 const TITLEBAR_ICON_SIZE: f32 = 17.0;
+/// The IDE split button: the remembered IDE's icon, which opens it, and a
+/// chevron that lists the installed ones.
+const IDE_LABEL_WIDTH: f32 = 34.0;
+const IDE_ICON_SIZE: f32 = 16.0;
+const IDE_CHEVRON_WIDTH: f32 = 22.0;
+const IDE_BUTTON_HEIGHT: f32 = 24.0;
+/// Both segments, the divider between them, and the outline on either side.
+const IDE_BUTTON_WIDTH: f32 = IDE_LABEL_WIDTH + 1.0 + IDE_CHEVRON_WIDTH + 2.0;
+/// Breathing room so the outlined button does not crowd the icon buttons.
+const IDE_BUTTON_MARGIN: f32 = 4.0;
+/// Titlebar width the IDE button takes beside the right panel toggle.
+const IDE_BUTTON_ROOM: f32 = IDE_BUTTON_WIDTH + 2.0 * IDE_BUTTON_MARGIN + TITLEBAR_BUTTON_GAP;
 
 /// Square icon button shared by every titlebar control so they line up.
 pub(super) fn titlebar_button(id: &'static str, enabled: bool) -> Stateful<Div> {
@@ -84,11 +96,15 @@ impl super::WorkspaceView {
         };
         let right_expanded_width = self.right_sidebar_width();
         let left_chrome_width = self.titlebar_left_width();
+        // The IDE button stays beside the panel toggle whether or not the
+        // panel is open, so the collapsed chrome makes room for it.
+        let show_ide = self.workspace_section == WorkspaceSection::Workspace;
+        let right_collapsed_width =
+            TITLEBAR_RIGHT_CHROME_COLLAPSED + if show_ide { IDE_BUTTON_ROOM } else { 0.0 };
         let right_chrome_width = if right_progress > 0.99 {
             right_expanded_width
         } else {
-            TITLEBAR_RIGHT_CHROME_COLLAPSED
-                + (right_expanded_width - TITLEBAR_RIGHT_CHROME_COLLAPSED) * right_progress
+            right_collapsed_width + (right_expanded_width - right_collapsed_width) * right_progress
         };
         let right_open = right_progress > 0.5;
         let show_tab_selector = self.workspace_section == WorkspaceSection::Workspace
@@ -194,16 +210,9 @@ impl super::WorkspaceView {
                                     })
                                     .child("Workspace"),
                             )
-                            .child(self.workspace_title_action(
-                                "workspace-file-search",
-                                "chrome-icons/search.svg",
-                                "Find file · ⌘P",
-                                cx,
-                                |this, _, cx| this.open_palette(PaletteMode::Files, cx),
-                            ))
-                            .child(self.ide_button(cx))
                     })
                     .when(!right_open, |chrome| chrome.child(div().flex_1()))
+                    .when(show_ide, |chrome| chrome.child(self.ide_button(cx)))
                     .child(self.sidebar_button(
                         "toggle-right-sidebar",
                         false,
@@ -323,21 +332,6 @@ impl super::WorkspaceView {
             .into_any_element()
     }
 
-    fn workspace_title_action(
-        &self,
-        id: &'static str,
-        icon: &'static str,
-        label: &'static str,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) -> Stateful<Div> {
-        titlebar_button(id, true)
-            .tooltip(move |_, cx| sidebar_tooltip(label, cx))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-            .child(titlebar_icon(icon))
-    }
-
     pub(super) fn sidebar_button(
         &self,
         id: &'static str,
@@ -378,19 +372,118 @@ impl super::WorkspaceView {
             }))
     }
 
-    pub(super) fn ide_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        titlebar_button("open-ide", true)
-            .tooltip(|_, cx| sidebar_tooltip("Open in IDE", cx))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.open_ide(&OpenIde, window, cx);
-            }))
-            .child(titlebar_icon("chrome-icons/open-external.svg"))
+    /// The IDE remembered from the menu, which the label opens directly.
+    fn preferred_editor(&self) -> Option<InstalledEditor> {
+        self.settings
+            .preferred_editor
+            .as_deref()
+            .and_then(crate::infrastructure::editor::supported_editor)
+    }
+
+    /// Caches an IDE's app icon so the button and the menu can show it.
+    pub(super) fn load_editor_icon(&mut self, bundle_identifier: &'static str) {
+        if self.ide_icons.contains_key(bundle_identifier) {
+            return;
+        }
+        if let Some(png) = crate::infrastructure::editor::editor_icon_png(bundle_identifier) {
+            self.ide_icons.insert(
+                bundle_identifier,
+                Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
+            );
+        }
+    }
+
+    /// Split button: the remembered IDE's icon opens it, the chevron picks one.
+    pub(super) fn ide_button(&self, cx: &mut Context<Self>) -> Div {
+        let menu_open = self.ide_menu_open;
+        let preferred = self.preferred_editor();
+        let label_tooltip: SharedString = match &preferred {
+            Some(editor) => format!("Open in {}", editor.name).into(),
+            None => "Open in IDE".into(),
+        };
+        // Until an IDE is picked, or when its icon cannot be read, say "IDE".
+        let label = match preferred
+            .and_then(|editor| self.ide_icons.get(editor.bundle_identifier).cloned())
+        {
+            Some(icon) => gpui::img(icon)
+                .size(px(IDE_ICON_SIZE))
+                .flex_none()
+                .into_any_element(),
+            None => "IDE".into_any_element(),
+        };
+        let hover_bg = surface_tint(colors().hover, colors().titlebar);
+        let segment = |id: &'static str, width: f32| {
+            div()
+                .id(id)
+                .w(px(width))
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(move |segment| segment.bg(hover_bg).text_color(colors().foreground))
+                .active(|segment| segment.opacity(0.8))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        };
+        div()
+            .flex_none()
+            .mx(px(IDE_BUTTON_MARGIN))
+            .h(px(IDE_BUTTON_HEIGHT))
+            .flex()
+            .items_center()
+            .rounded(px(IDE_BUTTON_HEIGHT / 2.0))
+            .border_1()
+            .border_color(colors().border_subtle)
+            .text_size(px(12.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(colors().muted)
+            .child(
+                segment("open-ide", IDE_LABEL_WIDTH)
+                    .rounded_l(px(IDE_BUTTON_HEIGHT / 2.0))
+                    .pl(px(2.0))
+                    .tooltip(move |_, cx| sidebar_tooltip(label_tooltip.clone(), cx))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| match this.preferred_editor() {
+                            Some(editor) => this.open_with_editor(editor, cx),
+                            None => this.open_ide(&OpenIde, window, cx),
+                        }),
+                    )
+                    .child(label),
+            )
+            .child(div().w(px(1.0)).h_full().bg(colors().border_subtle))
+            .child(
+                segment("choose-ide", IDE_CHEVRON_WIDTH)
+                    .group("ide-chevron")
+                    .rounded_r(px(IDE_BUTTON_HEIGHT / 2.0))
+                    .pr(px(2.0))
+                    .when(menu_open, |segment| segment.bg(hover_bg))
+                    .tooltip(|_, cx| sidebar_tooltip("Choose IDE · ⇧⌘E", cx))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_ide(&OpenIde, window, cx);
+                    }))
+                    .child(
+                        svg()
+                            .path("chrome-icons/chevron-down.svg")
+                            .size(px(12.0))
+                            .flex_none()
+                            .text_color(if menu_open {
+                                colors().foreground
+                            } else {
+                                colors().muted
+                            })
+                            .group_hover("ide-chevron", |icon| {
+                                icon.text_color(colors().foreground)
+                            }),
+                    ),
+            )
     }
 
     pub(super) fn ide_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.ide_menu_open.then(|| {
-            let right = 8.0;
+            // Hang the menu from the IDE button, right edges aligned.
+            let right = 8.0 + TITLEBAR_BUTTON_SIZE + TITLEBAR_BUTTON_GAP + IDE_BUTTON_MARGIN;
+            let top = (TITLEBAR_HEIGHT + IDE_BUTTON_HEIGHT) / 2.0 + 4.0;
+            let preferred = self.settings.preferred_editor.clone();
             div()
                 .absolute()
                 .inset_0()
@@ -405,7 +498,7 @@ impl super::WorkspaceView {
                     menu_panel()
                         .id("ide-menu")
                         .absolute()
-                        .top(px(TITLEBAR_HEIGHT - 2.0))
+                        .top(px(top))
                         .right(px(right))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(menu_heading("Open folder in"))
@@ -423,6 +516,8 @@ impl super::WorkspaceView {
                         .children(self.installed_editors.clone().into_iter().enumerate().map(
                             |(index, editor)| {
                                 let label = editor.name;
+                                let remembered =
+                                    preferred.as_deref() == Some(editor.bundle_identifier);
                                 let icon = self.ide_icons.get(editor.bundle_identifier).cloned();
                                 let icon = match icon {
                                     Some(icon) => gpui::img(icon).size(px(18.0)).into_any_element(),
@@ -444,6 +539,7 @@ impl super::WorkspaceView {
                                     .text_color(colors().foreground)
                                     .hover(|item| item.bg(menu_hover()))
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.remember_editor(&editor, cx);
                                         this.open_with_editor(editor.clone(), cx);
                                     }))
                                     .child(
@@ -455,7 +551,16 @@ impl super::WorkspaceView {
                                             .justify_center()
                                             .child(icon),
                                     )
-                                    .child(label)
+                                    .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+                                    .when(remembered, |item| {
+                                        item.child(
+                                            svg()
+                                                .path("chrome-icons/check.svg")
+                                                .size(px(14.0))
+                                                .flex_none()
+                                                .text_color(colors().accent),
+                                        )
+                                    })
                             },
                         )),
                 )
@@ -495,21 +600,22 @@ impl super::WorkspaceView {
                     );
                 }
                 for editor in &editors {
-                    if !this.ide_icons.contains_key(editor.bundle_identifier)
-                        && let Some(png) =
-                            crate::infrastructure::editor::editor_icon_png(editor.bundle_identifier)
-                    {
-                        this.ide_icons.insert(
-                            editor.bundle_identifier,
-                            Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
-                        );
-                    }
+                    this.load_editor_icon(editor.bundle_identifier);
                 }
                 this.installed_editors = editors;
                 cx.notify();
             });
         }));
         cx.notify();
+    }
+
+    /// The IDE picked from the menu becomes the one the IDE button opens.
+    fn remember_editor(&mut self, editor: &InstalledEditor, cx: &mut Context<Self>) {
+        if self.settings.preferred_editor.as_deref() == Some(editor.bundle_identifier) {
+            return;
+        }
+        self.settings.preferred_editor = Some(editor.bundle_identifier.to_owned());
+        self.persist_settings(cx);
     }
 
     pub(super) fn open_with_editor(&mut self, editor: InstalledEditor, cx: &mut Context<Self>) {

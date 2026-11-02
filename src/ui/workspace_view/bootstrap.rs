@@ -371,6 +371,14 @@ impl WorkspaceView {
         if settings.agent_notifications {
             crate::infrastructure::notifications::request_authorization();
         }
+        // The IDE button shows the remembered IDE's icon from the first frame.
+        if let Some(editor) = settings
+            .preferred_editor
+            .as_deref()
+            .and_then(crate::infrastructure::editor::supported_editor)
+        {
+            view.load_editor_icon(editor.bundle_identifier);
+        }
         // System appearance is refined on first paint via observe_window_appearance.
         view.apply_theme_preference(true, cx);
         view.reconcile_terminal_views(cx);

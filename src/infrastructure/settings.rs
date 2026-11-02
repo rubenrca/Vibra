@@ -68,6 +68,9 @@ pub struct AppSettings {
     /// Share of the center given to the terminal when a review sits beside it.
     #[serde(default = "default_review_split")]
     pub review_split: f32,
+    /// Bundle id of the IDE the titlebar's IDE button opens without asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_editor: Option<String>,
 }
 
 pub const MIN_REVIEW_SPLIT: f32 = 0.2;
@@ -159,6 +162,7 @@ impl Default for AppSettings {
             diff_wrap: false,
             diff_font_size: DEFAULT_DIFF_FONT_SIZE,
             review_split: default_review_split(),
+            preferred_editor: None,
         }
     }
 }
