@@ -117,11 +117,6 @@
     else revealer.observe(el);
   });
 
-  // Rings fill and other one-time entrances start the first time their block is seen.
-  all('[data-mock], .card').forEach(function (el) {
-    whileVisible(el, function () { el.classList.add('on'); });
-  });
-
   all('[data-card]').forEach(function (card) {
     card.addEventListener('pointermove', function (e) {
       var r = card.getBoundingClientRect();
@@ -270,11 +265,13 @@
   var commitInput = mock.querySelector('[data-commit-input]');
   var commitMessage = mock.querySelector('[data-commit-message]');
   var commitButton = mock.querySelector('[data-commit-button]');
+  var claudeUsage = mock.querySelector('[data-usage="claude"] b');
   var SPACE = {};
   all('.m-card', agentList).forEach(function (card) { SPACE[card.dataset.agent] = card.dataset.space; });
   // `since` counts the minutes each agent has spent in its current state.
   var agents, since, files;
 
+  // A card shows its state in its tile's dot and on its second line.
   function setState(card, state) {
     card.dataset.state = state;
     card.querySelector('.m-state').textContent = LABELS[state];
@@ -317,13 +314,16 @@
   function renderAgents() {
     all('.m-card', agentList).forEach(function (card) {
       var name = card.dataset.agent;
-      card.dataset.state = agents[name];
-      card.querySelector('.m-state').textContent = LABELS[agents[name]] + ' · ' + ago(since[name]);
+      setState(card, agents[name]);
+      card.querySelector('[data-ago]').textContent = ago(since[name]);
     });
     sortAgents();
-    // Tabs and pane headers show their agent's state beside its mark.
+    // Pane headers show their agent's state beside its mark; the tab's tile
+    // keeps a dot only while its agent is busy or waiting.
     all('[data-dot]', mock).forEach(function (dot) {
-      dot.style.setProperty('--dot', STATE_COLOR[agents[dot.dataset.dot]]);
+      var state = agents[dot.dataset.dot];
+      dot.style.setProperty('--dot', STATE_COLOR[state]);
+      if (dot.classList.contains('m-sdot')) dot.classList.toggle('is-off', state === 'idle');
     });
     // A space shows its most urgent active agent, and how many are active.
     all('.m-space[data-space]', mock).forEach(function (row) {
@@ -335,20 +335,6 @@
           '<i style="--dot:' + STATE_COLOR[mostUrgent(active)] + '"></i>'
         : '';
     });
-    var counts = { working: 0, waiting: 0, permission: 0 };
-    Object.keys(agents).forEach(function (key) {
-      if (counts[agents[key]] !== undefined) counts[agents[key]]++;
-    });
-    var groups = [
-      [counts.working, 'var(--m-accent)', 'working'],
-      [counts.waiting, 'var(--m-warning)', 'waiting'],
-      [counts.permission, 'var(--m-danger)', 'need permission']
-    ].filter(function (group) { return group[0] > 0; });
-    mock.querySelector('[data-agent-summary]').innerHTML = groups.length
-      ? groups.map(function (group) {
-        return '<i style="background:' + group[1] + '"></i>' + group[0] + ' ' + group[2];
-      }).join('<span class="m-sep">·</span>')
-      : '<i style="background:var(--m-subtle)"></i>No active agents';
   }
 
   function setAgent(name, state) {
@@ -429,13 +415,14 @@
     commitInput.classList.remove('has-text', 'is-generating');
     commitMessage.textContent = '';
     commitButton.classList.remove('is-ready');
+    claudeUsage.textContent = '61%';
     queue = [];
     typing = [];
     spinner = null;
 
-    claude.line('<span class="t-box claude"><span class="t-claude">✻</span> Welcome to <span class="t-b">Claude Code</span>\n<span class="t-dim">  cwd: ~/Dev/vibra</span></span>');
-    codex.line('<span class="t-box"><span class="t-b">&gt;_ OpenAI Codex</span>\n<span class="t-dim">directory: ~/Dev/vibra</span></span>');
-    shell.line('<span class="t-ok">~/Dev/vibra</span> <span class="t-acc">main</span>');
+    claude.line('<span class="t-box claude"><span class="t-claude">✻</span> Welcome to <span class="t-b">Claude Code</span>\n<span class="t-dim">  cwd: ~/Dev/Vibra</span></span>');
+    codex.line('<span class="t-box"><span class="t-b">&gt;_ OpenAI Codex</span>\n<span class="t-dim">directory: ~/Dev/Vibra</span></span>');
+    shell.line('<span class="t-ok">~/Dev/Vibra</span> <span class="t-acc">main</span>');
     shell.line('<span class="t-claude">❯</span> cargo watch -x check');
 
     at(300, function () { type(claude, '<span class="t-dim">&gt;</span> ', 'fix the failing auth test', 28); });
@@ -481,6 +468,8 @@
       claude.line('');
       claude.line('<span class="t-dim">&gt;</span> <span class="t-caret"></span>');
       setAgent('claude', 'idle');
+      // The session used a little more of the week.
+      claudeUsage.textContent = '62%';
     });
     // ✨ drafts the commit message, and Commit lights up once there is one.
     at(8300, function () { commitInput.classList.add('is-generating'); });
@@ -654,6 +643,51 @@
       timer = setTimeout(step, 600);
     }, function () {
       clearTimeout(timer);
+    });
+  })();
+
+  // Quotas: the card above the status bar follows the provider under the
+  // pointer, its percentages gliding from the last one's.
+  (function () {
+    var demo = document.querySelector('[data-usage-demo]');
+    var chips = all('.m-chip', demo);
+    var tile = demo.querySelector('[data-u-tile]');
+    var name = demo.querySelector('[data-u-name]');
+    var detail = demo.querySelector('[data-u-detail]');
+    var rows = all('.u-row', demo);
+    var PROVIDERS = [
+      { name: 'Claude', tile: 'claude', detail: 'Max · Updated just now',
+        quotas: [[42, 'Resets 3:40 PM'], [61, 'Resets Friday']] },
+      { name: 'Codex', tile: 'codex', detail: 'Plus · Updated 2 min ago',
+        quotas: [[18, 'Resets 5:15 PM'], [84, 'Resets Monday']] },
+      { name: 'Grok', tile: 'grok', detail: 'Updated 1 min ago',
+        quotas: [[7, 'Resets 4:05 PM'], [12, 'Resets Sunday']] }
+    ];
+    var shown = [42, 61], frame = 0;
+    cycle(demo, 2600, function (n) {
+      var provider = PROVIDERS[n % PROVIDERS.length];
+      chips.forEach(function (chip, i) { chip.classList.toggle('is-hover', i === n % PROVIDERS.length); });
+      tile.className = 'm-tile tile-' + provider.tile;
+      tile.innerHTML = '<svg><use href="#m-' + provider.tile + '"/></svg>';
+      name.textContent = provider.name;
+      detail.textContent = provider.detail;
+      var from = shown.slice(), start = performance.now();
+      rows.forEach(function (row, i) {
+        var quota = provider.quotas[i];
+        row.classList.toggle('is-alert', quota[0] >= 80);
+        row.querySelector('.u-bar i').style.width = quota[0] + '%';
+        row.querySelector('.u-reset').textContent = quota[1];
+      });
+      cancelAnimationFrame(frame);
+      (function count(now) {
+        var t = calm ? 1 : Math.min(1, (now - start) / 240);
+        var eased = 1 - Math.pow(1 - t, 3);
+        rows.forEach(function (row, i) {
+          shown[i] = from[i] + (provider.quotas[i][0] - from[i]) * eased;
+          row.querySelector('.u-value').textContent = Math.round(shown[i]) + '%';
+        });
+        if (t < 1) frame = requestAnimationFrame(count);
+      })(start);
     });
   })();
 
