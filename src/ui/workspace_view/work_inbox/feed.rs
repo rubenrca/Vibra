@@ -152,7 +152,6 @@ impl WorkspaceView {
         self.prune_inbox_details();
         self.refresh_inbox_repos(false, cx);
         if self.workspace_section == WorkspaceSection::Inbox
-            && !self.work_inbox.activity
             && self.settings.inbox.tab.kind().is_some()
         {
             self.sync_inbox_selection(cx);

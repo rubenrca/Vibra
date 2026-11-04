@@ -64,6 +64,68 @@ pub fn surface(color: impl Into<Hsla>) -> Hsla {
     surface_tint(color.into().into(), colors().background).into()
 }
 
+/// The frame the workspace cards float on: titlebar, sidebars, the gaps
+/// between panes, and the status bar all share this one tone.
+pub fn frame() -> Rgba {
+    colors().sidebar
+}
+
+/// Sets the sidebar tone a step off the terminal, so cards read as floating
+/// on it: lighter than the cards in dark palettes, darker in light ones.
+/// Every palette gets the same step, whatever its own sidebar was. The step
+/// stays small so the cards never read as holes in the frame.
+pub(super) fn with_floating_frame(mut theme: Theme) -> Theme {
+    const FRAME_STEP: f32 = 0.05;
+    theme.sidebar = mix(theme.terminal, theme.foreground, FRAME_STEP);
+    theme
+}
+
+/// `surface` raised toward the viewer by `step` (1.0 is a selected control):
+/// toward the foreground in dark palettes, toward white in light ones.
+pub fn lift(surface: Rgba, step: f32) -> Rgba {
+    let theme = colors();
+    if theme.is_dark() {
+        mix(surface, theme.foreground, 0.13 * step)
+    } else {
+        mix(surface, rgb(0xffffff), (0.9 * step).min(1.0))
+    }
+}
+
+/// How far a hovered row or control rises, against a selected one's 1.0.
+pub const HOVER_LIFT: f32 = 0.5;
+
+/// A row or control under the pointer on the frame.
+pub fn frame_hover() -> Rgba {
+    surface_tint(lift(frame(), HOVER_LIFT), frame())
+}
+
+/// A selected row or control on the frame.
+pub fn frame_selected() -> Rgba {
+    surface_tint(lift(frame(), 1.0), frame())
+}
+
+/// Paint the frame once, directly over the window base. Chrome inside it
+/// stays unfilled so the layers never stack.
+pub fn frame_surface() -> Hsla {
+    surface(frame())
+}
+
+/// A card's fill over the frame. Content inside a card tints relative to the
+/// card's own color, never to the window base.
+pub fn card_surface(color: Rgba) -> Rgba {
+    surface_tint(color, frame())
+}
+
+/// Text or a glyph drawn on a solid `fill`: white, unless near-black reads better.
+pub fn content_on(fill: Rgba) -> Rgba {
+    let (white, ink) = (rgb(0xffffff), rgb(0x1c1c1f));
+    if legibility::contrast_ratio(white, fill) >= legibility::contrast_ratio(ink, fill) {
+        white
+    } else {
+        ink
+    }
+}
+
 /// Floating content needs its own fill to remain readable above other content.
 /// Keep the 6% transparency at paint time; palette and foreground stay opaque.
 pub fn floating_surface(color: impl Into<Hsla>) -> Hsla {
@@ -353,7 +415,7 @@ fn theme_from_scheme(scheme: &ImportedScheme) -> Theme {
         }
         spec = spec.with_terminal(ansi);
     }
-    legibility::legible(theme_from_seed(spec))
+    legibility::legible(with_floating_frame(theme_from_seed(spec)))
 }
 
 fn find_family(id: &str) -> Option<ThemeFamily> {

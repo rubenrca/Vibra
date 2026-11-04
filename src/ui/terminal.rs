@@ -17,9 +17,7 @@ use crate::ports::terminal::{
     TerminalPoint, TerminalPort, TerminalRgb, TerminalSearchDirection, TerminalSelectionType,
     TerminalSize, TerminalSnapshot, TerminalUnderline, is_safe_hyperlink,
 };
-use crate::ui::theme::{
-    self, MONO_FONT, colors, floating_surface, popover_surface, surface, surface_tint,
-};
+use crate::ui::theme::{self, MONO_FONT, colors, floating_surface, popover_surface, surface_tint};
 use crate::{
     ClearTerminalScrollback, CopyTerminal, DecreaseTerminalFontSize, IncreaseTerminalFontSize,
     PasteTerminal, ResetTerminalFontSize, SearchTerminal, SearchTerminalNext,

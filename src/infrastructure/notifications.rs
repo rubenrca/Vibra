@@ -30,8 +30,7 @@ pub struct AgentNotification {
     pub delivery: AgentNotificationDelivery,
 }
 
-/// The activity worth surfacing, on a real transition only. Notifications and
-/// the Inbox share this so both report the same events.
+/// The activity worth surfacing, on a real transition only.
 pub fn agent_activity_event(
     previous: Option<&AgentActivitySnapshot>,
     current: Option<&AgentActivitySnapshot>,

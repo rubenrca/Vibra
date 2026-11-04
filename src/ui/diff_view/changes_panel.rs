@@ -14,7 +14,7 @@ use super::{DiffView, DiffViewEvent, GitPanelMode};
 use crate::ports::git::{GitCommit, GitCommitOptions, GitPort, GitSyncOperation};
 use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
 use crate::ui::text_edit::{TextKeyOutcome, apply_text_key};
-use crate::ui::theme::{colors, surface_tint};
+use crate::ui::theme::{colors, frame_hover, frame_selected, surface_tint};
 
 const GRAPH_ROW_HEIGHT: f32 = 26.0;
 /// The graph polls less often than the file list; commits change rarely.
@@ -288,7 +288,7 @@ impl DiffView {
                     }),
                 )
                 .when(self.changes.menu == Some(PanelMenu::More), |button| {
-                    button.bg(colors().selection)
+                    button.bg(frame_selected())
                 }),
             )
     }
@@ -490,11 +490,7 @@ impl DiffView {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(colors().muted)
                     .cursor_pointer()
-                    .hover(|button| {
-                        button
-                            .bg(surface_tint(colors().hover, colors().sidebar))
-                            .text_color(colors().foreground)
-                    })
+                    .hover(|button| button.bg(frame_hover()).text_color(colors().foreground))
                     .on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(DiffViewEvent::RunInTerminal {
                             title: "Pull request".to_owned(),
@@ -824,7 +820,7 @@ impl DiffView {
                     .flex()
                     .items_center()
                     .cursor_pointer()
-                    .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
+                    .hover(|row| row.bg(frame_hover()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.changes.graph_open = !this.changes.graph_open;
                         if this.changes.graph_open {
@@ -1047,10 +1043,8 @@ fn graph_row(
         .gap(px(6.0))
         .overflow_hidden()
         .cursor_pointer()
-        .when(is_selected, |row| {
-            row.bg(surface_tint(colors().selection, colors().sidebar))
-        })
-        .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
+        .when(is_selected, |row| row.bg(frame_selected()))
+        .hover(|row| row.bg(frame_hover()))
         .child(DiffView::graph_column(
             graph,
             graph_width,
@@ -1113,7 +1107,7 @@ fn icon_button(
     crate::ui::workspace_view::icon_button(id, icon, 26.0, enabled).when(enabled, |button| {
         button
             .cursor_pointer()
-            .hover(|button| button.bg(colors().hover))
+            .hover(|button| button.bg(frame_hover()))
             .on_click(on_click)
     })
 }

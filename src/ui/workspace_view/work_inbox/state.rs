@@ -19,7 +19,6 @@ pub(super) enum InboxMenu {
     Projects,
     Agents,
     PrActions,
-    Shortcuts,
     /// Local Git actions on the pull request's branch.
     Branch,
     /// The GitHub review being written.
@@ -286,7 +285,6 @@ impl SourceFeed {
 
 #[derive(Default)]
 pub(crate) struct WorkInbox {
-    pub activity: bool,
     pub(super) github: SourceFeed,
     pub(super) filter: WorkFilter,
     pub(super) search_editing: bool,

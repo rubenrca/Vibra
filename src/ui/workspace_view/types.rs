@@ -115,6 +115,7 @@ pub(super) enum ContextMenuAction {
     RemoveProject,
     ToggleProjectPin,
     ClosePane,
+    CloseTab,
     SplitRight,
     SplitDown,
     ToggleZoom,

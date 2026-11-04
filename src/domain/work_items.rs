@@ -782,8 +782,28 @@ pub(crate) fn pull_fixture() -> WorkItem {
     }
 }
 
+/// Short relative time for list rows.
+pub fn relative_time(now: u64, then: u64) -> String {
+    let seconds = now.saturating_sub(then);
+    match seconds {
+        0..=59 => "now".to_owned(),
+        60..=3_599 => format!("{} min ago", seconds / 60),
+        3_600..=86_399 => format!("{} h ago", seconds / 3_600),
+        _ => format!("{} d ago", seconds / 86_400),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relative_times_are_short() {
+        assert_eq!(relative_time(100, 90), "now");
+        assert_eq!(relative_time(600, 0), "10 min ago");
+        assert_eq!(relative_time(7_200, 0), "2 h ago");
+        assert_eq!(relative_time(172_800, 0), "2 d ago");
+        assert_eq!(relative_time(0, 10), "now");
+    }
+
     use super::*;
 
     #[test]

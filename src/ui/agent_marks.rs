@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use crate::infrastructure::automation::{AgentAttention, AgentRuntimeState};
-use crate::ui::theme::colors;
+use crate::ui::theme::{colors, frame, lift, mix};
 
 macro_rules! bundled_assets {
     ($(($key:literal, $rel:literal)),+ $(,)?) => {
@@ -111,8 +111,6 @@ bundled_assets! {
     ("chrome-icons/trash.svg", "ChromeIcons/trash.svg"),
     ("chrome-icons/rows.svg", "ChromeIcons/rows.svg"),
     ("chrome-icons/worktree.svg", "ChromeIcons/worktree.svg"),
-    ("chrome-icons/keyboard.svg", "ChromeIcons/keyboard.svg"),
-    ("chrome-icons/activity.svg", "ChromeIcons/activity.svg"),
     ("chrome-icons/repository.svg", "ChromeIcons/repository.svg"),
 }
 
@@ -194,6 +192,238 @@ fn badge_mark_color(selected: bool) -> Rgba {
     } else {
         colors().muted
     }
+}
+
+/// Tile colors for marks that read as an app icon on a brand background.
+fn tile_color(kind: &str) -> Option<Rgba> {
+    match kind {
+        "Gemini" => Some(gpui::rgb(0x3d7bf5)),
+        "Codex" | "Cursor" | "Grok" | "OpenCode" => Some(gpui::rgb(0x1c1c1f)),
+        _ => brand_tint(kind),
+    }
+}
+
+/// A rounded tile, like an app icon, holding `mark`. Brand tiles get a soft
+/// top-down sheen and a light rim; neutral tiles stay quiet on any surface.
+fn tile(brand: Option<Rgba>, size: f32, mark: AnyElement) -> gpui::Div {
+    let tile = div()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(size * 0.3))
+        .border_1();
+    match brand {
+        Some(color) => tile
+            .bg(gpui::linear_gradient(
+                180.0,
+                gpui::linear_color_stop(
+                    crate::ui::theme::mix(color, gpui::rgb(0xffffff), 0.16),
+                    0.0,
+                ),
+                gpui::linear_color_stop(color, 1.0),
+            ))
+            .border_color(gpui::Hsla::from(gpui::rgb(0xffffff)).opacity(0.18)),
+        // Opaque, so the tiles stacked behind never show through it.
+        None => tile
+            .bg(mix(lift(frame(), 1.0), colors().foreground, 0.08))
+            .border_color(gpui::Hsla::from(colors().foreground).opacity(0.10)),
+    }
+    .child(mark)
+}
+
+/// An agent's mark on a tile of its own; a terminal without one gets a
+/// neutral tile with a prompt glyph.
+pub fn agent_tile(kind: Option<&str>, size: f32) -> gpui::Div {
+    let brand = kind.and_then(tile_color);
+    let mark = match kind.and_then(agent_mark) {
+        Some((path, AgentMarkStyle::Template, scale)) => svg()
+            .path(path)
+            .size(px(size * scale * 0.62))
+            .flex_none()
+            .text_color(if brand.is_some() {
+                gpui::rgb(0xffffff)
+            } else {
+                colors().foreground
+            })
+            .into_any_element(),
+        Some((path, AgentMarkStyle::Original, scale)) => img(path)
+            .size(px(size * scale * 0.66))
+            .flex_none()
+            .into_any_element(),
+        None => svg()
+            .path("chrome-icons/terminal.svg")
+            .size(px(size * 0.6))
+            .flex_none()
+            .text_color(colors().muted)
+            .into_any_element(),
+    };
+    tile(brand, size, mark)
+}
+
+/// An initial on a tile of `color`, for marks that have no artwork.
+pub fn letter_tile(initial: impl Into<SharedString>, color: Rgba, size: f32) -> gpui::Div {
+    tile(
+        Some(color),
+        size,
+        div()
+            .text_size(px(size * 0.55))
+            .font_weight(gpui::FontWeight::BOLD)
+            .text_color(crate::ui::theme::content_on(color))
+            .child(initial.into())
+            .into_any_element(),
+    )
+}
+
+/// A neutral tile around a chrome icon, for tabs that hold no terminal.
+pub fn icon_tile(path: &'static str, size: f32) -> gpui::Div {
+    tile(
+        None,
+        size,
+        svg()
+            .path(path)
+            .size(px(size * 0.6))
+            .flex_none()
+            .text_color(colors().muted)
+            .into_any_element(),
+    )
+}
+
+/// Tiles a stack shows: the front one and up to two peeking out behind it.
+const STACK_DEPTH: usize = 3;
+/// How far each tile behind peeks out past the one in front of it.
+const STACK_PEEK: f32 = 4.0;
+/// How much smaller each tile behind is than the one in front of it.
+const STACK_SHRINK: f32 = 3.0;
+/// How high the leading tile arcs, against its size, on its way to the back.
+const STACK_LIFT: f32 = 0.4;
+
+/// A tile placed in a stack. Slot 0 is the front and 1 and 2 sit behind it;
+/// a fractional slot is on its way between them. `lift` raises it.
+struct PlacedTile<'a> {
+    kind: Option<&'a str>,
+    slot: f32,
+    lift: f32,
+}
+
+/// Draws `tiles` back to front, `count` slots wide, with the status dot on
+/// the front slot ringed in `surface`.
+fn placed_stack(
+    mut tiles: Vec<PlacedTile<'_>>,
+    count: usize,
+    size: f32,
+    status: Option<(Rgba, f32)>,
+    surface: gpui::Hsla,
+) -> AnyElement {
+    tiles.sort_by(|a, b| b.slot.total_cmp(&a.slot));
+    let last = (count.max(1) - 1) as f32;
+    let tiles = tiles.into_iter().map(|tile| {
+        let tile_size = size - STACK_SHRINK * tile.slot;
+        // Tiles behind are a little dimmer; one past the last slot fades out.
+        let opacity = (1.0 - 0.2 * tile.slot.min(1.0)) * (1.0 + last - tile.slot).clamp(0.0, 1.0);
+        agent_tile(tile.kind, tile_size)
+            .absolute()
+            .left(px(size + STACK_PEEK * tile.slot - tile_size))
+            .top(px((size - tile_size) / 2.0 - tile.lift))
+            .opacity(opacity)
+    });
+    div()
+        .relative()
+        .flex_none()
+        .w(px(size + STACK_PEEK * last))
+        .h(px(size))
+        .children(tiles)
+        .when_some(status, |stack, (color, opacity)| {
+            stack.child(
+                div()
+                    .absolute()
+                    .top(px(-2.0))
+                    .left(px(size - 6.0))
+                    .size(px(8.0))
+                    .rounded_full()
+                    .border_2()
+                    .border_color(surface)
+                    .bg(color)
+                    .opacity(opacity),
+            )
+        })
+        .into_any_element()
+}
+
+/// The dot for an agent's state; an idle agent shows none.
+fn stack_status(
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+) -> Option<Rgba> {
+    match state {
+        Some(AgentRuntimeState::Idle) | None => None,
+        _ => agent_status_color(state, attention),
+    }
+}
+
+/// A tab's panes as a stack of tiles: the focused one in front, up to two
+/// more peeking out behind it. A dot on the front tile tells what its agent
+/// is doing, ringed in `surface` (the color the tab sits on).
+pub fn agent_tile_stack(
+    kinds: &[Option<String>],
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+    surface: impl Into<gpui::Hsla>,
+    size: f32,
+) -> AnyElement {
+    let count = kinds.len().clamp(1, STACK_DEPTH);
+    let tiles = (0..count)
+        .map(|index| PlacedTile {
+            kind: kinds.get(index).and_then(|kind| kind.as_deref()),
+            slot: index as f32,
+            lift: 0.0,
+        })
+        .collect();
+    let status = stack_status(state, attention).map(|color| (color, 1.0));
+    placed_stack(tiles, count, size, status, surface.into())
+}
+
+/// The stack `progress` (0 to 1) of the way from `from` to `to`, each a
+/// tab's panes front first. Every tile slides from its old slot to its new
+/// one, so the pane taking focus comes forward while the one that led arcs
+/// up and over the others on its way back. A pane new to the stack rises in
+/// from behind it.
+pub fn agent_tile_stack_shuffle<Id: PartialEq>(
+    from: &[(Id, Option<String>)],
+    to: &[(Id, Option<String>)],
+    progress: f32,
+    state: Option<AgentRuntimeState>,
+    attention: Option<AgentAttention>,
+    surface: impl Into<gpui::Hsla>,
+    size: f32,
+) -> AnyElement {
+    let count = to.len().clamp(1, STACK_DEPTH);
+    let behind = STACK_DEPTH as f32;
+    let tiles = to
+        .iter()
+        .take(count)
+        .enumerate()
+        .map(|(index, (id, kind))| {
+            let end = index as f32;
+            let start = from
+                .iter()
+                .position(|(previous, _)| previous == id)
+                .map_or(behind, |slot| (slot as f32).min(behind));
+            let leaving_front = start == 0.0 && end > 0.0;
+            PlacedTile {
+                kind: kind.as_deref(),
+                slot: start + (end - start) * progress,
+                lift: if leaving_front {
+                    STACK_LIFT * size * (std::f32::consts::PI * progress).sin()
+                } else {
+                    0.0
+                },
+            }
+        })
+        .collect();
+    let status = stack_status(state, attention).map(|color| (color, progress));
+    placed_stack(tiles, count, size, status, surface.into())
 }
 
 /// Compact mark + runtime state used by pane headers and other dense chrome.

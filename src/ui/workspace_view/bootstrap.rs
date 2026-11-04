@@ -5,7 +5,6 @@ use std::rc::Rc;
 
 use gpui::{Context, FocusHandle, SharedString, px};
 
-use crate::domain::inbox::Inbox;
 use crate::domain::workspace::{PaneSplitDirection, WorkspaceSnapshot};
 use crate::infrastructure::automation::upgrade_outdated_agent_hooks;
 use crate::infrastructure::automation::{AutomationServer, agent_hook_status};
@@ -307,10 +306,11 @@ impl WorkspaceView {
             tab_strip_drop: None,
             tab_motion: SlotMotion::default(),
             tab_width: Rc::new(Cell::new(px(0.0))),
+            tab_fronts: Default::default(),
+            tab_front_motions: Cell::new(0),
             project_motion: RefCell::new([SlotMotion::default(), SlotMotion::default()]),
             project_drop: None,
             navigation: tabs::Navigation::default(),
-            inbox: Inbox::default(),
             work_inbox: work_inbox::WorkInbox::default(),
             expanded_directories: HashSet::new(),
             project_files_root: None,

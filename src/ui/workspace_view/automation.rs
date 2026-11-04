@@ -8,8 +8,7 @@ use crate::infrastructure::automation::{
     AutomationResponse,
 };
 use crate::infrastructure::notifications::{
-    AgentActivitySnapshot, AgentNotificationDelivery, agent_activity_event,
-    agent_notification_copy, should_notify_agent,
+    AgentActivitySnapshot, AgentNotificationDelivery, agent_notification_copy, should_notify_agent,
 };
 use crate::ports::terminal::{
     TerminalAgentKindSource, TerminalAgentPresence, TerminalAgentStateSource,
@@ -385,16 +384,6 @@ impl WorkspaceView {
             });
         let previous = self.agent_activity_seen.get(&pane_id);
         self.capture_turn_start(pane_id, previous, current.as_ref(), cx);
-        let previous = self.agent_activity_seen.get(&pane_id);
-        if let Some(event) = agent_activity_event(previous, current.as_ref()) {
-            let agent = current
-                .as_ref()
-                .or(previous)
-                .map(|snapshot| snapshot.kind.clone())
-                .unwrap_or_else(|| "Agent".to_owned());
-            let seen = self.window_is_active && self.session_is_selected(pane_id, cx);
-            self.record_agent_event(pane_id, event, &agent, seen);
-        }
         let previous = self.agent_activity_seen.get(&pane_id);
         if let Some(notification) = should_notify_agent(
             previous,

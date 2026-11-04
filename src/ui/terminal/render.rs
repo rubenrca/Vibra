@@ -79,10 +79,12 @@ impl TerminalPaintState {
 
     fn paint_backgrounds(&self, bounds: Bounds<Pixels>, floating: bool, window: &mut Window) {
         let grid = self.grid_bounds;
-        let background = if floating {
+        // A pane's card already paints the theme's terminal color, so only a
+        // program's own background (a TUI theme, OSC 11) needs a tint over it.
+        let background: Hsla = if floating {
             floating_surface(self.surface)
         } else {
-            surface(self.surface)
+            surface_tint(self.surface.into(), colors().terminal).into()
         };
         window.paint_quad(fill(bounds, background).corner_radii(px(SURFACE_CORNER_RADIUS)));
         let scale = window.scale_factor();

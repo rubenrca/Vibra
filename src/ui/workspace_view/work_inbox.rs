@@ -32,7 +32,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.workspace_section != WorkspaceSection::Inbox || self.work_inbox.activity {
+        if self.workspace_section != WorkspaceSection::Inbox {
             return false;
         }
         if matches!(event.keystroke.key.as_str(), "escape" | "esc") && self.dismiss_inbox_menu() {
@@ -121,16 +121,6 @@ impl WorkspaceView {
             return false;
         }
         let key = keystroke.key.to_ascii_lowercase();
-        if keystroke.key_char.as_deref() == Some("?")
-            || key == "?"
-            || (key == "/" && modifiers.shift)
-        {
-            let width: f32 = window.bounds().size.width.into();
-            self.work_inbox.menu_position = (width - 250.0, 40.0);
-            self.work_inbox.menu = Some(InboxMenu::Shortcuts);
-            cx.notify();
-            return true;
-        }
         match key.as_str() {
             "h" => self.select_repository_tab(RepositoryTab::History, cx),
             "p" => self.select_repository_tab(RepositoryTab::PullRequests, cx),

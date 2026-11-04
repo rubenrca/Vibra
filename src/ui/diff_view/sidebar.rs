@@ -4,7 +4,7 @@ use gpui::{AnyElement, Context, FontWeight, SharedString, div, prelude::*, px, s
 
 use super::{DiffView, GitFileChange, GitPanelMode, git_status_badge};
 use crate::ports::files::FileEntryKind;
-use crate::ui::theme::{MONO_FONT, colors, surface_tint};
+use crate::ui::theme::{MONO_FONT, colors, frame_hover, frame_selected, surface_tint};
 use crate::ui::workspace_view::{file_tree_icon, file_tree_icon_color};
 
 const FILE_ROW_HEIGHT: f32 = 28.0;
@@ -175,10 +175,8 @@ impl DiffView {
             .px_2()
             .overflow_hidden()
             .cursor_pointer()
-            .when(selected, |row| {
-                row.bg(surface_tint(colors().selection, colors().sidebar))
-            })
-            .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
+            .when(selected, |row| row.bg(frame_selected()))
+            .hover(|row| row.bg(frame_hover()))
             .child({
                 let color = file_tree_icon_color(FileEntryKind::File, &name);
                 div()
@@ -287,7 +285,7 @@ fn stage_button(id: SharedString, staged: bool) -> gpui::Stateful<gpui::Div> {
         .opacity(0.0)
         .group_hover("git-file-row", |button| button.opacity(1.0))
         .text_color(colors().muted)
-        .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
+        .hover(|button| button.bg(frame_hover()).text_color(colors().foreground))
         .child(
             svg()
                 .path(if staged {

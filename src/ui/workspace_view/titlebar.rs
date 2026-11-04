@@ -10,7 +10,8 @@ use gpui::{
 use crate::OpenIde;
 use crate::infrastructure::editor::InstalledEditor;
 use crate::ui::menu::{menu_heading, menu_hover, menu_panel};
-use crate::ui::theme::{colors, surface, surface_tint};
+use crate::ui::tab_style::lifted_tab;
+use crate::ui::theme::{colors, frame, frame_hover, frame_surface, surface, surface_tint};
 
 use super::{
     RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT, TITLEBAR_RIGHT_CHROME_COLLAPSED,
@@ -52,11 +53,7 @@ pub(super) fn titlebar_button(id: &'static str, enabled: bool) -> Stateful<Div> 
     button
         .group("titlebar-action")
         .cursor_pointer()
-        .hover(|button| {
-            button
-                .bg(surface_tint(colors().hover, colors().titlebar))
-                .text_color(colors().foreground)
-        })
+        .hover(|button| button.bg(frame_hover()).text_color(colors().foreground))
         .active(|button| button.opacity(0.8))
 }
 
@@ -88,7 +85,6 @@ impl super::WorkspaceView {
         if self.workspace_section == WorkspaceSection::Settings {
             return self.settings_titlebar();
         }
-        let left_progress = self.left_sidebar_progress;
         let right_progress = if self.workspace_section == WorkspaceSection::Workspace {
             self.right_sidebar_progress
         } else {
@@ -133,13 +129,15 @@ impl super::WorkspaceView {
                 })
                 .child(section_label);
         }
+        // The titlebar is part of the frame: one tone from the traffic lights
+        // to the right panel, with no seams above the sidebars.
         div()
             .h(px(TITLEBAR_HEIGHT))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
-            .bg(surface(colors().titlebar))
+            .bg(frame_surface())
             .child(
                 div()
                     .w(px(left_chrome_width))
@@ -150,12 +148,6 @@ impl super::WorkspaceView {
                     .pl(px(TRAFFIC_LIGHTS_INSET))
                     .pr_2()
                     .gap(px(TITLEBAR_BUTTON_GAP))
-                    .when(left_progress > 0.001, |chrome| {
-                        chrome
-                            .border_r_1()
-                            .border_color(colors().border_subtle)
-                            .bg(surface_tint(colors().sidebar, colors().titlebar))
-                    })
                     // Anchored beside the traffic lights so they stay put
                     // while the sidebar animates.
                     .child(
@@ -189,27 +181,23 @@ impl super::WorkspaceView {
                     .gap(px(TITLEBAR_BUTTON_GAP))
                     .overflow_hidden()
                     .when(right_open, |chrome| {
-                        chrome
-                            .border_l_1()
-                            .border_color(colors().border_subtle)
-                            .bg(surface_tint(colors().sidebar, colors().titlebar))
-                            .child(
-                                div()
-                                    .h_full()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .pl_3()
-                                    .flex()
-                                    .items_center()
-                                    .text_size(px(13.0))
-                                    .text_color(colors().muted)
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .window_control_area(WindowControlArea::Drag)
-                                    .on_mouse_down(MouseButton::Left, |_, _, _| {
-                                        crate::infrastructure::window::start_drag();
-                                    })
-                                    .child("Workspace"),
-                            )
+                        chrome.child(
+                            div()
+                                .h_full()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .pl_3()
+                                .flex()
+                                .items_center()
+                                .text_size(px(13.0))
+                                .text_color(colors().muted)
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .window_control_area(WindowControlArea::Drag)
+                                .on_mouse_down(MouseButton::Left, |_, _, _| {
+                                    crate::infrastructure::window::start_drag();
+                                })
+                                .child("Workspace"),
+                        )
                     })
                     .when(!right_open, |chrome| chrome.child(div().flex_1()))
                     .when(show_ide, |chrome| chrome.child(self.ide_button(cx)))
@@ -293,41 +281,23 @@ impl super::WorkspaceView {
             .gap(px(4.0))
             .children(modes.into_iter().map(|(item_mode, label)| {
                 let selected = item_mode == mode;
-                div()
-                    .id(SharedString::from(format!("utility-mode-{label}")))
-                    .h(px(26.0))
-                    .min_w(px(0.0))
-                    .flex_1()
-                    .rounded(px(6.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .bg(if selected {
-                        surface_tint(colors().selection, colors().sidebar)
-                    } else {
-                        gpui::rgba(0x00000000)
-                    })
-                    .text_color(if selected {
-                        colors().foreground
-                    } else {
-                        colors().muted
-                    })
-                    .hover(move |tab| {
-                        if selected {
-                            tab
-                        } else {
-                            tab.bg(surface_tint(colors().hover, colors().sidebar))
-                                .text_color(colors().foreground)
-                        }
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_workspace_mode(item_mode, cx);
-                        this.focus_selected_terminal(window, cx);
-                    }))
-                    .child(label)
+                lifted_tab(
+                    div().id(SharedString::from(format!("utility-mode-{label}"))),
+                    selected,
+                    frame(),
+                    28.0,
+                )
+                .min_w(px(0.0))
+                .flex_1()
+                .justify_center()
+                .cursor_pointer()
+                .text_size(px(12.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.set_workspace_mode(item_mode, cx);
+                    this.focus_selected_terminal(window, cx);
+                }))
+                .child(label)
             }))
             .into_any_element()
     }
@@ -411,7 +381,7 @@ impl super::WorkspaceView {
                 .into_any_element(),
             None => "IDE".into_any_element(),
         };
-        let hover_bg = surface_tint(colors().hover, colors().titlebar);
+        let hover_bg = frame_hover();
         let segment = |id: &'static str, width: f32| {
             div()
                 .id(id)

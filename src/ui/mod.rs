@@ -10,6 +10,7 @@ pub mod idle;
 mod markdown;
 pub mod menu;
 pub mod syntax;
+pub mod tab_style;
 pub mod terminal;
 mod text_edit;
 pub mod theme;

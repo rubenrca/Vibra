@@ -340,46 +340,31 @@ impl WorkspaceView {
             .h(px(36.0))
             .flex()
             .items_center()
-            .gap(px(18.0))
+            .gap(px(4.0))
             .children(DetailTab::ALL.into_iter().map(|tab| {
                 let selected = self.work_inbox.detail_tab == tab;
                 let label = tab.label();
-                div()
-                    .id(SharedString::from(format!("inbox-detail-{label}")))
-                    .h_full()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .cursor_pointer()
-                    .text_size(px(12.5))
-                    .text_color(if selected {
-                        colors().foreground
-                    } else {
-                        colors().subtle
-                    })
-                    .hover(|tab| tab.text_color(colors().foreground))
-                    .relative()
-                    .when(selected, |tab| tab.child(tab_underline()))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.select_inbox_detail_tab(tab, cx)),
+                page_tab(
+                    SharedString::from(format!("inbox-detail-{label}")),
+                    selected,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.select_inbox_detail_tab(tab, cx)))
+                .child(label)
+                .when_some(count(tab), |tab, count| {
+                    tab.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(colors().subtle)
+                            .child(count.to_string()),
                     )
-                    .child(label)
-                    .when_some(count(tab), |tab, count| {
-                        tab.child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(colors().subtle)
-                                .child(count.to_string()),
-                        )
+                })
+                .when(tab == DetailTab::Checks, |tab| {
+                    tab.when_some(checks.filter(|checks| !checks.is_empty()), |tab, checks| {
+                        let failed = checks.iter().any(|check| check.failed());
+                        let passed = checks.iter().all(|check| check.passed());
+                        tab.child(checks::check_status_icon(failed, passed, 13.0))
                     })
-                    .when(tab == DetailTab::Checks, |tab| {
-                        tab.when_some(checks.filter(|checks| !checks.is_empty()), |tab, checks| {
-                            let failed = checks.iter().any(|check| check.failed());
-                            let passed = checks.iter().all(|check| check.passed());
-                            tab.child(checks::check_status_icon(failed, passed, 13.0))
-                        })
-                    })
+                })
             }))
     }
 

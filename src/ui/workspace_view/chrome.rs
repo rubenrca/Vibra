@@ -4,20 +4,22 @@ use gpui::{Div, SharedString, Stateful, div, prelude::*, px, svg};
 
 use crate::domain::workspace::WorkspaceSplitAxis;
 use crate::ui::menu::{menu_border, menu_surface};
-use crate::ui::theme::{colors, surface};
+use crate::ui::theme::{card_surface, colors, frame_hover};
 
-use super::SidebarResizeEdge;
-
-pub(crate) const PANEL_GAP: f32 = 4.0;
-pub(crate) const PANEL_BORDER_WIDTH: f32 = 1.0;
+/// Room between floating cards, and between a card and the window edge.
+pub(crate) const PANEL_GAP: f32 = 6.0;
+/// Corner radius of the cards that hold panes and reviews.
+pub(crate) const CARD_RADIUS: f32 = 10.0;
+/// Sidebar rows keep squared-off corners, like the tabs.
+pub(crate) const SIDEBAR_ROW_RADIUS: f32 = crate::ui::tab_style::TAB_RADIUS;
 // Leave equal room for the status dot and shortcut so tab labels stay centered.
 // Keep project rows aligned with the global navigation.
-/// Horizontal inset of sidebar rows inside the panel border.
+/// Horizontal inset of sidebar rows inside the panel.
 pub(crate) const SIDEBAR_ROW_INSET: f32 = 10.0;
 pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
 
 pub(crate) fn sidebar_row_width(panel_width: f32) -> f32 {
-    panel_width - PANEL_BORDER_WIDTH - 2.0 * SIDEBAR_ROW_INSET
+    panel_width - 2.0 * SIDEBAR_ROW_INSET
 }
 
 pub(crate) fn icon_button(
@@ -41,12 +43,25 @@ pub(crate) fn icon_button(
         }))
 }
 
-/// Keep a usable resize target between the flat split panes.
+/// A card floating on the frame: rounded, outlined, and filled with `fill`.
+/// Children tint relative to `fill`.
+pub(crate) fn card(fill: gpui::Rgba) -> Div {
+    div()
+        .relative()
+        .overflow_hidden()
+        .rounded(px(CARD_RADIUS))
+        .border_1()
+        .border_color(colors().border_subtle)
+        .bg(card_surface(fill))
+}
+
+/// The frame between two cards doubles as their resize target.
 pub(crate) fn split_gutter(id: impl Into<SharedString>, axis: WorkspaceSplitAxis) -> Stateful<Div> {
     div()
         .id(id.into())
         .flex_none()
-        .hover(|divider| divider.bg(surface(colors().hover)))
+        .rounded(px(PANEL_GAP / 2.0))
+        .hover(|divider| divider.bg(frame_hover()))
         .when(axis == WorkspaceSplitAxis::Horizontal, |divider| {
             divider.w(px(PANEL_GAP)).h_full().cursor_ew_resize()
         })
@@ -225,27 +240,17 @@ pub(crate) fn ease_out_cubic(t: f32) -> f32 {
 }
 
 /// Outer clip + inner full-width column so sidebar content does not reflow while animating.
-pub(crate) fn clipped_width_panel(
-    width: f32,
-    full_width: f32,
-    edge: SidebarResizeEdge,
-    background: gpui::Rgba,
-    content: impl IntoElement,
-) -> Div {
+/// Sidebars sit on the frame itself, so they paint no fill or separator of their own.
+pub(crate) fn clipped_width_panel(width: f32, full_width: f32, content: impl IntoElement) -> Div {
     div()
         .w(px(width))
         .h_full()
         .flex_none()
         .relative()
         .overflow_hidden()
-        .bg(surface(background))
-        // Only the edge facing the workspace needs a separator.
-        .when(edge == SidebarResizeEdge::Left, |panel| panel.border_r_1())
-        .when(edge == SidebarResizeEdge::Right, |panel| panel.border_l_1())
-        .border_color(colors().border_subtle)
         .child(
             div()
-                .w(px(full_width - PANEL_BORDER_WIDTH))
+                .w(px(full_width))
                 .h_full()
                 .flex()
                 .flex_col()

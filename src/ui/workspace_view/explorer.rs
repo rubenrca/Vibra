@@ -11,7 +11,7 @@ use gpui::{
 
 use crate::ports::files::FileEntryKind;
 use crate::ports::git::GitFileStatus;
-use crate::ui::theme::{colors, surface_tint};
+use crate::ui::theme::{colors, frame_hover, frame_selected};
 
 use super::files::{
     aggregate_dir_statuses, collect_project_files, file_tree_icon, file_tree_icon_color,
@@ -245,11 +245,11 @@ impl WorkspaceView {
             .rounded(px(4.0))
             .cursor_pointer()
             .bg(if selected {
-                surface_tint(colors().elevated, colors().panel)
+                frame_selected()
             } else {
                 gpui::rgba(0x00000000)
             })
-            .hover(|item| item.bg(surface_tint(colors().hover, colors().panel)))
+            .hover(|item| item.bg(frame_hover()))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -446,11 +446,7 @@ impl WorkspaceView {
                 .justify_center()
                 .cursor_pointer()
                 .text_color(colors().subtle)
-                .hover(|button| {
-                    button
-                        .bg(surface_tint(colors().hover, colors().panel))
-                        .text_color(colors().foreground)
-                })
+                .hover(|button| button.bg(frame_hover()).text_color(colors().foreground))
                 .tooltip(move |_, cx| sidebar_tooltip(label, cx))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(

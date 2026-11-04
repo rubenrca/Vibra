@@ -5,7 +5,7 @@ use gpui::{
 };
 use uuid::Uuid;
 
-use crate::ui::theme::{colors, surface, surface_tint};
+use crate::ui::theme::{colors, frame_hover, frame_selected, surface_tint};
 
 use super::chrome::SIDEBAR_ROW_INSET;
 
@@ -33,7 +33,7 @@ fn rail_row(id: impl Into<SharedString>) -> Stateful<Div> {
         .w_full()
         .flex_none()
         .px(px(8.0))
-        .rounded(px(7.0))
+        .rounded(px(super::SIDEBAR_ROW_RADIUS))
         .flex()
         .items_center()
         .gap(px(10.0))
@@ -41,10 +41,7 @@ fn rail_row(id: impl Into<SharedString>) -> Stateful<Div> {
         .text_size(px(13.0))
         .font_weight(gpui::FontWeight::NORMAL)
         .text_color(colors().muted)
-        .hover(|row| {
-            row.bg(surface_tint(colors().hover, colors().sidebar))
-                .text_color(colors().foreground)
-        })
+        .hover(|row| row.bg(frame_hover()).text_color(colors().foreground))
 }
 
 /// System-font keycaps keep macOS modifier symbols legible and evenly spaced.
@@ -114,18 +111,10 @@ impl WorkspaceView {
                 self.scope_inbox_to_active_project();
             }
             self.ensure_inbox_loaded(cx);
-            if !self.work_inbox.activity {
-                self.sync_inbox_selection(cx);
-                if self.settings.inbox.tab == crate::domain::work_items::RepositoryTab::History {
-                    self.open_history(false, cx);
-                }
+            self.sync_inbox_selection(cx);
+            if self.settings.inbox.tab == crate::domain::work_items::RepositoryTab::History {
+                self.open_history(false, cx);
             }
-        }
-        if section == WorkspaceSection::Workspace
-            && !self.review_covers_terminal(cx)
-            && let Some(session) = self.snapshot.selected_session()
-        {
-            self.inbox.mark_pane_read(session.id);
         }
         self.context_menu = None;
         self.ide_menu_open = false;
@@ -200,11 +189,7 @@ impl WorkspaceView {
                             .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(colors().subtle)
-                            .hover(|field| {
-                                field
-                                    .bg(surface_tint(colors().hover, colors().sidebar))
-                                    .text_color(colors().muted)
-                            })
+                            .hover(|field| field.bg(frame_hover()).text_color(colors().muted))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_palette(PaletteMode::Commands, cx)
                             }))
@@ -225,7 +210,7 @@ impl WorkspaceView {
                         let selected = self.workspace_section == section;
                         rail_row(SharedString::from(format!("nav-{label}")))
                             .when(selected, |row| {
-                                row.bg(surface_tint(colors().selection, colors().sidebar))
+                                row.bg(frame_selected())
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(colors().foreground)
                             })
@@ -290,10 +275,7 @@ impl WorkspaceView {
                                         .items_center()
                                         .justify_center()
                                         .cursor_pointer()
-                                        .hover(|button| {
-                                            button
-                                                .bg(surface_tint(colors().hover, colors().sidebar))
-                                        })
+                                        .hover(|button| button.bg(frame_hover()))
                                         .tooltip(|_, cx| sidebar_tooltip("New space · ⌘N", cx))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.new_space(window, cx)
@@ -328,9 +310,7 @@ impl WorkspaceView {
                                         .flex()
                                         .flex_col()
                                         .cursor_pointer()
-                                        .hover(|card| {
-                                            card.bg(surface_tint(colors().hover, colors().sidebar))
-                                        })
+                                        .hover(|card| card.bg(frame_hover()))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.new_space(window, cx)
                                         }))
@@ -353,7 +333,6 @@ impl WorkspaceView {
                     )
                     .child(self.agents_section(cx)),
             )
-            .child(self.usage_tracker(cx))
             .into_any_element()
     }
 
@@ -368,137 +347,4 @@ impl WorkspaceView {
             WorkspaceSection::Workspace => unreachable!("workspace renders its terminal canvas"),
         }
     }
-}
-
-/// Page chrome shared by Review and other global pages.
-pub(super) fn section_frame(title: &str, actions: Vec<AnyElement>, body: AnyElement) -> AnyElement {
-    div()
-        .id("global-section")
-        .flex_1()
-        .min_w(px(0.0))
-        .h_full()
-        .flex()
-        .flex_col()
-        .bg(surface(colors().background))
-        .child(
-            div()
-                .h(px(58.0))
-                .flex_none()
-                .px_6()
-                .flex()
-                .items_center()
-                .gap_2()
-                .border_b_1()
-                .border_color(colors().border_subtle)
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(px(16.0))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .child(title.to_owned()),
-                )
-                .children(actions),
-        )
-        .child(
-            div()
-                .id("global-section-body")
-                .flex_1()
-                .min_h(px(0.0))
-                .overflow_y_scroll()
-                .px_6()
-                .py_4()
-                .flex()
-                .flex_col()
-                .items_center()
-                .child(body),
-        )
-        .into_any_element()
-}
-
-pub(crate) fn section_button(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    primary: bool,
-) -> Stateful<Div> {
-    let label = label.into();
-    div()
-        .id(id.into())
-        .h(px(28.0))
-        .flex_none()
-        .px_3()
-        .rounded(px(6.0))
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .text_size(px(12.0))
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .when(primary, |button| {
-            button
-                .bg(colors().accent)
-                .text_color(colors().background)
-                .hover(|button| button.opacity(0.9))
-        })
-        .when(!primary, |button| {
-            button
-                .border_1()
-                .border_color(colors().border_subtle)
-                .text_color(colors().muted)
-                .hover(|button| {
-                    button
-                        .bg(surface_tint(colors().hover, colors().background))
-                        .text_color(colors().foreground)
-                })
-        })
-        .child(label)
-}
-
-pub(super) fn section_heading(label: impl Into<SharedString>) -> Div {
-    div()
-        .h(px(30.0))
-        .px_3()
-        .flex()
-        .items_center()
-        .text_size(px(12.0))
-        .text_color(colors().subtle)
-        .child(label.into())
-}
-
-pub(super) fn section_empty_state(
-    icon: &'static str,
-    heading: &'static str,
-    description: &'static str,
-) -> AnyElement {
-    div()
-        .w_full()
-        .py_6()
-        .flex()
-        .flex_col()
-        .items_center()
-        .gap_2()
-        .text_center()
-        .child(
-            div()
-                .size(px(40.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(10.0))
-                .bg(surface_tint(colors().elevated, colors().background))
-                .child(svg().path(icon).size(px(20.0)).text_color(colors().muted)),
-        )
-        .child(
-            div()
-                .text_size(px(14.0))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .child(heading),
-        )
-        .child(
-            div()
-                .max_w(px(420.0))
-                .text_size(px(12.5))
-                .line_height(px(19.0))
-                .text_color(colors().muted)
-                .child(description),
-        )
-        .into_any_element()
 }

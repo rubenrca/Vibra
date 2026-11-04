@@ -8,14 +8,15 @@ use uuid::Uuid;
 
 use crate::domain::workspace::{PaneSplitDirection, WorkspaceTabId};
 use crate::infrastructure::settings::{MAX_REVIEW_SPLIT, MIN_REVIEW_SPLIT};
-use crate::ui::theme::{colors, surface_tint};
+use crate::ui::agent_marks::icon_tile;
+use crate::ui::theme::{colors, frame, frame_hover, lift};
 use crate::{GoToTab, NavigateBack, NavigateForward};
 
 use super::panes::{
-    TAB_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS, TAB_TEXT_SIZE, tab_drag_ghost, tab_shortcut,
+    PANE_HEADER_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS, TAB_TEXT_SIZE, TAB_TILE_SIZE,
+    card_header_button, tab_drag_ghost, tab_shortcut, tab_trailing_button, titlebar_tab_style,
 };
-use super::titlebar::{titlebar_button, titlebar_icon};
-use super::{DragGhost, ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView, sidebar_tooltip};
+use super::{DragGhost, PANEL_GAP, ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView, card};
 
 const MAX_NAVIGATION_HISTORY: usize = 50;
 
@@ -248,9 +249,6 @@ impl WorkspaceView {
         self.context_menu = None;
         self.ide_menu_open = false;
         self.close_palette(cx);
-        if let Some(session) = self.snapshot.selected_session() {
-            self.inbox.mark_pane_read(session.id);
-        }
         self.follow_spaces();
         self.sync_terminal_surface_visibility(cx);
         self.sync_diff_root(cx);
@@ -407,50 +405,22 @@ impl WorkspaceView {
         };
         let ghost = {
             let title = title.to_string();
-            DragGhost::new(TAB_RADIUS, colors().terminal, move || {
-                tab_drag_ghost(
-                    svg()
-                        .path(icon)
-                        .size(px(15.0))
-                        .flex_none()
-                        .text_color(colors().foreground),
-                    title.clone(),
-                )
+            DragGhost::new(TAB_RADIUS, lift(frame(), 1.0), move || {
+                tab_drag_ghost(icon_tile(icon, TAB_TILE_SIZE), title.clone())
             })
         };
         div()
             .id("review-tab")
             .relative()
             .group("title-tab")
-            .h(px(TAB_HEIGHT))
             .min_w(px(0.0))
             .max_w(px(TAB_MAX_WIDTH))
             .flex_1()
             .flex()
             .items_center()
-            .pl(px(10.0))
-            .pr(px(6.0))
-            .gap(px(8.0))
             .overflow_hidden()
-            .rounded(px(TAB_RADIUS))
             .cursor_move()
-            .bg(if selected {
-                surface_tint(colors().selection, colors().terminal)
-            } else {
-                gpui::rgba(0x00000000)
-            })
-            .text_color(if selected {
-                colors().foreground
-            } else {
-                colors().muted
-            })
-            .hover(|tab| {
-                if selected {
-                    tab
-                } else {
-                    tab.bg(colors().hover).text_color(colors().foreground)
-                }
-            })
+            .map(|tab| titlebar_tab_style(tab, selected))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
@@ -461,17 +431,7 @@ impl WorkspaceView {
             .child(ghost.measure())
             .on_drag(drag, move |_, _, _, cx| ghost.preview(cx))
             .on_click(cx.listener(|this, _, window, cx| this.activate_review_tab(window, cx)))
-            .child(
-                svg()
-                    .path(icon)
-                    .size(px(15.0))
-                    .flex_none()
-                    .text_color(if selected {
-                        colors().foreground
-                    } else {
-                        colors().muted
-                    }),
-            )
+            .child(icon_tile(icon, TAB_TILE_SIZE))
             .child(
                 div()
                     .flex_1()
@@ -488,34 +448,16 @@ impl WorkspaceView {
             .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
             .children(self.tab_drag_zone(WorkspaceTabId::Review, cx))
             .child(
-                div()
-                    .id("close-review-tab")
-                    .group("review-close")
-                    .size(px(20.0))
-                    .flex_none()
-                    .rounded(px(5.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .text_color(colors().subtle)
-                    .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
-                    .tooltip(move |_, cx| sidebar_tooltip(close_label, cx))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.close_review(window, cx);
-                    }))
-                    .child(
-                        svg()
-                            .path("chrome-icons/close.svg")
-                            .size(px(12.0))
-                            .flex_none()
-                            .text_color(colors().muted)
-                            .group_hover("review-close", |icon| {
-                                icon.text_color(colors().foreground)
-                            }),
-                    ),
+                tab_trailing_button(
+                    "close-review-tab",
+                    "chrome-icons/close.svg",
+                    close_label,
+                    selected,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.close_review(window, cx);
+                })),
             )
             .map(|tab| {
                 let slide = self.tab_motion.slide(WorkspaceTabId::Review);
@@ -539,14 +481,22 @@ impl WorkspaceView {
             self.review_split_direction,
             PaneSplitDirection::Left | PaneSplitDirection::Up
         );
-        let review = div()
+        let review = card(colors().panel)
+            .id("review-pane")
             .size_full()
             .min_w(px(0.0))
             .min_h(px(0.0))
             .flex()
             .flex_col()
             .child(self.review_pane_header(cx))
-            .child(review)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(review),
+            )
             .into_any_element();
         let (first, second) = if review_first {
             (review, terminal)
@@ -572,29 +522,22 @@ impl WorkspaceView {
                     .when(!vertical, |pane| pane.w(relative(ratio)).h_full())
                     .child(first),
             )
+            // The frame between the two cards is the resize target.
             .child(
                 div()
                     .id("review-split-divider")
                     .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
+                    .rounded(px(PANEL_GAP / 2.0))
                     .when(vertical, |divider| {
-                        divider.w_full().h(px(5.0)).cursor_ns_resize()
+                        divider.w_full().h(px(PANEL_GAP)).cursor_ns_resize()
                     })
                     .when(!vertical, |divider| {
-                        divider.h_full().w(px(5.0)).cursor_ew_resize()
+                        divider.h_full().w(px(PANEL_GAP)).cursor_ew_resize()
                     })
-                    .hover(|divider| divider.bg(surface_tint(colors().hover, colors().panel)))
+                    .hover(|divider| divider.bg(frame_hover()))
                     .on_drag(ReviewSplitDrag, |_, _, _, cx| {
                         cx.new(|_| ReviewSplitDragView)
-                    })
-                    .child(
-                        div()
-                            .bg(colors().border_subtle)
-                            .when(vertical, |line| line.w_full().h(px(1.0)))
-                            .when(!vertical, |line| line.h_full().w(px(1.0))),
-                    ),
+                    }),
             )
             .child(
                 div()
@@ -609,6 +552,7 @@ impl WorkspaceView {
 
     fn review_pane_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let title = self.diff_view.read(cx).review_title();
+        let icon = self.diff_view.read(cx).review_icon();
         let drag = TabDrag {
             tab_id: WorkspaceTabId::Review,
             title: title.to_string(),
@@ -616,14 +560,13 @@ impl WorkspaceView {
         };
         div()
             .id("review-pane-header")
-            .h(px(30.0))
+            .h(px(PANE_HEADER_HEIGHT))
             .flex_none()
             .flex()
             .items_center()
             .gap(px(6.0))
-            .px(px(8.0))
-            .border_b_1()
-            .border_color(colors().border_subtle)
+            .pl(px(10.0))
+            .pr(px(5.0))
             .cursor_move()
             .text_size(px(12.5))
             .text_color(colors().foreground)
@@ -637,29 +580,41 @@ impl WorkspaceView {
             .on_drag(drag, |drag, offset, _, cx| drag.preview(offset, cx))
             .child(
                 svg()
-                    .path("chrome-icons/grip.svg")
+                    .path(icon)
                     .size(px(14.0))
-                    .text_color(colors().subtle),
-            )
-            .child(div().flex_1().min_w(px(0.0)).truncate().child(title))
-            .child(
-                titlebar_button("review-pane-detach", true)
-                    .tooltip(|_, cx| sidebar_tooltip("Open as tab", cx))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.review_docked_tab_id = None;
-                        this.diff_view
-                            .update(cx, |diff, cx| diff.set_review_focused(true, cx));
-                        this.activate_review_tab(window, cx);
-                    }))
-                    .child(titlebar_icon("chrome-icons/maximize.svg")),
+                    .flex_none()
+                    .text_color(colors().muted),
             )
             .child(
-                titlebar_button("review-pane-close", true)
-                    .tooltip(|_, cx| sidebar_tooltip("Close review", cx))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(|this, _, window, cx| this.close_review(window, cx)))
-                    .child(titlebar_icon("chrome-icons/close.svg")),
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(
+                card_header_button(
+                    "review-pane-detach",
+                    "chrome-icons/maximize.svg",
+                    "Open as tab",
+                    colors().panel,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.review_docked_tab_id = None;
+                    this.diff_view
+                        .update(cx, |diff, cx| diff.set_review_focused(true, cx));
+                    this.activate_review_tab(window, cx);
+                })),
+            )
+            .child(
+                card_header_button(
+                    "review-pane-close",
+                    "chrome-icons/close.svg",
+                    "Close review",
+                    colors().panel,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.close_review(window, cx))),
             )
             .into_any_element()
     }

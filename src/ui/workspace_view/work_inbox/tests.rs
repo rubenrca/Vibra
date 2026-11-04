@@ -280,11 +280,6 @@ fn work_inbox_prefetch_does_not_select_or_mark_tasks_read_until_visible(
             assert!(item.unread(&view.settings.inbox.seen));
             assert!(view.work_inbox.details.is_empty());
             view.workspace_section = WorkspaceSection::Inbox;
-            view.work_inbox.activity = true;
-            view.inbox_items_updated(false, cx);
-            assert!(view.work_inbox.selected.is_none());
-            assert!(item.unread(&view.settings.inbox.seen));
-            view.work_inbox.activity = false;
             view.inbox_items_updated(false, cx);
             assert_eq!(view.work_inbox.selected.as_deref(), Some(item.url.as_str()));
             assert!(!item.unread(&view.settings.inbox.seen));
@@ -635,10 +630,6 @@ fn review_tabs_group_by_relation_and_keys_walk_tasks_and_tabs(cx: &mut gpui::Tes
             assert_eq!(view.work_inbox.selected.as_deref(), Some(mine.url.as_str()));
             assert_eq!(view.inbox_card_child_index(&other.url), Some(4));
 
-            assert!(view.handle_inbox_key(&key("shift-/"), window, cx));
-            assert!(view.work_inbox.menu == Some(InboxMenu::Shortcuts));
-            assert!(view.handle_inbox_key(&key("escape"), window, cx));
-            assert!(view.work_inbox.menu.is_none());
             // Typed text never triggers shortcuts.
             view.work_inbox.search_editing = true;
             assert!(view.handle_inbox_key(&key("j"), window, cx));

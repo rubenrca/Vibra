@@ -707,7 +707,6 @@ impl WorkspaceView {
 
     pub(in crate::ui::workspace_view) fn visible_inbox_terminal(&self) -> Option<Uuid> {
         if self.workspace_section != WorkspaceSection::Inbox
-            || self.work_inbox.activity
             || self.settings.inbox.tab == RepositoryTab::History
             || !self.work_inbox.discussion_open
         {

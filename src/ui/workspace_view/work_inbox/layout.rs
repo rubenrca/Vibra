@@ -10,7 +10,7 @@ mod local;
 mod merge;
 
 use super::*;
-use crate::domain::inbox::relative_time;
+use crate::domain::work_items::relative_time;
 use crate::domain::work_items::{InboxPreferences, InboxTime, PullStep, RepositoryTab};
 use crate::infrastructure::clock::unix_now;
 use crate::ui::menu::{MENU_WIDTH, MenuRow, menu_heading, menu_panel, menu_separator};
@@ -28,9 +28,6 @@ impl WorkspaceView {
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.work_inbox.activity {
-            return self.inbox_activity_content(cx);
-        }
         let body = if self.settings.inbox.tab == RepositoryTab::History {
             self.history_view(cx)
         } else {
@@ -232,79 +229,43 @@ impl WorkspaceView {
     fn repository_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.settings.inbox.tab;
         div()
-            .h(px(38.0))
+            .h(px(40.0))
             .flex_none()
-            .pl_4()
+            .pl(px(10.0))
             .pr_2()
             .flex()
             .items_center()
             .border_b_1()
             .border_color(colors().border_subtle)
-            .child(div().h_full().min_w(px(0.0)).flex().gap(px(18.0)).children(
-                RepositoryTab::ALL.into_iter().map(|tab| {
-                    let selected = current == tab;
-                    let count = tab.kind().map(|kind| self.inbox_items_of(kind).count());
-                    div()
-                        .id(SharedString::from(format!("repository-tab-{tab:?}")))
-                        .h_full()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(5.0))
-                        .relative()
-                        .when(selected, |tab| tab.child(tab_underline()))
-                        .cursor_pointer()
-                        .text_size(px(12.5))
-                        .text_color(if selected {
-                            colors().foreground
-                        } else {
-                            colors().subtle
-                        })
-                        .hover(|tab| tab.text_color(colors().foreground))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .children(RepositoryTab::ALL.into_iter().map(|tab| {
+                        let selected = current == tab;
+                        let count = tab.kind().map(|kind| self.inbox_items_of(kind).count());
+                        page_tab(
+                            SharedString::from(format!("repository-tab-{tab:?}")),
+                            selected,
+                        )
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.select_repository_tab(tab, cx)),
                         )
                         .child(tab.label())
-                        .when_some(count.filter(|count| *count > 0), |tab, count| {
-                            tab.child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(colors().subtle)
-                                    .child(count.to_string()),
-                            )
-                        })
-                }),
-            ))
-            .child(div().flex_1().min_w(px(8.0)))
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .child(
-                        icon_button(
-                            "inbox-activity",
-                            "chrome-icons/activity.svg",
-                            "Agent activity",
+                        .when_some(
+                            count.filter(|count| *count > 0),
+                            |tab, count| {
+                                tab.child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(colors().subtle)
+                                        .child(count.to_string()),
+                                )
+                            },
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.work_inbox.activity = true;
-                            this.dismiss_inbox_menu();
-                            this.sync_terminal_surface_visibility(cx);
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        icon_button(
-                            "inbox-shortcuts",
-                            "chrome-icons/keyboard.svg",
-                            "Keyboard shortcuts (?)",
-                        )
-                        .on_click(cx.listener(|this, event, _, cx| {
-                            this.open_inbox_menu(InboxMenu::Shortcuts, event, cx)
-                        })),
-                    ),
+                    })),
             )
     }
 
@@ -720,16 +681,6 @@ impl WorkspaceView {
                     );
                 }
             }
-            InboxMenu::Shortcuts => {
-                content = content.child(menu_heading("KEYBOARD"));
-                for (label, keys) in SHORTCUTS {
-                    content = content.child(
-                        MenuRow::new(*label)
-                            .shortcut(keys)
-                            .render(SharedString::from(format!("shortcut-{label}"))),
-                    );
-                }
-            }
             InboxMenu::PrActions => {
                 let item = self.selected_work_item()?;
                 let detail = self
@@ -939,26 +890,6 @@ impl WorkspaceView {
     }
 }
 
-/// Review keyboard shortcuts, shown by `?` and the keyboard button.
-pub(super) const SHORTCUTS: &[(&str, &str)] = &[
-    ("History, Pull requests, Issues", "H / P / I"),
-    ("Next task or commit", "J"),
-    ("Previous task or commit", "K"),
-    ("Conversation, Files, Commits, Checks", "1–4"),
-    ("Next file", "]"),
-    ("Previous file", "["),
-    ("Mark file viewed", "V"),
-    ("Check out", "C"),
-    ("Open in worktree", "W"),
-    ("Send to agent", "A"),
-    ("Open on GitHub", "O"),
-    ("Open the commit", "Enter"),
-    ("Back to history", "Esc"),
-    ("Refresh", "R"),
-    ("Search", "/"),
-    ("Shortcuts", "?"),
-];
-
 /// Separators in the pull request menu: merge methods, auto-merge, branch
 /// upkeep, then state changes.
 fn action_group(action: PrAction) -> u8 {
@@ -1035,14 +966,19 @@ fn key_hint(key: &'static str) -> impl IntoElement {
 
 /// The selected tab's line, drawn over the row's bottom edge so the label
 /// stays centered with the buttons beside it.
-fn tab_underline() -> impl IntoElement {
-    div()
-        .absolute()
-        .left_0()
-        .right_0()
-        .bottom_0()
-        .h(px(2.0))
-        .bg(colors().foreground)
+/// A tab in a page's header, lifted off the page, its count beside the label.
+pub(super) fn page_tab(id: SharedString, selected: bool) -> gpui::Stateful<gpui::Div> {
+    crate::ui::tab_style::lifted_tab(div().id(id), selected, colors().background, 26.0)
+        .flex_none()
+        .px(px(10.0))
+        .gap(px(6.0))
+        .cursor_pointer()
+        .text_size(px(12.5))
+        .font_weight(if selected {
+            gpui::FontWeight::MEDIUM
+        } else {
+            gpui::FontWeight::NORMAL
+        })
 }
 
 fn group_heading(label: &'static str, count: usize, collapsed: bool) -> gpui::Stateful<gpui::Div> {

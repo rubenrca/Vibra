@@ -2,7 +2,7 @@
 
 use super::{DiffView, GitPanelMode, elapsed_label};
 use crate::ui::diff_rows::DiffLayout;
-use crate::ui::theme::{colors, floating_surface, mix, surface_tint};
+use crate::ui::theme::{colors, floating_surface};
 use gpui::{
     Context, DispatchPhase, Div, IntoElement, ScrollWheelEvent, Stateful, Window, canvas, div,
     list, prelude::*, px,
@@ -175,19 +175,7 @@ impl DiffView {
             .child(self.review_summary())
             .child(div().w(px(8.0)).flex_none())
             .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .p(px(2.0))
-                    .gap(px(2.0))
-                    .rounded(px(7.0))
-                    .border_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(
-                        mix(colors().background, colors().foreground, 0.03),
-                        colors().background,
-                    ))
+                crate::ui::tab_style::track(colors().panel)
                     .child(Self::segment_button(
                         "diff-layout-unified",
                         "chrome-icons/diff-unified.svg",
@@ -335,29 +323,12 @@ impl DiffView {
         active: bool,
         on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> Stateful<Div> {
-        div()
-            .id(id)
+        crate::ui::tab_style::lifted_tab(div().id(id), active, colors().panel, 22.0)
             .flex_none()
-            .h(px(20.0))
-            .px(px(7.0))
-            .flex()
-            .items_center()
+            .px(px(8.0))
             .gap(px(4.0))
-            .rounded(px(5.0))
             .cursor_pointer()
-            .map(|button| {
-                if active {
-                    button.bg(colors().selection)
-                } else {
-                    button.hover(|button| button.bg(colors().hover))
-                }
-            })
             .text_size(px(10.5))
-            .text_color(if active {
-                colors().foreground
-            } else {
-                colors().muted
-            })
             .child(gpui::svg().path(icon).size(px(12.0)).text_color(if active {
                 colors().foreground
             } else {

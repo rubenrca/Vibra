@@ -48,7 +48,7 @@ updates).
   has a card for every agent, those that need you first: its status and how
   long it has been in it, its task, and its space and branch.
 - **AI usage.** Subscription usage for Claude Code, Codex, and Grok Build in the
-  sidebar footer, read from each CLI's current session. Vibra never stores or
+  status bar, read from each CLI's current session. Vibra never stores or
   modifies credentials.
 - **Customization.** Command palette (`⇧⌘P`), quick open (`⌘P`), translucency over
   the macOS blur (switch it off in Settings → Appearance), built-in themes plus
@@ -92,8 +92,6 @@ pane. After installing the Codex hook, open Codex once and approve it in `/hooks
 | `⌘,` | Settings |
 | `⌘B` / `⌥⌘B` | Toggle the sidebar / the Workspace panel |
 | `⌘F` | Search the terminal |
-
-In Repository, `?` lists its shortcuts.
 
 ## Development
 

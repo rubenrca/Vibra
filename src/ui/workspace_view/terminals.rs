@@ -14,6 +14,16 @@ use super::chrome::{pane_detail_title, tab_display_title};
 use super::{ContextMenuKind, PaneIdentity, WorkspaceSection, WorkspaceView};
 
 impl WorkspaceView {
+    /// Shows a terminal from anywhere in the app.
+    pub(super) fn open_pane(&mut self, pane_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.snapshot.select_terminal_global(pane_id) {
+            return;
+        }
+        self.show_terminal_tab(window, cx);
+        self.pending_focus_session = Some(pane_id);
+        cx.notify();
+    }
+
     pub(super) fn pane_identity_with_cwd(
         &self,
         session: &SessionSnapshot,
@@ -115,7 +125,6 @@ impl WorkspaceView {
             self.agent_notification_requests.remove(&session_id);
             self.agent_state_since.remove(&session_id);
         }
-        self.inbox.forget_closed_panes(&live_ids);
         self.work_inbox.forget_closed_discussion_panes(&live_ids);
 
         for session in self.snapshot.terminal_sessions() {
@@ -282,7 +291,6 @@ impl WorkspaceView {
                 self.open_context_menu(ContextMenuKind::Pane { session_id }, *x, *y, cx);
             }
             TerminalViewEvent::Activated { session_id } => {
-                self.inbox.mark_pane_read(*session_id);
                 if self.snapshot.select_terminal(*session_id) {
                     self.terminal_selection_changed(cx);
                 }

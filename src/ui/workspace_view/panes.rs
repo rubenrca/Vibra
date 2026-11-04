@@ -1,8 +1,11 @@
 //! Split pane layout, tab strip, and pane keyboard/mouse actions.
 
+use std::time::{Duration, Instant};
+
 use gpui::{
-    AnyElement, Context, DragMoveEvent, Focusable, MouseButton, MouseDownEvent, MouseUpEvent,
-    SharedString, Window, WindowControlArea, div, prelude::*, px, relative, svg,
+    Animation, AnimationExt, AnyElement, Context, DragMoveEvent, Focusable, Hsla, MouseButton,
+    MouseDownEvent, MouseUpEvent, SharedString, Window, WindowControlArea, div, prelude::*, px,
+    relative, svg,
 };
 use uuid::Uuid;
 
@@ -10,35 +13,53 @@ use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
     WorkspaceSplitAxis, WorkspaceTabId,
 };
-use crate::ui::agent_marks::agent_compact_badge;
+use crate::ui::agent_marks::{agent_compact_badge, agent_tile_stack, agent_tile_stack_shuffle};
+use crate::ui::tab_style::{self, lifted_tab};
 use crate::ui::terminal::TerminalDragPreview;
-use crate::ui::theme::{MONO_FONT, colors, surface, surface_tint};
+use crate::ui::theme::{MONO_FONT, colors, frame, lift, mix, surface_tint};
 use crate::{EqualizePanes, TogglePaneZoom};
 
 use super::{
-    ContextMenuKind, DragGhost, PaneDividerDrag, PaneDividerDragView, PaneDrag, ReorderDrag,
-    ReorderSlot, TabDrag, WorkspaceSection, split_gutter,
+    CARD_RADIUS, ContextMenuKind, DragGhost, PaneDividerDrag, PaneDividerDragView, PaneDrag,
+    ReorderDrag, ReorderSlot, TabDrag, WorkspaceSection, card, split_gutter,
 };
 
 pub(super) const TAB_HEIGHT: f32 = 30.0;
 pub(super) const TAB_MAX_WIDTH: f32 = 240.0;
-pub(super) const TAB_RADIUS: f32 = 8.0;
-pub(super) const TAB_TEXT_SIZE: f32 = 14.0;
-const TAB_GAP: f32 = 2.0;
+pub(super) use crate::ui::tab_style::TAB_RADIUS;
+pub(super) const TAB_TEXT_SIZE: f32 = 13.0;
+/// The leading tile sits as far from the tab's top, bottom, and left edge.
+pub(super) const TAB_TILE_SIZE: f32 = 20.0;
+pub(super) const TAB_TILE_INSET: f32 = (TAB_HEIGHT - TAB_TILE_SIZE) / 2.0;
+const TAB_GAP: f32 = 4.0;
+/// Pane headers sit inside their card, so they need no divider of their own.
+pub(super) const PANE_HEADER_HEIGHT: f32 = 30.0;
+
+/// A titlebar tab on the frame, its leading tile inset as far from the left
+/// edge as from the top and bottom.
+pub(super) fn titlebar_tab_style(
+    tab: gpui::Stateful<gpui::Div>,
+    selected: bool,
+) -> gpui::Stateful<gpui::Div> {
+    lifted_tab(tab, selected, frame(), TAB_HEIGHT)
+        .pl(px(TAB_TILE_INSET))
+        .pr(px(6.0))
+        .gap(px(8.0))
+}
 
 /// A tab as it looks while selected. Close and shortcut affordances stay behind
 /// because they cannot be used mid-drag.
 pub(super) fn tab_drag_ghost(leading: impl IntoElement, title: String) -> AnyElement {
     div()
         .h(px(TAB_HEIGHT))
-        .pl(px(10.0))
-        .pr(px(8.0))
+        .pl(px(TAB_TILE_INSET))
+        .pr(px(10.0))
         .flex()
         .items_center()
         .gap(px(8.0))
         .overflow_hidden()
         .rounded(px(TAB_RADIUS))
-        .bg(surface_tint(colors().selection, colors().terminal))
+        .bg(tab_style::selected_fill(frame()))
         .text_color(colors().foreground)
         .child(leading)
         .child(
@@ -51,6 +72,68 @@ pub(super) fn tab_drag_ghost(leading: impl IntoElement, title: String) -> AnyEle
                 .child(title),
         )
         .into_any_element()
+}
+
+/// A quiet icon action in a card header; `card_fill` is the card it sits on.
+pub(super) fn card_header_button(
+    id: impl Into<SharedString>,
+    icon: &'static str,
+    label: &'static str,
+    card_fill: gpui::Rgba,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id.into())
+        .group("card-action")
+        .size(px(20.0))
+        .flex_none()
+        .rounded(px(5.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(move |button| button.bg(surface_tint(colors().hover, card_fill)))
+        .tooltip(move |_, cx| super::sidebar_tooltip(label, cx))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            svg()
+                .path(icon)
+                .size(px(13.0))
+                .flex_none()
+                .text_color(colors().subtle)
+                .group_hover("card-action", |icon| icon.text_color(colors().foreground)),
+        )
+}
+
+/// The control at a tab's end: the selected tab's menu, or a close button
+/// that appears while another tab is hovered.
+pub(super) fn tab_trailing_button(
+    id: impl Into<SharedString>,
+    icon: &'static str,
+    label: &'static str,
+    visible: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id.into())
+        .group("tab-trailing")
+        .size(px(20.0))
+        .flex_none()
+        .rounded(px(5.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .opacity(if visible { 1.0 } else { 0.0 })
+        .group_hover("title-tab", |button| button.opacity(1.0))
+        .hover(|button| button.bg(Hsla::from(colors().foreground).opacity(0.08)))
+        .tooltip(move |_, cx| super::sidebar_tooltip(label, cx))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            svg()
+                .path(icon)
+                .size(px(14.0))
+                .text_color(colors().subtle)
+                .group_hover("tab-trailing", |icon| icon.text_color(colors().foreground)),
+        )
 }
 
 /// `⌘N` hint, revealed while the tab is hovered.
@@ -66,7 +149,131 @@ pub(super) fn tab_shortcut(shortcut: String) -> gpui::Div {
         .child(shortcut)
 }
 
+/// How long a tab takes to bring a newly focused pane to its front.
+const TAB_FRONT_SWAP: Duration = Duration::from_millis(320);
+/// How far a tab's title rolls as it changes to another pane's.
+const TITLE_ROLL: f32 = 14.0;
+
+/// What a tab shows in front, to animate the change when another of its
+/// panes takes focus.
+pub(super) struct TabFront {
+    session_id: Uuid,
+    stack: Vec<(Uuid, Option<String>)>,
+    title: String,
+    motion: Option<TabFrontMotion>,
+}
+
+#[derive(Clone)]
+pub(super) struct TabFrontMotion {
+    /// Gives each change an animation of its own.
+    pub(super) id: u64,
+    pub(super) from_stack: Vec<(Uuid, Option<String>)>,
+    pub(super) from_title: String,
+    /// 1.0 when focus moved to a later pane, so the title rolls up; −1.0 rolls down.
+    pub(super) direction: f32,
+    started: Instant,
+}
+
+/// The title `progress` (0 to 1) of the way from `from` to `to`: the old one
+/// rolls out along `direction` while the new one rolls in behind it.
+fn rolling_title(
+    label: gpui::Div,
+    from: &str,
+    to: &str,
+    direction: f32,
+    progress: f32,
+) -> gpui::Div {
+    let line = |text: &str, offset: f32, opacity: f32| {
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(px(offset))
+            .bottom(px(-offset))
+            .flex()
+            .items_center()
+            .opacity(opacity)
+            .child(div().min_w(px(0.0)).truncate().child(text.to_owned()))
+    };
+    label
+        .relative()
+        .h_full()
+        .overflow_hidden()
+        .child(line(
+            from,
+            -direction * TITLE_ROLL * progress,
+            1.0 - progress,
+        ))
+        .child(line(
+            to,
+            direction * TITLE_ROLL * (1.0 - progress),
+            progress,
+        ))
+}
+
+#[derive(Clone, Copy)]
+struct PaneHeaderState {
+    highlighted: bool,
+    zoomed: bool,
+    can_drag: bool,
+    can_zoom: bool,
+}
+
 impl super::WorkspaceView {
+    /// Records the pane `tab_id` shows in front. When another of its panes
+    /// took focus since the last frame, starts the swap; returns the swap
+    /// while it runs.
+    pub(super) fn tab_front_motion(
+        &self,
+        tab_id: Uuid,
+        session_id: Uuid,
+        stack: &[(Uuid, Option<String>)],
+        title: &str,
+        order: &[Uuid],
+    ) -> Option<TabFrontMotion> {
+        let now = Instant::now();
+        let mut fronts = self.tab_fronts.borrow_mut();
+        let Some(front) = fronts.get_mut(&tab_id) else {
+            fronts.insert(
+                tab_id,
+                TabFront {
+                    session_id,
+                    stack: stack.to_vec(),
+                    title: title.to_owned(),
+                    motion: None,
+                },
+            );
+            return None;
+        };
+        if front.session_id != session_id {
+            let position = |id: Uuid| order.iter().position(|other| *other == id);
+            let direction = match (position(front.session_id), position(session_id)) {
+                (Some(from), Some(to)) if to < from => -1.0,
+                _ => 1.0,
+            };
+            let id = self.tab_front_motions.get() + 1;
+            self.tab_front_motions.set(id);
+            front.motion = Some(TabFrontMotion {
+                id,
+                from_stack: std::mem::take(&mut front.stack),
+                from_title: std::mem::take(&mut front.title),
+                direction,
+                started: now,
+            });
+            front.session_id = session_id;
+        }
+        front.stack = stack.to_vec();
+        front.title = title.to_owned();
+        if front
+            .motion
+            .as_ref()
+            .is_some_and(|motion| now.duration_since(motion.started) >= TAB_FRONT_SWAP)
+        {
+            front.motion = None;
+        }
+        front.motion.clone()
+    }
+
     fn center_has_splits(&self) -> bool {
         self.snapshot
             .selected_tab()
@@ -105,6 +312,9 @@ impl super::WorkspaceView {
             .map(|workspace| workspace.tabs.as_slice())
             .unwrap_or_default();
         let selected_tab_id = workspace.and_then(|workspace| workspace.selected_tab_id);
+        self.tab_fronts
+            .get_mut()
+            .retain(|id, _| tabs.iter().any(|tab| tab.id == *id));
         let tab_list = div()
             .h_full()
             .flex_1()
@@ -136,6 +346,26 @@ impl super::WorkspaceView {
                     .or_else(|| tab.sessions.first());
                 let identity = session.map(|session| self.pane_identity(session, index, cx));
                 let session_id = session.map(|session| session.id);
+                // The focused pane's agent leads; the tab's other panes stack behind it.
+                let pane_stack: Vec<(Uuid, Option<String>)> = session_id
+                    .zip(identity.as_ref())
+                    .map(|(id, identity)| (id, identity.agent_kind.clone()))
+                    .into_iter()
+                    .chain(
+                        tab.sessions
+                            .iter()
+                            .filter(|other| Some(other.id) != session_id)
+                            .map(|other| {
+                                (other.id, self.pane_identity(other, index, cx).agent_kind)
+                            }),
+                    )
+                    .collect();
+                let pane_kinds: Vec<Option<String>> =
+                    pane_stack.iter().map(|(_, kind)| kind.clone()).collect();
+                let agent_state = identity.as_ref().and_then(|identity| identity.agent_state);
+                let agent_attention = identity
+                    .as_ref()
+                    .and_then(|identity| identity.agent_attention);
                 let title = identity
                     .as_ref()
                     .map(|identity| identity.title.clone())
@@ -147,8 +377,10 @@ impl super::WorkspaceView {
                     title
                 };
                 let shortcut = super::tabs::tab_shortcut_label(index, tab_count);
-                let pane_count =
-                    tab.sessions.len() + usize::from(self.review_dock_owner() == Some(tab_id));
+                let motion = session_id.and_then(|session_id| {
+                    let order: Vec<Uuid> = tab.sessions.iter().map(|session| session.id).collect();
+                    self.tab_front_motion(tab_id, session_id, &pane_stack, &title, &order)
+                });
                 let drag = TabDrag {
                     tab_id: item,
                     title: title.clone(),
@@ -156,20 +388,15 @@ impl super::WorkspaceView {
                 };
                 let ghost = {
                     let title = title.clone();
-                    let agent_kind = identity
-                        .as_ref()
-                        .and_then(|identity| identity.agent_kind.clone());
-                    let agent_state = identity.as_ref().and_then(|identity| identity.agent_state);
-                    let agent_attention = identity
-                        .as_ref()
-                        .and_then(|identity| identity.agent_attention);
-                    DragGhost::new(TAB_RADIUS, colors().terminal, move || {
+                    let pane_kinds = pane_kinds.clone();
+                    DragGhost::new(TAB_RADIUS, lift(frame(), 1.0), move || {
                         tab_drag_ghost(
-                            agent_compact_badge(
-                                agent_kind.as_deref(),
+                            agent_tile_stack(
+                                &pane_kinds,
                                 agent_state,
                                 agent_attention,
-                                true,
+                                lift(frame(), 1.0),
+                                TAB_TILE_SIZE,
                             ),
                             title.clone(),
                         )
@@ -178,7 +405,6 @@ impl super::WorkspaceView {
                 div()
                     .id(SharedString::from(format!("tab-{tab_id}")))
                     .group("title-tab")
-                    .h(px(TAB_HEIGHT))
                     .min_w(px(0.0))
                     .max_w(px(TAB_MAX_WIDTH))
                     .flex_1()
@@ -186,29 +412,9 @@ impl super::WorkspaceView {
                     .flex()
                     .items_center()
                     .justify_start()
-                    .pl(px(10.0))
-                    .pr(px(8.0))
-                    .gap(px(8.0))
-                    .overflow_hidden()
-                    .rounded(px(TAB_RADIUS))
+                    // Not clipped: the leading tile arcs above the tab as panes swap.
                     .cursor_move()
-                    .bg(if selected {
-                        surface_tint(colors().selection, colors().terminal)
-                    } else {
-                        gpui::rgba(0x00000000)
-                    })
-                    .text_color(if selected {
-                        colors().foreground
-                    } else {
-                        colors().muted
-                    })
-                    .hover(|tab| {
-                        if selected {
-                            tab
-                        } else {
-                            tab.bg(colors().hover).text_color(colors().foreground)
-                        }
-                    })
+                    .map(|tab| titlebar_tab_style(tab, selected))
                     .active(|tab| tab.opacity(0.88))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -243,87 +449,106 @@ impl super::WorkspaceView {
                     .child(ghost.measure())
                     .child(super::measure_width(self.tab_width.clone()))
                     .on_drag(drag, move |_, _, _, cx| ghost.preview(cx))
-                    .child(agent_compact_badge(
-                        identity
-                            .as_ref()
-                            .and_then(|identity| identity.agent_kind.as_deref()),
-                        identity.as_ref().and_then(|identity| identity.agent_state),
-                        identity
-                            .as_ref()
-                            .and_then(|identity| identity.agent_attention),
-                        selected,
-                    ))
-                    .child(
-                        div()
+                    .map(|tab| {
+                        let ring: Hsla = if selected {
+                            tab_style::selected_fill(frame())
+                        } else {
+                            frame().into()
+                        };
+                        let label = div()
                             .flex_1()
                             .min_w(px(0.0))
-                            .overflow_hidden()
-                            .flex()
-                            .items_center()
-                            .justify_start()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .flex_shrink()
-                                    .truncate()
-                                    .text_size(px(TAB_TEXT_SIZE))
-                                    .font_weight(if selected {
-                                        gpui::FontWeight::MEDIUM
-                                    } else {
-                                        gpui::FontWeight::NORMAL
-                                    })
-                                    .child(title),
-                            )
-                            .when(pane_count > 1, |label| {
-                                label.child(
-                                    div()
-                                        .flex_none()
-                                        .h(px(16.0))
-                                        .px(px(5.0))
-                                        .rounded(px(4.0))
-                                        .flex()
-                                        .items_center()
-                                        .bg(surface_tint(colors().hover, colors().terminal))
-                                        .font_family(MONO_FONT)
-                                        .text_size(px(10.0))
-                                        .text_color(colors().subtle)
-                                        .child(format!("{pane_count} panes")),
+                            .text_size(px(TAB_TEXT_SIZE))
+                            .font_weight(if selected {
+                                gpui::FontWeight::MEDIUM
+                            } else {
+                                gpui::FontWeight::NORMAL
+                            });
+                        let Some(motion) = motion else {
+                            return tab
+                                .child(agent_tile_stack(
+                                    &pane_kinds,
+                                    agent_state,
+                                    agent_attention,
+                                    ring,
+                                    TAB_TILE_SIZE,
+                                ))
+                                .child(label.truncate().child(title));
+                        };
+                        // Another pane took focus: shuffle the tiles and roll the title.
+                        let to = pane_stack.clone();
+                        tab.child(div().flex_none().with_animation(
+                            SharedString::from(format!("tab-front-stack-{}", motion.id)),
+                            Animation::new(TAB_FRONT_SWAP).with_easing(gpui::ease_in_out),
+                            {
+                                let from = motion.from_stack.clone();
+                                move |shell, progress| {
+                                    shell.child(agent_tile_stack_shuffle(
+                                        &from,
+                                        &to,
+                                        progress,
+                                        agent_state,
+                                        agent_attention,
+                                        ring,
+                                        TAB_TILE_SIZE,
+                                    ))
+                                }
+                            },
+                        ))
+                        .child(label.with_animation(
+                            SharedString::from(format!("tab-front-title-{}", motion.id)),
+                            Animation::new(TAB_FRONT_SWAP).with_easing(gpui::ease_in_out),
+                            move |label, progress| {
+                                rolling_title(
+                                    label,
+                                    &motion.from_title,
+                                    &title,
+                                    motion.direction,
+                                    progress,
                                 )
-                            }),
-                    )
+                            },
+                        ))
+                    })
                     .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
                     .children(self.tab_drag_zone(item, cx))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("close-tab-{tab_id}")))
-                            .group("tab-close")
-                            .size(px(20.0))
-                            .flex_none()
-                            .rounded(px(5.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .opacity(if selected { 1.0 } else { 0.0 })
-                            .group_hover("title-tab", |button| button.opacity(1.0))
-                            .hover(|button| button.bg(colors().hover))
-                            .tooltip(|_, cx| super::sidebar_tooltip("Close tab", cx))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_tab(tab_id, window, cx);
-                                cx.stop_propagation();
-                            }))
-                            .child(
-                                svg()
-                                    .path("chrome-icons/close.svg")
-                                    .size(px(12.0))
-                                    .text_color(colors().muted)
-                                    .group_hover("tab-close", |icon| {
-                                        icon.text_color(colors().foreground)
-                                    }),
-                            ),
-                    )
+                    // The selected tab offers its menu; the others close from a hover.
+                    .map(|tab| match (selected, session_id) {
+                        (true, Some(session_id)) => tab.child(
+                            tab_trailing_button(
+                                format!("tab-menu-{tab_id}"),
+                                "chrome-icons/ellipsis.svg",
+                                "More",
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    this.select_terminal(session_id, window, cx);
+                                    let position = event.position();
+                                    this.open_context_menu(
+                                        ContextMenuKind::Pane { session_id },
+                                        position.x.into(),
+                                        position.y.into(),
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                },
+                            )),
+                        ),
+                        _ => tab.child(
+                            tab_trailing_button(
+                                format!("close-tab-{tab_id}"),
+                                "chrome-icons/close.svg",
+                                "Close tab",
+                                selected,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.close_tab(tab_id, window, cx);
+                                    cx.stop_propagation();
+                                },
+                            )),
+                        ),
+                    })
                     .map(|tab| super::slide_into_place(tab, slide, "tab", false))
             }))
             .child(self.tab_strip_end_target(cx));
@@ -335,8 +560,7 @@ impl super::WorkspaceView {
             .min_w(px(0.0))
             .flex()
             .items_center()
-            .px(px(8.0))
-            .bg(surface_tint(colors().terminal, colors().titlebar))
+            .px(px(6.0))
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 crate::infrastructure::window::start_drag();
@@ -364,7 +588,7 @@ impl super::WorkspaceView {
                     .snapshot
                     .selected_tab()
                     .map_or(1, |tab| tab.sessions.len());
-                let framed = self.center_has_splits();
+                let split = self.center_has_splits();
                 let highlighted = terminal
                     .as_ref()
                     .is_some_and(|terminal| terminal.read(cx).focus_handle(cx).is_focused(window));
@@ -383,32 +607,32 @@ impl super::WorkspaceView {
                         .unwrap_or_else(|| "Terminal".into()),
                     preview: drag_preview,
                 };
-                // Split panes get a header: grip to reorder, title, zoom, close.
-                let show_header = can_drag;
+                // Every pane is a card with its own header: title, split, zoom, close.
                 let zoomed = self
                     .snapshot
                     .selected_tab()
                     .is_some_and(|tab| tab.zoomed_session_id == Some(session_id));
-                let header = show_header
-                    .then(|| self.pane_header(session_id, highlighted, zoomed, can_drag, drag, cx));
-                div()
+                let header = self.pane_header(
+                    session_id,
+                    PaneHeaderState {
+                        highlighted,
+                        zoomed,
+                        can_drag,
+                        can_zoom: pane_count > 1,
+                    },
+                    drag,
+                    cx,
+                );
+                card(colors().terminal)
                     .id(SharedString::from(format!("pane-{session_id}")))
                     .size_full()
                     .min_w(px(80.0))
                     .min_h(px(48.0))
-                    .relative()
                     .flex()
                     .flex_col()
-                    .overflow_hidden()
-                    .when(terminal.is_none(), |pane| {
-                        pane.bg(surface(colors().terminal))
-                    })
-                    .when(framed, |pane| {
-                        pane.border_1().border_color(if highlighted {
-                            crate::ui::theme::mix(colors().border_subtle, colors().muted, 0.28)
-                        } else {
-                            colors().border_subtle
-                        })
+                    // Among splits, the focused card's outline brightens slightly.
+                    .when(split && highlighted, |pane| {
+                        pane.border_color(mix(colors().border_subtle, colors().muted, 0.28))
                     })
                     .when(is_source, |pane| pane.opacity(0.55))
                     .on_mouse_down(
@@ -428,7 +652,7 @@ impl super::WorkspaceView {
                             cx.stop_propagation();
                         }),
                     )
-                    .children(header)
+                    .child(header)
                     .when_some(terminal, |pane, terminal| {
                         pane.child(
                             div()
@@ -450,6 +674,7 @@ impl super::WorkspaceView {
                             .left_0()
                             .right_0()
                             .bottom_0()
+                            .rounded(px(CARD_RADIUS - 1.0))
                             .can_drop(move |value, _, _| {
                                 value
                                     .downcast_ref::<PaneDrag>()
@@ -560,54 +785,44 @@ impl super::WorkspaceView {
     fn pane_header(
         &self,
         session_id: Uuid,
-        highlighted: bool,
-        zoomed: bool,
-        can_drag: bool,
+        state: PaneHeaderState,
         drag: PaneDrag,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let PaneHeaderState {
+            highlighted,
+            zoomed,
+            can_drag,
+            can_zoom,
+        } = state;
         let identity = self.pane_identity_by_id(session_id, cx);
         let title = identity
             .as_ref()
             .map(|identity| identity.title.clone())
             .unwrap_or_else(|| "Terminal".to_owned());
+        let detail = identity
+            .as_ref()
+            .and_then(|identity| identity.detail.clone());
         let button = |id: String, icon: &'static str, label: &'static str| {
-            div()
-                .id(SharedString::from(id))
-                .group("pane-action")
-                .size(px(22.0))
-                .flex_none()
-                .rounded(px(4.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .text_color(colors().subtle)
-                .hover(|button| button.bg(colors().hover).text_color(colors().foreground))
-                .tooltip(move |_, cx| super::sidebar_tooltip(label, cx))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    svg()
-                        .path(icon)
-                        .size(px(14.0))
-                        .flex_none()
-                        .text_color(colors().muted)
-                        .group_hover("pane-action", |icon| icon.text_color(colors().foreground)),
-                )
+            card_header_button(id, icon, label, colors().terminal)
         };
+        let split_button =
+            |id: String, icon: &'static str, label: &'static str, direction: PaneSplitDirection| {
+                button(id, icon, label).on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_terminal(session_id, window, cx);
+                    this.split_pane(direction, window, cx);
+                }))
+            };
         div()
             .id(SharedString::from(format!("pane-header-{session_id}")))
-            .h(px(30.0))
+            .h(px(PANE_HEADER_HEIGHT))
             .w_full()
             .flex_none()
             .flex()
             .items_center()
             .gap(px(6.0))
-            .pl_1()
-            .pr_1()
-            .border_b_1()
-            .border_color(colors().border_subtle)
-            .bg(surface(colors().terminal))
+            .pl(px(10.0))
+            .pr(px(5.0))
             .text_color(if highlighted {
                 colors().foreground
             } else {
@@ -624,27 +839,10 @@ impl super::WorkspaceView {
                     if can_drag {
                         this.reorder_drag = Some(ReorderDrag::Pane(session_id));
                     }
-                    if event.click_count == 2 {
+                    if can_zoom && event.click_count == 2 {
                         this.toggle_pane_zoom_for(session_id, window, cx);
                     }
                 }),
-            )
-            .child(
-                div()
-                    .size(px(20.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(colors().subtle)
-                    .when(!can_drag, |grip| grip.opacity(0.4))
-                    .child(
-                        svg()
-                            .path("chrome-icons/grip.svg")
-                            .size(px(14.0))
-                            .flex_none()
-                            .text_color(colors().subtle),
-                    ),
             )
             .child(agent_compact_badge(
                 identity
@@ -660,33 +858,63 @@ impl super::WorkspaceView {
                 div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .truncate()
-                    .text_size(px(12.5))
-                    .font_weight(if highlighted {
-                        gpui::FontWeight::MEDIUM
-                    } else {
-                        gpui::FontWeight::NORMAL
-                    })
-                    .child(title),
+                    .flex()
+                    .items_baseline()
+                    .gap(px(6.0))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .max_w(relative(0.7))
+                            .truncate()
+                            .text_size(px(12.5))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .when_some(detail, |label, detail| {
+                        label.child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_size(px(12.0))
+                                .text_color(colors().subtle)
+                                .child(detail),
+                        )
+                    }),
             )
-            .child(
-                button(
-                    format!("pane-zoom-{session_id}"),
-                    if zoomed {
-                        "chrome-icons/minimize.svg"
-                    } else {
-                        "chrome-icons/maximize.svg"
-                    },
-                    if zoomed {
-                        "Restore pane · ⇧⌘↵"
-                    } else {
-                        "Zoom pane · ⇧⌘↵"
-                    },
+            .child(split_button(
+                format!("pane-split-right-{session_id}"),
+                "chrome-icons/split-view.svg",
+                "Split right · ⌘D",
+                PaneSplitDirection::Right,
+            ))
+            .child(split_button(
+                format!("pane-split-down-{session_id}"),
+                "chrome-icons/rows.svg",
+                "Split down · ⇧⌘D",
+                PaneSplitDirection::Down,
+            ))
+            .when(can_zoom, |header| {
+                header.child(
+                    button(
+                        format!("pane-zoom-{session_id}"),
+                        if zoomed {
+                            "chrome-icons/minimize.svg"
+                        } else {
+                            "chrome-icons/maximize.svg"
+                        },
+                        if zoomed {
+                            "Restore pane · ⇧⌘↵"
+                        } else {
+                            "Zoom pane · ⇧⌘↵"
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_pane_zoom_for(session_id, window, cx);
+                    })),
                 )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.toggle_pane_zoom_for(session_id, window, cx);
-                })),
-            )
+            })
             .child(
                 button(
                     format!("pane-close-{session_id}"),
@@ -738,6 +966,18 @@ impl super::WorkspaceView {
         }
     }
 
+    /// The space's tab that holds `session_id`.
+    pub(super) fn tab_of_session(
+        &self,
+        session_id: Uuid,
+    ) -> Option<&crate::domain::workspace::TabSnapshot> {
+        self.snapshot
+            .selected_workspace()?
+            .tabs
+            .iter()
+            .find(|tab| tab.sessions.iter().any(|session| session.id == session_id))
+    }
+
     pub(super) fn close_tab(&mut self, tab_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         let review_in_front = self.review_covers_terminal(cx);
         let closing_selected = self
@@ -773,14 +1013,15 @@ impl super::WorkspaceView {
             .as_ref()
             .map(|layout| self.render_pane_layout(layout, Vec::new(), window, cx));
         let is_empty = panes.is_none();
-        // Terminals share the continuous workspace surface; split panes keep
-        // thin boundaries so focus and resize targets remain legible.
-        div()
+        // Each pane draws its own card; with none, the canvas is the card.
+        let canvas = if is_empty {
+            card(colors().terminal)
+        } else {
+            div().relative().overflow_hidden()
+        };
+        canvas
             .flex_1()
             .min_h(px(0.0))
-            .relative()
-            .overflow_hidden()
-            .when(is_empty, |canvas| canvas.bg(surface(colors().terminal)))
             .when_some(panes, |canvas, panes| canvas.child(panes))
             .when(is_empty, |canvas| {
                 canvas.child(self.empty_project_content(cx))

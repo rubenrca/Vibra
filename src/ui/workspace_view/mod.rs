@@ -10,7 +10,6 @@ mod context_menu;
 mod drag;
 mod explorer;
 mod files;
-mod inbox;
 mod input;
 mod navigation;
 mod palette;
@@ -48,7 +47,6 @@ use gpui::{
 };
 use uuid::Uuid;
 
-use crate::domain::inbox::Inbox;
 use crate::domain::workspace::{PaneSplitDirection, WorkspaceSnapshot};
 use crate::infrastructure::automation::{AgentHookStatus, AutomationServer};
 use crate::infrastructure::editor::InstalledEditor;
@@ -65,7 +63,7 @@ use crate::ports::terminal::TerminalAgentPresence;
 use crate::ports::terminal::TerminalPort;
 use crate::ui::diff_view::{DiffFileIndexView, DiffView};
 use crate::ui::terminal::TerminalView;
-use crate::ui::theme::{colors, surface, window_surface};
+use crate::ui::theme::{colors, frame_surface, window_surface};
 
 /// Titlebar chrome width when the left sidebar is fully collapsed.
 const TITLEBAR_CHROME_COLLAPSED: f32 = 124.0;
@@ -134,13 +132,14 @@ pub struct WorkspaceView {
     tab_motion: SlotMotion<crate::domain::workspace::WorkspaceTabId>,
     /// Width of a tab in the strip, which is the distance a reordered tab slides.
     tab_width: Rc<Cell<gpui::Pixels>>,
+    /// The pane each tab shows in front, to animate a change of focus.
+    tab_fronts: RefCell<HashMap<Uuid, panes::TabFront>>,
+    tab_front_motions: Cell<u64>,
     /// Pinned and unpinned sections slide independently.
     project_motion: RefCell<[SlotMotion<Uuid>; 2]>,
     /// The project a dragged one lands before; `Some(None)` is the end.
     project_drop: Option<Option<Uuid>>,
     navigation: tabs::Navigation,
-    /// Agent and automation events, newest last; lives only while the app runs.
-    inbox: Inbox,
     work_inbox: work_inbox::WorkInbox,
     expanded_directories: HashSet<PathBuf>,
     project_files_root: Option<PathBuf>,
@@ -481,15 +480,8 @@ impl WorkspaceView {
         let full_width = self.left_sidebar_width();
         let width = full_width * self.left_sidebar_progress;
         let show_handle = self.left_sidebar_progress > 0.99;
-        // The native backdrop is tinted once underneath this panel.
-        clipped_width_panel(
-            width,
-            full_width,
-            SidebarResizeEdge::Left,
-            colors().sidebar,
-            content,
-        )
-        .when(show_handle, |sidebar| {
+        // The sidebar is part of the frame, which the root paints once.
+        clipped_width_panel(width, full_width, content).when(show_handle, |sidebar| {
             sidebar.child(self.sidebar_resize_handle(
                 "resize-left-sidebar",
                 SidebarResizeEdge::Left,
@@ -527,20 +519,34 @@ impl WorkspaceView {
             .flex_col()
             .child(self.utility_mode_tabs(cx))
             .child(content);
-        clipped_width_panel(
-            width,
-            full_width,
-            SidebarResizeEdge::Right,
-            colors().sidebar,
-            content,
-        )
-        .when(show_handle, |sidebar| {
+        clipped_width_panel(width, full_width, content).when(show_handle, |sidebar| {
             sidebar.child(self.sidebar_resize_handle(
                 "resize-right-sidebar",
                 SidebarResizeEdge::Right,
                 cx,
             ))
         })
+    }
+
+    /// The cards' place on the frame. A gap separates them from each window
+    /// edge; beside an open sidebar, its own row inset is gap enough, so the
+    /// margin follows each sidebar's animation.
+    fn floating_area(&self, content: impl IntoElement) -> gpui::Div {
+        let right_progress = if self.workspace_section == WorkspaceSection::Workspace {
+            self.right_sidebar_progress
+        } else {
+            0.0
+        };
+        let margin = |progress: f32| px(PANEL_GAP * (1.0 - progress.clamp(0.0, 1.0)));
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full()
+            .flex()
+            .pl(margin(self.left_sidebar_progress))
+            .pr(margin(right_progress))
+            .pb(px(PANEL_GAP))
+            .child(content)
     }
 
     fn current_banner_errors(&self) -> Vec<SharedString> {
@@ -663,12 +669,16 @@ impl Render for WorkspaceView {
         }
 
         let expanded_review = self.has_project_context() && self.review_visible(cx);
+        // The frame behind the cards. The titlebar and status bar paint the
+        // same tone beside it, never over it, so the tint is applied once.
+        let framed = self.workspace_section != WorkspaceSection::Settings;
         let mut layout = div()
             .id("workspace-columns")
             .relative()
             .flex_1()
             .min_h(px(0.0))
             .flex()
+            .when(framed, |layout| layout.bg(frame_surface()))
             .on_drag_move(cx.listener(Self::on_sidebar_resize_move));
         // Keep both navigators visible while reviewing code in the center.
         if self.workspace_section == WorkspaceSection::Settings {
@@ -677,44 +687,53 @@ impl Render for WorkspaceView {
             layout = layout.child(self.sidebar(cx));
         }
         if self.workspace_section == WorkspaceSection::Workspace {
-            let review_pane = || {
-                div()
-                    .id("review-pane")
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .h_full()
-                    .overflow_hidden()
-                    .bg(surface(colors().panel))
-            };
             if expanded_review && self.diff_view.read(cx).review_focused() {
                 layout = layout.child(
-                    review_pane()
-                        .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
-                            this.dock_tab(
-                                drag.tab_id,
-                                crate::domain::workspace::WorkspaceTabId::Review,
-                                window,
-                                cx,
-                            );
-                        }))
-                        .drag_over::<TabDrag>(|style, _, _, _| {
-                            style.border_2().border_color(colors().accent)
-                        })
-                        .child(self.diff_view.clone()),
+                    self.floating_area(
+                        card(colors().panel)
+                            .id("review-pane")
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h_full()
+                            .on_drop(cx.listener(|this, drag: &TabDrag, window, cx| {
+                                this.dock_tab(
+                                    drag.tab_id,
+                                    crate::domain::workspace::WorkspaceTabId::Review,
+                                    window,
+                                    cx,
+                                );
+                            }))
+                            .drag_over::<TabDrag>(|style, _, _, _| {
+                                style.border_2().border_color(colors().accent)
+                            })
+                            .child(self.diff_view.clone()),
+                    ),
                 );
             } else if expanded_review {
                 // The review opens beside the terminal, like an editor split.
                 let terminal = self.center_panel(window, cx).into_any_element();
-                let review = review_pane()
-                    .child(self.diff_view.clone())
-                    .into_any_element();
-                layout = layout.child(self.review_split(terminal, review, cx));
+                let review = self.diff_view.clone().into_any_element();
+                let split = self.review_split(terminal, review, cx);
+                layout = layout.child(self.floating_area(split));
             } else {
-                layout = layout.child(self.center_panel(window, cx));
+                let center = self.center_panel(window, cx).into_any_element();
+                layout = layout.child(self.floating_area(center));
             }
             if self.right_sidebar_progress > 0.001 {
                 layout = layout.child(self.right_sidebar(cx));
             }
+        } else if self.workspace_section == WorkspaceSection::Inbox {
+            let content = self.global_section_content(window, cx);
+            layout = layout.child(
+                self.floating_area(
+                    card(colors().background)
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .h_full()
+                        .flex()
+                        .child(content),
+                ),
+            );
         } else {
             layout = layout.child(self.global_section_content(window, cx));
         }

@@ -19,8 +19,8 @@ use crate::NewSpace;
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 use crate::infrastructure::settings::{MAX_AGENTS_PANEL_HEIGHT, MIN_AGENTS_PANEL_HEIGHT};
 use crate::ports::files::FileSystemPort;
-use crate::ui::agent_marks::{agent_compact_badge, agent_status_color};
-use crate::ui::theme::{colors, surface_tint};
+use crate::ui::agent_marks::{agent_status_color, agent_tile_stack, letter_tile};
+use crate::ui::theme::{colors, frame, frame_hover, frame_selected, lift};
 
 use super::chrome::{SIDEBAR_ROW_INSET, sidebar_row_width};
 use super::navigation::section_label;
@@ -32,7 +32,10 @@ use super::{
 /// Time-in-state labels count minutes, so this is often enough to keep them true.
 const AGENT_CLOCK_TICK: Duration = Duration::from_secs(30);
 /// An agent card and the gap below it.
-const AGENT_CARD_PITCH: f32 = 64.0;
+const AGENT_CARD_PITCH: f32 = 50.0;
+/// The agent's tile, inset as far from the card's left edge as from its top.
+const AGENT_TILE_SIZE: f32 = 28.0;
+const AGENT_TILE_INSET: f32 = (AGENT_CARD_PITCH - 2.0 - AGENT_TILE_SIZE) / 2.0;
 /// Room the spaces keep above Agents while it is dragged taller.
 const MIN_SPACES_HEIGHT: f32 = 96.0;
 /// Grab area of the line between the spaces and Agents.
@@ -65,28 +68,17 @@ pub(super) fn locate_space(
     Some((root, name))
 }
 
-/// The space's mark: its initial on a tint chosen by its name, so a
-/// repository keeps its color in every space that visits it.
+/// The space's mark: its initial on a tile colored by its name, so a
+/// repository keeps its color in every space that visits it. It is the same
+/// tile the tabs use, inset as far from the row's top and bottom as from its left edge.
 pub(super) fn space_avatar(name: &str) -> Div {
-    let color = space_color(name);
     let initial: String = name
         .chars()
         .find(|character| character.is_alphanumeric())
         .or_else(|| name.chars().next())
         .map(|character| character.to_uppercase().collect())
         .unwrap_or_default();
-    div()
-        .size(px(SIDEBAR_CONTROL_SIZE))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(5.0))
-        .bg(gpui::Hsla::from(color).opacity(0.18))
-        .text_size(px(11.0))
-        .font_weight(gpui::FontWeight::BOLD)
-        .text_color(color)
-        .child(initial)
+    letter_tile(initial, space_color(name), SIDEBAR_CONTROL_SIZE)
 }
 
 fn space_color(name: &str) -> gpui::Rgba {
@@ -318,38 +310,9 @@ impl WorkspaceView {
                     }),
             )
             .child(
-                div().px(px(SIDEBAR_ROW_INSET)).child(
-                    section_label("Agents").child(
-                        div()
-                            .id("sidebar-agent-activity")
-                            .group("sidebar-agent-activity")
-                            .size(px(22.0))
-                            .flex_none()
-                            .rounded(px(5.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|button| {
-                                button.bg(surface_tint(colors().hover, colors().sidebar))
-                            })
-                            .tooltip(|_, cx| sidebar_tooltip("Agent activity", cx))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.work_inbox.activity = true;
-                                this.select_section(WorkspaceSection::Inbox, window, cx);
-                            }))
-                            .child(
-                                svg()
-                                    .path("chrome-icons/activity.svg")
-                                    .size(px(15.0))
-                                    .flex_none()
-                                    .text_color(colors().muted)
-                                    .group_hover("sidebar-agent-activity", |icon| {
-                                        icon.text_color(colors().foreground)
-                                    }),
-                            ),
-                    ),
-                ),
+                div()
+                    .px(px(SIDEBAR_ROW_INSET))
+                    .child(section_label("Agents")),
             )
             .child(
                 div()
@@ -375,7 +338,9 @@ impl WorkspaceView {
             .into_any_element()
     }
 
-    /// The agent card: agent and status, task title, then its space and branch.
+    /// The agent card, laid out like a tab: the agent's tile with its status
+    /// dot, the task title and how long it has been in that state, then the
+    /// state, space, and branch.
     fn sidebar_agent_card(&self, agent: SidebarAgent, cx: &mut Context<Self>) -> AnyElement {
         let SidebarAgent {
             session_id,
@@ -390,21 +355,17 @@ impl WorkspaceView {
                 .snapshot
                 .selected_session()
                 .is_some_and(|session| session.id == session_id);
-        let kind = identity
-            .agent_kind
-            .clone()
-            .unwrap_or_else(|| "Agent".into());
-        let status = identity.agent_state.map(|state| {
-            let label = agent_state_short_label(state, identity.agent_attention);
-            (
-                match since {
-                    Some(since) => format!("{label} · {}", elapsed_label(since.elapsed())),
-                    None => label.to_owned(),
-                },
-                agent_status_color(Some(state), identity.agent_attention)
-                    .unwrap_or_else(|| colors().subtle),
-            )
-        });
+        let state = identity.agent_state;
+        let attention = identity.agent_attention;
+        let status = state.map(|state| agent_state_short_label(state, attention));
+        // Only a state that waits on the user takes its color in the text.
+        let status_color = match state {
+            Some(AgentRuntimeState::Waiting) => {
+                agent_status_color(state, attention).unwrap_or_else(|| colors().subtle)
+            }
+            _ => colors().subtle,
+        };
+        let elapsed = since.map(|since| elapsed_label(since.elapsed()));
         let tooltip = format!(
             "{}{}",
             identity.title,
@@ -422,21 +383,18 @@ impl WorkspaceView {
             .h(px(AGENT_CARD_PITCH - 2.0))
             .flex_none()
             .mb(px(2.0))
-            .px(px(8.0))
-            .py(px(5.0))
-            .rounded(px(7.0))
+            .px(px(AGENT_TILE_INSET))
+            .rounded(px(super::SIDEBAR_ROW_RADIUS))
             .flex()
-            .flex_col()
-            .gap(px(1.0))
+            .items_center()
+            .gap(px(10.0))
             .cursor_pointer()
-            .when(selected, |card| {
-                card.bg(surface_tint(colors().selection, colors().sidebar))
-            })
+            .when(selected, |card| card.bg(frame_selected()))
             .hover(move |card| {
                 if selected {
                     card
                 } else {
-                    card.bg(surface_tint(colors().hover, colors().sidebar))
+                    card.bg(frame_hover())
                 }
             })
             .tooltip(move |_, cx| sidebar_tooltip(tooltip.clone(), cx))
@@ -458,84 +416,87 @@ impl WorkspaceView {
                 })
             })
             .child(super::measure_bounds(card_bounds))
+            .child(agent_tile_stack(
+                std::slice::from_ref(&identity.agent_kind),
+                state,
+                attention,
+                if selected {
+                    lift(frame(), 1.0)
+                } else {
+                    frame()
+                },
+                AGENT_TILE_SIZE,
+            ))
             .child(
                 div()
-                    .h(px(16.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(agent_compact_badge(
-                        identity.agent_kind.as_deref(),
-                        None,
-                        None,
-                        selected,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(11.5))
-                            .text_color(colors().muted)
-                            .child(kind),
-                    )
-                    .when_some(status, |line, (label, color)| {
-                        line.child(
-                            div()
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap(px(5.0))
-                                .text_size(px(11.0))
-                                .text_color(colors().subtle)
-                                .child(div().size(px(6.0)).rounded_full().bg(color))
-                                .child(label),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .h(px(18.0))
-                    .truncate()
-                    .text_size(px(13.0))
-                    .line_height(px(18.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors().foreground)
-                    .child(identity.title),
-            )
-            .child(
-                div()
-                    .h(px(16.0))
+                    .flex_1()
                     .min_w(px(0.0))
                     .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .text_size(px(11.5))
-                    .line_height(px(16.0))
-                    .text_color(colors().subtle)
+                    .flex_col()
+                    .gap(px(1.0))
                     .child(
                         div()
-                            .flex_none()
-                            .max_w(relative(0.5))
-                            .truncate()
-                            .child(space),
+                            .h(px(18.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_size(px(13.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(colors().foreground)
+                                    .child(identity.title),
+                            )
+                            .when_some(elapsed, |line, elapsed| {
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(11.0))
+                                        .text_color(colors().subtle)
+                                        .child(elapsed),
+                                )
+                            }),
                     )
-                    .when_some(branch, |line, branch| {
-                        line.child(
-                            svg()
-                                .path("chrome-icons/git-branch.svg")
-                                .size(px(12.0))
-                                .flex_none()
-                                .text_color(colors().subtle),
-                        )
-                        .child(div().min_w(px(0.0)).truncate().child(branch))
-                    }),
+                    .child(
+                        div()
+                            .h(px(16.0))
+                            .min_w(px(0.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .text_size(px(11.5))
+                            .text_color(colors().subtle)
+                            .when_some(status, |line, status| {
+                                line.child(div().flex_none().text_color(status_color).child(status))
+                                    .child(div().flex_none().child("·"))
+                            })
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .max_w(relative(0.5))
+                                    .truncate()
+                                    .child(space),
+                            )
+                            .when_some(branch, |line, branch| {
+                                line.child(
+                                    svg()
+                                        .path("chrome-icons/git-branch.svg")
+                                        .size(px(11.0))
+                                        .flex_none()
+                                        .text_color(colors().subtle),
+                                )
+                                .child(div().min_w(px(0.0)).truncate().child(branch))
+                            }),
+                    ),
             )
             .into_any_element()
     }
 }
 
-/// Fits the card's top line; the Inbox keeps the longer wording.
+/// Fits beside the space on the card's second line.
 fn agent_state_short_label(
     state: AgentRuntimeState,
     attention: Option<AgentAttention>,

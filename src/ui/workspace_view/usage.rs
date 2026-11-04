@@ -1,7 +1,7 @@
-//! Subscription usage: a one-line sidebar footer with a pair of concentric
-//! progress rings per provider (session outside, week inside). Hovering one
-//! lists its quotas in a card above the footer, which eases in and glides
-//! between providers; clicking opens a modal listing every subscription.
+//! Subscription usage: a group at the start of the status bar with a pair of
+//! concentric progress rings per provider (session outside, week inside).
+//! Hovering one lists its quotas in a card above the bar, which eases in and
+//! glides between providers; clicking opens a modal listing every subscription.
 
 use std::cell::Cell;
 use std::f32::consts::TAU;
@@ -23,22 +23,22 @@ use crate::infrastructure::clock::local_utc_offset;
 use crate::infrastructure::usage::UsageMonitor;
 use crate::ui::dialog::dialog_shadow;
 use crate::ui::menu::{menu_hover, menu_panel};
-use crate::ui::theme::{colors, mix};
+use crate::ui::theme::{colors, frame_hover, mix};
 
-use super::chrome::{SIDEBAR_ROW_INSET, ease_out_cubic};
+use super::chrome::ease_out_cubic;
 use super::context_menu::MENU_EDGE_MARGIN;
 use super::{WorkspaceView, sidebar_tooltip};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
-const RING_SIZE: f32 = 18.0;
+const RING_SIZE: f32 = 16.0;
 const RING_STROKE: f32 = 1.75;
 /// Space between concentric rings.
 const RING_GAP: f32 = 1.5;
-const CHIP_HEIGHT: f32 = 32.0;
-const FOOTER_PAD_Y: f32 = 8.0;
-/// Space between the hover card and the chips it describes.
-const HOVER_CARD_GAP: f32 = 4.0;
-const HOVER_CARD_MAX_WIDTH: f32 = 232.0;
+/// Matches the other status bar items.
+const CHIP_HEIGHT: f32 = 22.0;
+/// Space between the hover card or modal and the chips that opened it.
+const POPOVER_GAP: f32 = 8.0;
+const HOVER_CARD_WIDTH: f32 = 232.0;
 /// The hover card fades in while rising this far into place.
 const HOVER_CARD_RISE: f32 = 4.0;
 const HOVER_CARD_ENTER: Duration = Duration::from_millis(100);
@@ -61,16 +61,16 @@ pub(super) struct UsageState {
     /// Whether a first reading has finished; until then there is nothing to say.
     loaded: bool,
     pub open: bool,
-    /// Bottom-left corner of the modal, level with the footer chip that opened it.
+    /// Bottom-left corner of the modal, just above the chips that opened it.
     anchor: Point<Pixels>,
-    /// Provider whose chip the pointer last entered, until it leaves the footer.
+    /// Provider whose chip the pointer last entered, until it leaves the group.
     hovered: Option<String>,
     /// How the hover card got to what it shows, while it shows anything.
     hover_motion: Option<HoverMotion>,
     /// Gives each hover motion an animation of its own.
     hover_motions: u64,
-    /// Where the footer sits in the window, to hang the hover card above it.
-    footer_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Where the chips sit in the window, to hang the hover card and modal above them.
+    tracker_bounds: Rc<Cell<Bounds<Pixels>>>,
     _poll_task: Option<Task<()>>,
     _refresh_task: Option<Task<()>>,
 }
@@ -228,10 +228,16 @@ impl WorkspaceView {
         }));
     }
 
-    /// Opens the modal beside the sidebar, rising from `bottom`, the bottom
-    /// edge of the chip that was clicked.
-    fn open_usage(&mut self, bottom: f32, window: &mut Window, cx: &mut Context<Self>) {
-        self.usage.anchor = point(px(self.sidebar_popover_left()), px(bottom));
+    /// Where the hover card and the modal hang from: just above the chips,
+    /// level with their left edge.
+    fn usage_popover_anchor(&self) -> Point<Pixels> {
+        let bounds = self.usage.tracker_bounds.get();
+        point(bounds.left(), bounds.top() - px(POPOVER_GAP))
+    }
+
+    /// Opens the modal, rising from the status bar above the chips.
+    fn open_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.usage.anchor = self.usage_popover_anchor();
         self.usage.open = true;
         self.usage.hover(None, Instant::now());
         self.context_menu = None;
@@ -247,49 +253,43 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Sidebar footer on a single line. Each provider shows its quota windows as
+    /// The status bar's usage group. Each provider shows its quota windows as
     /// concentric rings; hovering one lists them and clicking any of them opens
     /// every subscription.
     pub(super) fn usage_tracker(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = now_timestamp();
         let snapshot = &self.usage.snapshot;
         div()
-            .id("sidebar-usage")
+            .id("status-usage")
             .relative()
             .flex_none()
-            // Keep the footer's height while the first reading is in flight so
-            // the providers appear without moving the project list.
-            .min_h(px(CHIP_HEIGHT + 2.0 * FOOTER_PAD_Y))
-            .px(px(SIDEBAR_ROW_INSET))
-            .py(px(FOOTER_PAD_Y))
+            .min_w(px(0.0))
             .flex()
             .items_center()
+            .gap(px(2.0))
             .overflow_hidden()
-            // The card stays up between chips and goes once the pointer leaves the footer.
+            // The card stays up between chips and goes once the pointer leaves the group.
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !*hovered && this.usage.hover(None, Instant::now()) {
                     cx.notify();
                 }
             }))
-            .child(super::measure_bounds(self.usage.footer_bounds.clone()))
+            .child(super::measure_bounds(self.usage.tracker_bounds.clone()))
             .when(
                 snapshot.providers.is_empty() && self.usage.loaded,
-                |footer| {
-                    let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
-                    footer.child(
-                        usage_chip("sidebar-usage-empty".into())
+                |group| {
+                    group.child(
+                        usage_chip("status-usage-empty".into())
                             .child(usage_ring(vec![(None, colors().subtle)]))
                             .child(div().min_w(px(0.0)).truncate().child("No usage data"))
-                            .child(super::measure_bounds(bounds.clone()))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_usage(bounds.get().bottom().into(), window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_usage(window, cx)),
+                            ),
                     )
                 },
             )
             .children(snapshot.providers.iter().map(|(id, provider)| {
                 let stale = self.usage.provider_stale(id, provider, now);
-                let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
                 let percents = ring_percents(provider);
                 // A quota close to blocking work also sets its provider's name apart.
                 let alerting = !stale
@@ -308,7 +308,7 @@ impl WorkspaceView {
                     })
                     .collect();
                 let hover_id = id.clone();
-                usage_chip(SharedString::from(format!("sidebar-usage-{id}")))
+                usage_chip(SharedString::from(format!("status-usage-{id}")))
                     .when(alerting, |chip| {
                         chip.font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(colors().foreground)
@@ -325,16 +325,13 @@ impl WorkspaceView {
                             .truncate()
                             .child(provider.display_name.clone()),
                     )
-                    .child(super::measure_bounds(bounds.clone()))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_usage(bounds.get().bottom().into(), window, cx)
-                    }))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_usage(window, cx)))
             }))
             .into_any_element()
     }
 
     /// Quotas of the provider under the pointer, in a card hanging above the
-    /// footer, level with the sidebar rows.
+    /// status bar, level with the usage group.
     pub(super) fn usage_hover_card(&self) -> Option<AnyElement> {
         if self.usage.open
             || self.context_menu.is_some()
@@ -346,19 +343,14 @@ impl WorkspaceView {
         let id = self.usage.hovered.as_deref()?;
         let provider = self.usage.snapshot.providers.get(id)?;
         let motion = self.usage.hover_motion.clone()?;
-        let footer = self.usage.footer_bounds.get();
-        let row_width = f32::from(footer.size.width) - 2.0 * SIDEBAR_ROW_INSET;
-        // Not measured yet, or a sidebar too narrow for any card.
-        if row_width <= 0.0 {
+        // The group has not been laid out yet.
+        if self.usage.tracker_bounds.get().size.width <= px(0.0) {
             return None;
         }
         let now = now_timestamp();
         let card = self.usage.card(id, provider, now, local_utc_offset(now));
-        let width = row_width.min(HOVER_CARD_MAX_WIDTH);
-        let position = point(
-            footer.left() + px(SIDEBAR_ROW_INSET),
-            footer.top() + px(FOOTER_PAD_Y - HOVER_CARD_GAP),
-        );
+        let width = HOVER_CARD_WIDTH;
+        let position = self.usage_popover_anchor();
         Some(
             div()
                 .absolute()
@@ -536,23 +528,23 @@ impl WorkspaceView {
     }
 }
 
-/// One provider in the footer, shaped like the navigation rows above it.
-/// Chips share the line and give up width by truncating their name, so a
-/// narrow sidebar never cuts a ring. Hovering one leaves it as it is: the
-/// card above is the response.
+/// One provider in the status bar, shaped like the bar's other items. Chips
+/// give up width by truncating their name, so a narrow window never cuts a ring.
 fn usage_chip(id: SharedString) -> Stateful<Div> {
     div()
         .id(id)
         .relative()
         .h(px(CHIP_HEIGHT))
         .min_w(px(0.0))
-        .px(px(4.0))
+        .px(px(6.0))
+        .rounded(px(6.0))
         .flex()
         .items_center()
         .gap(px(5.0))
         .cursor_pointer()
-        .text_size(px(12.0))
+        .text_size(px(11.0))
         .text_color(colors().muted)
+        .hover(|chip| chip.bg(frame_hover()))
 }
 
 /// A provider's session window, then its weekly one, outermost ring first.
@@ -1332,7 +1324,7 @@ mod tests {
         assert_eq!(settled.rows[0].color, colors().foreground);
         assert!(settled.rows[0].emphasized);
 
-        // Leaving the footer closes the card at once.
+        // Leaving the group closes the card at once.
         assert!(state.hover(None, switched));
         assert_eq!(state.hovered, None);
         assert!(state.hover_motion.is_none());
@@ -1348,7 +1340,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn usage_hover_card_hangs_above_the_footer_for_the_hovered_provider(
+    fn usage_hover_card_hangs_above_the_status_bar_for_the_hovered_provider(
         cx: &mut gpui::TestAppContext,
     ) {
         let (root, _, _, window) = super::super::tests::open_recording_workspace(cx, "usage-hover");
@@ -1359,9 +1351,9 @@ mod tests {
                         "session":{"kind":"consumption","unit":"percent","used":84,"limit":100}
                     }}}}"#,
                 );
-                view.usage.footer_bounds.set(Bounds::new(
-                    point(px(0.0), px(900.0)),
-                    gpui::size(px(250.0), px(48.0)),
+                view.usage.tracker_bounds.set(Bounds::new(
+                    point(px(6.0), px(904.0)),
+                    gpui::size(px(180.0), px(22.0)),
                 ));
                 // Nothing hovered, a provider the snapshot lacks, then the real one.
                 assert!(view.usage_hover_card().is_none());
@@ -1369,18 +1361,18 @@ mod tests {
                 assert!(view.usage_hover_card().is_none());
                 view.usage.hover(Some("codex"), Instant::now());
                 assert!(view.usage_hover_card().is_some());
-                // The footer is not measured until it has been laid out.
-                view.usage.footer_bounds.set(Bounds::default());
+                // The group is not measured until it has been laid out.
+                view.usage.tracker_bounds.set(Bounds::default());
                 assert!(view.usage_hover_card().is_none());
-                view.usage.footer_bounds.set(Bounds::new(
-                    point(px(0.0), px(900.0)),
-                    gpui::size(px(250.0), px(48.0)),
+                view.usage.tracker_bounds.set(Bounds::new(
+                    point(px(6.0), px(904.0)),
+                    gpui::size(px(180.0), px(22.0)),
                 ));
                 // The modal takes over from the card, and opening it clears the hover.
                 view.usage.open = true;
                 assert!(view.usage_hover_card().is_none());
                 view.usage.loading = true;
-                view.open_usage(940.0, window, cx);
+                view.open_usage(window, cx);
                 assert_eq!(view.usage.hovered, None);
                 assert!(view.usage.hover_motion.is_none());
                 window.remove_window();
@@ -1415,19 +1407,20 @@ mod tests {
     }
 
     #[gpui::test]
-    fn usage_modal_rises_from_the_chip_beside_the_sidebar(cx: &mut gpui::TestAppContext) {
+    fn usage_modal_rises_from_the_status_bar_chips(cx: &mut gpui::TestAppContext) {
         let (root, _, _, window) =
             super::super::tests::open_recording_workspace(cx, "usage-anchor");
         window
             .update(cx, |view, window, cx| {
                 // A refresh in flight keeps the test away from the user's real logins.
                 view.usage.loading = true;
-                view.open_usage(1480.0, window, cx);
+                view.usage.tracker_bounds.set(Bounds::new(
+                    point(px(6.0), px(1480.0)),
+                    gpui::size(px(180.0), px(22.0)),
+                ));
+                view.open_usage(window, cx);
                 assert!(view.usage.open);
-                assert_eq!(
-                    view.usage.anchor,
-                    point(px(view.sidebar_popover_left()), px(1480.0))
-                );
+                assert_eq!(view.usage.anchor, point(px(6.0), px(1480.0 - POPOVER_GAP)));
                 assert!(view.usage_modal(cx).is_some());
                 window.remove_window();
             })

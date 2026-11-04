@@ -779,60 +779,49 @@ pub(super) fn open_recording_workspace(
 }
 
 #[gpui::test]
-fn agents_that_finish_in_another_pane_land_in_the_inbox(cx: &mut gpui::TestAppContext) {
-    use crate::domain::inbox::InboxKind;
-    use crate::ports::terminal::TerminalAgentPresence;
-
-    let (root, snapshot, _, window) = open_recording_workspace(cx, "inbox");
-    let selected = snapshot.selected_session().unwrap().id;
-    let other = snapshot
-        .selected_tab()
-        .unwrap()
-        .sessions
-        .iter()
-        .map(|session| session.id)
-        .find(|id| *id != selected)
-        .unwrap();
-    let presence = |state| TerminalAgentPresence {
-        kind: "Codex".into(),
-        kind_source: TerminalAgentKindSource::Process,
-        state,
-        state_source: TerminalAgentStateSource::Heuristic,
-        attention: None,
-        process_id: Some(7),
+fn focusing_another_pane_swaps_the_front_of_its_tab(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "tab-front");
+    let tab = snapshot.selected_tab().unwrap();
+    let order: Vec<Uuid> = tab.sessions.iter().map(|session| session.id).collect();
+    // The window's first frame already recorded the selected pane in front.
+    let first = tab.selected_session_id.unwrap();
+    let second = *order.iter().find(|id| **id != first).unwrap();
+    let later = |from: Uuid, to: Uuid| {
+        let position = |id| order.iter().position(|other| *other == id).unwrap();
+        if position(to) > position(from) {
+            1.0
+        } else {
+            -1.0
+        }
     };
+    let tab_id = tab.id;
     window
-        .update(cx, |view, window, cx| {
-            view.window_is_active = true;
-            for (session_id, state) in [
-                (selected, AgentRuntimeState::Working),
-                (other, AgentRuntimeState::Working),
-                (selected, AgentRuntimeState::Idle),
-                (other, AgentRuntimeState::Idle),
-            ] {
-                view.handle_terminal_view_event(
-                    &TerminalViewEvent::AgentPresenceChanged {
-                        session_id,
-                        presence: Some(presence(state)),
-                    },
-                    cx,
-                );
-            }
-            let items: Vec<_> = view.inbox.items().cloned().collect();
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0].pane_id, Some(other));
-            assert_eq!(items[0].kind, InboxKind::Finished);
-            assert_eq!(items[0].title, "Codex finished");
-            assert!(!items[0].read);
+        .update(cx, |view, window, _| {
+            let stack = |front: Uuid, back: Uuid| vec![(front, None), (back, None)];
+            // Frames that keep the same pane in front only record it.
             assert!(
-                items[1].read,
-                "the pane the user is watching does not count as unread"
+                view.tab_front_motion(tab_id, first, &stack(first, second), "one", &order)
+                    .is_none()
             );
-            view.handle_terminal_view_event(
-                &TerminalViewEvent::Activated { session_id: other },
-                cx,
-            );
-            assert!(view.inbox.items().all(|item| item.read));
+            // Another pane takes focus: the title rolls toward it from the old one.
+            let swap = view
+                .tab_front_motion(tab_id, second, &stack(second, first), "two", &order)
+                .unwrap();
+            assert_eq!(swap.direction, later(first, second));
+            assert_eq!(swap.from_title, "one");
+            assert_eq!(swap.from_stack[0].0, first);
+            // It keeps running across frames…
+            let running = view
+                .tab_front_motion(tab_id, second, &stack(second, first), "two", &order)
+                .unwrap();
+            assert_eq!(running.id, swap.id);
+            // …and going back is a new swap that rolls the other way.
+            let back = view
+                .tab_front_motion(tab_id, first, &stack(first, second), "one", &order)
+                .unwrap();
+            assert_eq!(back.direction, -swap.direction);
+            assert_ne!(back.id, swap.id);
+            assert_eq!(back.from_title, "two");
             window.remove_window();
         })
         .unwrap();

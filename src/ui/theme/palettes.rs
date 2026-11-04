@@ -5,7 +5,9 @@ use std::sync::LazyLock;
 use gpui::{rgb, rgba};
 
 use super::legibility::legible;
-use super::{Theme, ThemeFamily, mix, relative_luminance, subtle_border, with_alpha};
+use super::{
+    Theme, ThemeFamily, mix, relative_luminance, subtle_border, with_alpha, with_floating_frame,
+};
 use crate::ports::terminal::TerminalRgb;
 
 /// Compact terminal/UI seed. Chrome surfaces are derived so a new palette
@@ -141,8 +143,8 @@ fn family(id: &'static str, label: &'static str, light: ThemeSeed, dark: ThemeSe
     ThemeFamily {
         id: id.to_string(),
         label: label.to_string(),
-        light: legible(theme_from_seed(light)),
-        dark: legible(theme_from_seed(dark)),
+        light: legible(with_floating_frame(theme_from_seed(light))),
+        dark: legible(with_floating_frame(theme_from_seed(dark))),
     }
 }
 
@@ -512,8 +514,8 @@ fn product_family(id: &'static str, label: &'static str, light: Theme, dark: The
     ThemeFamily {
         id: id.to_string(),
         label: label.to_string(),
-        light: legible(light),
-        dark: legible(dark),
+        light: legible(with_floating_frame(light)),
+        dark: legible(with_floating_frame(dark)),
     }
 }
 

@@ -529,14 +529,7 @@ impl WorkspaceView {
 }
 
 pub(super) fn segmented_control() -> gpui::Div {
-    div()
-        .flex_none()
-        .flex()
-        .items_center()
-        .p(px(2.0))
-        .gap(px(2.0))
-        .rounded(px(7.0))
-        .bg(surface_tint(colors().elevated, colors().background))
+    crate::ui::tab_style::track(colors().background)
 }
 
 pub(super) fn segment(
@@ -544,25 +537,11 @@ pub(super) fn segment(
     label: impl Into<SharedString>,
     selected: bool,
 ) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .h(px(24.0))
-        .px(px(9.0))
+    crate::ui::tab_style::lifted_tab(div().id(id), selected, colors().background, 22.0)
+        .px(px(10.0))
         .flex_none()
-        .flex()
-        .items_center()
         .gap(px(8.0))
-        .rounded(px(5.0))
         .text_size(px(12.0))
         .cursor_pointer()
-        .text_color(if selected {
-            colors().foreground
-        } else {
-            colors().subtle
-        })
-        .when(selected, |button| {
-            button.bg(surface_tint(colors().selection, colors().background))
-        })
-        .hover(|button| button.text_color(colors().foreground))
         .child(label.into())
 }

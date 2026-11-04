@@ -246,6 +246,11 @@ impl WorkspaceView {
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::ClosePane) => {
                 self.close_pane(session_id, window, cx);
             }
+            (ContextMenuKind::Pane { session_id }, ContextMenuAction::CloseTab) => {
+                if let Some(tab_id) = self.tab_of_session(session_id).map(|tab| tab.id) {
+                    self.close_tab(tab_id, window, cx);
+                }
+            }
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::SplitRight) => {
                 if self.snapshot.select_terminal_global(session_id) {
                     self.split_pane(PaneSplitDirection::Right, window, cx);
@@ -333,39 +338,57 @@ impl WorkspaceView {
                 )
                 .map(|(item, action)| (item.shortcut("⇧⌘O"), action)),
             ],
-            ContextMenuKind::Pane { .. } => vec![
-                row(
-                    "Rename",
-                    "chrome-icons/pencil.svg",
-                    ContextMenuAction::Rename,
-                ),
-                None,
-                row(
-                    "Split right",
-                    "chrome-icons/split-view.svg",
-                    ContextMenuAction::SplitRight,
-                )
-                .map(|(item, action)| (item.shortcut("⌘D"), action)),
-                row(
-                    "Split down",
-                    "chrome-icons/rows.svg",
-                    ContextMenuAction::SplitDown,
-                )
-                .map(|(item, action)| (item.shortcut("⇧⌘D"), action)),
-                row(
-                    "Zoom or restore",
-                    "chrome-icons/maximize.svg",
-                    ContextMenuAction::ToggleZoom,
-                )
-                .map(|(item, action)| (item.shortcut("⇧⌘↩"), action)),
-                None,
-                row(
-                    "Close pane",
-                    "chrome-icons/close.svg",
-                    ContextMenuAction::ClosePane,
-                )
-                .map(|(item, action)| (item.danger(), action)),
-            ],
+            ContextMenuKind::Pane { session_id } => {
+                let mut entries = vec![
+                    row(
+                        "Rename",
+                        "chrome-icons/pencil.svg",
+                        ContextMenuAction::Rename,
+                    ),
+                    None,
+                    row(
+                        "Split right",
+                        "chrome-icons/split-view.svg",
+                        ContextMenuAction::SplitRight,
+                    )
+                    .map(|(item, action)| (item.shortcut("⌘D"), action)),
+                    row(
+                        "Split down",
+                        "chrome-icons/rows.svg",
+                        ContextMenuAction::SplitDown,
+                    )
+                    .map(|(item, action)| (item.shortcut("⇧⌘D"), action)),
+                    row(
+                        "Zoom or restore",
+                        "chrome-icons/maximize.svg",
+                        ContextMenuAction::ToggleZoom,
+                    )
+                    .map(|(item, action)| (item.shortcut("⇧⌘↩"), action)),
+                    None,
+                    row(
+                        "Close pane",
+                        "chrome-icons/close.svg",
+                        ContextMenuAction::ClosePane,
+                    )
+                    .map(|(item, action)| (item.danger(), action)),
+                ];
+                // The selected tab shows this menu instead of a close button,
+                // so a tab of several panes can still close as a whole.
+                if self
+                    .tab_of_session(*session_id)
+                    .is_some_and(|tab| tab.sessions.len() > 1)
+                {
+                    entries.push(
+                        row(
+                            "Close tab",
+                            "chrome-icons/close.svg",
+                            ContextMenuAction::CloseTab,
+                        )
+                        .map(|(item, action)| (item.danger(), action)),
+                    );
+                }
+                entries
+            }
         };
         let rows = entries.iter().flatten().count();
         let separators = entries.len() - rows;

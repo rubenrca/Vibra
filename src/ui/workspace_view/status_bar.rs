@@ -1,25 +1,17 @@
-//! Bottom status bar: project branch, running agents, Keep Awake, and Review.
+//! Bottom status bar: subscription usage, project branch, and Keep Awake.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{AnyElement, Context, Rgba, Timer, div, prelude::*, px, svg};
 
-use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 use crate::ports::git::GitBranchSummary;
-use crate::ui::theme::{colors, surface, surface_tint};
+use crate::ui::theme::{colors, frame_hover, frame_surface};
 
 use super::{RightSidebarMode, WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const STATUS_POLL: Duration = Duration::from_secs(4);
 pub(super) const STATUS_BAR_HEIGHT: f32 = 30.0;
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) struct AgentCounts {
-    pub working: usize,
-    pub waiting: usize,
-    pub permission: usize,
-}
 
 impl WorkspaceView {
     fn toggle_keep_awake(&mut self, cx: &mut Context<Self>) {
@@ -137,26 +129,7 @@ impl WorkspaceView {
             .map(|(_, summary)| summary)
     }
 
-    pub(super) fn agent_counts(&self) -> AgentCounts {
-        let mut counts = AgentCounts::default();
-        for session in self.snapshot.terminal_sessions() {
-            let Some(presence) = self.resolved_agent_presence(session.id) else {
-                continue;
-            };
-            match (presence.state, presence.attention) {
-                (AgentRuntimeState::Waiting, Some(AgentAttention::Permission)) => {
-                    counts.permission += 1
-                }
-                (AgentRuntimeState::Waiting, _) => counts.waiting += 1,
-                (AgentRuntimeState::Working, _) => counts.working += 1,
-                (AgentRuntimeState::Idle, _) => {}
-            }
-        }
-        counts
-    }
-
     pub(super) fn status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let counts = self.agent_counts();
         let keep_awake = self.keep_awake.is_enabled();
         // GPUI allows a single hover style per element, so styled items start from `base`.
         let base = |id: &'static str| {
@@ -171,10 +144,7 @@ impl WorkspaceView {
                 .cursor_pointer()
         };
         let item = move |id: &'static str| {
-            base(id).hover(|item| {
-                item.bg(surface_tint(colors().hover, colors().titlebar))
-                    .text_color(colors().foreground)
-            })
+            base(id).hover(|item| item.bg(frame_hover()).text_color(colors().foreground))
         };
         let icon = |path: &'static str| {
             svg()
@@ -184,7 +154,6 @@ impl WorkspaceView {
                 .text_color(colors().muted)
         };
         let dot = |color| div().size(px(6.0)).flex_none().rounded_full().bg(color);
-        let separator = || div().text_color(colors().subtle).child("·");
         let divider = || {
             div()
                 .w(px(1.0))
@@ -202,50 +171,11 @@ impl WorkspaceView {
             .items_center()
             .px(px(6.0))
             .gap(px(2.0))
-            .bg(surface(colors().titlebar))
-            .border_t_1()
-            .border_color(colors().border_subtle)
+            // Part of the frame, so the cards above float without a seam.
+            .bg(frame_surface())
             .text_size(px(11.0))
             .text_color(colors().muted)
-            .child(
-                item("status-agents")
-                    .tooltip(|_, cx| sidebar_tooltip("View agent activity", cx))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.work_inbox.activity = true;
-                        this.select_section(WorkspaceSection::Inbox, window, cx)
-                    }))
-                    .map(|item| {
-                        if counts == AgentCounts::default() {
-                            item.text_color(colors().subtle)
-                                .child(dot(colors().subtle))
-                                .child("No active agents")
-                        } else {
-                            let groups = [
-                                (counts.working, colors().accent, "working"),
-                                (counts.waiting, colors().warning, "waiting"),
-                                (counts.permission, colors().danger, "need permission"),
-                            ];
-                            let mut first = true;
-                            groups.into_iter().filter(|(count, _, _)| *count > 0).fold(
-                                item,
-                                |item, (count, color, label)| {
-                                    let item = if first { item } else { item.child(separator()) };
-                                    first = false;
-                                    item.child(dot(color)).child(format!("{count} {label}"))
-                                },
-                            )
-                        }
-                    }),
-            )
-            .child(
-                item("status-inbox")
-                    .tooltip(|_, cx| sidebar_tooltip("Repository", cx))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.select_section(WorkspaceSection::Inbox, window, cx)
-                    }))
-                    .child(icon("chrome-icons/repository.svg"))
-                    .child("Repository"),
-            )
+            .child(self.usage_tracker(cx))
             .child(div().flex_1())
             .when_some(self.current_branch_summary(), |bar, summary| {
                 bar.child(
@@ -286,9 +216,7 @@ impl WorkspaceView {
                         } else {
                             item.px(px(5.0))
                                 .group("keep-awake")
-                                .hover(|item| {
-                                    item.bg(surface_tint(colors().hover, colors().titlebar))
-                                })
+                                .hover(|item| item.bg(frame_hover()))
                                 .child(
                                     icon("chrome-icons/coffee.svg")
                                         .group_hover("keep-awake", |icon| {

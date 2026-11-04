@@ -14,14 +14,14 @@ use uuid::Uuid;
 
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 use crate::ui::agent_marks::agent_status_color;
-use crate::ui::theme::{colors, surface_tint};
+use crate::ui::theme::{HOVER_LIFT, colors, frame, frame_hover, frame_selected, lift};
 use crate::{AddProject, GoToProject};
 
 use super::chrome::sidebar_row_width;
 use super::spaces::space_avatar;
 use super::{
     ContextMenuKind, DragGhost, ProjectDrag, ReorderDrag, ReorderSlot, RightSidebarMode,
-    SIDEBAR_CONTROL_SIZE, WorkspaceSection, WorkspaceView, sidebar_tooltip,
+    SIDEBAR_CONTROL_SIZE, SIDEBAR_ROW_RADIUS, WorkspaceSection, WorkspaceView, sidebar_tooltip,
 };
 
 /// A space row and the gap below it.
@@ -349,11 +349,8 @@ impl WorkspaceView {
         let diff_stats = self
             .project_diff_stats(id)
             .filter(|stats| stats.additions > 0 || stats.deletions > 0);
-        let hover_background = if selected {
-            colors().selection
-        } else {
-            colors().hover
-        };
+        // The fade under the row's controls matches the row's own fill.
+        let hover_background = lift(frame(), if selected { 1.0 } else { HOVER_LIFT });
         let branch = self.project_branch(id);
         let fade_controls = diff_stats.is_some() || branch.is_some();
         let activity = self.project_agent_activity(id);
@@ -361,7 +358,7 @@ impl WorkspaceView {
         let row_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
         let ghost = {
             let name = name.clone();
-            DragGhost::new(7.0, colors().sidebar, move || {
+            DragGhost::new(SIDEBAR_ROW_RADIUS, frame(), move || {
                 project_drag_ghost(name.clone(), project_padding)
             })
         };
@@ -375,20 +372,16 @@ impl WorkspaceView {
             .h(px(32.0))
             .pl(px(project_padding))
             .pr(px(project_padding))
-            .rounded(px(7.0))
+            .rounded(px(SIDEBAR_ROW_RADIUS))
             .flex()
             .items_center()
             .gap(px(10.0))
-            .when(selected, |row| {
-                row.bg(surface_tint(colors().selection, colors().sidebar))
-            })
-            .hover(move |row| {
-                if selected {
-                    row
-                } else {
-                    row.bg(surface_tint(colors().hover, colors().sidebar))
-                }
-            })
+            .when(selected, |row| row.bg(frame_selected()))
+            .hover(
+                move |row| {
+                    if selected { row } else { row.bg(frame_hover()) }
+                },
+            )
             .cursor_move()
             .on_mouse_down(
                 MouseButton::Left,
@@ -536,7 +529,7 @@ impl WorkspaceView {
                             .bottom(px(-project_padding))
                             .w(px(controls_width + 24.0 + project_padding))
                             .pr(px(project_padding))
-                            .rounded_r(px(7.0))
+                            .rounded_r(px(SIDEBAR_ROW_RADIUS))
                             .flex()
                             .items_center()
                             .justify_end()
@@ -563,7 +556,7 @@ impl WorkspaceView {
                                     .justify_center()
                                     .rounded(px(5.0))
                                     .cursor_pointer()
-                                    .hover(|s| s.bg(colors().hover))
+                                    .hover(|s| s.bg(frame_hover()))
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                         cx.stop_propagation()
                                     })
@@ -627,7 +620,7 @@ impl WorkspaceView {
                     .w(px(sidebar_row_width(self.left_sidebar_width())))
                     .h(px(PROJECT_ROW_PITCH - 2.0))
                     .mb(px(2.0))
-                    .rounded(px(7.0))
+                    .rounded(px(SIDEBAR_ROW_RADIUS))
                     .into_any_element(),
             })
             .collect()
@@ -787,11 +780,11 @@ fn project_drag_ghost(name: String, padding: f32) -> AnyElement {
     div()
         .h(px(32.0))
         .px(px(padding))
-        .rounded(px(7.0))
+        .rounded(px(SIDEBAR_ROW_RADIUS))
         .flex()
         .items_center()
         .gap(px(10.0))
-        .bg(surface_tint(colors().selection, colors().sidebar))
+        .bg(frame_selected())
         .child(space_avatar(&name))
         .child(
             div()

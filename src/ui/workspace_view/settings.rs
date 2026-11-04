@@ -4,7 +4,10 @@ mod appearance;
 
 use gpui::{AnyElement, Context, Div, SharedString, Stateful, Window, div, prelude::*, px, svg};
 
-use crate::ui::theme::{self, AppearanceMode, MONO_FONT, ThemeTone, colors, surface, surface_tint};
+use crate::ui::theme::{
+    self, AppearanceMode, MONO_FONT, ThemeTone, colors, frame_hover, frame_selected, surface,
+    surface_tint,
+};
 
 use super::{WorkspaceSection, WorkspaceView};
 use crate::infrastructure::automation::{
@@ -345,10 +348,10 @@ impl WorkspaceView {
                                 colors().muted
                             })
                             .when(selected, |row| {
-                                row.bg(surface_tint(colors().selection, colors().sidebar))
+                                row.bg(frame_selected())
                                     .font_weight(gpui::FontWeight::MEDIUM)
                             })
-                            .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
+                            .hover(|row| row.bg(frame_hover()))
                             .child(
                                 svg()
                                     .path(page.icon())
@@ -394,7 +397,7 @@ impl WorkspaceView {
                         .cursor_pointer()
                         .text_size(px(13.0))
                         .text_color(colors().muted)
-                        .hover(|row| row.bg(surface_tint(colors().hover, colors().sidebar)))
+                        .hover(|row| row.bg(frame_hover()))
                         .child(
                             svg()
                                 .path("chrome-icons/chevron-left.svg")
