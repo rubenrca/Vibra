@@ -3,21 +3,19 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.46</title>
-            <pubDate>Wed, 04 Nov 2026 11:07:06 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.46</link>
-            <sparkle:version>327</sparkle:version>
-            <sparkle:shortVersionString>0.3.46</sparkle:shortVersionString>
+            <title>0.3.47</title>
+            <pubDate>Wed, 04 Nov 2026 11:26:02 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.47</link>
+            <sparkle:version>330</sparkle:version>
+            <sparkle:shortVersionString>0.3.47</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Float every pane, review, and the Repository page as a rounded card on a single frame: the titlebar, sidebars, the gaps between panes, and the status bar now share one tone, a step off the terminal in every palette. Each pane has a header with its title, folder, and split, zoom, and close buttons.</li>
-  <li>Lift the selected tab off the frame and lead every tab with its agent's mark on a tile in the agent's color, with the tab's other panes stacked behind it. Focusing another pane shuffles the tiles and rolls the title. The selected tab's menu can also close the whole tab.</li>
-  <li>Give Explorer and Changes, the Repository and pull request tabs, and the segmented controls the same tab style, and show spaces and the sidebar's Agents cards with the same tiles. Agent cards now fit on two lines.</li>
-  <li>Show subscription usage in the status bar instead of the sidebar footer.</li>
-  <li>Remove the Agent activity page and the Repository shortcuts menu.</li>
+  <li>Show subscription usage in the status bar as each provider's mark and the share used of whichever of its five-hour and weekly windows is closer to its limit, in place of the rings and the provider's name.</li>
+  <li>Redo the quota hover card and the Usage modal: each provider leads with its agent tile and a line with its plan and when it was read, every subscription gets a card of its own in the modal, failures show as tinted notes, and an outdated reading gets a badge.</li>
+  <li>Leave the titlebar blank instead of showing Vibra when no space is open.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.46/Vibra-0.3.46.dmg" length="16167756" type="application/octet-stream" sparkle:edSignature="BWderRfyNwgeodq+REss6jr/iX1nP89q9RAMCCRfYN16xbwK64HaejLGJ1x0rsvi/zvP+UncX/GJOJWQ9tBDDQ=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.47/Vibra-0.3.47.dmg" length="16162313" type="application/octet-stream" sparkle:edSignature="8vUs4y+q+EVmOqggXLI9fmHGfK1DkMf64ZlY+W8gLq1TjcnBVo1k2W4ewv7D47zOYLKUbKOA/c4BWgNYuZsRBA=="/>
         </item>
     </channel>
 </rss>
