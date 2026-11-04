@@ -3,21 +3,21 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.45</title>
-            <pubDate>Mon, 02 Nov 2026 13:37:19 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.45</link>
-            <sparkle:version>324</sparkle:version>
-            <sparkle:shortVersionString>0.3.45</sparkle:shortVersionString>
+            <title>0.3.46</title>
+            <pubDate>Wed, 04 Nov 2026 11:07:06 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.46</link>
+            <sparkle:version>327</sparkle:version>
+            <sparkle:shortVersionString>0.3.46</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Keep text readable on hovered and selected rows in every palette, and give primary buttons and accent chips labels with at least 4.5:1 contrast. Light palettes such as Tokyo Night, Ayu, Everforest, Nord, Solarized, and Rosé Pine get a slightly deeper accent.</li>
-  <li>Fade dimmed terminal text toward its background, so it no longer looks heavier than normal text on light palettes.</li>
-  <li>Turn the IDE button into a split button beside the right panel toggle: its icon opens the folder in the IDE you last picked, and the chevron lists the installed IDEs. The file search button in the Workspace header is gone; ⌘P still opens the finder.</li>
-  <li>Refine the quota hover card and modal: figures keep their width as they count, quotas near their limit read in semibold, the hover card shows each provider's mark, and the refresh icon turns while quotas are checked.</li>
-  <li>Fix a clicked space opening a reorder gap on the next drag, such as resizing Agents or dropping a file from Finder.</li>
+  <li>Float every pane, review, and the Repository page as a rounded card on a single frame: the titlebar, sidebars, the gaps between panes, and the status bar now share one tone, a step off the terminal in every palette. Each pane has a header with its title, folder, and split, zoom, and close buttons.</li>
+  <li>Lift the selected tab off the frame and lead every tab with its agent's mark on a tile in the agent's color, with the tab's other panes stacked behind it. Focusing another pane shuffles the tiles and rolls the title. The selected tab's menu can also close the whole tab.</li>
+  <li>Give Explorer and Changes, the Repository and pull request tabs, and the segmented controls the same tab style, and show spaces and the sidebar's Agents cards with the same tiles. Agent cards now fit on two lines.</li>
+  <li>Show subscription usage in the status bar instead of the sidebar footer.</li>
+  <li>Remove the Agent activity page and the Repository shortcuts menu.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.45/Vibra-0.3.45.dmg" length="16171642" type="application/octet-stream" sparkle:edSignature="uoOUBTogX34GmAWVpqwUzy7KFWAKIHDjjQntDaiQo0qlks2LioKbHCqJI4/4VqaNqXCN2m+c4JblFO5YCcCwDA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.46/Vibra-0.3.46.dmg" length="16167756" type="application/octet-stream" sparkle:edSignature="BWderRfyNwgeodq+REss6jr/iX1nP89q9RAMCCRfYN16xbwK64HaejLGJ1x0rsvi/zvP+UncX/GJOJWQ9tBDDQ=="/>
         </item>
     </channel>
 </rss>
