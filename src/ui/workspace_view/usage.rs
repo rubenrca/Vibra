@@ -1,19 +1,18 @@
-//! Subscription usage: a group at the start of the status bar with a pair of
-//! concentric progress rings per provider (session outside, week inside).
+//! Subscription usage: a group at the start of the status bar with each
+//! provider's mark and the share used of the quota closest to its limit.
 //! Hovering one lists its quotas in a card above the bar, which eases in and
 //! glides between providers; clicking opens a modal listing every subscription.
 
 use std::cell::Cell;
-use std::f32::consts::TAU;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
     Animation, AnimationExt, AnyElement, Bounds, Context, Corner, Div, Font, FontFeatures,
-    FontStyle, FontWeight, Hsla, MouseButton, PathBuilder, Pixels, Point, Rgba, SharedString,
-    Stateful, Task, Timer, Transformation, Window, canvas, div, ease_out_quint, percentage, point,
-    prelude::*, px, relative, svg,
+    FontStyle, FontWeight, Hsla, MouseButton, Pixels, Point, Rgba, SharedString, Stateful, Task,
+    Timer, Transformation, Window, div, ease_out_quint, percentage, point, prelude::*, px,
+    relative, svg,
 };
 
 use crate::domain::usage::{
@@ -21,8 +20,9 @@ use crate::domain::usage::{
 };
 use crate::infrastructure::clock::local_utc_offset;
 use crate::infrastructure::usage::UsageMonitor;
-use crate::ui::dialog::dialog_shadow;
-use crate::ui::menu::{menu_hover, menu_panel};
+use crate::ui::agent_marks::{agent_tile, icon_tile};
+use crate::ui::dialog::{DIALOG_RADIUS, dialog_shadow};
+use crate::ui::menu::{menu_border, menu_hover, menu_panel, menu_surface};
 use crate::ui::theme::{colors, frame_hover, mix};
 
 use super::chrome::ease_out_cubic;
@@ -30,15 +30,21 @@ use super::context_menu::MENU_EDGE_MARGIN;
 use super::{WorkspaceView, sidebar_tooltip};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
-const RING_SIZE: f32 = 16.0;
-const RING_STROKE: f32 = 1.75;
-/// Space between concentric rings.
-const RING_GAP: f32 = 1.5;
+/// Brand marks fill their box, so they sit a step under the bar's 14 px icons.
+const CHIP_MARK_SIZE: f32 = 13.0;
 /// Matches the other status bar items.
 const CHIP_HEIGHT: f32 = 22.0;
 /// Space between the hover card or modal and the chips that opened it.
 const POPOVER_GAP: f32 = 8.0;
-const HOVER_CARD_WIDTH: f32 = 232.0;
+const HOVER_CARD_WIDTH: f32 = 248.0;
+const MODAL_WIDTH: f32 = 360.0;
+/// Space between the modal's edge and the cards inside it.
+const MODAL_INSET: f32 = 10.0;
+/// Subscription cards keep their corners concentric with the modal's.
+const CARD_RADIUS: f32 = DIALOG_RADIUS - MODAL_INSET / 2.0;
+/// The agent tile beside each provider's name.
+const HEADING_TILE_SIZE: f32 = 28.0;
+const QUOTA_BAR_HEIGHT: f32 = 4.0;
 /// The hover card fades in while rising this far into place.
 const HOVER_CARD_RISE: f32 = 4.0;
 const HOVER_CARD_ENTER: Duration = Duration::from_millis(100);
@@ -169,7 +175,7 @@ impl UsageState {
                 .as_deref()
                 .and_then(timestamp)
                 .map(|fetched| match now.saturating_sub(fetched).max(0) / 60 {
-                    0 => "Updated less than 1 min ago".to_owned(),
+                    0 => "Updated just now".to_owned(),
                     minutes => format!("Updated {minutes} min ago"),
                 })
         };
@@ -253,9 +259,9 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// The status bar's usage group. Each provider shows its quota windows as
-    /// concentric rings; hovering one lists them and clicking any of them opens
-    /// every subscription.
+    /// The status bar's usage group. Each provider shows its mark and the share
+    /// used of its tightest window; hovering one lists every quota and clicking
+    /// any of them opens every subscription.
     pub(super) fn usage_tracker(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = now_timestamp();
         let snapshot = &self.usage.snapshot;
@@ -280,7 +286,13 @@ impl WorkspaceView {
                 |group| {
                     group.child(
                         usage_chip("status-usage-empty".into())
-                            .child(usage_ring(vec![(None, colors().subtle)]))
+                            .child(
+                                svg()
+                                    .path("chrome-icons/sparkles.svg")
+                                    .size(px(CHIP_MARK_SIZE))
+                                    .flex_none()
+                                    .text_color(colors().subtle),
+                            )
                             .child(div().min_w(px(0.0)).truncate().child("No usage data"))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.open_usage(window, cx)),
@@ -290,40 +302,38 @@ impl WorkspaceView {
             )
             .children(snapshot.providers.iter().map(|(id, provider)| {
                 let stale = self.usage.provider_stale(id, provider, now);
-                let percents = ring_percents(provider);
-                // A quota close to blocking work also sets its provider's name apart.
-                let alerting = !stale
-                    && percents
-                        .iter()
-                        .any(|&percent| quota_alert(percent).is_some());
-                let rings = percents
-                    .into_iter()
-                    .map(|percent| {
-                        let color = if stale {
-                            colors().subtle
-                        } else {
-                            quota_alert(percent).unwrap_or(colors().muted)
-                        };
-                        (percent, color)
-                    })
-                    .collect();
+                let percent = headline_percent(provider);
+                // Only a quota close to blocking work stands out; an outdated reading fades.
+                let alert = (!stale).then(|| quota_alert(percent)).flatten();
+                let color = if stale {
+                    colors().subtle
+                } else {
+                    alert.unwrap_or(colors().muted)
+                };
                 let hover_id = id.clone();
                 usage_chip(SharedString::from(format!("status-usage-{id}")))
-                    .when(alerting, |chip| {
-                        chip.font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(colors().foreground)
-                    })
+                    .text_color(color)
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         if *hovered && this.usage.hover(Some(&hover_id), Instant::now()) {
                             cx.notify();
                         }
                     }))
-                    .child(usage_ring(rings))
                     .child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(provider.display_name.clone()),
+                        svg()
+                            .path(provider_mark(id))
+                            .size(px(CHIP_MARK_SIZE))
+                            .flex_none()
+                            .text_color(color),
+                    )
+                    .child(
+                        tabular(div())
+                            .flex_none()
+                            .font_weight(if alert.is_some() {
+                                FontWeight::SEMIBOLD
+                            } else {
+                                FontWeight::MEDIUM
+                            })
+                            .child(percent_label(percent)),
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.open_usage(window, cx)))
             }))
@@ -393,36 +403,23 @@ impl WorkspaceView {
         } else {
             "Refresh usage · May request Keychain access"
         };
+        let empty = snapshot.providers.is_empty() && self.usage.error.is_none();
         let content = div()
             .id("usage-provider-list")
             .min_h(px(0.0))
             .overflow_y_scroll()
-            .p(px(14.0))
+            .px(px(MODAL_INSET))
+            .pb(px(MODAL_INSET))
             .flex()
             .flex_col()
-            .gap(px(14.0))
+            .gap(px(8.0))
             .when_some(self.usage.error.clone(), |content, error| {
-                content.child(div().text_color(colors().warning).child(error))
+                content.child(warning_callout(None, error))
             })
-            .when(
-                snapshot.providers.is_empty() && self.usage.error.is_none(),
-                |content| {
-                    content.child(div().text_color(colors().muted).child(if loading {
-                        "Checking quotas…"
-                    } else {
-                        "Sign in with Claude Code, Codex, or Grok Build and click Refresh."
-                    }))
-                },
-            )
-            .children(
-                snapshot
-                    .providers
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (id, provider))| {
-                        usage_section(&self.usage.card(id, provider, now, utc_offset), index)
-                    }),
-            )
+            .when(empty, |content| content.child(usage_empty_state(loading)))
+            .children(snapshot.providers.iter().map(|(id, provider)| {
+                provider_section(&self.usage.card(id, provider, now, utc_offset))
+            }))
             // Failures for a provider that has nothing to list would otherwise vanish.
             .children(
                 snapshot
@@ -430,11 +427,10 @@ impl WorkspaceView {
                     .iter()
                     .filter(|error| !snapshot.providers.contains_key(&error.provider_id))
                     .map(|error| {
-                        div().text_color(colors().warning).child(format!(
-                            "{}: {}",
-                            provider_name(&error.provider_id),
-                            error.message
-                        ))
+                        warning_callout(
+                            Some(&error.provider_id),
+                            format!("{}: {}", provider_name(&error.provider_id), error.message),
+                        )
                     }),
             );
 
@@ -443,16 +439,15 @@ impl WorkspaceView {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .pl(px(14.0))
-            .pr(px(8.0))
-            .py(px(8.0))
-            .border_b_1()
-            .border_color(colors().border_subtle)
+            .pl(px(MODAL_INSET + 4.0))
+            .pr(px(MODAL_INSET - 2.0))
+            .pt(px(10.0))
+            .pb(px(8.0))
             .child(
                 div()
                     .id("usage-title")
                     .flex_1()
-                    .text_size(px(13.0))
+                    .text_size(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .tooltip(|_, cx| {
                         sidebar_tooltip("Subscription usage · Refreshes every 5 min", cx)
@@ -478,13 +473,18 @@ impl WorkspaceView {
                     .child(refresh_icon(loading)),
             );
 
-        let panel = menu_panel()
+        // The same lifted panel as the other dialogs, with a card per subscription.
+        let panel = div()
             .id("usage-modal")
-            .p(px(0.0))
-            .rounded(px(12.0))
-            .shadow(dialog_shadow())
-            .w(px(380.0))
+            .w(px(MODAL_WIDTH))
             .max_h(px((available - MENU_EDGE_MARGIN).max(100.0)))
+            .flex()
+            .flex_col()
+            .rounded(px(DIALOG_RADIUS))
+            .border_1()
+            .border_color(menu_border())
+            .bg(menu_surface())
+            .shadow(dialog_shadow())
             .text_size(px(12.0))
             .text_color(colors().foreground)
             .overflow_hidden()
@@ -528,14 +528,13 @@ impl WorkspaceView {
     }
 }
 
-/// One provider in the status bar, shaped like the bar's other items. Chips
-/// give up width by truncating their name, so a narrow window never cuts a ring.
+/// One provider in the status bar, shaped like the bar's other items.
 fn usage_chip(id: SharedString) -> Stateful<Div> {
     div()
         .id(id)
         .relative()
         .h(px(CHIP_HEIGHT))
-        .min_w(px(0.0))
+        .flex_none()
         .px(px(6.0))
         .rounded(px(6.0))
         .flex()
@@ -547,86 +546,24 @@ fn usage_chip(id: SharedString) -> Stateful<Div> {
         .hover(|chip| chip.bg(frame_hover()))
 }
 
-/// A provider's session window, then its weekly one, outermost ring first.
-/// Providers that report neither get their tightest quota, or an empty ring
-/// without data.
-fn ring_percents(provider: &ProviderUsage) -> Vec<Option<f64>> {
-    let windows: Vec<_> = ["session", "weekly"]
+/// The share the status bar shows for a provider: whichever of its session
+/// and weekly windows is closer to blocking work. Providers that report
+/// neither show their tightest quota, or nothing without data.
+fn headline_percent(provider: &ProviderUsage) -> Option<f64> {
+    ["session", "weekly"]
         .into_iter()
         .filter_map(|key| provider.resources.get(key)?.percent_used())
-        .map(Some)
-        .collect();
-    if windows.is_empty() {
-        vec![
+        .max_by(f64::total_cmp)
+        .or_else(|| {
             provider
                 .tightest_quota()
-                .and_then(|(_, resource)| resource.percent_used()),
-        ]
-    } else {
-        windows
-    }
+                .and_then(|(_, resource)| resource.percent_used())
+        })
 }
 
-/// Concentric quota rings, the first one outermost. Each is a faint track with
-/// the consumed share drawn clockwise from the top; without a percentage only
-/// the track shows.
-fn usage_ring(rings: Vec<(Option<f64>, Rgba)>) -> impl IntoElement {
-    div().size(px(RING_SIZE)).flex_none().relative().child(
-        canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
-                let track = Hsla::from(colors().foreground).opacity(0.18);
-                let outer = (RING_SIZE - RING_STROKE) / 2.0;
-                for (index, (percent, color)) in rings.into_iter().enumerate() {
-                    let radius = outer - index as f32 * (RING_STROKE + RING_GAP);
-                    let fraction =
-                        percent.map_or(0.0, |percent| (percent / 100.0).clamp(0.0, 1.0) as f32);
-                    paint_ring_arc(window, bounds.center(), radius, 1.0, track);
-                    paint_ring_arc(window, bounds.center(), radius, fraction, color.into());
-                }
-            },
-        )
-        .absolute()
-        .inset_0(),
-    )
-}
-
-/// Strokes `fraction` of a circle clockwise from 12 o'clock.
-fn paint_ring_arc(
-    window: &mut Window,
-    center: Point<Pixels>,
-    radius: f32,
-    fraction: f32,
-    color: Hsla,
-) {
-    if fraction <= 0.0 {
-        return;
-    }
-    let top = point(center.x, center.y - px(radius));
-    let radii = point(px(radius), px(radius));
-    let mut path = PathBuilder::stroke(px(RING_STROKE));
-    path.move_to(top);
-    if fraction >= 1.0 {
-        // An arc cannot start and end on the same point, so close the circle in halves.
-        path.arc_to(
-            radii,
-            px(0.0),
-            false,
-            true,
-            point(center.x, center.y + px(radius)),
-        );
-        path.arc_to(radii, px(0.0), false, true, top);
-    } else {
-        let angle = fraction * TAU;
-        let end = point(
-            center.x + px(radius * angle.sin()),
-            center.y - px(radius * angle.cos()),
-        );
-        path.arc_to(radii, px(0.0), fraction > 0.5, true, end);
-    }
-    if let Ok(path) = path.build() {
-        window.paint_path(path, color);
-    }
+/// A whole percentage, or a dash while the provider reports none.
+fn percent_label(percent: Option<f64>) -> String {
+    percent.map_or_else(|| "–".to_owned(), |percent| format!("{percent:.0}%"))
 }
 
 /// Only quotas close to blocking work stand out: in the text color as they
@@ -639,15 +576,29 @@ fn quota_alert(percent: Option<f64>) -> Option<Rgba> {
     }
 }
 
+/// The agent a provider's subscription is for, named as its tabs name it.
+fn provider_kind(id: &str) -> Option<&'static str> {
+    [("claude", "Claude"), ("codex", "Codex"), ("grok", "Grok")]
+        .into_iter()
+        .find(|(prefix, _)| id.starts_with(prefix))
+        .map(|(_, kind)| kind)
+}
+
 fn provider_mark(id: &str) -> &'static str {
-    if id.starts_with("claude") {
-        "agent-marks/claude.svg"
-    } else if id.starts_with("codex") {
-        "agent-marks/codex.svg"
-    } else if id.starts_with("grok") {
-        "agent-marks/grok.svg"
-    } else {
-        "chrome-icons/sparkles.svg"
+    match provider_kind(id) {
+        Some("Claude") => "agent-marks/claude.svg",
+        Some("Codex") => "agent-marks/codex.svg",
+        Some("Grok") => "agent-marks/grok.svg",
+        _ => "chrome-icons/sparkles.svg",
+    }
+}
+
+/// A provider's mark on its agent's tile, as tabs show it; a provider
+/// without one gets a neutral tile.
+fn provider_tile(id: &str, size: f32) -> Div {
+    match provider_kind(id) {
+        Some(kind) => agent_tile(Some(kind), size),
+        None => icon_tile("chrome-icons/sparkles.svg", size),
     }
 }
 
@@ -672,6 +623,15 @@ struct UsageCard {
 }
 
 impl UsageCard {
+    /// The plan and when the reading was taken, for the line under the name.
+    fn detail(&self) -> Option<String> {
+        let parts = [self.plan.as_deref(), self.status.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
     /// Quotas close to blocking work stand out; an outdated reading fades.
     fn bar_color(&self, percent: f64) -> Rgba {
         if self.stale {
@@ -737,6 +697,7 @@ impl HoverMotion {
         CardFrame {
             id: card.id.clone(),
             name: card.name.clone(),
+            detail: card.detail(),
             rows: card
                 .rows
                 .iter()
@@ -759,6 +720,7 @@ fn elapsed_share(start: Instant, now: Instant, duration: Duration) -> f32 {
 struct CardFrame {
     id: String,
     name: String,
+    detail: Option<String>,
     rows: Vec<QuotaFrame>,
 }
 
@@ -849,39 +811,257 @@ fn crossfade(text: String, previous: Option<String>, progress: f32) -> Div {
         })
 }
 
-/// `id`'s mark fading in over `previous`'s while `progress` runs to 1.
-fn mark_crossfade(id: &str, previous: Option<&str>, progress: f32) -> Div {
+/// `id`'s tile fading in over `previous`'s while `progress` runs to 1.
+fn tile_crossfade(id: &str, previous: Option<&str>, progress: f32, size: f32) -> Div {
     let previous = previous.filter(|previous| *previous != id && progress < 1.0);
     let fading = previous.is_some();
-    let mark = |id: &str| {
-        svg()
-            .path(provider_mark(id))
-            .size_full()
-            .text_color(colors().foreground)
-    };
     div()
         .relative()
-        .size(px(14.0))
+        .size(px(size))
         .flex_none()
         .child(
             div()
                 .absolute()
                 .inset_0()
                 .when(fading, |current| current.opacity(progress))
-                .child(mark(id)),
+                .child(provider_tile(id, size)),
         )
-        .when_some(previous, |marks, previous| {
-            marks.child(
+        .when_some(previous, |tiles, previous| {
+            tiles.child(
                 div()
                     .absolute()
                     .inset_0()
                     .opacity(1.0 - progress)
-                    .child(mark(previous)),
+                    .child(provider_tile(previous, size)),
             )
         })
 }
 
-/// The hover card at `now`: provider mark and name, then each quota as label
+/// A provider's tile beside its name, with its plan and when it was read
+/// below. While `progress` runs to 1 it crossfades from `from`.
+fn provider_heading(card: &UsageCard, from: Option<&CardFrame>, progress: f32) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(tile_crossfade(
+            &card.id,
+            from.map(|from| from.id.as_str()),
+            progress,
+            HEADING_TILE_SIZE,
+        ))
+        .child(
+            div()
+                .min_w(px(0.0))
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(crossfade(
+                            card.name.clone(),
+                            from.map(|from| from.name.clone()),
+                            progress,
+                        )),
+                )
+                .when_some(card.detail(), |text, detail| {
+                    text.child(div().text_size(px(11.0)).text_color(colors().subtle).child(
+                        crossfade(detail, from.and_then(|from| from.detail.clone()), progress),
+                    ))
+                }),
+        )
+        .when(card.stale, |heading| heading.child(outdated_badge()))
+}
+
+/// A reading that may no longer be current.
+fn outdated_badge() -> Div {
+    let warning = colors().warning;
+    div()
+        .flex_none()
+        .h(px(18.0))
+        .px(px(6.0))
+        .flex()
+        .items_center()
+        .rounded(px(5.0))
+        .bg(Rgba { a: 0.12, ..warning })
+        .text_size(px(10.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(warning)
+        .child("Outdated")
+}
+
+/// Where a quota says when it resets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResetPlacement {
+    /// Between the label and the value, to keep a long list short.
+    Inline,
+    /// Under the bar, where a narrow card has room for it.
+    Below,
+}
+
+/// A provider's quotas: the ones with a limit over their bars, then balances
+/// and other plain values below a hairline. Resets crossfade from `from`
+/// while `progress` runs to 1.
+fn quota_list(
+    rows: Vec<QuotaFrame>,
+    from: Option<&CardFrame>,
+    progress: f32,
+    reset: ResetPlacement,
+) -> Div {
+    // Plain values trail the quotas, so the hairline goes after the last bar.
+    let first_plain = rows
+        .iter()
+        .rposition(|row| row.percent.is_some())
+        .map_or(0, |last| last + 1);
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .when(rows.is_empty(), |list| {
+            list.child(
+                div()
+                    .text_color(colors().muted)
+                    .child("No quotas available"),
+            )
+        })
+        .children(rows.into_iter().enumerate().map(|(index, row)| {
+            let previous_reset = from
+                .and_then(|from| from.row(&row.label))
+                .and_then(|previous| previous.reset.clone());
+            quota_row(row, previous_reset, progress, reset).when(
+                index > 0 && index == first_plain,
+                |row| {
+                    row.pt(px(12.0))
+                        .border_t_1()
+                        .border_color(colors().border_subtle)
+                },
+            )
+        }))
+}
+
+/// One quota: its label and value, its bar when it has a limit, and when it
+/// resets. A value close to blocking work takes the bar's color.
+fn quota_row(
+    row: QuotaFrame,
+    previous_reset: Option<String>,
+    progress: f32,
+    placement: ResetPlacement,
+) -> Div {
+    let reset = row.reset.map(|reset| {
+        div()
+            .min_w(px(0.0))
+            .text_size(px(11.0))
+            .text_color(colors().subtle)
+            .child(crossfade(reset, previous_reset, progress))
+    });
+    let (inline_reset, reset_below) = match placement {
+        ResetPlacement::Inline => (reset, None),
+        ResetPlacement::Below => (None, reset),
+    };
+    let inline = inline_reset.is_some();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .when(!inline, |label| label.flex_1())
+                        .truncate()
+                        .text_color(colors().muted)
+                        .child(row.label),
+                )
+                .when_some(inline_reset, |line, reset| line.child(reset.flex_1()))
+                .child(
+                    tabular(div())
+                        .flex_none()
+                        .font_weight(if row.emphasized {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::MEDIUM
+                        })
+                        .text_color(if row.emphasized {
+                            row.color
+                        } else {
+                            colors().foreground
+                        })
+                        .child(row.value),
+                ),
+        )
+        .when_some(row.percent, |quota, percent| {
+            quota.child(quota_bar(percent, row.color, QUOTA_BAR_HEIGHT))
+        })
+        .when_some(reset_below, |quota, reset| quota.child(reset))
+}
+
+fn provider_warning(warning: &str) -> Div {
+    div()
+        .text_size(px(11.5))
+        .text_color(colors().warning)
+        .child(warning.to_owned())
+}
+
+/// A tinted note for a failure, with the provider's tile when it has one.
+fn warning_callout(provider: Option<&str>, message: impl Into<SharedString>) -> Div {
+    let warning = colors().warning;
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(10.0))
+        .py(px(8.0))
+        .rounded(px(CARD_RADIUS))
+        .border_1()
+        .border_color(Rgba { a: 0.25, ..warning })
+        .bg(Rgba { a: 0.08, ..warning })
+        .text_color(warning)
+        .when_some(provider, |callout, id| {
+            callout.child(provider_tile(id, 18.0))
+        })
+        .child(div().min_w(px(0.0)).flex_1().child(message.into()))
+}
+
+/// What the modal shows before any subscription has reported.
+fn usage_empty_state(loading: bool) -> Div {
+    div()
+        .flex_none()
+        .py(px(20.0))
+        .px(px(12.0))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(8.0))
+        .child(icon_tile("chrome-icons/sparkles.svg", 32.0))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(if loading {
+                    "Checking quotas…"
+                } else {
+                    "No subscriptions found"
+                }),
+        )
+        .when(!loading, |state| {
+            state.child(
+                div()
+                    .text_center()
+                    .text_color(colors().muted)
+                    .child("Sign in with Claude Code, Codex, or Grok Build, then refresh."),
+            )
+        })
+}
+
+/// The hover card at `now`: the provider's heading, then each quota as label
 /// and value over its bar and reset time. It fades and rises in as it opens,
 /// counts its quotas up, and glides between providers.
 fn usage_hover_content(
@@ -905,210 +1085,51 @@ fn usage_hover_content(
         .gap(px(14.0))
         .rounded(px(12.0))
         .shadow(dialog_shadow())
-        .text_size(px(13.0))
+        .text_size(px(12.0))
         .text_color(colors().foreground)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(mark_crossfade(
-                    &card.id,
-                    from.map(|from| from.id.as_str()),
-                    progress,
-                ))
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .flex_1()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(crossfade(
-                            card.name.clone(),
-                            from.map(|from| from.name.clone()),
-                            progress,
-                        )),
-                )
-                .when(card.stale, |title| {
-                    title.child(
-                        div()
-                            .flex_none()
-                            .text_size(px(11.0))
-                            .text_color(colors().warning)
-                            .child("Outdated"),
-                    )
-                }),
+        .child(provider_heading(card, from, progress))
+        .child(quota_list(
+            frame.rows,
+            from,
+            progress,
+            ResetPlacement::Below,
+        ))
+        .children(
+            card.warnings
+                .iter()
+                .map(|warning| provider_warning(warning)),
         )
-        .when(card.rows.is_empty(), |panel| {
-            panel.child(
-                div()
-                    .text_color(colors().muted)
-                    .child("No quotas available"),
-            )
-        })
-        .children(frame.rows.into_iter().map(|row| {
-            let previous_reset = from
-                .and_then(|from| from.row(&row.label))
-                .and_then(|previous| previous.reset.clone());
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .min_w(px(0.0))
-                                .flex_1()
-                                .truncate()
-                                .text_color(colors().muted)
-                                .child(row.label),
-                        )
-                        .child(
-                            tabular(div())
-                                .flex_none()
-                                .when(row.emphasized, |value| {
-                                    value.font_weight(FontWeight::SEMIBOLD)
-                                })
-                                .child(row.value),
-                        ),
-                )
-                .when_some(row.percent, |quota, percent| {
-                    quota.child(quota_bar(percent, row.color, 4.0))
-                })
-                .when_some(row.reset, |quota, reset| {
-                    quota.child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(colors().subtle)
-                            .child(crossfade(reset, previous_reset, progress)),
-                    )
-                })
-        }))
-        .children(card.warnings.iter().map(|warning| {
-            div()
-                .text_size(px(12.0))
-                .text_color(colors().warning)
-                .child(warning.clone())
-        }))
 }
 
-/// One provider's block in the modal: header, then each quota with its bar.
-fn usage_section(card: &UsageCard, index: usize) -> impl IntoElement + use<> {
-    let header_tooltip = [card.plan.clone(), card.status.clone()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ");
+/// One subscription in the modal: a card with its heading and quotas.
+fn provider_section(card: &UsageCard) -> impl IntoElement + use<> {
+    let rows = card
+        .rows
+        .iter()
+        .map(|row| QuotaFrame::of(card, row))
+        .collect();
     div()
         .flex_none()
         .flex()
         .flex_col()
-        .gap(px(10.0))
-        .when(index > 0, |section| {
-            section
-                .pt(px(14.0))
-                .border_t_1()
-                .border_color(colors().border_subtle)
-        })
-        .child(
-            div()
-                .id(SharedString::from(format!("usage-provider-{}", card.id)))
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .text_size(px(13.0))
-                .when(!header_tooltip.is_empty(), |header| {
-                    header.tooltip(move |_, cx| sidebar_tooltip(header_tooltip.clone(), cx))
-                })
-                .child(
-                    svg()
-                        .path(provider_mark(&card.id))
-                        .size(px(14.0))
-                        .flex_none()
-                        .text_color(colors().foreground),
-                )
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .flex_1()
-                        .truncate()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(card.name.clone()),
-                )
-                .when_some(card.plan.clone(), |header, plan| {
-                    header.child(
-                        div()
-                            .max_w(px(100.0))
-                            .truncate()
-                            .text_size(px(11.0))
-                            .text_color(colors().subtle)
-                            .child(plan),
-                    )
-                })
-                .when(card.stale, |header| {
-                    header.child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(colors().warning)
-                            .child("Outdated"),
-                    )
-                }),
-        )
-        .when(card.rows.is_empty(), |section| {
-            section.child(
-                div()
-                    .text_color(colors().muted)
-                    .child("No quotas available"),
-            )
-        })
-        .children(card.rows.iter().map(|row| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .text_color(colors().muted)
-                                .child(row.label.clone()),
-                        )
-                        .child(
-                            div()
-                                .min_w(px(0.0))
-                                .flex_1()
-                                .truncate()
-                                .text_size(px(11.0))
-                                .text_color(colors().subtle)
-                                .when_some(row.reset.clone(), |label, reset| label.child(reset)),
-                        )
-                        .child(
-                            tabular(div())
-                                .flex_none()
-                                // Quotas close to blocking work stand out, as in the hover card.
-                                .when(!card.stale && quota_alert(row.percent).is_some(), |value| {
-                                    value.font_weight(FontWeight::SEMIBOLD)
-                                })
-                                .child(row.value.clone()),
-                        ),
-                )
-                .when_some(row.percent, |row, percent| {
-                    row.child(quota_bar(percent, card.bar_color(percent), 3.0))
-                })
-        }))
+        .gap(px(14.0))
+        .p(px(12.0))
+        .rounded(px(CARD_RADIUS))
+        .border_1()
+        .border_color(foreground(0.07))
+        .bg(foreground(0.03))
+        .child(provider_heading(card, None, 1.0))
+        .child(quota_list(rows, None, 1.0, ResetPlacement::Inline))
         .children(
             card.warnings
                 .iter()
-                .map(|warning| div().text_color(colors().warning).child(warning.clone())),
+                .map(|warning| provider_warning(warning)),
         )
+}
+
+/// The foreground at `alpha`, for fills and strokes that tint whatever is below.
+fn foreground(alpha: f32) -> Hsla {
+    Hsla::from(colors().foreground).opacity(alpha)
 }
 
 /// The interface font with tabular figures, so values hold their width as
@@ -1144,12 +1165,7 @@ fn refresh_icon(loading: bool) -> AnyElement {
 
 /// A provider's name when it only reported a failure, without a reading to carry one.
 fn provider_name(id: &str) -> &str {
-    match id {
-        "claude" => "Claude",
-        "codex" => "Codex",
-        "grok" => "Grok",
-        _ => id,
-    }
+    provider_kind(id).unwrap_or(id)
 }
 
 #[cfg(test)]
@@ -1198,6 +1214,25 @@ mod tests {
         assert!(!card.stale);
         assert!(card.warnings.is_empty());
         assert_eq!(card.status.as_deref(), Some("Updated 3 min ago"));
+        // The line under the name carries both; without either there is none.
+        assert_eq!(card.detail().as_deref(), Some("Plus · Updated 3 min ago"));
+        let bare = UsageCard {
+            plan: None,
+            status: None,
+            ..card
+        };
+        assert_eq!(bare.detail(), None);
+    }
+
+    #[test]
+    fn providers_borrow_their_agent_tile_and_name() {
+        assert_eq!(provider_kind("claude"), Some("Claude"));
+        assert_eq!(provider_kind("codex-enterprise"), Some("Codex"));
+        assert_eq!(provider_kind("grok"), Some("Grok"));
+        assert_eq!(provider_kind("copilot"), None);
+        assert_eq!(provider_name("codex"), "Codex");
+        assert_eq!(provider_name("copilot"), "copilot");
+        assert_eq!(provider_mark("copilot"), "chrome-icons/sparkles.svg");
     }
 
     #[test]
@@ -1225,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn rings_follow_session_and_weekly_windows_with_a_single_fallback() {
+    fn headline_follows_the_tighter_window_with_a_fallback() {
         let provider = |resources: &str| -> ProviderUsage {
             serde_json::from_str(&format!(r#"{{"displayName":"P","resources":{resources}}}"#))
                 .unwrap()
@@ -1233,28 +1268,33 @@ mod tests {
         let quota = |used: u32| {
             format!(r#"{{"kind":"consumption","unit":"percent","used":{used},"limit":100}}"#)
         };
-        // Both limits: one ring each, in session-then-week order, ignoring model scopes.
+        // Both windows: the one closer to its limit, ignoring model scopes.
         assert_eq!(
-            ring_percents(&provider(&format!(
+            headline_percent(&provider(&format!(
                 r#"{{"opus":{},"weekly":{},"session":{}}}"#,
                 quota(90),
                 quota(40),
                 quota(20)
             ))),
-            [Some(20.0), Some(40.0)]
+            Some(40.0)
         );
-        // A single window gets a single ring.
         assert_eq!(
-            ring_percents(&provider(&format!(r#"{{"weekly":{}}}"#, quota(40)))),
-            [Some(40.0)]
+            headline_percent(&provider(&format!(
+                r#"{{"weekly":{},"session":{}}}"#,
+                quota(12),
+                quota(63)
+            ))),
+            Some(63.0)
         );
         // Without either, the tightest quota stands in for them.
         assert_eq!(
-            ring_percents(&provider(&format!(r#"{{"monthly":{}}}"#, quota(65)))),
-            [Some(65.0)]
+            headline_percent(&provider(&format!(r#"{{"monthly":{}}}"#, quota(65)))),
+            Some(65.0)
         );
-        // No data still leaves the provider visible as an empty ring.
-        assert_eq!(ring_percents(&provider("{}")), [None]);
+        // No data still leaves the provider visible, with a dash.
+        assert_eq!(headline_percent(&provider("{}")), None);
+        assert_eq!(percent_label(None), "–");
+        assert_eq!(percent_label(Some(37.6)), "38%");
     }
 
     #[gpui::test]
@@ -1397,6 +1437,16 @@ mod tests {
                     r#"{"providers":{"codex":{"displayName":"Codex","resources":{}}},
                         "errors":[{"providerId":"grok","message":"Signed out"}]}"#,
                 );
+                assert!(view.usage_modal(cx).is_some());
+                // Quotas with bars and resets, a balance below them, and a monitor failure.
+                view.usage.snapshot = snapshot(
+                    r#"{"providers":{"claude":{"displayName":"Claude","plan":"max",
+                        "resources":{
+                            "session":{"kind":"consumption","unit":"percent","used":97,
+                                       "limit":100,"resetsAt":"2026-09-26T18:12:00Z"},
+                            "credits":{"kind":"balance","unit":"credits","available":40}}}}}"#,
+                );
+                view.usage.error = Some("Could not refresh the quota monitor.".into());
                 assert!(view.usage_modal(cx).is_some());
                 view.close_usage(window, cx);
                 assert!(view.usage_modal(cx).is_none());

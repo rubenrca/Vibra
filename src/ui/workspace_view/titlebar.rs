@@ -105,16 +105,16 @@ impl super::WorkspaceView {
         let right_open = right_progress > 0.5;
         let show_tab_selector = self.workspace_section == WorkspaceSection::Workspace
             && !self.visible_tab_order(cx).is_empty();
+        // Without a space the titlebar stays blank rather than naming the app.
         let section_label = match self.workspace_section {
             WorkspaceSection::Workspace => self
                 .snapshot
                 .selected_project()
-                .map(|project| project.name.as_str())
-                .unwrap_or("Vibra"),
-            WorkspaceSection::Inbox => "Repository",
-            WorkspaceSection::Settings => "Settings",
+                .map(|project| project.name.as_str()),
+            WorkspaceSection::Inbox => Some("Repository"),
+            WorkspaceSection::Settings => Some("Settings"),
         }
-        .to_owned();
+        .map(str::to_owned);
         let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(cx));
@@ -127,7 +127,7 @@ impl super::WorkspaceView {
                 .on_mouse_down(MouseButton::Left, |_, _, _| {
                     crate::infrastructure::window::start_drag();
                 })
-                .child(section_label);
+                .children(section_label);
         }
         // The titlebar is part of the frame: one tone from the traffic lights
         // to the right panel, with no seams above the sidebars.
