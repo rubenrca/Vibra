@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.47 — 2026-11-04
+
+- Show subscription usage in the status bar as each provider's mark and the share used of whichever of its five-hour and weekly windows is closer to its limit, in place of the rings and the provider's name.
+- Redo the quota hover card and the Usage modal: each provider leads with its agent tile and a line with its plan and when it was read, every subscription gets a card of its own in the modal, failures show as tinted notes, and an outdated reading gets a badge.
+- Leave the titlebar blank instead of showing Vibra when no space is open.
+
 ## 0.3.46 — 2026-11-04
 
 - Float every pane, review, and the Repository page as a rounded card on a single frame: the titlebar, sidebars, the gaps between panes, and the status bar now share one tone, a step off the terminal in every palette. Each pane has a header with its title, folder, and split, zoom, and close buttons.
