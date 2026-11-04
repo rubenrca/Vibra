@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.46 — 2026-11-04
+
+- Float every pane, review, and the Repository page as a rounded card on a single frame: the titlebar, sidebars, the gaps between panes, and the status bar now share one tone, a step off the terminal in every palette. Each pane has a header with its title, folder, and split, zoom, and close buttons.
+- Lift the selected tab off the frame and lead every tab with its agent's mark on a tile in the agent's color, with the tab's other panes stacked behind it. Focusing another pane shuffles the tiles and rolls the title. The selected tab's menu can also close the whole tab.
+- Give Explorer and Changes, the Repository and pull request tabs, and the segmented controls the same tab style, and show spaces and the sidebar's Agents cards with the same tiles. Agent cards now fit on two lines.
+- Show subscription usage in the status bar instead of the sidebar footer.
+- Remove the Agent activity page and the Repository shortcuts menu.
+
 ## 0.3.45 — 2026-11-02
 
 - Keep text readable on hovered and selected rows in every palette, and give primary buttons and accent chips labels with at least 4.5:1 contrast. Light palettes such as Tokyo Night, Ayu, Everforest, Nord, Solarized, and Rosé Pine get a slightly deeper accent.
