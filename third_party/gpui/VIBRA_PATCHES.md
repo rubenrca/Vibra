@@ -21,6 +21,15 @@ The root Cargo patch applies to both the application and its tests. No Cargo
 registry sources are modified. Remove this override when an upstream release
 contains the correction and has been validated with Vibra.
 
+## Text truncation
+
+In `src/elements/text.rs`, a measured text layout is reused only when it was
+truncated for the same width (`TextLayoutInner::truncate_width`), and each
+measurement starts from the untruncated text runs. Upstream reused the first
+measurement of any text that does not wrap, so a truncating flex item that
+shrank after its first measurement kept the full string and was clipped at its
+edge with no ellipsis.
+
 ## Vendored footprint
 
 The upstream example programs and their assets are omitted, along with their
