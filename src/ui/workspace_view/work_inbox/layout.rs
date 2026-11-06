@@ -952,27 +952,25 @@ fn icon_button(
         .tooltip(move |_, cx| sidebar_tooltip(label, cx))
 }
 
-/// The way back from a page opened in place, beside its title: an outlined
-/// square, large enough to find without looking for it.
+/// The way back from a page opened in place, beside its title: the arrow
+/// alone, brightening under the pointer, with room enough to hit.
 fn back_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .size(px(30.0))
+        .group(id)
+        .size(px(28.0))
         .flex_none()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(colors().border_subtle)
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .hover(|button| button.bg(card_hover()))
         .tooltip(move |_, cx| sidebar_tooltip(label, cx))
         .child(
             svg()
                 .path("chrome-icons/chevron-left.svg")
-                .size(px(15.0))
-                .text_color(colors().muted),
+                .size(px(18.0))
+                .text_color(colors().muted)
+                .group_hover(id, |icon| icon.text_color(colors().foreground)),
         )
 }
 

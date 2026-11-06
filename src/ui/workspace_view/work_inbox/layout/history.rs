@@ -470,7 +470,7 @@ impl WorkspaceView {
             .pb(px(14.0))
             .flex()
             .items_start()
-            .gap(px(14.0))
+            .gap(px(8.0))
             .border_b_1()
             .border_color(colors().border_subtle)
             .child(
