@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.48 — 2026-11-06
+
+- Put History, Pull requests, and Issues in the titlebar as tabs, in place of the Repository title, and float the task list and the selected task as two cards whose gap resizes the list.
+- Redo the pull request page: a tinted state pill, branches and labels as chips, the merge box, comments, and the comment composer as cards, and commits grouped by day.
+- Show Files with one toolbar and its changed files as a tree by folder, and open a commit under a single header with a plain way back, its neighbors, and the review's controls; only commits with many files list them beside the diff.
+- Render Markdown lists with real bullets, numbers, and checkboxes whose wrapped lines hang under the text, and set inline code in the monospaced font instead of the link color.
+- Move Settings onto the frame like the rest of the app, with the global sidebar's rows, the page on a card, and matching cards, switches, buttons, and steppers.
+- Open the usage hover card only once the pointer rests on a provider, and make it and the Usage modal more compact; the modal now scrolls instead of covering the window.
+- Truncate long names and paths with an ellipsis instead of clipping them mid-character.
+
 ## 0.3.47 — 2026-11-04
 
 - Show subscription usage in the status bar as each provider's mark and the share used of whichever of its five-hour and weekly windows is closer to its limit, in place of the rings and the provider's name.
