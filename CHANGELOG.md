@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.49 — 2026-11-06
+
+- Keep a space open when its last terminal closes: it stays in the sidebar with its folder, name, and pin, and ⌘T opens a new terminal there. Close space closes an empty space without asking.
+
 ## 0.3.48 — 2026-11-06
 
 - Put History, Pull requests, and Issues in the titlebar as tabs, in place of the Repository title, and float the task list and the selected task as two cards whose gap resizes the list.
