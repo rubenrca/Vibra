@@ -198,6 +198,9 @@ pub struct DiffView {
     remote_threads: Vec<RemoteThread>,
     /// Shown inside another page: no terminal split and no Escape to close.
     embedded: bool,
+    /// The hosting page draws the layout, wrap, and fold controls itself,
+    /// so the review shows only its files, with lighter file headers.
+    host_toolbar: bool,
     context_root: PathBuf,
     mode: GitPanelMode,
     mode_menu_open: bool,
@@ -408,6 +411,7 @@ impl DiffView {
             viewed: None,
             remote_threads: Vec::new(),
             embedded: false,
+            host_toolbar: false,
             context_root,
             mode: GitPanelMode::Worktree,
             mode_menu_open: false,
@@ -537,6 +541,44 @@ impl DiffView {
         self.embedded = true;
         self.review_expanded = true;
         cx.notify();
+    }
+
+    /// The hosting page draws the review's controls from here on.
+    pub(crate) fn set_host_toolbar(&mut self, cx: &mut Context<Self>) {
+        self.host_toolbar = true;
+        cx.notify();
+    }
+
+    pub(crate) fn is_split(&self) -> bool {
+        self.layout.is_split()
+    }
+
+    pub(crate) fn wraps(&self) -> bool {
+        self.wrap
+    }
+
+    pub(crate) fn has_expanded(&self) -> bool {
+        !self.expanded.is_empty()
+    }
+
+    pub(crate) fn set_split(&mut self, split: bool, cx: &mut Context<Self>) {
+        self.set_layout(DiffLayout::from_split(split), cx);
+    }
+
+    /// Files, added lines, and deleted lines of what the review shows.
+    pub(crate) fn change_summary(&self) -> (usize, usize, usize) {
+        self.active_snapshot().map_or((0, 0, 0), |snapshot| {
+            (
+                snapshot.changes.len(),
+                snapshot.additions,
+                snapshot.deletions,
+            )
+        })
+    }
+
+    /// Line comments waiting to be sent to an agent.
+    pub(crate) fn comment_count(&self) -> usize {
+        self.comments.len()
     }
 
     #[cfg(test)]
@@ -841,7 +883,7 @@ impl DiffView {
         cx.notify();
     }
 
-    fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
         self.wrap = !self.wrap;
         self.h_offset = 0.0;
         cx.emit(DiffViewEvent::PreferencesChanged {
@@ -945,7 +987,7 @@ impl DiffView {
         cx.notify();
     }
 
-    fn send_review(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn send_review(&mut self, cx: &mut Context<Self>) {
         self.commit_draft();
         if self.comments.is_empty() || self.review_delivery.is_some() {
             return;
@@ -1104,9 +1146,14 @@ impl Render for DiffView {
             })
             .map(|view| match empty_message {
                 Some(text) => view.child(self.message(text)),
-                None => view
-                    .child(self.review_toolbar(cx))
-                    .child(self.review_list(window, cx)),
+                None => {
+                    let view = if self.host_toolbar {
+                        view
+                    } else {
+                        view.child(self.review_toolbar(cx))
+                    };
+                    view.child(self.review_list(window, cx))
+                }
             })
             .into_any_element()
     }

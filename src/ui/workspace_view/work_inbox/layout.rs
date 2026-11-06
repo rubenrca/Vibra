@@ -12,89 +12,96 @@ mod merge;
 use super::*;
 use crate::domain::work_items::relative_time;
 use crate::domain::work_items::{InboxPreferences, InboxTime, PullStep, RepositoryTab};
+use crate::domain::workspace::WorkspaceSplitAxis;
 use crate::infrastructure::clock::unix_now;
 use crate::ui::menu::{MENU_WIDTH, MenuRow, menu_heading, menu_panel, menu_separator};
-use crate::ui::theme::{surface, surface_tint};
+use crate::ui::tab_style::lifted_tab;
+use crate::ui::theme::{HOVER_LIFT, frame, lift, mix, surface, surface_tint};
+use crate::ui::workspace_view::chrome::{PANEL_GAP, SIDEBAR_ROW_RADIUS, card, split_gutter};
 use crate::ui::workspace_view::drag::SidebarResizeDragView;
 use crate::ui::workspace_view::navigation::project_color;
+use crate::ui::workspace_view::panes::{TAB_HEIGHT, TAB_TEXT_SIZE};
 use crate::ui::workspace_view::sidebar_tooltip;
-use gpui::{ClickEvent, DragMoveEvent, MouseButton, Rgba, svg};
+use gpui::{ClickEvent, DragMoveEvent, Hsla, MouseButton, Rgba, WindowControlArea, svg};
 
 #[derive(Clone)]
 struct InboxListResize;
 
+/// Width of the pull request and issue list, and the range it resizes in.
+const LIST_WIDTH: f32 = 300.0;
+const LIST_MIN_WIDTH: f32 = 240.0;
+const LIST_MAX_WIDTH: f32 = 440.0;
+
 impl WorkspaceView {
+    /// The section floats on the frame like a space's panes: History is one
+    /// card; a list and the task it selects are two, side by side.
     pub(in crate::ui::workspace_view) fn inbox_content(
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let body = if self.settings.inbox.tab == RepositoryTab::History {
-            self.history_view(cx)
-        } else {
-            self.inbox_list_and_detail(cx)
-        };
-        div()
-            .id("work-inbox")
-            .flex_1()
-            .min_w(px(0.0))
-            .h_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .bg(surface(colors().background))
-            .child(self.repository_tabs(cx))
-            .child(body)
-            .into_any_element()
+        if self.settings.inbox.tab == RepositoryTab::History {
+            return card(colors().background)
+                .id("work-inbox")
+                .flex_1()
+                .min_w(px(0.0))
+                .h_full()
+                .flex()
+                .flex_col()
+                .child(self.history_view(cx))
+                .into_any_element();
+        }
+        self.inbox_list_and_detail(cx)
     }
 
-    /// The pull request or issue list beside the selected task.
+    /// The pull request or issue list beside the selected task. The frame
+    /// between the two cards resizes the list.
     fn inbox_list_and_detail(&self, cx: &mut Context<Self>) -> AnyElement {
         let width = if self.settings.inbox.list_width.is_finite() {
-            self.settings.inbox.list_width.clamp(240.0, 420.0)
+            self.settings
+                .inbox
+                .list_width
+                .clamp(LIST_MIN_WIDTH, LIST_MAX_WIDTH)
         } else {
-            280.0
+            LIST_WIDTH
         };
-        let list = div()
+        let list = card(colors().background)
             .id("inbox-list-pane")
-            .relative()
             .w(px(width))
             .flex_none()
             .h_full()
             .flex()
             .flex_col()
-            .border_r_1()
-            .border_color(colors().border_subtle)
             .child(self.inbox_list_header(cx))
-            .child(self.inbox_task_list(cx))
-            .child(
-                div()
-                    .id("resize-inbox-list")
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right_0()
-                    .w(px(5.0))
-                    .cursor_ew_resize()
-                    .hover(|handle| handle.bg(colors().border_subtle))
-                    .on_drag(InboxListResize, |_, _, _, cx| {
-                        cx.new(|_| SidebarResizeDragView)
-                    })
-                    .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                        if event.click_count() == 2 {
-                            this.settings.inbox.list_width = 280.0;
-                            this.persist_settings(cx);
-                        }
-                    })),
-            );
+            .child(self.inbox_task_list(cx));
+        let gutter = split_gutter("resize-inbox-list", WorkspaceSplitAxis::Horizontal)
+            .on_drag(InboxListResize, |_, _, _, cx| {
+                cx.new(|_| SidebarResizeDragView)
+            })
+            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                if event.click_count() == 2 {
+                    this.settings.inbox.list_width = LIST_WIDTH;
+                    this.persist_settings(cx);
+                }
+            }));
+        let detail = card(colors().background)
+            .id("inbox-detail-card")
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full()
+            .flex()
+            .child(self.inbox_detail_panel(cx));
         div()
             .id("inbox-list-and-detail")
             .flex_1()
-            .min_h(px(0.0))
+            .min_w(px(0.0))
+            .h_full()
             .flex()
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<InboxListResize>, _, cx| {
+                    // The pointer stays centered in the gap it drags.
                     let width: f32 = (event.event.position.x - event.bounds.left()).into();
-                    this.settings.inbox.list_width = width.clamp(240.0, 420.0);
+                    this.settings.inbox.list_width =
+                        (width - PANEL_GAP / 2.0).clamp(LIST_MIN_WIDTH, LIST_MAX_WIDTH);
                     this.persist_settings(cx);
                 }),
             )
@@ -103,7 +110,8 @@ impl WorkspaceView {
                 cx.listener(|this, _, _, cx| this.persist_settings(cx)),
             )
             .child(list)
-            .child(self.inbox_detail_panel(cx))
+            .child(gutter)
+            .child(detail)
             .into_any_element()
     }
 
@@ -113,31 +121,33 @@ impl WorkspaceView {
         let editing = self.work_inbox.search_editing;
         let query = self.work_inbox.filter.query.clone();
         div()
-            .h(px(44.0))
+            .h(px(46.0))
             .flex_none()
-            .px_2()
+            .pl(px(8.0))
+            .pr(px(6.0))
             .flex()
             .items_center()
-            .gap_1()
+            .gap(px(2.0))
             .child(
                 div()
                     .id("inbox-filter-input")
                     .flex_1()
                     .min_w(px(0.0))
-                    .h(px(28.0))
-                    .pl_2()
-                    .pr_1()
-                    .rounded(px(6.0))
+                    .h(px(30.0))
+                    .mr(px(4.0))
+                    .pl(px(9.0))
+                    .pr(px(5.0))
+                    .rounded(px(8.0))
                     .border_1()
                     .border_color(if editing {
                         colors().accent
                     } else {
                         colors().border_subtle
                     })
-                    .bg(surface_tint(colors().elevated, colors().background))
+                    .bg(recessed_fill())
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
+                    .gap(px(7.0))
                     .cursor_text()
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.focus_inbox_search(window, cx);
@@ -145,16 +155,20 @@ impl WorkspaceView {
                     .child(
                         svg()
                             .path("chrome-icons/search.svg")
-                            .size(px(12.0))
+                            .size(px(13.0))
                             .flex_none()
-                            .text_color(colors().subtle),
+                            .text_color(if editing {
+                                colors().muted
+                            } else {
+                                colors().subtle
+                            }),
                     )
                     .child(
                         div()
                             .flex_1()
                             .min_w(px(0.0))
                             .truncate()
-                            .text_size(px(12.0))
+                            .text_size(px(12.5))
                             .text_color(if query.is_empty() {
                                 colors().subtle
                             } else {
@@ -204,7 +218,7 @@ impl WorkspaceView {
                     .when(
                         self.settings.inbox.filters_active()
                             || self.work_inbox.filter.project.is_some(),
-                        |button| button.bg(surface_tint(colors().selection, colors().background)),
+                        |button| button.bg(card_selected()),
                     )
                     .on_click(cx.listener(|this, event, _, cx| {
                         this.open_inbox_menu(InboxMenu::Filters, event, cx)
@@ -225,48 +239,68 @@ impl WorkspaceView {
             )
     }
 
-    /// History · Pull requests · Issues, with Activity and the shortcuts.
-    fn repository_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// History · Pull requests · Issues, in the titlebar where a space's
+    /// tabs sit, lifted off the frame the same way. The empty bar beside
+    /// them moves the window.
+    pub(in crate::ui::workspace_view) fn repository_tabs(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let current = self.settings.inbox.tab;
         div()
-            .h(px(40.0))
-            .flex_none()
-            .pl(px(10.0))
-            .pr_2()
+            .h_full()
+            .flex_1()
+            .min_w(px(0.0))
+            .px(px(6.0))
             .flex()
             .items_center()
-            .border_b_1()
-            .border_color(colors().border_subtle)
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .children(RepositoryTab::ALL.into_iter().map(|tab| {
-                        let selected = current == tab;
-                        let count = tab.kind().map(|kind| self.inbox_items_of(kind).count());
-                        page_tab(
-                            SharedString::from(format!("repository-tab-{tab:?}")),
-                            selected,
-                        )
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.select_repository_tab(tab, cx)),
-                        )
-                        .child(tab.label())
-                        .when_some(
-                            count.filter(|count| *count > 0),
-                            |tab, count| {
-                                tab.child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(colors().subtle)
-                                        .child(count.to_string()),
-                                )
-                            },
-                        )
-                    })),
-            )
+            .gap(px(4.0))
+            .overflow_x_hidden()
+            .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                crate::infrastructure::window::start_drag();
+                cx.stop_propagation();
+            })
+            .children(RepositoryTab::ALL.into_iter().map(|tab| {
+                let selected = current == tab;
+                let count = tab
+                    .kind()
+                    .map(|kind| self.inbox_items_of(kind).count())
+                    .filter(|count| *count > 0);
+                let id = SharedString::from(format!("repository-tab-{tab:?}"));
+                lifted_tab(div().id(id.clone()), selected, frame(), TAB_HEIGHT)
+                    .group(id.clone())
+                    .flex_none()
+                    .pl(px(10.0))
+                    .pr(px(if count.is_some() { 7.0 } else { 12.0 }))
+                    .gap(px(7.0))
+                    .cursor_pointer()
+                    .text_size(px(TAB_TEXT_SIZE))
+                    .font_weight(if selected {
+                        gpui::FontWeight::MEDIUM
+                    } else {
+                        gpui::FontWeight::NORMAL
+                    })
+                    // Tabs own their clicks; only the empty bar moves the window.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.select_repository_tab(tab, cx)),
+                    )
+                    .child(
+                        svg()
+                            .path(repository_tab_icon(tab))
+                            .size(px(14.0))
+                            .flex_none()
+                            .text_color(if selected {
+                                colors().foreground
+                            } else {
+                                colors().muted
+                            })
+                            .group_hover(id, |icon| icon.text_color(colors().foreground)),
+                    )
+                    .child(tab.label())
+                    .when_some(count, |tab, count| tab.child(count_badge(count, selected)))
+            }))
     }
 
     /// Switch tabs. A list returns to the task last selected there.
@@ -315,10 +349,11 @@ impl WorkspaceView {
             .min_h(px(0.0))
             .overflow_y_scroll()
             .track_scroll(&self.work_inbox.list_scroll)
-            .p(px(6.0))
+            .px(px(6.0))
+            .pb(px(6.0))
             .flex()
             .flex_col()
-            .gap(px(1.0));
+            .gap(px(2.0));
         if let Some(error) = &feed.error {
             list = list.child(message(error, true));
         }
@@ -439,17 +474,15 @@ impl WorkspaceView {
         let row_id = SharedString::from(format!("inbox-item-{url}"));
         div()
             .id(row_id)
-            .px(px(8.0))
-            .py(px(7.0))
-            .rounded(px(6.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .rounded(px(SIDEBAR_ROW_RADIUS))
             .flex()
             .items_start()
-            .gap(px(8.0))
+            .gap(px(9.0))
             .cursor_pointer()
-            .when(selected, |row| {
-                row.bg(surface_tint(colors().selection, colors().background))
-            })
-            .hover(|row| row.bg(surface_tint(colors().hover, colors().background)))
+            .when(selected, |row| row.bg(card_selected()))
+            .when(!selected, |row| row.hover(|row| row.bg(card_hover())))
             .tooltip({
                 let title = item.title.clone();
                 move |_, cx| sidebar_tooltip(title.clone(), cx)
@@ -479,6 +512,9 @@ impl WorkspaceView {
                                     .min_w(px(0.0))
                                     .truncate()
                                     .text_size(px(13.0))
+                                    .when(selected, |title| {
+                                        title.font_weight(gpui::FontWeight::MEDIUM)
+                                    })
                                     .text_color(colors().foreground)
                                     .child(item.title.clone()),
                             )
@@ -909,10 +945,121 @@ fn icon_button(
     path: &'static str,
     label: &'static str,
 ) -> gpui::Stateful<gpui::Div> {
-    super::super::chrome::icon_button(id, path, 26.0, true)
+    super::super::chrome::icon_button(id, path, 28.0, true)
+        .rounded(px(SIDEBAR_ROW_RADIUS))
         .cursor_pointer()
-        .hover(|button| button.bg(surface_tint(colors().hover, colors().background)))
+        .hover(|button| button.bg(card_hover()))
         .tooltip(move |_, cx| sidebar_tooltip(label, cx))
+}
+
+/// The way back from a page opened in place, beside its title: an outlined
+/// square, large enough to find without looking for it.
+fn back_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .size(px(30.0))
+        .flex_none()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(colors().border_subtle)
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|button| button.bg(card_hover()))
+        .tooltip(move |_, cx| sidebar_tooltip(label, cx))
+        .child(
+            svg()
+                .path("chrome-icons/chevron-left.svg")
+                .size(px(15.0))
+                .text_color(colors().muted),
+        )
+}
+
+/// A short hash in a chip; clicking copies the full one.
+fn hash_chip(id: impl Into<SharedString>, short: String, full: String) -> impl IntoElement {
+    div()
+        .id(id.into())
+        .flex_none()
+        .h(px(22.0))
+        .px(px(7.0))
+        .rounded(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .bg(foreground(0.05))
+        .font_family(crate::ui::theme::MONO_FONT)
+        .text_size(px(11.5))
+        .text_color(colors().muted)
+        .cursor_pointer()
+        .hover(|chip| chip.bg(foreground(0.09)))
+        .tooltip(|_, cx| sidebar_tooltip("Copy SHA", cx))
+        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(full.clone())))
+        .child(short)
+        .child(
+            svg()
+                .path("chrome-icons/copy.svg")
+                .size(px(10.0))
+                .text_color(colors().subtle),
+        )
+}
+
+/// A selected row or control on a card, raised like a selected tab.
+fn card_selected() -> Rgba {
+    surface_tint(lift(colors().background, 1.0), colors().background)
+}
+
+/// A row or control under the pointer on a card.
+fn card_hover() -> Rgba {
+    surface_tint(lift(colors().background, HOVER_LIFT), colors().background)
+}
+
+/// Inputs sit a step into the card, like the track of a segmented control.
+fn recessed_fill() -> Rgba {
+    surface_tint(
+        mix(colors().background, colors().foreground, 0.04),
+        colors().background,
+    )
+}
+
+/// The foreground at `alpha`, for fills and strokes over whatever is below.
+fn foreground(alpha: f32) -> Hsla {
+    Hsla::from(colors().foreground).opacity(alpha)
+}
+
+/// A state color at `alpha`, for the tinted fills behind badges and icons.
+fn tinted(color: Rgba, alpha: f32) -> Hsla {
+    Rgba { a: alpha, ..color }.into()
+}
+
+fn repository_tab_icon(tab: RepositoryTab) -> &'static str {
+    match tab {
+        RepositoryTab::History => "chrome-icons/git-commit.svg",
+        RepositoryTab::PullRequests => "chrome-icons/git-pull-request.svg",
+        RepositoryTab::Issues => "chrome-icons/issue-open.svg",
+    }
+}
+
+/// How many tasks a tab holds, in a small pill after its label.
+fn count_badge(count: usize, selected: bool) -> impl IntoElement {
+    div()
+        .flex_none()
+        .min_w(px(18.0))
+        .h(px(18.0))
+        .px(px(5.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(foreground(if selected { 0.10 } else { 0.06 }))
+        .text_size(px(11.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(if selected {
+            colors().foreground
+        } else {
+            colors().muted
+        })
+        .child(count.to_string())
 }
 
 fn quiet_button(
@@ -923,7 +1070,7 @@ fn quiet_button(
         .id(id.into())
         .h(px(28.0))
         .px_2()
-        .rounded(px(5.0))
+        .rounded(px(SIDEBAR_ROW_RADIUS))
         .flex_none()
         .flex()
         .items_center()
@@ -931,11 +1078,7 @@ fn quiet_button(
         .text_size(px(12.0))
         .text_color(colors().muted)
         .cursor_pointer()
-        .hover(|button| {
-            button
-                .bg(surface_tint(colors().hover, colors().background))
-                .text_color(colors().foreground)
-        })
+        .hover(|button| button.bg(card_hover()).text_color(colors().foreground))
         .child(label.into())
 }
 
@@ -985,15 +1128,15 @@ fn group_heading(label: &'static str, count: usize, collapsed: bool) -> gpui::St
     div()
         .id(SharedString::from(format!("inbox-group-{label}")))
         .h(px(26.0))
-        .px(px(8.0))
+        .px(px(10.0))
         .mt(px(6.0))
         .flex()
         .flex_none()
         .items_center()
         .gap(px(6.0))
-        .rounded(px(5.0))
+        .rounded(px(SIDEBAR_ROW_RADIUS))
         .cursor_pointer()
-        .hover(|row| row.bg(surface_tint(colors().hover, colors().background)))
+        .hover(|row| row.bg(card_hover()))
         .child(
             div()
                 .flex_1()
@@ -1038,17 +1181,26 @@ fn list_empty_state(text: &'static str) -> impl IntoElement {
         .child(div().text_size(px(12.0)).text_center().child(text))
 }
 
+/// A GitHub label: an outlined pill, quieter than the task's state.
 fn label_chip(label: &str) -> gpui::Div {
     div()
         .flex_none()
-        .max_w(px(90.0))
-        .truncate()
-        .px(px(5.0))
-        .rounded(px(4.0))
-        .bg(surface_tint(colors().elevated, colors().background))
-        .text_size(px(10.0))
-        .text_color(colors().muted)
-        .child(label.to_owned())
+        .max_w(px(120.0))
+        .h(px(18.0))
+        .px(px(7.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .border_1()
+        .border_color(foreground(0.12))
+        .child(
+            div()
+                .min_w(px(0.0))
+                .truncate()
+                .text_size(px(10.5))
+                .text_color(colors().muted)
+                .child(label.to_owned()),
+        )
 }
 
 fn line_counts(additions: u64, deletions: u64) -> impl IntoElement {

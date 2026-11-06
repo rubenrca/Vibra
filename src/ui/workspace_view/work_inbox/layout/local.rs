@@ -56,14 +56,14 @@ impl WorkspaceView {
             .max_w(px(360.0))
             .h(px(22.0))
             .px(px(7.0))
-            .rounded(px(5.0))
+            .rounded(px(6.0))
             .flex()
             .items_center()
             .gap(px(5.0))
-            .bg(surface_tint(colors().elevated, colors().background))
+            .bg(foreground(0.05))
             .when(has_menu, |pill| {
                 pill.cursor_pointer()
-                    .hover(|pill| pill.bg(surface_tint(colors().hover, colors().background)))
+                    .hover(|pill| pill.bg(foreground(0.09)))
                     .tooltip(|_, cx| sidebar_tooltip("Branch actions", cx))
                     .on_click(cx.listener(|this, event, _, cx| {
                         this.open_inbox_menu(InboxMenu::Branch, event, cx)

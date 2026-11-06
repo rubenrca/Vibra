@@ -82,40 +82,83 @@ impl WorkspaceView {
             Some(step) => (step.label(), step_color(step)),
             None => ("Merge status", colors().muted),
         };
+        let met = rows
+            .iter()
+            .filter(|(requirement, _)| *requirement == Requirement::Met)
+            .count();
+        let summary = if met == rows.len() {
+            "Every requirement is met".to_owned()
+        } else {
+            format!("{met} of {} requirements met", rows.len())
+        };
+        // A card: the state in a tinted tile, then each requirement, then the
+        // actions that would unblock it.
         let mut box_ = div()
-            .p(px(14.0))
-            .rounded(px(8.0))
+            .rounded(px(10.0))
             .border_1()
             .border_color(colors().border_subtle)
-            .bg(surface_tint(colors().panel, colors().background))
+            .bg(foreground(0.025))
+            .overflow_hidden()
             .flex()
             .flex_col()
-            .gap(px(8.0))
             .child(
                 div()
+                    .px(px(14.0))
+                    .py(px(12.0))
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .pb(px(2.0))
+                    .gap(px(12.0))
                     .child(
-                        svg()
-                            .path("chrome-icons/git-merge.svg")
-                            .size(px(15.0))
-                            .text_color(color),
+                        div()
+                            .size(px(32.0))
+                            .flex_none()
+                            .rounded(px(8.0))
+                            .bg(tinted(color, 0.14))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                svg()
+                                    .path("chrome-icons/git-merge.svg")
+                                    .size(px(16.0))
+                                    .text_color(color),
+                            ),
                     )
                     .child(
                         div()
-                            .text_size(px(13.5))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(colors().foreground)
-                            .child(headline),
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.0))
+                            .child(
+                                div()
+                                    .text_size(px(13.5))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(colors().foreground)
+                                    .child(headline),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(colors().subtle)
+                                    .child(summary),
+                            ),
                     ),
-            )
+            );
+        let mut requirements = div()
+            .px(px(14.0))
+            .py(px(8.0))
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(colors().border_subtle)
             .children(rows.into_iter().map(|(requirement, label)| {
                 div()
+                    .h(px(28.0))
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(px(10.0))
                     .text_size(px(12.5))
                     .text_color(if requirement == Requirement::Met {
                         colors().muted
@@ -130,11 +173,12 @@ impl WorkspaceView {
                     .child(label)
             }));
         if let Some(method) = &detail.merge.auto_merge {
-            box_ = box_.child(
+            requirements = requirements.child(
                 div()
+                    .h(px(28.0))
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(px(10.0))
                     .text_size(px(12.5))
                     .text_color(colors().accent)
                     .child(
@@ -149,6 +193,7 @@ impl WorkspaceView {
                     )),
             );
         }
+        box_ = box_.child(requirements);
         let buttons: Vec<PrAction> = [
             (detail.merge.behind() && detail.merge.can_update_branch)
                 .then_some(PrAction::UpdateBranch),
@@ -159,23 +204,32 @@ impl WorkspaceView {
         .flatten()
         .collect();
         if !buttons.is_empty() {
-            box_ = box_.child(div().pt(px(4.0)).flex().flex_wrap().gap_2().children(
-                buttons.into_iter().map(|action| {
-                    let url = url.clone();
-                    super::item_detail::header_button(
-                        SharedString::from(format!("inbox-merge-{action:?}")),
-                        None,
-                        action.label(),
-                        false,
-                    )
-                    .on_click(cx.listener(
-                        move |this, event: &ClickEvent, _, cx| {
-                            let position = (event.position().x.into(), event.position().y.into());
-                            this.confirm_pr_action_at(&url, action, position, cx);
-                        },
-                    ))
-                }),
-            ));
+            box_ = box_.child(
+                div()
+                    .px(px(14.0))
+                    .py(px(10.0))
+                    .border_t_1()
+                    .border_color(colors().border_subtle)
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(buttons.into_iter().map(|action| {
+                        let url = url.clone();
+                        super::item_detail::header_button(
+                            SharedString::from(format!("inbox-merge-{action:?}")),
+                            None,
+                            action.label(),
+                            false,
+                        )
+                        .on_click(cx.listener(
+                            move |this, event: &ClickEvent, _, cx| {
+                                let position =
+                                    (event.position().x.into(), event.position().y.into());
+                                this.confirm_pr_action_at(&url, action, position, cx);
+                            },
+                        ))
+                    })),
+            );
         }
         Some(box_.into_any_element())
     }

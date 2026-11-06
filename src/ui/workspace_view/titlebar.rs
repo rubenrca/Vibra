@@ -11,7 +11,7 @@ use crate::OpenIde;
 use crate::infrastructure::editor::InstalledEditor;
 use crate::ui::menu::{menu_heading, menu_hover, menu_panel};
 use crate::ui::tab_style::lifted_tab;
-use crate::ui::theme::{colors, frame, frame_hover, frame_surface, surface, surface_tint};
+use crate::ui::theme::{colors, frame, frame_hover, frame_surface};
 
 use super::{
     RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT, TITLEBAR_RIGHT_CHROME_COLLAPSED,
@@ -106,18 +106,21 @@ impl super::WorkspaceView {
         let show_tab_selector = self.workspace_section == WorkspaceSection::Workspace
             && !self.visible_tab_order(cx).is_empty();
         // Without a space the titlebar stays blank rather than naming the app.
+        // Repository needs no name: its tabs sit where a space's tabs would.
         let section_label = match self.workspace_section {
             WorkspaceSection::Workspace => self
                 .snapshot
                 .selected_project()
                 .map(|project| project.name.as_str()),
-            WorkspaceSection::Inbox => Some("Repository"),
+            WorkspaceSection::Inbox => None,
             WorkspaceSection::Settings => Some("Settings"),
         }
         .map(str::to_owned);
         let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(cx));
+        } else if self.workspace_section == WorkspaceSection::Inbox {
+            center_chrome = center_chrome.child(self.repository_tabs(cx));
         } else {
             center_chrome = center_chrome
                 .px_4()
@@ -213,54 +216,18 @@ impl super::WorkspaceView {
             .into_any_element()
     }
 
+    /// Settings has no tabs or panels to toggle: the bar is all frame, and
+    /// all of it moves the window. The page names itself on its card.
     fn settings_titlebar(&self) -> AnyElement {
         div()
             .h(px(TITLEBAR_HEIGHT))
             .w_full()
             .flex_none()
-            .flex()
-            .items_center()
-            .bg(surface(colors().titlebar))
-            .child(
-                div()
-                    .w(px(self.left_sidebar_width()))
-                    .h_full()
-                    .flex_none()
-                    .border_r_1()
-                    .border_color(colors().border_subtle)
-                    .bg(surface_tint(colors().sidebar, colors().titlebar)),
-            )
-            .child(
-                div()
-                    .h_full()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .px_4()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(colors().border_subtle)
-                    .text_size(px(13.0))
-                    .window_control_area(WindowControlArea::Drag)
-                    .on_mouse_down(MouseButton::Left, |_, _, _| {
-                        crate::infrastructure::window::start_drag();
-                    })
-                    .child(div().text_color(colors().muted).child("Settings"))
-                    .child(div().text_color(colors().subtle).child("/"))
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(self.settings_page.label()),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(colors().subtle)
-                            .child("Saved automatically"),
-                    ),
-            )
+            .bg(frame_surface())
+            .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down(MouseButton::Left, |_, _, _| {
+                crate::infrastructure::window::start_drag();
+            })
             .into_any_element()
     }
 

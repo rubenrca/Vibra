@@ -26,7 +26,7 @@ pub(super) fn project_color(id: Uuid) -> gpui::Rgba {
 }
 
 /// One navigation row: 32 px, 15 px icon, 13 px label.
-fn rail_row(id: impl Into<SharedString>) -> Stateful<Div> {
+pub(super) fn rail_row(id: impl Into<SharedString>) -> Stateful<Div> {
     div()
         .id(id.into())
         .h(px(32.0))

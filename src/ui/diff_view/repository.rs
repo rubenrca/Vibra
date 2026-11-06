@@ -784,7 +784,7 @@ impl DiffView {
     }
 
     /// Open every file (up to the cap on simultaneously prepared diffs).
-    pub(super) fn expand_all(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn expand_all(&mut self, cx: &mut Context<Self>) {
         let paths: Vec<String> = self
             .ordered_file_refs()
             .map(|change| change.path.clone())
@@ -795,7 +795,7 @@ impl DiffView {
         }
     }
 
-    pub(super) fn collapse_all(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn collapse_all(&mut self, cx: &mut Context<Self>) {
         if self.expanded.is_empty() {
             return;
         }

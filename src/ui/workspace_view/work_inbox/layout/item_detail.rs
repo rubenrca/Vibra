@@ -3,32 +3,64 @@ use crate::domain::work_items::WorkComment;
 use crate::ui::markdown::{markdown, safe_link};
 
 /// Reading width of the conversation.
-const PROSE_WIDTH: f32 = 780.0;
+const PROSE_WIDTH: f32 = 800.0;
+/// Space between the detail card's edge and its content.
+const DETAIL_INSET: f32 = 24.0;
 
 impl WorkspaceView {
     pub(super) fn inbox_detail_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(item) = self.selected_work_item() else {
+            let pulls = self.settings.inbox.tab == RepositoryTab::PullRequests;
             return div()
                 .flex_1()
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap_3()
-                .text_color(colors().subtle)
+                .gap(px(6.0))
                 .child(
-                    svg()
-                        .path("chrome-icons/inbox.svg")
-                        .size(px(24.0))
-                        .text_color(colors().subtle),
+                    div()
+                        .mb(px(6.0))
+                        .size(px(44.0))
+                        .rounded(px(12.0))
+                        .border_1()
+                        .border_color(foreground(0.07))
+                        .bg(foreground(0.04))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path(if pulls {
+                                    "chrome-icons/git-pull-request.svg"
+                                } else {
+                                    "chrome-icons/issue-open.svg"
+                                })
+                                .size(px(20.0))
+                                .text_color(colors().muted),
+                        ),
                 )
-                .child(div().text_size(px(13.0)).child(
-                    if self.settings.inbox.tab == RepositoryTab::PullRequests {
-                        "Select a pull request"
-                    } else {
-                        "Select an issue"
-                    },
-                ))
+                .child(
+                    div()
+                        .text_size(px(13.5))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(colors().foreground)
+                        .child(if pulls {
+                            "Select a pull request"
+                        } else {
+                            "Select an issue"
+                        }),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(colors().subtle)
+                        .child(if pulls {
+                            "Its conversation, files, commits, and checks open here."
+                        } else {
+                            "Its conversation opens here."
+                        }),
+                )
                 .into_any_element();
         };
         let state = self.work_inbox.details.get(&item.url);
@@ -41,12 +73,12 @@ impl WorkspaceView {
         let mut header = div()
             .flex_none()
             .min_w(px(0.0))
-            .px(px(20.0))
-            .pt(px(14.0))
-            .when(!pull, |header| header.pb(px(14.0)))
+            .px(px(DETAIL_INSET))
+            .pt(px(18.0))
+            .pb(px(if pull { 8.0 } else { 16.0 }))
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            .gap(px(10.0))
             .border_b_1()
             .border_color(colors().border_subtle)
             .child(
@@ -59,8 +91,9 @@ impl WorkspaceView {
                         div()
                             .flex_1()
                             .min_w(px(240.0))
-                            .text_size(px(17.0))
-                            .line_height(px(23.0))
+                            .pt(px(2.0))
+                            .text_size(px(18.0))
+                            .line_height(px(25.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(colors().foreground)
                             .child(item.title.clone()),
@@ -99,8 +132,9 @@ impl WorkspaceView {
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
-                .px(px(20.0))
-                .py(px(18.0))
+                .px(px(DETAIL_INSET))
+                .pt(px(20.0))
+                .pb(px(28.0))
                 .child(div().w_full().max_w(px(PROSE_WIDTH)).child(match tab {
                     DetailTab::Checks => self.inbox_checks_body(item, state, cx),
                     DetailTab::Commits => self.inbox_commits_body(item, state, cx),
@@ -223,7 +257,7 @@ impl WorkspaceView {
                     .find(|session| session.id == *pane)
             })
             .collect();
-        let dot = || div().text_color(colors().subtle).child("·");
+        let dot = || div().flex_none().text_color(colors().subtle).child("·");
         div()
             .flex()
             .flex_wrap()
@@ -235,17 +269,24 @@ impl WorkspaceView {
                 div()
                     .flex_none()
                     .h(px(22.0))
-                    .px(px(7.0))
-                    .rounded(px(11.0))
+                    .pl(px(7.0))
+                    .pr(px(9.0))
+                    .rounded_full()
                     .flex()
                     .items_center()
                     .gap(px(5.0))
-                    .bg(surface_tint(colors().elevated, colors().background))
+                    .bg(tinted(label_color, 0.14))
                     .text_color(label_color)
-                    .child(svg().path(icon).size(px(12.0)).text_color(color))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(svg().path(icon).size(px(12.0)).text_color(label_color))
                     .child(label),
             )
-            .child(div().flex_none().child(item.reference.clone()))
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(colors().muted)
+                    .child(item.reference.clone()),
+            )
             .when(!item.author.is_empty(), |row| {
                 row.child(dot()).child(person(&item.author))
             })
@@ -266,7 +307,7 @@ impl WorkspaceView {
                     .unwrap_or_else(|| pull.base_ref.clone());
                 row.child(dot())
                     .when(!base.is_empty(), |row| {
-                        row.child(div().flex_none().child(base)).child(
+                        row.child(branch_chip(base)).child(
                             svg()
                                 .path("chrome-icons/chevron-left.svg")
                                 .size(px(11.0))
@@ -350,13 +391,8 @@ impl WorkspaceView {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.select_inbox_detail_tab(tab, cx)))
                 .child(label)
-                .when_some(count(tab), |tab, count| {
-                    tab.child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(colors().subtle)
-                            .child(count.to_string()),
-                    )
+                .when_some(count(tab).filter(|count| *count > 0), |tab, count| {
+                    tab.child(count_badge(count, selected))
                 })
                 .when(tab == DetailTab::Checks, |tab| {
                     tab.when_some(checks.filter(|checks| !checks.is_empty()), |tab, checks| {
@@ -399,19 +435,22 @@ impl WorkspaceView {
         }
         if let Some(detail) = detail {
             if !detail.comments.is_empty() {
-                let count = detail.comments.len();
                 content = content.child(
                     div()
-                        .pt(px(18.0))
+                        .pt(px(20.0))
                         .border_t_1()
                         .border_color(colors().border_subtle)
-                        .text_size(px(11.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(colors().muted)
-                        .child(format!(
-                            "{count} COMMENT{}",
-                            if count == 1 { "" } else { "S" }
-                        )),
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(colors().foreground)
+                                .child("Comments"),
+                        )
+                        .child(count_badge(detail.comments.len(), false)),
                 );
             }
             for comment in &detail.comments {
@@ -438,7 +477,7 @@ impl WorkspaceView {
         let busy = state.is_some_and(|state| state.posting);
         let editing = self.work_inbox.comment_editing;
         div()
-            .pt(px(18.0))
+            .pt(px(20.0))
             .border_t_1()
             .border_color(colors().border_subtle)
             .flex()
@@ -467,68 +506,86 @@ impl WorkspaceView {
                     )
                 },
             )
+            // One card: the text, then a footer with the hint and the action.
             .child(
                 div()
-                    .id("inbox-comment-input")
-                    .min_h(px(72.0))
-                    .max_h(px(180.0))
-                    .overflow_y_scroll()
-                    .p_3()
-                    .rounded(px(8.0))
+                    .rounded(px(10.0))
                     .border_1()
                     .border_color(if editing {
                         colors().accent
                     } else {
                         colors().border_subtle
                     })
-                    .bg(surface_tint(colors().elevated, colors().background))
-                    .text_size(px(13.0))
-                    .text_color(if draft.is_empty() {
-                        colors().subtle
-                    } else {
-                        colors().foreground
-                    })
-                    .cursor_text()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if !busy {
-                            this.work_inbox.comment_editing = true;
-                            this.work_inbox.search_editing = false;
-                            this.work_inbox.composer_editing = false;
-                            this.focus_handle.focus(window);
-                            cx.notify();
-                        }
-                    }))
-                    .child(if draft.is_empty() {
-                        "Write a comment…".into()
-                    } else {
-                        draft.clone()
-                    }),
+                    .bg(recessed_fill())
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("inbox-comment-input")
+                            .min_h(px(76.0))
+                            .max_h(px(200.0))
+                            .overflow_y_scroll()
+                            .px(px(14.0))
+                            .py(px(12.0))
+                            .text_size(px(13.0))
+                            .line_height(px(20.0))
+                            .text_color(if draft.is_empty() {
+                                colors().subtle
+                            } else {
+                                colors().foreground
+                            })
+                            .cursor_text()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if !busy {
+                                    this.work_inbox.comment_editing = true;
+                                    this.work_inbox.search_editing = false;
+                                    this.work_inbox.composer_editing = false;
+                                    this.focus_handle.focus(window);
+                                    cx.notify();
+                                }
+                            }))
+                            .child(if draft.is_empty() {
+                                "Write a comment…".into()
+                            } else {
+                                draft.clone()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .h(px(42.0))
+                            .pl(px(14.0))
+                            .pr(px(7.0))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .border_t_1()
+                            .border_color(foreground(0.06))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_size(px(11.5))
+                                    .text_color(colors().subtle)
+                                    .child("Markdown · ⌘↩ to post"),
+                            )
+                            .child(
+                                header_button(
+                                    "inbox-post-comment",
+                                    None,
+                                    if busy { "Posting…" } else { "Comment" },
+                                    !draft.trim().is_empty() && !busy,
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.post_inbox_comment(cx)),
+                                ),
+                            ),
+                    ),
             )
             .when_some(
                 state.and_then(|state| state.post_error.as_ref()),
                 |form, error| form.child(message(error, true)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(11.0))
-                            .text_color(colors().subtle)
-                            .child("Markdown · ⌘↩ to post"),
-                    )
-                    .child(
-                        header_button(
-                            "inbox-post-comment",
-                            None,
-                            if busy { "Posting…" } else { "Comment" },
-                            !draft.trim().is_empty() && !busy,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.post_inbox_comment(cx))),
-                    ),
             )
     }
 
@@ -545,21 +602,29 @@ impl WorkspaceView {
         let link = safe_link(&comment.url).then(|| comment.url.clone());
         div()
             .flex()
-            .gap(px(10.0))
-            .child(avatar(&comment.author, 24.0))
+            .gap(px(12.0))
+            .child(avatar(&comment.author, 28.0))
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(colors().border_subtle)
+                    .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .gap(px(6.0))
                     .child(
                         div()
-                            .h(px(24.0))
+                            .h(px(36.0))
+                            .pl(px(14.0))
+                            .pr(px(6.0))
                             .flex()
                             .items_center()
                             .gap_2()
+                            .bg(foreground(0.03))
+                            .border_b_1()
+                            .border_color(colors().border_subtle)
                             .text_size(px(12.0))
                             .text_color(colors().subtle)
                             .child(
@@ -635,16 +700,21 @@ impl WorkspaceView {
                                 )
                             }),
                     )
-                    .child(markdown(&format!("comment-{}", comment.id), &comment.body))
+                    .child(
+                        div()
+                            .px(px(14.0))
+                            .py(px(12.0))
+                            .child(markdown(&format!("comment-{}", comment.id), &comment.body)),
+                    )
                     .children(comment.replies.iter().map(|reply| {
                         div()
-                            .mt_1()
-                            .pl_3()
-                            .border_l_2()
+                            .px(px(14.0))
+                            .py(px(12.0))
+                            .border_t_1()
                             .border_color(colors().border_subtle)
                             .flex()
                             .flex_col()
-                            .gap(px(4.0))
+                            .gap(px(6.0))
                             .child(
                                 div()
                                     .flex()
@@ -896,16 +966,19 @@ impl WorkspaceView {
     }
 }
 
-fn avatar(name: &str, size: f32) -> gpui::Div {
+pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
     div()
         .size(px(size))
         .flex_none()
         .rounded_full()
         .bg(surface_tint(colors().selection, colors().background))
+        .border_1()
+        .border_color(foreground(0.08))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px((size * 0.45).round()))
+        .text_size(px((size * 0.42).round()))
+        .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(colors().foreground)
         .child(
             name.chars()
@@ -924,6 +997,28 @@ fn person(name: &str) -> gpui::Div {
         .gap(px(5.0))
         .child(avatar(name, 16.0))
         .child(name.to_owned())
+}
+
+/// A branch the pull request merges into, set like the head branch beside it.
+fn branch_chip(name: String) -> impl IntoElement {
+    div()
+        .flex_none()
+        .max_w(px(200.0))
+        .h(px(22.0))
+        .px(px(7.0))
+        .rounded(px(6.0))
+        .flex()
+        .items_center()
+        .bg(foreground(0.05))
+        .child(
+            div()
+                .min_w(px(0.0))
+                .truncate()
+                .font_family(crate::ui::theme::MONO_FONT)
+                .text_size(px(11.5))
+                .text_color(colors().muted)
+                .child(name),
+        )
 }
 
 fn field_label(label: &'static str) -> impl IntoElement {
@@ -959,7 +1054,7 @@ pub(super) fn header_button(
         .flex()
         .items_center()
         .gap(px(6.0))
-        .rounded(px(6.0))
+        .rounded(px(crate::ui::tab_style::TAB_RADIUS))
         .cursor_pointer()
         .text_size(px(12.0))
         .font_weight(gpui::FontWeight::MEDIUM)
@@ -974,11 +1069,7 @@ pub(super) fn header_button(
                 .border_1()
                 .border_color(colors().border_subtle)
                 .text_color(colors().muted)
-                .hover(|button| {
-                    button
-                        .bg(surface_tint(colors().hover, colors().background))
-                        .text_color(colors().foreground)
-                })
+                .hover(|button| button.bg(card_hover()).text_color(colors().foreground))
         })
         .when_some(icon, |button, icon| {
             button.child(

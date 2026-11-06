@@ -671,14 +671,13 @@ impl Render for WorkspaceView {
         let expanded_review = self.has_project_context() && self.review_visible(cx);
         // The frame behind the cards. The titlebar and status bar paint the
         // same tone beside it, never over it, so the tint is applied once.
-        let framed = self.workspace_section != WorkspaceSection::Settings;
         let mut layout = div()
             .id("workspace-columns")
             .relative()
             .flex_1()
             .min_h(px(0.0))
             .flex()
-            .when(framed, |layout| layout.bg(frame_surface()))
+            .bg(frame_surface())
             .on_drag_move(cx.listener(Self::on_sidebar_resize_move));
         // Keep both navigators visible while reviewing code in the center.
         if self.workspace_section == WorkspaceSection::Settings {
@@ -723,19 +722,30 @@ impl Render for WorkspaceView {
                 layout = layout.child(self.right_sidebar(cx));
             }
         } else if self.workspace_section == WorkspaceSection::Inbox {
+            // Repository lays out its own cards on the frame.
+            let content = self.global_section_content(window, cx);
+            layout = layout.child(self.floating_area(content));
+        } else {
+            // Settings: its navigation on the frame, the page on a card.
             let content = self.global_section_content(window, cx);
             layout = layout.child(
-                self.floating_area(
-                    card(colors().background)
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .h_full()
-                        .flex()
-                        .child(content),
-                ),
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full()
+                    .flex()
+                    .pr(px(PANEL_GAP))
+                    .pb(px(PANEL_GAP))
+                    .child(
+                        card(colors().background)
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .child(content),
+                    ),
             );
-        } else {
-            layout = layout.child(self.global_section_content(window, cx));
         }
 
         body = body.child(layout);

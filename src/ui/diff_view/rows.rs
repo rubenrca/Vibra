@@ -648,7 +648,10 @@ impl DiffView {
                                     .child(format!("−{deletions}")),
                             )
                         })
-                        .child(diffstat(additions, deletions)),
+                        // Hosted pages keep the counts and drop the blocks.
+                        .when(!self.host_toolbar, |stats| {
+                            stats.child(diffstat(additions, deletions))
+                        }),
                 )
             })
             .when_some(
@@ -1804,58 +1807,56 @@ fn diffstat(additions: usize, deletions: usize) -> Div {
         }))
 }
 
-/// GitHub-style "Viewed" checkbox for a file header.
+/// GitHub-style "Viewed" checkbox for a file header: a quiet label with its
+/// box, filled once the file is viewed.
 fn viewed_toggle(id: SharedString, state: Option<FileViewed>) -> Stateful<Div> {
     let viewed = state == Some(FileViewed::Viewed);
+    let dismissed = state == Some(FileViewed::Dismissed);
     div()
         .id(id)
         .flex_none()
-        .h(px(22.0))
-        .px(px(6.0))
+        .h(px(24.0))
+        .px(px(7.0))
         .flex()
         .items_center()
-        .gap(px(5.0))
-        .rounded(px(5.0))
-        .border_1()
-        .border_color(if viewed {
-            colors().accent
-        } else {
-            colors().border_subtle
-        })
-        .when(viewed, |toggle| toggle.bg(colors().selection))
+        .gap(px(6.0))
+        .rounded(px(6.0))
         .cursor_pointer()
         .hover(|toggle| toggle.bg(colors().hover))
-        .text_size(px(10.5))
-        .text_color(if viewed {
-            colors().foreground
-        } else {
+        .text_size(px(11.0))
+        .text_color(if dismissed {
+            colors().warning
+        } else if viewed {
             colors().muted
+        } else {
+            colors().subtle
         })
         .child(
             div()
-                .size(px(11.0))
+                .size(px(13.0))
                 .flex_none()
-                .rounded(px(3.0))
-                .border_1()
-                .border_color(if viewed {
-                    colors().accent
-                } else {
-                    colors().subtle
-                })
-                .when(viewed, |box_| box_.bg(colors().accent))
+                .rounded(px(4.0))
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(viewed, |box_| {
-                    box_.child(
-                        gpui::svg()
-                            .path("chrome-icons/check.svg")
-                            .size(px(9.0))
-                            .text_color(colors().background),
-                    )
+                .map(|box_| {
+                    if viewed {
+                        box_.bg(colors().success).child(
+                            gpui::svg()
+                                .path("chrome-icons/check.svg")
+                                .size(px(9.0))
+                                .text_color(crate::ui::theme::content_on(colors().success)),
+                        )
+                    } else {
+                        box_.border_1().border_color(if dismissed {
+                            colors().warning
+                        } else {
+                            colors().subtle
+                        })
+                    }
                 }),
         )
-        .child(if state == Some(FileViewed::Dismissed) {
+        .child(if dismissed {
             "Changed since viewed"
         } else {
             "Viewed"

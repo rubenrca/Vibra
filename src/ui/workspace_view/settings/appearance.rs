@@ -5,8 +5,8 @@ use gpui::{
     linear_gradient, prelude::*, px, relative, svg,
 };
 
-use super::{FontSizeRow, SettingsToggleRow, WorkspaceView, settings_card};
-use crate::ui::theme::{self, AppearanceMode, Theme, ThemeFamily, ThemeTone, colors, surface_tint};
+use super::{FontSizeRow, SettingsToggleRow, WorkspaceView, foreground, settings_card};
+use crate::ui::theme::{self, AppearanceMode, Theme, ThemeFamily, ThemeTone, colors};
 
 fn preview_line(width: f32, color: gpui::Rgba) -> Div {
     div()
@@ -173,9 +173,9 @@ impl WorkspaceView {
             .map(|(mode, label, id)| {
                 let selected = appearance == mode;
                 let preview = div()
-                    .h(px(122.0))
+                    .h(px(118.0))
                     .w_full()
-                    .rounded(px(8.0))
+                    .rounded(px(7.0))
                     .border_1()
                     .border_color(colors().border_subtle)
                     .overflow_hidden()
@@ -207,30 +207,41 @@ impl WorkspaceView {
                     .id(id)
                     .flex_1()
                     .min_w(px(0.0))
-                    .p_2()
-                    .rounded(px(13.0))
+                    .p(px(6.0))
+                    .rounded(px(12.0))
                     .border_1()
                     .border_color(if selected {
-                        colors().accent
+                        colors().accent.into()
                     } else {
-                        colors().border_subtle
+                        foreground(0.08)
                     })
-                    .bg(surface_tint(colors().elevated, colors().background))
+                    .bg(foreground(0.025))
                     .cursor_pointer()
-                    .hover(|card| card.border_color(colors().accent))
+                    .when(!selected, |card| {
+                        card.hover(|card| card.border_color(foreground(0.22)))
+                    })
                     .child(preview)
                     .child(
                         div()
-                            .h(px(30.0))
+                            .h(px(34.0))
                             .flex()
                             .items_center()
                             .justify_center()
+                            .gap(px(6.0))
                             .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(if selected {
                                 colors().foreground
                             } else {
                                 colors().muted
+                            })
+                            .when(selected, |label| {
+                                label.child(
+                                    svg()
+                                        .path("chrome-icons/check.svg")
+                                        .size(px(13.0))
+                                        .text_color(colors().accent),
+                                )
                             })
                             .child(label),
                     )
@@ -276,17 +287,21 @@ impl WorkspaceView {
             .id(SharedString::from(format!("settings-theme-{theme_id}")))
             .flex_1()
             .min_w(px(0.0))
-            .p_4()
-            .rounded(px(13.0))
+            .px(px(14.0))
+            .pt(px(12.0))
+            .pb(px(12.0))
+            .rounded(px(12.0))
             .border_1()
             .border_color(if selected {
-                colors().accent
+                colors().accent.into()
             } else {
-                colors().border_subtle
+                foreground(0.08)
             })
-            .bg(surface_tint(colors().elevated, colors().background))
+            .bg(foreground(0.025))
             .cursor_pointer()
-            .hover(|card| card.border_color(colors().accent))
+            .when(!selected, |card| {
+                card.hover(|card| card.border_color(foreground(0.22)))
+            })
             .child(
                 div()
                     .h(px(86.0))
@@ -307,7 +322,7 @@ impl WorkspaceView {
             )
             .child(
                 div()
-                    .pt_2()
+                    .pt(px(10.0))
                     .flex()
                     .items_center()
                     .gap_2()
@@ -318,6 +333,11 @@ impl WorkspaceView {
                             .truncate()
                             .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(if selected {
+                                colors().foreground
+                            } else {
+                                colors().muted
+                            })
                             .child(family.label.clone()),
                     )
                     .when(selected, |label| {
@@ -339,17 +359,18 @@ impl WorkspaceView {
         div()
             .w(px(200.0))
             .h(px(30.0))
-            .px_3()
-            .rounded(px(7.0))
+            .px(px(10.0))
+            .rounded(px(8.0))
             .border_1()
             .border_color(colors().border_subtle)
+            .bg(foreground(0.04))
             .flex()
             .items_center()
-            .gap_2()
+            .gap(px(7.0))
             .child(
                 svg()
                     .path("chrome-icons/search.svg")
-                    .size(px(14.0))
+                    .size(px(13.0))
                     .flex_none()
                     .text_color(colors().subtle),
             )
@@ -447,9 +468,10 @@ impl WorkspaceView {
                         section
                             .child(
                                 div()
-                                    .pt_3()
-                                    .text_size(px(13.0))
-                                    .text_color(colors().muted)
+                                    .pt_2()
+                                    .text_size(px(12.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(colors().subtle)
                                     .child("Your themes"),
                             )
                             .child(self.settings_theme_grid(&user, preview_tone, columns, cx))
@@ -478,7 +500,8 @@ impl WorkspaceView {
                     ))
                     .child(
                         settings_card()
-                            .child(div().p_5().child(self.settings_font_row(
+                            .overflow_hidden()
+                            .child(self.settings_font_row(
                                 FontSizeRow {
                                     label: "Terminal text",
                                     description: "JetBrains Mono in all terminals.",
@@ -492,11 +515,11 @@ impl WorkspaceView {
                                         "settings-font-up",
                                     ],
                                 },
+                                false,
                                 cx,
                                 |this, size, cx| this.set_terminal_font_size(size, cx),
-                            )))
-                            .child(div().h(px(1.0)).bg(colors().border_subtle))
-                            .child(div().p_5().child(self.settings_font_row(
+                            ))
+                            .child(self.settings_font_row(
                                 FontSizeRow {
                                     label: "Diff text",
                                     description: "Code in reviews, independent of the terminal.",
@@ -509,9 +532,10 @@ impl WorkspaceView {
                                         "settings-diff-font-up",
                                     ],
                                 },
+                                true,
                                 cx,
                                 |this, size, cx| this.set_diff_font_size(size, cx),
-                            ))),
+                            )),
                     ),
             )
             .when(cfg!(target_os = "macos"), |panel| {

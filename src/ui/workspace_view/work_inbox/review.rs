@@ -26,7 +26,12 @@ impl WorkspaceView {
         kind: ReviewKind,
         cx: &mut Context<Self>,
     ) -> (gpui::Entity<DiffView>, gpui::Subscription) {
-        let view = cx.new(|cx| DiffView::new(std::path::PathBuf::new(), self.git_port.clone(), cx));
+        // The detail draws the review's controls in its own bar.
+        let view = cx.new(|cx| {
+            let mut view = DiffView::new(std::path::PathBuf::new(), self.git_port.clone(), cx);
+            view.set_host_toolbar(cx);
+            view
+        });
         let key = url.to_owned();
         let subscription =
             cx.subscribe(

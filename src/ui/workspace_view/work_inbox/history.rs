@@ -349,6 +349,7 @@ impl WorkspaceView {
                 cx,
             );
             view.set_embedded(cx);
+            view.set_host_toolbar(cx);
             view
         });
         let index = cx.new(|cx| DiffFileIndexView::new(review.clone(), cx).files_only());
