@@ -3,19 +3,23 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.47</title>
-            <pubDate>Wed, 04 Nov 2026 11:26:02 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.47</link>
-            <sparkle:version>330</sparkle:version>
-            <sparkle:shortVersionString>0.3.47</sparkle:shortVersionString>
+            <title>0.3.48</title>
+            <pubDate>Fri, 06 Nov 2026 14:43:58 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.48</link>
+            <sparkle:version>338</sparkle:version>
+            <sparkle:shortVersionString>0.3.48</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Show subscription usage in the status bar as each provider's mark and the share used of whichever of its five-hour and weekly windows is closer to its limit, in place of the rings and the provider's name.</li>
-  <li>Redo the quota hover card and the Usage modal: each provider leads with its agent tile and a line with its plan and when it was read, every subscription gets a card of its own in the modal, failures show as tinted notes, and an outdated reading gets a badge.</li>
-  <li>Leave the titlebar blank instead of showing Vibra when no space is open.</li>
+  <li>Put History, Pull requests, and Issues in the titlebar as tabs, in place of the Repository title, and float the task list and the selected task as two cards whose gap resizes the list.</li>
+  <li>Redo the pull request page: a tinted state pill, branches and labels as chips, the merge box, comments, and the comment composer as cards, and commits grouped by day.</li>
+  <li>Show Files with one toolbar and its changed files as a tree by folder, and open a commit under a single header with a plain way back, its neighbors, and the review's controls; only commits with many files list them beside the diff.</li>
+  <li>Render Markdown lists with real bullets, numbers, and checkboxes whose wrapped lines hang under the text, and set inline code in the monospaced font instead of the link color.</li>
+  <li>Move Settings onto the frame like the rest of the app, with the global sidebar's rows, the page on a card, and matching cards, switches, buttons, and steppers.</li>
+  <li>Open the usage hover card only once the pointer rests on a provider, and make it and the Usage modal more compact; the modal now scrolls instead of covering the window.</li>
+  <li>Truncate long names and paths with an ellipsis instead of clipping them mid-character.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.47/Vibra-0.3.47.dmg" length="16162313" type="application/octet-stream" sparkle:edSignature="8vUs4y+q+EVmOqggXLI9fmHGfK1DkMf64ZlY+W8gLq1TjcnBVo1k2W4ewv7D47zOYLKUbKOA/c4BWgNYuZsRBA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.48/Vibra-0.3.48.dmg" length="16220725" type="application/octet-stream" sparkle:edSignature="huUaGnxuyFqVoyUs/TPqjG/GNYj2NlXVpBLvbSFgFRRRUkB8O5zdIiCe2yPnMMVoAgDYSCjFokJmJ03GNPS+AA=="/>
         </item>
     </channel>
 </rss>
