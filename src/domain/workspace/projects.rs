@@ -258,25 +258,6 @@ impl WorkspaceSnapshot {
         true
     }
 
-    /// Spaces live while they have terminals: removes every other one but
-    /// `keep`, and returns the removed IDs.
-    pub fn remove_empty_spaces(&mut self, keep: Option<Uuid>) -> Vec<Uuid> {
-        let removed: Vec<_> = self
-            .projects
-            .iter()
-            .filter(|project| {
-                Some(project.id) != keep && project.terminal_sessions().next().is_none()
-            })
-            .map(|project| project.id)
-            .collect();
-        if !removed.is_empty() {
-            self.projects
-                .retain(|project| !removed.contains(&project.id));
-            self.normalize();
-        }
-        removed
-    }
-
     /// Removes only app state; no folder or repository is deleted.
     pub fn remove_project(&mut self, project_id: Uuid) -> bool {
         let Some(index) = self.projects.iter().position(|p| p.id == project_id) else {

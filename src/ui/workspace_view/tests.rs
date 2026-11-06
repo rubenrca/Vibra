@@ -1400,11 +1400,19 @@ fn spaces_follow_their_terminal_into_repositories_and_close_with_it(cx: &mut gpu
             let second_pane = second_pane.id;
             assert!(view.terminals.contains_key(&second_pane));
 
-            // Its last terminal closes it, pinned or not.
+            // Its last terminal leaves it open, selected and pinned.
             view.settings.pinned_project_ids.push(second);
             view.close_pane(second_pane, window, cx);
-            assert!(view.snapshot.project(second).is_none());
             assert!(!view.terminals.contains_key(&second_pane));
+            let project = view.snapshot.project(second).unwrap();
+            assert_eq!(project.terminal_sessions().count(), 0);
+            assert_eq!(project.directory(), root.to_str());
+            assert_eq!(view.snapshot.selected_project_id, Some(second));
+            assert_eq!(view.settings.pinned_project_ids, vec![second]);
+
+            // Closing it without terminals asks nothing and unpins it.
+            view.confirm_remove_project(second, window, cx);
+            assert!(view.snapshot.project(second).is_none());
             assert!(view.settings.pinned_project_ids.is_empty());
             assert_eq!(view.snapshot.selected_project_id, Some(space));
 

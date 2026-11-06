@@ -285,6 +285,11 @@ impl WorkspaceView {
         let Some(project) = self.snapshot.project(id) else {
             return;
         };
+        // With no terminals there is nothing to lose.
+        if project.terminal_sessions().next().is_none() {
+            self.remove_project(id, window, cx);
+            return;
+        }
         let confirmation = window.prompt(
             PromptLevel::Warning,
             &format!("Close the {} space?", project.name),
@@ -299,14 +304,25 @@ impl WorkspaceView {
             if confirmation.await.ok() != Some(1) {
                 return;
             }
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.snapshot.remove_project(id) {
-                    this.reconcile_terminal_views(cx);
-                    this.show_terminal_tab(window, cx);
-                }
-            });
+            let _ = this.update_in(cx, |this, window, cx| this.remove_project(id, window, cx));
         })
         .detach();
+    }
+
+    /// Closes the space and its terminals, and unpins it.
+    pub(super) fn remove_project(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.snapshot.remove_project(id) {
+            return;
+        }
+        let pinned = self.settings.pinned_project_ids.len();
+        self.settings
+            .pinned_project_ids
+            .retain(|pinned| *pinned != id);
+        if self.settings.pinned_project_ids.len() != pinned {
+            self.persist_settings(cx);
+        }
+        self.reconcile_terminal_views(cx);
+        self.show_terminal_tab(window, cx);
     }
 
     /// The most urgent agent state in a project, as a status color, and how

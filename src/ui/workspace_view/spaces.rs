@@ -1,7 +1,8 @@
 //! Spaces: a project follows the terminal it has selected. Its folder is the
 //! repository that terminal is in (else the terminal's own folder) and its
 //! name is that folder's, unless the user renamed it. ⌘N opens one with a
-//! terminal in the home folder, and a space lives only while it has terminals.
+//! terminal in the home folder. A space stays when its last terminal closes,
+//! keeping its folder and name, until the user closes it.
 //! The Agents list under the spaces shows every agent, wherever it runs.
 
 use std::cell::Cell;
@@ -159,27 +160,6 @@ impl WorkspaceView {
         self.set_left_sidebar_visible(true, true, cx);
         self.reconcile_terminal_views(cx);
         self.show_terminal_tab(window, cx);
-    }
-
-    /// Spaces live while they have terminals. The selected one also stays
-    /// while it shows a review or document. Returns whether any went away.
-    pub(super) fn drop_empty_spaces(&mut self, cx: &mut Context<Self>) -> bool {
-        let keep = self
-            .snapshot
-            .selected_project_id
-            .filter(|_| self.diff_view.read(cx).review_expanded());
-        let removed = self.snapshot.remove_empty_spaces(keep);
-        if removed.is_empty() {
-            return false;
-        }
-        let pinned = self.settings.pinned_project_ids.len();
-        self.settings
-            .pinned_project_ids
-            .retain(|id| !removed.contains(id));
-        if self.settings.pinned_project_ids.len() != pinned {
-            self.persist_settings(cx);
-        }
-        true
     }
 
     /// The Agents list grows from its bottom edge up to the pointer, leaving

@@ -952,11 +952,6 @@ impl super::WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.snapshot.close_terminal(session_id) {
-            if self.drop_empty_spaces(cx) {
-                self.reconcile_terminal_views(cx);
-                self.show_terminal_tab(window, cx);
-                return;
-            }
             self.follow_spaces();
             self.reconcile_terminal_views(cx);
             self.sync_diff_root(cx);
@@ -985,11 +980,6 @@ impl super::WorkspaceView {
             .selected_tab()
             .is_some_and(|tab| tab.id == tab_id);
         if self.snapshot.close_tab(tab_id) {
-            if self.drop_empty_spaces(cx) {
-                self.reconcile_terminal_views(cx);
-                self.show_terminal_tab(window, cx);
-                return;
-            }
             self.reconcile_terminal_views(cx);
             if closing_selected && !review_in_front {
                 self.show_terminal_tab(window, cx);

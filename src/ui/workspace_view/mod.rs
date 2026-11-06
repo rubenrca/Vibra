@@ -357,12 +357,6 @@ impl WorkspaceView {
         self.review_docked_tab_id = None;
         self.diff_view
             .update(cx, |diff, cx| diff.set_review_expanded(false, cx));
-        // A space kept only by its review goes with it.
-        if self.drop_empty_spaces(cx) {
-            self.reconcile_terminal_views(cx);
-            self.show_terminal_tab(window, cx);
-            return;
-        }
         self.sync_terminal_surface_visibility(cx);
         self.sync_git_panel_visibility(cx);
         self.focus_selected_terminal(window, cx);

@@ -47,7 +47,7 @@ impl WorkspaceView {
                 }
             };
         theme::refresh_user_themes();
-        let (mut settings, settings_load_error) = match settings_repository.load() {
+        let (settings, settings_load_error) = match settings_repository.load() {
             Ok(settings) => (settings, None),
             Err(error) => {
                 let message: SharedString = format!(
@@ -68,20 +68,13 @@ impl WorkspaceView {
         let relocated =
             launch_directory.is_dir() && snapshot.relocate_root(Path::new("/"), &launch_directory);
         let home_directory = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
-        // Spaces catch up with where their terminals were left; those without
-        // terminals, such as projects saved before spaces, are gone.
-        let (followed, emptied) = if workspace_load_error.is_none() {
-            let followed = snapshot.follow_space_locations(|cwd| {
+        // Spaces catch up with where their terminals were left; one without
+        // terminals keeps the folder it had.
+        let followed = workspace_load_error.is_none()
+            && snapshot.follow_space_locations(|cwd| {
                 spaces::locate_space(file_port.as_ref(), cwd, home_directory.as_deref())
             });
-            (followed, snapshot.remove_empty_spaces(None))
-        } else {
-            (false, Vec::new())
-        };
-        settings
-            .pinned_project_ids
-            .retain(|id| !emptied.contains(id));
-        let mut snapshot_changed = consolidated || relocated || followed || !emptied.is_empty();
+        let mut snapshot_changed = consolidated || relocated || followed;
         if first_launch {
             let project = snapshot.add_project(&launch_directory);
             snapshot.open_tab_in_project(project, true);

@@ -501,21 +501,26 @@ fn spaces_saved_before_following_keep_the_names_the_user_chose() {
 }
 
 #[test]
-fn new_spaces_never_reuse_one_and_go_away_with_their_last_terminal() {
+fn new_spaces_never_reuse_one_and_outlive_their_last_terminal() {
     let mut snapshot = WorkspaceSnapshot::default();
     let first = snapshot.add_space(Path::new("/home/demo"), "~".into());
     let second = snapshot.add_space(Path::new("/home/demo"), "~".into());
-    let reviewing = snapshot.add_space(Path::new("/home/demo"), "~".into());
     assert_ne!(first, second);
-    assert_eq!(snapshot.selected_project_id, Some(reviewing));
+    assert_eq!(snapshot.selected_project_id, Some(second));
 
-    snapshot.open_tab_in_project(first, true);
-    assert_eq!(snapshot.remove_empty_spaces(Some(reviewing)), vec![second]);
+    let (tab, session) = snapshot.open_tab_in_project(first, true).unwrap();
+    assert!(snapshot.close_terminal(session));
+    let space = snapshot.project(first).unwrap();
+    assert_eq!(space.terminal_sessions().count(), 0);
+    assert_eq!(space.directory(), Some("/home/demo"));
+    assert_eq!(snapshot.selected_project_id, Some(first));
+
+    // A new tab starts in the folder the space kept.
+    let (reopened, _) = snapshot.open_tab_in_project(first, true).unwrap();
+    assert_ne!(reopened, tab);
+    assert!(snapshot.close_tab(reopened));
     assert_eq!(
         snapshot.projects.iter().map(|p| p.id).collect::<Vec<_>>(),
-        vec![first, reviewing]
+        vec![first, second]
     );
-    assert_eq!(snapshot.remove_empty_spaces(None), vec![reviewing]);
-    assert_eq!(snapshot.selected_project_id, Some(first));
-    assert!(snapshot.remove_empty_spaces(None).is_empty());
 }

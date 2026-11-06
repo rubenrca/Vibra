@@ -284,6 +284,11 @@ impl WorkspaceView {
         let entries: Vec<Option<(MenuRow, ContextMenuAction)>> = match &menu.kind {
             ContextMenuKind::Project { project_id } => {
                 let pinned = self.settings.pinned_project_ids.contains(project_id);
+                // Only a space with terminals asks before closing.
+                let asks = self
+                    .snapshot
+                    .project(*project_id)
+                    .is_some_and(|project| project.terminal_sessions().next().is_some());
                 vec![
                     row(
                         "New tab",
@@ -317,7 +322,11 @@ impl WorkspaceView {
                     ),
                     None,
                     row(
-                        "Close space…",
+                        if asks {
+                            "Close space…"
+                        } else {
+                            "Close space"
+                        },
                         "chrome-icons/trash.svg",
                         ContextMenuAction::RemoveProject,
                     )

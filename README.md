@@ -20,8 +20,8 @@ updates).
   repository and the space takes its name, branch, Explorer, and Changes (a name
   you give it stays). Each space has its own tabs (`⌘T`) and panes, restored
   when Vibra reopens; panes split in any direction and can be reordered, turned
-  into tabs, or zoomed by dragging or with shortcuts. A space lives only while it
-  has terminals: closing the last one closes it.
+  into tabs, or zoomed by dragging or with shortcuts. Closing a space's last
+  terminal leaves the space open in its folder until you close it.
 - **Native terminal.** A built-in PTY with `libghostty-vt` emulation, GPUI/Metal
   rendering, xterm and Kitty keyboard, SGR mouse, IME, search, and OSC 8 links.
 - **Files and Git.** An Explorer confined to the space, a file viewer, and a
