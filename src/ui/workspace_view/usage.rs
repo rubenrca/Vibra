@@ -36,15 +36,20 @@ const CHIP_MARK_SIZE: f32 = 13.0;
 const CHIP_HEIGHT: f32 = 22.0;
 /// Space between the hover card or modal and the chips that opened it.
 const POPOVER_GAP: f32 = 8.0;
-const HOVER_CARD_WIDTH: f32 = 248.0;
-const MODAL_WIDTH: f32 = 360.0;
+const HOVER_CARD_WIDTH: f32 = 236.0;
+/// The card opens once the pointer rests on a chip this long, so crossing
+/// the status bar does not flash it over the terminal.
+const HOVER_CARD_DELAY: Duration = Duration::from_millis(350);
+const MODAL_WIDTH: f32 = 330.0;
+/// Past this the modal scrolls, so it never covers the whole window.
+const MODAL_MAX_HEIGHT: f32 = 460.0;
 /// Space between the modal's edge and the cards inside it.
 const MODAL_INSET: f32 = 10.0;
 /// Subscription cards keep their corners concentric with the modal's.
 const CARD_RADIUS: f32 = DIALOG_RADIUS - MODAL_INSET / 2.0;
 /// The agent tile beside each provider's name.
-const HEADING_TILE_SIZE: f32 = 28.0;
-const QUOTA_BAR_HEIGHT: f32 = 4.0;
+const HEADING_TILE_SIZE: f32 = 24.0;
+const QUOTA_BAR_HEIGHT: f32 = 3.0;
 /// The hover card fades in while rising this far into place.
 const HOVER_CARD_RISE: f32 = 4.0;
 const HOVER_CARD_ENTER: Duration = Duration::from_millis(100);
@@ -75,6 +80,10 @@ pub(super) struct UsageState {
     hover_motion: Option<HoverMotion>,
     /// Gives each hover motion an animation of its own.
     hover_motions: u64,
+    /// Bumped by every chip the pointer enters and by leaving the group, so
+    /// a delayed opening only lands for the chip still under the pointer.
+    hover_intent: u64,
+    _hover_task: Option<Task<()>>,
     /// Where the chips sit in the window, to hang the hover card and modal above them.
     tracker_bounds: Rc<Cell<Bounds<Pixels>>>,
     _poll_task: Option<Task<()>>,
@@ -116,6 +125,14 @@ impl UsageState {
             }
         };
         true
+    }
+
+    /// Closes the hover card and forgets any opening still waiting. Returns
+    /// whether anything changed.
+    fn cancel_hover(&mut self, now: Instant) -> bool {
+        self.hover_intent = self.hover_intent.wrapping_add(1);
+        self._hover_task = None;
+        self.hover(None, now)
     }
 
     /// The hover card as drawn at `now`, with when it opened.
@@ -245,12 +262,38 @@ impl WorkspaceView {
     fn open_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.usage.anchor = self.usage_popover_anchor();
         self.usage.open = true;
-        self.usage.hover(None, Instant::now());
+        self.usage.cancel_hover(Instant::now());
         self.context_menu = None;
         self.ide_menu_open = false;
         self.focus_handle.focus(window);
         self.refresh_usage(false, cx);
         cx.notify();
+    }
+
+    /// The pointer entered a provider's chip. The card opens after a short
+    /// rest; once it is open it follows the pointer from chip to chip.
+    fn hover_usage_chip(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.usage.hovered.is_some() {
+            if self.usage.hover(Some(id), Instant::now()) {
+                cx.notify();
+            }
+            return;
+        }
+        self.usage.hover_intent = self.usage.hover_intent.wrapping_add(1);
+        let intent = self.usage.hover_intent;
+        let id = id.to_owned();
+        let delay = cx.background_executor().timer(HOVER_CARD_DELAY);
+        self.usage._hover_task = Some(cx.spawn(async move |this, cx| {
+            delay.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.usage.hover_intent == intent
+                    && !this.usage.open
+                    && this.usage.hover(Some(&id), Instant::now())
+                {
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     pub(super) fn close_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -276,7 +319,7 @@ impl WorkspaceView {
             .overflow_hidden()
             // The card stays up between chips and goes once the pointer leaves the group.
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !*hovered && this.usage.hover(None, Instant::now()) {
+                if !*hovered && this.usage.cancel_hover(Instant::now()) {
                     cx.notify();
                 }
             }))
@@ -314,8 +357,8 @@ impl WorkspaceView {
                 usage_chip(SharedString::from(format!("status-usage-{id}")))
                     .text_color(color)
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        if *hovered && this.usage.hover(Some(&hover_id), Instant::now()) {
-                            cx.notify();
+                        if *hovered {
+                            this.hover_usage_chip(&hover_id, cx);
                         }
                     }))
                     .child(
@@ -394,8 +437,10 @@ impl WorkspaceView {
         }
         let now = now_timestamp();
         let utc_offset = local_utc_offset(now);
-        // It rises from its anchor, so only the room above limits its height.
+        // It rises from its anchor, so the room above limits its height, and
+        // past a point it scrolls instead of covering the window.
         let available: f32 = self.usage.anchor.y.into();
+        let max_height = (available - MENU_EDGE_MARGIN).clamp(100.0, MODAL_MAX_HEIGHT);
         let snapshot = &self.usage.snapshot;
         let loading = self.usage.loading;
         let refresh_tooltip = if loading {
@@ -412,7 +457,7 @@ impl WorkspaceView {
             .pb(px(MODAL_INSET))
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            .gap(px(6.0))
             .when_some(self.usage.error.clone(), |content, error| {
                 content.child(warning_callout(None, error))
             })
@@ -477,7 +522,7 @@ impl WorkspaceView {
         let panel = div()
             .id("usage-modal")
             .w(px(MODAL_WIDTH))
-            .max_h(px((available - MENU_EDGE_MARGIN).max(100.0)))
+            .max_h(px(max_height))
             .flex()
             .flex_col()
             .rounded(px(DIALOG_RADIUS))
@@ -843,7 +888,7 @@ fn provider_heading(card: &UsageCard, from: Option<&CardFrame>, progress: f32) -
     div()
         .flex()
         .items_center()
-        .gap(px(10.0))
+        .gap(px(9.0))
         .child(tile_crossfade(
             &card.id,
             from.map(|from| from.id.as_str()),
@@ -859,7 +904,7 @@ fn provider_heading(card: &UsageCard, from: Option<&CardFrame>, progress: f32) -
                 .gap(px(1.0))
                 .child(
                     div()
-                        .text_size(px(13.0))
+                        .text_size(px(12.5))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(crossfade(
                             card.name.clone(),
@@ -893,24 +938,10 @@ fn outdated_badge() -> Div {
         .child("Outdated")
 }
 
-/// Where a quota says when it resets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ResetPlacement {
-    /// Between the label and the value, to keep a long list short.
-    Inline,
-    /// Under the bar, where a narrow card has room for it.
-    Below,
-}
-
 /// A provider's quotas: the ones with a limit over their bars, then balances
 /// and other plain values below a hairline. Resets crossfade from `from`
 /// while `progress` runs to 1.
-fn quota_list(
-    rows: Vec<QuotaFrame>,
-    from: Option<&CardFrame>,
-    progress: f32,
-    reset: ResetPlacement,
-) -> Div {
+fn quota_list(rows: Vec<QuotaFrame>, from: Option<&CardFrame>, progress: f32) -> Div {
     // Plain values trail the quotas, so the hairline goes after the last bar.
     let first_plain = rows
         .iter()
@@ -919,7 +950,7 @@ fn quota_list(
     div()
         .flex()
         .flex_col()
-        .gap(px(12.0))
+        .gap(px(10.0))
         .when(rows.is_empty(), |list| {
             list.child(
                 div()
@@ -931,10 +962,10 @@ fn quota_list(
             let previous_reset = from
                 .and_then(|from| from.row(&row.label))
                 .and_then(|previous| previous.reset.clone());
-            quota_row(row, previous_reset, progress, reset).when(
+            quota_row(row, previous_reset, progress).when(
                 index > 0 && index == first_plain,
                 |row| {
-                    row.pt(px(12.0))
+                    row.pt(px(10.0))
                         .border_t_1()
                         .border_color(colors().border_subtle)
                 },
@@ -942,30 +973,24 @@ fn quota_list(
         }))
 }
 
-/// One quota: its label and value, its bar when it has a limit, and when it
-/// resets. A value close to blocking work takes the bar's color.
-fn quota_row(
-    row: QuotaFrame,
-    previous_reset: Option<String>,
-    progress: f32,
-    placement: ResetPlacement,
-) -> Div {
+/// One quota on two lines: its label, when it resets, and its value, then
+/// its bar when it has a limit. A value close to blocking work takes the
+/// bar's color.
+fn quota_row(row: QuotaFrame, previous_reset: Option<String>, progress: f32) -> Div {
     let reset = row.reset.map(|reset| {
         div()
+            .flex_1()
             .min_w(px(0.0))
+            .truncate()
             .text_size(px(11.0))
             .text_color(colors().subtle)
             .child(crossfade(reset, previous_reset, progress))
     });
-    let (inline_reset, reset_below) = match placement {
-        ResetPlacement::Inline => (reset, None),
-        ResetPlacement::Below => (None, reset),
-    };
-    let inline = inline_reset.is_some();
+    let has_reset = reset.is_some();
     div()
         .flex()
         .flex_col()
-        .gap(px(6.0))
+        .gap(px(5.0))
         .child(
             div()
                 .flex()
@@ -974,12 +999,12 @@ fn quota_row(
                 .child(
                     div()
                         .min_w(px(0.0))
-                        .when(!inline, |label| label.flex_1())
+                        .when(!has_reset, |label| label.flex_1())
                         .truncate()
                         .text_color(colors().muted)
                         .child(row.label),
                 )
-                .when_some(inline_reset, |line, reset| line.child(reset.flex_1()))
+                .children(reset)
                 .child(
                     tabular(div())
                         .flex_none()
@@ -999,7 +1024,6 @@ fn quota_row(
         .when_some(row.percent, |quota, percent| {
             quota.child(quota_bar(percent, row.color, QUOTA_BAR_HEIGHT))
         })
-        .when_some(reset_below, |quota, reset| quota.child(reset))
 }
 
 fn provider_warning(warning: &str) -> Div {
@@ -1081,19 +1105,12 @@ fn usage_hover_content(
         .opacity(entrance)
         .min_w(px(0.0))
         .w(px(width))
-        .p(px(14.0))
-        .gap(px(14.0))
-        .rounded(px(12.0))
-        .shadow(dialog_shadow())
+        .p(px(12.0))
+        .gap(px(12.0))
         .text_size(px(12.0))
         .text_color(colors().foreground)
         .child(provider_heading(card, from, progress))
-        .child(quota_list(
-            frame.rows,
-            from,
-            progress,
-            ResetPlacement::Below,
-        ))
+        .child(quota_list(frame.rows, from, progress))
         .children(
             card.warnings
                 .iter()
@@ -1112,14 +1129,14 @@ fn provider_section(card: &UsageCard) -> impl IntoElement + use<> {
         .flex_none()
         .flex()
         .flex_col()
-        .gap(px(14.0))
+        .gap(px(12.0))
         .p(px(12.0))
         .rounded(px(CARD_RADIUS))
         .border_1()
         .border_color(foreground(0.07))
         .bg(foreground(0.03))
         .child(provider_heading(card, None, 1.0))
-        .child(quota_list(rows, None, 1.0, ResetPlacement::Inline))
+        .child(quota_list(rows, None, 1.0))
         .children(
             card.warnings
                 .iter()
@@ -1415,6 +1432,46 @@ mod tests {
                 view.open_usage(window, cx);
                 assert_eq!(view.usage.hovered, None);
                 assert!(view.usage.hover_motion.is_none());
+                window.remove_window();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn usage_hover_card_waits_for_the_pointer_to_rest(cx: &mut gpui::TestAppContext) {
+        let (root, _, _, window) =
+            super::super::tests::open_recording_workspace(cx, "usage-hover-delay");
+        window
+            .update(cx, |view, _, cx| {
+                view.usage.snapshot = snapshot(
+                    r#"{"providers":{"claude":{"displayName":"Claude","resources":{}},
+                                     "codex":{"displayName":"Codex","resources":{}}}}"#,
+                );
+                // Crossing a chip opens nothing yet.
+                view.hover_usage_chip("codex", cx);
+                assert_eq!(view.usage.hovered, None);
+            })
+            .unwrap();
+        cx.executor().advance_clock(HOVER_CARD_DELAY);
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _, cx| {
+                assert_eq!(view.usage.hovered.as_deref(), Some("codex"));
+                // Once open, the card follows the pointer at once.
+                view.hover_usage_chip("claude", cx);
+                assert_eq!(view.usage.hovered.as_deref(), Some("claude"));
+                // Leaving the group also drops an opening still waiting.
+                view.usage.cancel_hover(Instant::now());
+                view.hover_usage_chip("codex", cx);
+                view.usage.cancel_hover(Instant::now());
+            })
+            .unwrap();
+        cx.executor().advance_clock(HOVER_CARD_DELAY);
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, _| {
+                assert_eq!(view.usage.hovered, None);
                 window.remove_window();
             })
             .unwrap();
