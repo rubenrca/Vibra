@@ -1,14 +1,21 @@
 version: 2
 updates:
+  # One pull request per ecosystem: each one runs the macOS job again
+  # whenever main moves, so separate pull requests multiply that.
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      cargo:
+        patterns: ['*']
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-
+    groups:
+      github-actions:
+        patterns: ['*']

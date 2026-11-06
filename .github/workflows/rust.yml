@@ -3,6 +3,11 @@ name: Rust
 on:
   push:
     branches: [main]
+    # The appcast commit a release pushes would otherwise cancel the run that
+    # checks the release itself, and nothing here builds from these files.
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   pull_request:
 
 permissions:
@@ -29,15 +34,43 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
+      # The script pins Ghostty's revision, Zig, and the build flags, so its
+      # hash names the build. The build needs the libraries and the headers,
+      # not the checkout or the toolchain.
+      - name: Restore Ghostty
+        id: ghostty
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/ghostty/aarch64
+            .build/ghostty/x86_64
+            .build/ghostty/source/include
+          key: ghostty-${{ runner.os }}-${{ hashFiles('Scripts/fetch_ghostty.sh') }}
+
       - name: Prepare pinned Ghostty and Zig
+        if: steps.ghostty.outputs.cache-hit != 'true'
         run: |
           ./Scripts/fetch_ghostty.sh aarch64
           ./Scripts/fetch_ghostty.sh x86_64
 
+      # Saved right away, so a failing test does not throw the build away.
+      - name: Save Ghostty
+        if: steps.ghostty.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/ghostty/aarch64
+            .build/ghostty/x86_64
+            .build/ghostty/source/include
+          key: ${{ steps.ghostty.outputs.cache-primary-key }}
+
       - name: Verify
         run: ./Scripts/verify.sh
 
+      # Pull requests stop at verification; main also proves the release
+      # bundle still builds for both architectures.
       - name: Package universal release bundle and DMG
+        if: github.event_name == 'push'
         run: |
           ./Scripts/package_app.sh release --universal --dmg --sign -
           test -s dist/Vibra.dmg
