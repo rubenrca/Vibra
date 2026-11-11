@@ -3,24 +3,20 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.51</title>
-            <pubDate>Wed, 11 Nov 2026 18:55:59 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.51</link>
-            <sparkle:version>359</sparkle:version>
-            <sparkle:shortVersionString>0.3.51</sparkle:shortVersionString>
+            <title>0.3.52</title>
+            <pubDate>Wed, 11 Nov 2026 19:33:08 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.52</link>
+            <sparkle:version>364</sparkle:version>
+            <sparkle:shortVersionString>0.3.52</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Render pull requests and issues in Repository as GitHub does: tables with sized columns, collapsible details, GitHub's HTML, alerts such as NOTE and WARNING, and links for bare URLs, #123, and @user. Images show as links to them.</li>
-  <li>Keep the right sidebar beside Repository and Activity: it stays as it was, and its toggle and the Explorer and Changes tabs work there without leaving the tab.</li>
-  <li>Hide Keep Awake with the right sidebar instead of moving it to the left sidebar's foot.</li>
-  <li>Center the usage chips in their strip, with larger provider marks.</li>
-  <li>Bring back the left sidebar's dividers as lines that fade out toward both ends.</li>
-  <li>Never cut a space's name short in the sidebar: the branch gives way first, and a long name wraps.</li>
-  <li>Keep a space lit while its Repository or Activity tab is in front.</li>
-  <li>Fade the Changes graph into the frame at its foot.</li>
+  <li>Add ten workspace presets after Midnight in Appearance: Harbor, Moss, Ember, Orchid, Tidepool, Dune, Rosewood, Glacier, Arcade, and Ink, each with a dark and a light tone. A preset paints the window, cards, ink, and accent in its hue, and ships its own code colors and Markdown headings and links.</li>
+  <li>Retire Cinder, Violet, and Bloom; a saved choice moves to Ember, Orchid, and Rosewood.</li>
+  <li>Let the desktop show through the window in dark themes only, since it washes light ones out, and slightly more than before.</li>
+  <li>Keep a space's name on one line in agent cards instead of painting it a letter per line.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.51/Vibra-0.3.51.dmg" length="16624484" type="application/octet-stream" sparkle:edSignature="wkMR30b75j93rSY+ToMfI6CYjShTHraqk+KQ6kJsVZCj4CwNu2O4M64gcm/V1XV5vgrZQdR8d7/ssTNMhzgdAA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.52/Vibra-0.3.52.dmg" length="16628065" type="application/octet-stream" sparkle:edSignature="urBQLTfHVnGQfFS+hfsZOztSOIVzSV5tjK/7rQzxs5eeWWiyFB4FspjXQup9ME975t7mvhWK0cT8d+7YVdFGDA=="/>
         </item>
     </channel>
 </rss>
