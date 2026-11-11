@@ -19,6 +19,7 @@ mod projects;
 mod settings;
 mod spaces;
 mod status_bar;
+use status_bar::{StatusItems, status_layout};
 mod storage;
 mod tab_drag;
 mod tabs;
@@ -172,6 +173,8 @@ pub struct WorkspaceView {
     settings_page: SettingsPage,
     theme_query: String,
     context_menu: Option<ContextMenuState>,
+    /// Spaces whose strip holds a Repository tab, after their own tabs.
+    repository_tabs: HashSet<Uuid>,
     ide_menu_open: bool,
     ide_discovering: bool,
     installed_editors: Vec<InstalledEditor>,
@@ -496,6 +499,16 @@ impl WorkspaceView {
         self.workspace_section == WorkspaceSection::Workspace && self.right_sidebar_progress > 0.001
     }
 
+    /// The status items at the left sidebar's foot, the right sidebar's foot,
+    /// and under the cards, for the sidebars now on screen.
+    fn status_layout(&self) -> [StatusItems; 3] {
+        status_layout(
+            self.usage_in_sidebar(),
+            self.status_controls_in_sidebar(),
+            self.workspace_section == WorkspaceSection::Workspace,
+        )
+    }
+
     fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let content = div()
             .size_full()
@@ -509,7 +522,7 @@ impl WorkspaceView {
                     .flex_col()
                     .child(self.global_sidebar_content(cx)),
             )
-            .child(self.status_row(true, false, cx));
+            .child(self.status_row(self.status_layout()[0], cx));
         let full_width = self.left_sidebar_width();
         let width = full_width * self.left_sidebar_progress;
         let show_handle = self.left_sidebar_progress > 0.99;
@@ -559,7 +572,7 @@ impl WorkspaceView {
                     .flex_col()
                     .child(content),
             )
-            .child(self.status_row(false, true, cx));
+            .child(self.status_row(self.status_layout()[1], cx));
         clipped_width_panel(width, full_width, content).when(show_handle, |sidebar| {
             sidebar.child(self.sidebar_resize_handle(
                 "resize-right-sidebar",
@@ -573,7 +586,7 @@ impl WorkspaceView {
     /// edge; beside an open sidebar, its own row inset is gap enough, so the
     /// margin follows each sidebar's animation. The status items live at the
     /// sidebars' feet, so the cards reach down to the window's bottom gap; only
-    /// the items of a hidden sidebar take a strip under them.
+    /// with the left sidebar hidden do they take a strip under them.
     fn floating_area(&self, content: impl IntoElement, cx: &mut Context<Self>) -> gpui::Div {
         let right_progress = if self.workspace_section == WorkspaceSection::Workspace {
             self.right_sidebar_progress
@@ -581,8 +594,8 @@ impl WorkspaceView {
             0.0
         };
         let margin = |progress: f32| px(PANEL_GAP * (1.0 - progress.clamp(0.0, 1.0)));
-        let usage = !self.usage_in_sidebar();
-        let controls = !self.status_controls_in_sidebar();
+        // Only a hidden left sidebar sends status items under the cards.
+        let strip = self.status_layout()[2];
         div()
             .flex_1()
             .min_w(px(0.0))
@@ -599,9 +612,7 @@ impl WorkspaceView {
                     .pb(px(PANEL_GAP))
                     .child(content),
             )
-            .when(usage || controls, |area| {
-                area.child(self.status_row(usage, controls, cx))
-            })
+            .when(strip.any(), |area| area.child(self.status_row(strip, cx)))
     }
 
     fn current_banner_errors(&self) -> Vec<SharedString> {
@@ -687,6 +698,7 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.settle_space_front(window, cx);
         self.sync_terminal_surface_visibility(cx);
         self.sync_ripple_clock(cx);
         self.sync_arcade_clock(cx);

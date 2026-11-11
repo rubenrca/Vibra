@@ -39,6 +39,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.workspace_section == WorkspaceSection::Inbox {
+            self.close_repository_tab(window, cx);
+            return;
+        }
         if self.workspace_section != WorkspaceSection::Workspace {
             self.select_section(WorkspaceSection::Workspace, window, cx);
             return;

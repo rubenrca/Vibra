@@ -103,8 +103,8 @@ impl super::WorkspaceView {
             right_collapsed_width + (right_expanded_width - right_collapsed_width) * right_progress
         };
         let right_open = right_progress > 0.5;
-        let show_tab_selector = self.workspace_section == WorkspaceSection::Workspace
-            && !self.visible_tab_order(cx).is_empty();
+        let show_tab_selector = self.workspace_section != WorkspaceSection::Settings
+            && (!self.visible_tab_order(cx).is_empty() || self.repository_tab_open());
         // A space without tabs leaves the bar blank: the sidebar already names
         // it. Repository needs no name: its tabs sit where a space's tabs would.
         let section_label = match self.workspace_section {
@@ -114,8 +114,6 @@ impl super::WorkspaceView {
         let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(cx));
-        } else if self.workspace_section == WorkspaceSection::Inbox {
-            center_chrome = center_chrome.child(self.repository_tabs(cx));
         } else {
             center_chrome = center_chrome
                 .px_4()

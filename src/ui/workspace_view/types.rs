@@ -74,6 +74,8 @@ pub(super) enum ContextMenuKind {
     },
     /// The review's tab in the strip.
     Review,
+    /// Repository's tab in the strip.
+    Repository,
     Project {
         project_id: Uuid,
     },
@@ -123,6 +125,7 @@ pub(super) enum ContextMenuAction {
     ClosePane,
     CloseTab,
     CloseReview,
+    CloseRepository,
     SplitRight,
     SplitDown,
     ToggleZoom,

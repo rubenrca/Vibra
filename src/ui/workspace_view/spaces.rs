@@ -46,7 +46,7 @@ const MIN_SPACES_HEIGHT: f32 = 96.0;
 /// Grab area of the line between the spaces and Agents.
 const AGENTS_RESIZE_HANDLE: f32 = 7.0;
 
-/// Drag payload of the line between the spaces and the Agents list.
+/// Drag payload of the edge between the spaces and the Agents list.
 #[derive(Clone, Copy)]
 pub(super) struct AgentsResizeDrag;
 
@@ -285,8 +285,6 @@ impl WorkspaceView {
             .flex_shrink()
             .flex()
             .flex_col()
-            .border_t_1()
-            .border_color(colors().border_subtle)
             .child(
                 div()
                     .id("agents-resize-handle")
@@ -296,6 +294,9 @@ impl WorkspaceView {
                     .right_0()
                     .top(px(-AGENTS_RESIZE_HANDLE / 2.0))
                     .h(px(AGENTS_RESIZE_HANDLE))
+                    // No line marks the edge; pointing at it shows where to drag.
+                    .rounded(px(AGENTS_RESIZE_HANDLE / 2.0))
+                    .hover(|handle| handle.bg(frame_hover()))
                     .cursor_ns_resize()
                     .on_drag(AgentsResizeDrag, |_, _, _, cx| {
                         cx.new(|_| SidebarResizeDragView)

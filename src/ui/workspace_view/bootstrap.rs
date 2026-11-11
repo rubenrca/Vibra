@@ -338,6 +338,7 @@ impl WorkspaceView {
             settings_page: SettingsPage::General,
             theme_query: String::new(),
             context_menu: None,
+            repository_tabs: Default::default(),
             ide_menu_open: false,
             ide_discovering: false,
             installed_editors: Vec::new(),

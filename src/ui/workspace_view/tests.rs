@@ -1260,6 +1260,79 @@ fn project_diff_counts_follow_folders_and_ignore_removed_projects(cx: &mut gpui:
 }
 
 #[gpui::test]
+fn repository_opens_as_a_tab_of_its_space_beside_the_terminals(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "repository-tab");
+    let space = snapshot.selected_project_id.unwrap();
+    let tab = snapshot.selected_tab().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            assert!(!view.repository_tab_open());
+            view.select_section(WorkspaceSection::Inbox, window, cx);
+            assert!(view.repository_tab_open(), "Repository opens as a tab");
+
+            // A terminal tab comes forward; Repository keeps its tab.
+            view.select_tab(tab, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
+            assert!(view.repository_tab_open());
+
+            // The tab is the space's: another space has none until it opens one.
+            let other = view.snapshot.add_project(&root.join("other"));
+            view.snapshot.open_tab_in_project(other, true);
+            view.reconcile_terminal_views(cx);
+            view.select_project(other, window, cx);
+            assert!(!view.repository_tab_open());
+            view.select_project(space, window, cx);
+            assert!(view.repository_tab_open(), "it waits in its own space");
+
+            // Closing it from the strip while a terminal is in front stays there.
+            view.open_context_menu(ContextMenuKind::Repository, 10.0, 10.0, cx);
+            view.run_context_menu_action(ContextMenuAction::CloseRepository, window, cx);
+            assert!(!view.repository_tab_open());
+            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
+
+            // ⌘W in front of Repository closes its tab and shows the terminal.
+            view.select_section(WorkspaceSection::Inbox, window, cx);
+            view.close_terminal(&CloseTerminal, window, cx);
+            assert!(!view.repository_tab_open());
+            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
+            assert_eq!(view.snapshot.selected_tab().unwrap().id, tab);
+
+            // Numbered shortcuts count Repository's tab after the terminals.
+            view.select_section(WorkspaceSection::Inbox, window, cx);
+            view.go_to_tab(&crate::GoToTab { index: 1 }, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
+            view.go_to_tab(&crate::GoToTab { index: 2 }, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Inbox);
+            view.go_to_tab(&crate::GoToTab { index: 1 }, window, cx);
+            view.go_to_tab(&crate::GoToTab { index: 9 }, window, cx);
+            assert_eq!(
+                view.workspace_section,
+                WorkspaceSection::Inbox,
+                "⌘9 is the last tab"
+            );
+
+            // A space whose only tab is Repository shows it, not the empty space.
+            let bare = view.snapshot.add_project(&root.join("bare"));
+            view.select_project(bare, window, cx);
+            assert!(view.snapshot.selected_tab().is_none());
+            view.select_section(WorkspaceSection::Inbox, window, cx);
+            view.select_section(WorkspaceSection::Workspace, window, cx);
+            view.settle_space_front(window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Inbox);
+            view.close_repository_tab(window, cx);
+            view.settle_space_front(window, cx);
+            assert_eq!(
+                view.workspace_section,
+                WorkspaceSection::Workspace,
+                "with no tabs at all, the empty space"
+            );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn snake_hides_in_the_field_of_an_empty_space_and_pauses_out_of_sight(
     cx: &mut gpui::TestAppContext,
 ) {

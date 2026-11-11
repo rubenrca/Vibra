@@ -12,6 +12,56 @@ use super::{RightSidebarMode, WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const STATUS_POLL: Duration = Duration::from_secs(4);
 pub(super) const STATUS_BAR_HEIGHT: f32 = 30.0;
+
+/// Which status items a strip holds. The usage group sits at the foot of the
+/// left sidebar, the branch and Keep Awake at the foot of the right one, so
+/// the cards between them reach the bottom of the window. With the right
+/// sidebar hidden, Keep Awake joins the usage group and the branch, which the
+/// space's row already shows, steps aside; Repository shows neither. Only
+/// with the left sidebar hidden do the items take a strip under the cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct StatusItems {
+    pub(super) usage: bool,
+    pub(super) branch: bool,
+    pub(super) keep_awake: bool,
+}
+
+impl StatusItems {
+    pub(super) fn any(self) -> bool {
+        self.usage || self.branch || self.keep_awake
+    }
+}
+
+/// Where the status items go given which sidebars are on screen: the left
+/// sidebar's foot, the right sidebar's foot, and the strip under the cards.
+/// Without `controls` (Repository), the branch and Keep Awake are left out.
+pub(super) fn status_layout(left: bool, right: bool, controls: bool) -> [StatusItems; 3] {
+    let none = StatusItems {
+        usage: false,
+        branch: false,
+        keep_awake: false,
+    };
+    let left_foot = StatusItems {
+        usage: true,
+        branch: false,
+        keep_awake: controls && !right,
+    };
+    let right_foot = StatusItems {
+        usage: false,
+        branch: true,
+        keep_awake: true,
+    };
+    let strip = StatusItems {
+        usage: !left,
+        branch: controls && !left && !right,
+        keep_awake: controls && !left && !right,
+    };
+    [
+        if left { left_foot } else { none },
+        if right { right_foot } else { none },
+        strip,
+    ]
+}
 /// Status items stay flat: hovering one lights its icon and label, never a
 /// box, so nothing solid sits against the window's rounder bottom corners.
 pub(super) const STATUS_ITEM_HEIGHT: f32 = 22.0;
@@ -132,16 +182,14 @@ impl WorkspaceView {
             .map(|(_, summary)| summary)
     }
 
-    /// A strip of status items on the frame. The usage group sits at the foot
-    /// of the left sidebar and the controls (branch, Keep Awake) at the foot of
-    /// the right one, so the cards between them reach the bottom of the window.
-    /// Items whose sidebar is hidden share a strip under the cards instead.
-    pub(super) fn status_row(
-        &self,
-        usage: bool,
-        controls: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// A strip of status items on the frame, at the foot of a sidebar or,
+    /// when the left sidebar is hidden, under the cards.
+    pub(super) fn status_row(&self, items: StatusItems, cx: &mut Context<Self>) -> AnyElement {
+        let StatusItems {
+            usage,
+            branch,
+            keep_awake,
+        } = items;
         let row = div()
             .h(px(STATUS_BAR_HEIGHT))
             .w_full()
@@ -155,14 +203,15 @@ impl WorkspaceView {
             .text_color(colors().muted)
             .when(usage, |row| row.child(self.usage_tracker(cx)))
             .child(div().flex_1());
-        if !controls {
+        if !keep_awake {
             return row.into_any_element();
         }
-        self.status_controls(row, cx).into_any_element()
+        self.status_controls(row, branch, cx).into_any_element()
     }
 
-    /// The branch, which opens Changes, and the Keep Awake toggle.
-    fn status_controls(&self, row: Div, cx: &mut Context<Self>) -> Div {
+    /// The branch, which opens Changes, when `branch` asks for it, and the
+    /// Keep Awake toggle.
+    fn status_controls(&self, row: Div, branch: bool, cx: &mut Context<Self>) -> Div {
         let keep_awake = self.keep_awake.is_enabled();
         // GPUI allows a single hover style per element, so styled items start from `base`.
         // Each item is its own hover group, which its icon follows.
@@ -196,7 +245,8 @@ impl WorkspaceView {
                 .bg(colors().border_subtle)
         };
 
-        row.when_some(self.current_branch_summary(), |bar, summary| {
+        let summary = self.current_branch_summary().filter(|_| branch);
+        row.when_some(summary, |bar, summary| {
             bar.child(
                 item("status-branch")
                     .tooltip(|_, cx| sidebar_tooltip("Open Changes", cx))
@@ -251,5 +301,39 @@ impl WorkspaceView {
                 })
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_awake(cx))),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_items_reach_the_strip_only_without_a_left_sidebar() {
+        let [left, right, strip] = status_layout(true, true, true);
+        assert!(left.usage && !left.keep_awake && !left.branch);
+        assert!(right.branch && right.keep_awake);
+        assert!(!strip.any(), "the cards reach the bottom");
+
+        // A space with its right sidebar closed.
+        let [left, right, strip] = status_layout(true, false, true);
+        assert!(left.usage && left.keep_awake && !left.branch);
+        assert!(!right.any());
+        assert!(!strip.any(), "the cards still reach the bottom");
+
+        let [_, right, strip] = status_layout(false, true, true);
+        assert!(right.branch && right.keep_awake);
+        assert!(strip.usage && !strip.keep_awake);
+
+        let [left, right, strip] = status_layout(false, false, true);
+        assert!(!left.any() && !right.any());
+        assert!(strip.usage && strip.branch && strip.keep_awake);
+
+        // Repository leaves the branch and Keep Awake out altogether.
+        let [left, _, strip] = status_layout(true, false, false);
+        assert!(left.usage && !left.keep_awake);
+        assert!(!strip.any());
+        let [_, _, strip] = status_layout(false, false, false);
+        assert!(strip.usage && !strip.branch && !strip.keep_awake);
     }
 }

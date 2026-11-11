@@ -15,20 +15,21 @@ use crate::domain::work_items::{InboxPreferences, InboxTime, PullStep, Repositor
 use crate::domain::workspace::WorkspaceSplitAxis;
 use crate::infrastructure::clock::unix_now;
 use crate::ui::menu::{MENU_WIDTH, MenuRow, menu_heading, menu_panel, menu_separator};
-use crate::ui::tab_style::lifted_tab;
-use crate::ui::theme::{HOVER_LIFT, frame, lift, mix, surface, surface_tint};
+use crate::ui::tab_style::{lifted_tab, track};
+use crate::ui::theme::{HOVER_LIFT, lift, mix, surface, surface_tint};
 use crate::ui::workspace_view::chrome::{PANEL_GAP, SIDEBAR_ROW_RADIUS, card, split_gutter};
 use crate::ui::workspace_view::drag::SidebarResizeDragView;
 use crate::ui::workspace_view::navigation::project_color;
-use crate::ui::workspace_view::panes::{TAB_HEIGHT, TAB_TEXT_SIZE};
 use crate::ui::workspace_view::sidebar_tooltip;
-use gpui::{ClickEvent, DragMoveEvent, Hsla, MouseButton, Rgba, WindowControlArea, svg};
+use gpui::{ClickEvent, DragMoveEvent, Hsla, MouseButton, Rgba, svg};
 
 #[derive(Clone)]
 struct InboxListResize;
 
 /// Width of the pull request and issue list, and the range it resizes in.
 const LIST_WIDTH: f32 = 300.0;
+/// Height of the History · Pull requests · Issues control's segments.
+const SWITCHER_HEIGHT: f32 = 26.0;
 const LIST_MIN_WIDTH: f32 = 240.0;
 const LIST_MAX_WIDTH: f32 = 440.0;
 
@@ -47,6 +48,7 @@ impl WorkspaceView {
                 .h_full()
                 .flex()
                 .flex_col()
+                .child(self.repository_tabs(cx))
                 .child(self.history_view(cx))
                 .into_any_element();
         }
@@ -56,14 +58,7 @@ impl WorkspaceView {
     /// The pull request or issue list beside the selected task. The frame
     /// between the two cards resizes the list.
     fn inbox_list_and_detail(&self, cx: &mut Context<Self>) -> AnyElement {
-        let width = if self.settings.inbox.list_width.is_finite() {
-            self.settings
-                .inbox
-                .list_width
-                .clamp(LIST_MIN_WIDTH, LIST_MAX_WIDTH)
-        } else {
-            LIST_WIDTH
-        };
+        let width = self.inbox_list_width();
         let list = card(colors().background)
             .id("inbox-list-pane")
             .w(px(width))
@@ -71,6 +66,7 @@ impl WorkspaceView {
             .h_full()
             .flex()
             .flex_col()
+            .child(self.repository_tabs(cx))
             .child(self.inbox_list_header(cx))
             .child(self.inbox_task_list(cx));
         let gutter = split_gutter("resize-inbox-list", WorkspaceSplitAxis::Horizontal)
@@ -239,68 +235,60 @@ impl WorkspaceView {
             )
     }
 
-    /// History · Pull requests · Issues, in the titlebar where a space's
-    /// tabs sit, lifted off the frame the same way. The empty bar beside
-    /// them moves the window.
+    /// History · Pull requests · Issues, a segmented control at the top of
+    /// Repository's first card, as wide as the list: over the list, or over
+    /// the history. Its three equal parts read the same in every view.
     pub(in crate::ui::workspace_view) fn repository_tabs(
         &self,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let current = self.settings.inbox.tab;
+        let surface = colors().background;
         div()
-            .h_full()
-            .flex_1()
-            .min_w(px(0.0))
-            .px(px(6.0))
+            .w(px(self.inbox_list_width()))
+            .max_w_full()
+            .flex_none()
+            .px(px(8.0))
+            .pt(px(8.0))
             .flex()
-            .items_center()
-            .gap(px(4.0))
-            .overflow_x_hidden()
-            .window_control_area(WindowControlArea::Drag)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                crate::infrastructure::window::start_drag();
-                cx.stop_propagation();
-            })
-            .children(RepositoryTab::ALL.into_iter().map(|tab| {
-                let selected = current == tab;
-                let count = tab
-                    .kind()
-                    .map(|kind| self.inbox_items_of(kind).count())
-                    .filter(|count| *count > 0);
-                let id = SharedString::from(format!("repository-tab-{tab:?}"));
-                lifted_tab(div().id(id.clone()), selected, frame(), TAB_HEIGHT)
-                    .group(id.clone())
-                    .flex_none()
-                    .pl(px(10.0))
-                    .pr(px(if count.is_some() { 7.0 } else { 12.0 }))
-                    .gap(px(7.0))
-                    .cursor_pointer()
-                    .text_size(px(TAB_TEXT_SIZE))
-                    .font_weight(if selected {
-                        gpui::FontWeight::MEDIUM
-                    } else {
-                        gpui::FontWeight::NORMAL
-                    })
-                    // Tabs own their clicks; only the empty bar moves the window.
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.select_repository_tab(tab, cx)),
-                    )
-                    .child(
-                        svg()
-                            .path(repository_tab_icon(tab))
-                            .size(px(14.0))
-                            .flex_none()
-                            .text_color(if selected {
-                                colors().foreground
-                            } else {
-                                colors().muted
-                            })
-                            .group_hover(id, |icon| icon.text_color(colors().foreground)),
-                    )
-                    .child(tab.label())
-                    .when_some(count, |tab, count| tab.child(count_badge(count, selected)))
-            }))
+            .child(track(surface).flex_1().min_w(px(0.0)).children(
+                RepositoryTab::ALL.into_iter().map(|tab| {
+                    let selected = current == tab;
+                    let id = SharedString::from(format!("repository-tab-{tab:?}"));
+                    lifted_tab(div().id(id), selected, surface, SWITCHER_HEIGHT)
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .px(px(6.0))
+                        .justify_center()
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .font_weight(if selected {
+                            gpui::FontWeight::MEDIUM
+                        } else {
+                            gpui::FontWeight::NORMAL
+                        })
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.select_repository_tab(tab, cx)),
+                        )
+                        .child(div().min_w(px(0.0)).truncate().child(match tab {
+                            // The switcher is narrow, and PRs is what people say.
+                            RepositoryTab::PullRequests => "PRs",
+                            _ => tab.label(),
+                        }))
+                }),
+            ))
+    }
+
+    /// The list's width, which the switcher matches in every view.
+    fn inbox_list_width(&self) -> f32 {
+        if self.settings.inbox.list_width.is_finite() {
+            self.settings
+                .inbox
+                .list_width
+                .clamp(LIST_MIN_WIDTH, LIST_MAX_WIDTH)
+        } else {
+            LIST_WIDTH
+        }
     }
 
     /// Switch tabs. A list returns to the task last selected there.
@@ -917,13 +905,6 @@ impl WorkspaceView {
         );
         rows
     }
-
-    /// The tasks of one tab that pass the filters, for its count.
-    fn inbox_items_of(&self, kind: WorkKind) -> impl Iterator<Item = &WorkItem> {
-        self.work_inbox.github.items.iter().filter(move |item| {
-            item.kind == kind && self.work_inbox.filter.matches(item, &self.settings.inbox)
-        })
-    }
 }
 
 /// Separators in the pull request menu: merge methods, auto-merge, branch
@@ -1028,14 +1009,6 @@ fn foreground(alpha: f32) -> Hsla {
 /// A state color at `alpha`, for the tinted fills behind badges and icons.
 fn tinted(color: Rgba, alpha: f32) -> Hsla {
     Rgba { a: alpha, ..color }.into()
-}
-
-fn repository_tab_icon(tab: RepositoryTab) -> &'static str {
-    match tab {
-        RepositoryTab::History => "chrome-icons/git-commit.svg",
-        RepositoryTab::PullRequests => "chrome-icons/git-pull-request.svg",
-        RepositoryTab::Issues => "chrome-icons/issue-open.svg",
-    }
 }
 
 /// How many tasks a tab holds, in a small pill after its label.

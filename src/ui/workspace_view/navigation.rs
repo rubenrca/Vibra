@@ -72,10 +72,12 @@ pub(super) fn keycap(label: &'static str) -> Div {
 }
 
 /// Sidebar section heading with room for a trailing action.
+/// A section's title. It is the only separator in the sidebar, so it keeps
+/// clear room above it.
 pub(super) fn section_label(label: &'static str) -> Div {
     div()
         .h(px(28.0))
-        .mt(px(10.0))
+        .mt(px(14.0))
         .pl(px(8.0))
         .pr(px(4.0))
         .flex()
@@ -107,6 +109,10 @@ impl WorkspaceView {
         self.usage.open = false;
         self.workspace_section = section;
         if section == WorkspaceSection::Inbox {
+            // The tab belongs to the space Repository was opened from.
+            if let Some(project_id) = self.snapshot.selected_project_id {
+                self.repository_tabs.insert(project_id);
+            }
             if entering_inbox {
                 self.scope_inbox_to_active_project();
             }
@@ -160,14 +166,13 @@ impl WorkspaceView {
             .size_full()
             .flex()
             .flex_col()
-            // The line under Repository matches the one above Agents.
+            // No dividers: each section's title, with room above it,
+            // separates it from the one before.
             .child(
                 div()
                     .px(px(SIDEBAR_ROW_INSET))
                     .pt(px(10.0))
-                    .pb(px(8.0))
-                    .border_b_1()
-                    .border_color(colors().border_subtle)
+                    .pb(px(4.0))
                     .flex()
                     .flex_col()
                     .gap(px(3.0))
@@ -227,8 +232,8 @@ impl WorkspaceView {
                             .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
                     })),
             )
-            // Spaces above, Agents below; dragging the line between them
-            // resizes Agents.
+            // Spaces above, Agents below; dragging the edge above Agents'
+            // title resizes it.
             .child(
                 div()
                     .id("sidebar-body")

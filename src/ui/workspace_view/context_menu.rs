@@ -267,6 +267,9 @@ impl WorkspaceView {
             (ContextMenuKind::Review, ContextMenuAction::CloseReview) => {
                 self.close_review(window, cx);
             }
+            (ContextMenuKind::Repository, ContextMenuAction::CloseRepository) => {
+                self.close_repository_tab(window, cx);
+            }
             _ => cx.notify(),
         }
     }
@@ -281,7 +284,8 @@ impl WorkspaceView {
             ContextMenuKind::Pane { session_id } => self.pane_identity_by_id(*session_id, cx),
             ContextMenuKind::Project { .. }
             | ContextMenuKind::SidebarBackground
-            | ContextMenuKind::Review => None,
+            | ContextMenuKind::Review
+            | ContextMenuKind::Repository => None,
         };
         let row = |label: &'static str, icon: &'static str, action| {
             Some((MenuRow::new(label).icon(icon), action))
@@ -353,6 +357,14 @@ impl WorkspaceView {
                     .map(|(item, action)| (item.shortcut("⌘W"), action)),
                 ]
             }
+            ContextMenuKind::Repository => vec![
+                row(
+                    "Close Repository",
+                    "chrome-icons/close.svg",
+                    ContextMenuAction::CloseRepository,
+                )
+                .map(|(item, action)| (item.shortcut("⌘W"), action)),
+            ],
             ContextMenuKind::SidebarBackground => vec![
                 row(
                     "New space",
