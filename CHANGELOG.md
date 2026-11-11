@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.52 — 2026-11-11
+
+- Add ten workspace presets after Midnight in Appearance: Harbor, Moss, Ember, Orchid, Tidepool, Dune, Rosewood, Glacier, Arcade, and Ink, each with a dark and a light tone. A preset paints the window, cards, ink, and accent in its hue, and ships its own code colors and Markdown headings and links.
+- Retire Cinder, Violet, and Bloom; a saved choice moves to Ember, Orchid, and Rosewood.
+- Let the desktop show through the window in dark themes only, since it washes light ones out, and slightly more than before.
+- Keep a space's name on one line in agent cards instead of painting it a letter per line.
+
 ## 0.3.51 — 2026-11-11
 
 - Render pull requests and issues in Repository as GitHub does: tables with sized columns, collapsible details, GitHub's HTML, alerts such as NOTE and WARNING, and links for bare URLs, #123, and @user. Images show as links to them.
