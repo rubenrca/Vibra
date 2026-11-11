@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.50 — 2026-11-11
+
+- Add Activity under Repository: a read-only monitor of what runs for your spaces. Tiles show the servers listening and the memory in use, the agents and what they need, the fullest agent context, each subscription's five-hour and weekly windows, and today's tokens beside the last seven days. Each space lists its ports (a click opens localhost), its terminals' memory, and its agents with their task, state, and context; servers and agents running outside Vibra are grouped by repository.
+- Open Repository as a tab of its space, after its terminals, closed with ⌘W or its menu and counted by ⌘1–⌘9. History, Pull requests, and Issues move into a segmented control at the top of its list.
+- Mark spaces with a drop and spreading rings, placed and colored by the space's name; the rings move while its agents work and faster while one needs you.
+- Rest an empty space on a quiet field with a snake playing by itself; click it to play Snake on the whole card. The high score is kept.
+- Drop the tabs' buttons and the panes' headers: right-click for the menu and ⌘W to close, and drag a pane by the strip along its top edge.
+- Reach the cards to the window's bottom edge: the usage group sits at the left sidebar's foot and the branch and Keep Awake at the right one's.
+- Show a bare prompt on a terminal's tile instead of a framed icon.
+
 ## 0.3.49 — 2026-11-06
 
 - Keep a space open when its last terminal closes: it stays in the sidebar with its folder, name, and pin, and ⌘T opens a new terminal there. Close space closes an empty space without asking.
