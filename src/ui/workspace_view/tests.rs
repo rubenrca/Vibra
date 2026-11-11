@@ -1298,10 +1298,24 @@ fn snake_hides_in_the_field_of_an_empty_space_and_pauses_out_of_sight(
             // The resting field is a picture: keys leave it alone.
             assert!(!view.arcade_key("w", cx));
             assert!(!view.arcade_key("space", cx));
+
+            // The faint snake that plays by itself becomes the player's.
+            for _ in 0..12 {
+                view.attract.step(57, 20);
+            }
+            let resting: Vec<_> = view.attract.body().collect();
+            assert!(!resting.is_empty());
             view.start_snake();
             assert_eq!(view.snake.phase(), SnakePhase::Playing);
             assert_eq!(view.snake.grid(), (57, 20), "the board fills the field");
-            assert!(view.arcade_key("down", cx));
+            assert_eq!(view.snake.body().collect::<Vec<_>>(), resting);
+
+            // It waits for the field to finish opening before it moves.
+            view.sync_arcade_clock(cx);
+            assert_eq!(view.arcade_stage_target, 1.0);
+            assert!(view._arcade_stage_task.is_some(), "the field opens");
+            assert!(view._arcade_step_task.is_none());
+            view.arcade_stage = 1.0;
             view.sync_arcade_clock(cx);
             assert!(view._arcade_step_task.is_some(), "a game steps");
             assert!(
@@ -1317,8 +1331,16 @@ fn snake_hides_in_the_field_of_an_empty_space_and_pauses_out_of_sight(
             assert!(view._arcade_rest_task.is_none());
 
             view.window_is_active = true;
+            let playing: Vec<_> = view.snake.body().collect();
             assert!(view.arcade_key("escape", cx), "escape leaves a paused game");
             assert_eq!(view.snake.phase(), SnakePhase::Title);
+            assert_eq!(
+                view.attract.body().collect::<Vec<_>>(),
+                playing,
+                "the field takes the snake back where it was"
+            );
+            view.sync_arcade_clock(cx);
+            assert_eq!(view.arcade_stage_target, 0.0, "the field closes");
             window.remove_window();
         })
         .unwrap();

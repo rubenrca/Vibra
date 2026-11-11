@@ -121,7 +121,7 @@ impl Snake {
         (self.columns, self.rows)
     }
 
-    pub fn body(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+    pub fn body(&self) -> impl Iterator<Item = (i32, i32)> + Clone + '_ {
         self.body.iter().copied()
     }
 
@@ -142,6 +142,38 @@ impl Snake {
         self.new_best = false;
         self.place_food();
         self.phase = SnakePhase::Playing;
+    }
+
+    /// Starts a game with a snake already on the board, heading its way,
+    /// and its food where it is. Falls back to a fresh start when the snake
+    /// does not fit the grid.
+    pub fn start_from(
+        &mut self,
+        columns: i32,
+        rows: i32,
+        body: &[(i32, i32)],
+        heading: Heading,
+        food: Option<(i32, i32)>,
+    ) {
+        self.start(columns, rows);
+        let inside = |&(x, y): &(i32, i32)| x >= 0 && y >= 0 && x < self.columns && y < self.rows;
+        let mut unique = body.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        if body.len() < 2 || unique.len() != body.len() || !body.iter().all(inside) {
+            return;
+        }
+        self.body = body.iter().copied().collect();
+        self.heading = heading;
+        match food.filter(|cell| inside(cell) && !body.contains(cell)) {
+            Some(food) => self.food = food,
+            None => self.place_food(),
+        }
+    }
+
+    /// Which way the snake is going.
+    pub fn heading(&self) -> Heading {
+        self.heading
     }
 
     /// Queues a turn; the snake cannot fold back onto itself.
@@ -335,6 +367,29 @@ mod tests {
         snake.turn(Heading::Up);
         snake.step();
         assert_eq!(snake.phase(), SnakePhase::Over);
+    }
+
+    #[test]
+    fn a_game_can_pick_up_a_snake_already_moving() {
+        let mut snake = Snake::new(0, 4);
+        snake.start_from(
+            20,
+            12,
+            &[(5, 2), (4, 2), (3, 2)],
+            Heading::Right,
+            Some((9, 2)),
+        );
+        assert_eq!(snake.phase(), SnakePhase::Playing);
+        assert_eq!(snake.body().collect::<Vec<_>>(), [(5, 2), (4, 2), (3, 2)]);
+        assert_eq!(snake.food(), (9, 2));
+        snake.step();
+        assert_eq!(snake.body().next(), Some((6, 2)));
+
+        // A snake that does not fit falls back to a fresh start.
+        snake.start_from(20, 12, &[(25, 2), (24, 2)], Heading::Right, None);
+        assert_eq!(snake.body().count(), 4);
+        snake.start_from(20, 12, &[(5, 2), (5, 2)], Heading::Right, None);
+        assert_eq!(snake.body().next(), Some((10, 6)));
     }
 
     #[test]

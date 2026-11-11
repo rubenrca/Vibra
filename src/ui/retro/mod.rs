@@ -1,8 +1,8 @@
 //! A quiet field of tiles behind an empty space, a few of them twinkling and
 //! a faint snake playing by itself, all fading out toward the middle. It is
-//! Snake's board: click it and the whole field becomes the game. Everything
-//! is drawn in the theme's ink at low strength, so it reads as texture until
-//! someone goes looking.
+//! Snake's board: click it and the field opens over the whole card while the
+//! faint snake brightens into yours. Everything is drawn in the theme's ink
+//! at low strength, so it reads as texture until someone goes looking.
 
 pub mod attract;
 pub mod font;
@@ -32,9 +32,16 @@ const TILE_ALPHA: f32 = 0.035;
 /// reaches before it is gone.
 const FADE_POWER: f32 = 1.4;
 const FADE_REACH: f32 = 0.62;
-/// The resting snake's strength at its head and at its tail.
+/// A snake's strength at its head and at its tail, and its food's: faint
+/// while it plays by itself, full in a game.
 const ATTRACT_HEAD: f32 = 0.42;
 const ATTRACT_TAIL: f32 = 0.1;
+const ATTRACT_FOOD: f32 = 0.32;
+const GAME_HEAD: f32 = 0.95;
+const GAME_TAIL: f32 = 0.4;
+const GAME_FOOD: f32 = 0.9;
+/// The twinkle's strength behind a game, against its strength at rest.
+const GAME_TWINKLE: f32 = 0.4;
 /// Pixel size of the field's words, in points.
 const TEXT_SCALE: f32 = 2.0;
 
@@ -78,19 +85,28 @@ fn twinkle(hash: u32, time: f32) -> f32 {
     0.25 + 0.75 * (0.5 + 0.5 * (time * speed + offset).sin())
 }
 
-/// What the resting field shows besides its tiles.
-pub struct Resting<'a> {
+/// What the field shows besides the game itself.
+pub struct Scene<'a> {
+    /// The snake that plays by itself at rest.
     pub attract: &'a Attract,
     pub hovered: bool,
     pub seed: u32,
     /// Drives the twinkle.
     pub time: f32,
+    /// How far the field has opened into the game: 0 at rest, 1 in a game.
+    /// Everything eases between the two, so starting a game grows the
+    /// resting picture into the board instead of swapping it out.
+    pub stage: f32,
+}
+
+fn mix(from: f32, to: f32, amount: f32) -> f32 {
+    from + (to - from) * amount
 }
 
 /// Paints the field and, during a game, Snake on it.
 pub fn paint_field(
     game: &Snake,
-    resting: Resting,
+    scene: Scene,
     bounds: Bounds<Pixels>,
     ink: Rgba,
     window: &mut Window,
@@ -99,56 +115,87 @@ pub fn paint_field(
     if field.columns <= 0 || field.rows <= 0 {
         return;
     }
-    let Resting {
+    let Scene {
         attract,
         hovered,
         seed,
         time,
-    } = resting;
-    let at_rest = game.phase() == SnakePhase::Title;
+        stage,
+    } = scene;
+    let stage = stage.clamp(0.0, 1.0);
+    let rest = 1.0 - stage;
     // Pointing at the resting field lifts it a little, the only hint it has.
-    let lift = if hovered && at_rest { 1.5 } else { 1.0 };
-    // At rest the field fades out; a game uses all of it.
-    let fade = |row: i32| if at_rest { field.fade(row) } else { 1.0 };
+    let lift = if hovered && game.phase() == SnakePhase::Title {
+        1.0 + 0.5 * rest
+    } else {
+        1.0
+    };
+    // At rest the field fades out past the middle; it opens to the whole card.
+    let fade = |row: i32| mix(field.fade(row), 1.0, stage);
     for row in 0..field.rows {
         for column in 0..field.columns {
             field.tile(column, row, TILE_ALPHA * lift * fade(row), window);
         }
     }
-    match game.phase() {
-        SnakePhase::Title => {
-            let length = attract.body().count().max(1) as f32;
-            for (index, (column, row)) in attract.body().enumerate() {
-                let along = index as f32 / length;
-                let alpha = ATTRACT_HEAD + (ATTRACT_TAIL - ATTRACT_HEAD) * along;
-                field.tile(column, row, alpha * lift * fade(row), window);
-            }
-            if let Some((column, row)) = attract.food() {
-                field.tile(column, row, 0.32 * lift * fade(row), window);
-            }
-            for row in 0..field.rows {
-                for column in 0..field.columns {
-                    let hash = cell_hash(column, row, seed);
-                    if hash % 100 < LIT_PERCENT {
-                        let level = LIT_LEVELS[(hash / 100) as usize % LIT_LEVELS.len()];
-                        let alpha = level * twinkle(hash, time) * lift * field.fade(row);
-                        field.tile(column, row, alpha, window);
-                    }
-                }
-            }
-            if hovered {
-                field.words("CLICK TO PLAY", field.height * 0.26, 0.45, window);
+    // The twinkle stays behind a game, quieter, so both look like one place.
+    let twinkle_strength = mix(1.0, GAME_TWINKLE, stage);
+    for row in 0..field.rows {
+        for column in 0..field.columns {
+            let hash = cell_hash(column, row, seed);
+            if hash % 100 < LIT_PERCENT {
+                let level = LIT_LEVELS[(hash / 100) as usize % LIT_LEVELS.len()];
+                let alpha = level * twinkle(hash, time) * twinkle_strength * lift * fade(row);
+                field.tile(column, row, alpha, window);
             }
         }
-        SnakePhase::Playing => field.board(game, 1.0, window),
+    }
+    if game.phase() == SnakePhase::Title {
+        let snake = Brightness::at(stage);
+        field.snake(
+            attract.body(),
+            attract.food(),
+            (0, 0),
+            Brightness {
+                head: snake.head * lift,
+                tail: snake.tail * lift,
+                food: snake.food * lift,
+            },
+            &fade,
+            window,
+        );
+        if hovered {
+            field.words("CLICK TO PLAY", field.height * 0.26, 0.45 * rest, window);
+        }
+        return;
+    }
+    let dim = match game.phase() {
+        SnakePhase::Paused => 0.3,
+        SnakePhase::Over => 0.25,
+        _ => 1.0,
+    };
+    field.board(game, Brightness::at(stage).dimmed(dim), &fade, window);
+    match game.phase() {
+        SnakePhase::Playing => {
+            let score = format!(
+                "{:04}   HI {:04}",
+                game.score(),
+                game.best().max(game.score())
+            );
+            let width = font::text_columns(&score) as f32 * TEXT_SCALE;
+            field.text_at(
+                &score,
+                field.width - width - 12.0,
+                field.height - 7.0 * TEXT_SCALE - 8.0,
+                0.4 * stage,
+                window,
+            );
+        }
         SnakePhase::Paused => {
-            field.board(game, 0.3, window);
             let top = field.height * 0.4;
             field.words("PAUSED", top, 0.8, window);
             field.words("SPACE TO GO ON   ESC TO LEAVE", top + 26.0, 0.45, window);
         }
         SnakePhase::Over => {
-            field.board(game, 0.25, window);
             let line = if game.new_best() {
                 format!("NEW HIGH SCORE {:04}", game.score())
             } else {
@@ -164,7 +211,44 @@ pub fn paint_field(
                 window,
             );
         }
+        SnakePhase::Title => {}
     }
+}
+
+/// How strongly a snake and its food are drawn.
+#[derive(Clone, Copy)]
+struct Brightness {
+    head: f32,
+    tail: f32,
+    food: f32,
+}
+
+impl Brightness {
+    /// Faint at rest, full in a game, and in between while the field opens.
+    fn at(stage: f32) -> Self {
+        Self {
+            head: mix(ATTRACT_HEAD, GAME_HEAD, stage),
+            tail: mix(ATTRACT_TAIL, GAME_TAIL, stage),
+            food: mix(ATTRACT_FOOD, GAME_FOOD, stage),
+        }
+    }
+
+    fn dimmed(self, amount: f32) -> Self {
+        Self {
+            head: self.head * amount,
+            tail: self.tail * amount,
+            food: self.food * amount,
+        }
+    }
+}
+
+/// Where a board sits in a field, in cells, so its cells line up with the
+/// field's tiles.
+pub fn board_offset(field: (i32, i32), board: (i32, i32)) -> (i32, i32) {
+    (
+        ((field.0 - board.0) / 2).max(0),
+        ((field.1 - board.1) / 2).max(0),
+    )
 }
 
 /// The field's tiles, centered in its bounds, in the theme's ink.
@@ -227,58 +311,63 @@ impl Field {
         );
     }
 
+    /// A snake from head to tail, fading along its length, and its food.
+    fn snake(
+        &self,
+        body: impl Iterator<Item = (i32, i32)> + Clone,
+        food: Option<(i32, i32)>,
+        (offset_column, offset_row): (i32, i32),
+        brightness: Brightness,
+        fade: &dyn Fn(i32) -> f32,
+        window: &mut Window,
+    ) {
+        let length = body.clone().count().max(1) as f32;
+        for (index, (column, row)) in body.enumerate() {
+            let along = index as f32 / length;
+            let alpha = mix(brightness.head, brightness.tail, along);
+            let (column, row) = (offset_column + column, offset_row + row);
+            self.tile(column, row, alpha * fade(row), window);
+        }
+        if let Some((column, row)) = food {
+            let (column, row) = (offset_column + column, offset_row + row);
+            self.tile(column, row, brightness.food * fade(row), window);
+        }
+    }
+
     /// The game's board, lined up with the field's tiles.
-    fn board(&self, game: &Snake, strength: f32, window: &mut Window) {
+    fn board(
+        &self,
+        game: &Snake,
+        brightness: Brightness,
+        fade: &dyn Fn(i32) -> f32,
+        window: &mut Window,
+    ) {
         let (columns, rows) = game.grid();
-        let offset_column = ((self.columns - columns) / 2).max(0);
-        let offset_row = ((self.rows - rows) / 2).max(0);
+        let offset = board_offset((self.columns, self.rows), (columns, rows));
         if columns < self.columns || rows < self.rows {
             let edge = self.rect(
-                self.left + offset_column as f32 * CELL,
-                offset_row as f32 * CELL,
+                self.left + offset.0 as f32 * CELL,
+                offset.1 as f32 * CELL,
                 columns as f32 * CELL,
                 rows as f32 * CELL,
             );
             window.paint_quad(outline(
                 edge,
                 Rgba {
-                    a: 0.12 * strength,
+                    a: 0.12 * brightness.head,
                     ..self.ink
                 },
                 BorderStyle::Solid,
             ));
         }
-        for (index, (column, row)) in game.body().enumerate() {
-            let alpha = if index == 0 { 0.95 } else { 0.65 };
-            self.tile(
-                offset_column + column,
-                offset_row + row,
-                alpha * strength,
-                window,
-            );
-        }
-        let (column, row) = game.food();
-        self.tile(
-            offset_column + column,
-            offset_row + row,
-            0.9 * strength,
+        self.snake(
+            game.body(),
+            Some(game.food()),
+            offset,
+            brightness,
+            fade,
             window,
         );
-        if game.phase() == SnakePhase::Playing {
-            let score = format!(
-                "{:04}   HI {:04}",
-                game.score(),
-                game.best().max(game.score())
-            );
-            let width = font::text_columns(&score) as f32 * TEXT_SCALE;
-            self.text_at(
-                &score,
-                self.width - width - 12.0,
-                self.height - 7.0 * TEXT_SCALE - 8.0,
-                0.4,
-                window,
-            );
-        }
     }
 
     /// A centered line in the bitmap font.

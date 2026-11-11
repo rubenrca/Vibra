@@ -1,10 +1,11 @@
 //! A space with no terminal open: a way to open one, over a quiet field of
 //! twinkling tiles where a faint snake plays by itself. Clicking the field
-//! starts Snake on the whole card. The resting field runs on a slow tick and
-//! a game asks for a frame only on each step, both only while in sight in the
-//! active window.
+//! opens it over the whole card and the faint snake becomes the player's;
+//! leaving closes it again and hands the snake back. The resting field runs
+//! on a slow tick and a game asks for a frame only on each step, both only
+//! while in sight in the active window.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, Context, Div, MouseButton, MouseDownEvent, Timer, Window, canvas, div, prelude::*,
@@ -12,9 +13,12 @@ use gpui::{
 };
 
 use crate::ui::retro::snake::{Heading, SnakePhase};
-use crate::ui::retro::{Resting, board_grid, field_clock, field_grid, field_seed, paint_field};
+use crate::ui::retro::{
+    Scene, board_grid, board_offset, field_clock, field_grid, field_seed, paint_field,
+};
 use crate::ui::theme::colors;
 
+use super::chrome::ease_out_cubic;
 use super::{WorkspaceSection, WorkspaceView};
 
 /// The resting field's twinkle and its snake are slow, so ten frames a second
@@ -24,6 +28,9 @@ const REST_FRAME: Duration = Duration::from_millis(100);
 const ATTRACT_EVERY: u32 = 2;
 /// The button sits a little below the middle, where the field has faded.
 const BUTTON_DROP: f32 = 56.0;
+/// How long the field takes to open into a game, or close back.
+const STAGE_DURATION: Duration = Duration::from_millis(420);
+const STAGE_FRAME: Duration = Duration::from_millis(16);
 
 impl WorkspaceView {
     /// Whether the center shows the empty space, and with it the field.
@@ -42,7 +49,12 @@ impl WorkspaceView {
             self.snake.pause();
         }
         let phase = self.snake.phase();
-        if phase != SnakePhase::Playing {
+        let stage_target = if phase == SnakePhase::Title { 0.0 } else { 1.0 };
+        if self.arcade_stage_target != stage_target {
+            self.open_stage(stage_target, cx);
+        }
+        // The snake waits for the field to finish opening.
+        if phase != SnakePhase::Playing || self.arcade_stage < 0.999 {
             self._arcade_step_task = None;
         } else if self._arcade_step_task.is_none() {
             self._arcade_step_task = Some(cx.spawn(async move |this, cx| {
@@ -84,6 +96,39 @@ impl WorkspaceView {
         }
     }
 
+    /// Eases the field toward `to`: 1 open over the card, 0 at rest.
+    fn open_stage(&mut self, to: f32, cx: &mut Context<Self>) {
+        self.arcade_stage_target = to;
+        let from = self.arcade_stage;
+        let started = Instant::now();
+        self._arcade_stage_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                Timer::after(STAGE_FRAME).await;
+                let opening = this
+                    .update(cx, |this, cx| {
+                        let t = (started.elapsed().as_secs_f32() / STAGE_DURATION.as_secs_f32())
+                            .min(1.0);
+                        this.arcade_stage = from + (to - from) * ease_out_cubic(t);
+                        cx.notify();
+                        t < 1.0
+                    })
+                    .unwrap_or(false);
+                if !opening {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// The field and board sizes, and where the board sits in the field.
+    fn arcade_grids(&self) -> ((i32, i32), (i32, i32), (i32, i32)) {
+        let bounds = self.arcade_bounds.get();
+        let (width, height) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        let field = field_grid(width, height);
+        let board = board_grid(width, height);
+        (field, board, board_offset(field, board))
+    }
+
     fn step_snake(&mut self, cx: &mut Context<Self>) {
         self.snake.step();
         if self.snake.best() > self.settings.snake_best {
@@ -93,11 +138,27 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// From the resting field, the faint snake becomes the player's, where
+    /// it is; after a game, a fresh snake starts in the middle.
     pub(super) fn start_snake(&mut self) {
-        let bounds = self.arcade_bounds.get();
-        let (columns, rows) =
-            board_grid(f32::from(bounds.size.width), f32::from(bounds.size.height));
-        self.snake.start(columns, rows);
+        let (_, (columns, rows), (dx, dy)) = self.arcade_grids();
+        if self.snake.phase() != SnakePhase::Title {
+            self.snake.start(columns, rows);
+            return;
+        }
+        let body: Vec<(i32, i32)> = self.attract.body().map(|(x, y)| (x - dx, y - dy)).collect();
+        let food = self.attract.food().map(|(x, y)| (x - dx, y - dy));
+        let heading = self.attract.heading();
+        self.snake.start_from(columns, rows, &body, heading, food);
+    }
+
+    /// Back to the resting field, which takes the player's snake with it.
+    fn leave_snake(&mut self) {
+        let ((columns, rows), _, (dx, dy)) = self.arcade_grids();
+        let body: Vec<(i32, i32)> = self.snake.body().map(|(x, y)| (x + dx, y + dy)).collect();
+        self.attract
+            .adopt(&body, self.snake.heading(), columns, rows);
+        self.snake.quit();
     }
 
     /// Keys for the game, while the empty space has the keyboard. Returns
@@ -116,7 +177,7 @@ impl WorkspaceView {
             ("space" | "enter", SnakePhase::Over) => self.start_snake(),
             ("space" | "enter" | "p", SnakePhase::Paused) => self.snake.resume(),
             ("space" | "p" | "escape", SnakePhase::Playing) => self.snake.pause(),
-            ("escape", SnakePhase::Paused | SnakePhase::Over) => self.snake.quit(),
+            ("escape", SnakePhase::Paused | SnakePhase::Over) => self.leave_snake(),
             (_, SnakePhase::Playing) if heading.is_some() => {
                 self.snake.turn(heading.unwrap_or(Heading::Right));
                 return true;
@@ -149,6 +210,7 @@ impl WorkspaceView {
                 .map_or("", |project| project.name.as_str()),
         );
         let ink = colors().foreground;
+        let stage = self.arcade_stage;
         let phase = self.snake.phase();
         let idle = matches!(phase, SnakePhase::Title | SnakePhase::Over);
         div()
@@ -165,22 +227,23 @@ impl WorkspaceView {
                 canvas(
                     move |bounds, _, _| measured.set(bounds),
                     move |bounds, _, window, _| {
-                        let resting = Resting {
+                        let scene = Scene {
                             attract: &attract,
                             hovered,
                             seed,
                             time: field_clock(),
+                            stage,
                         };
-                        paint_field(&snake, resting, bounds, ink, window)
+                        paint_field(&snake, scene, bounds, ink, window)
                     },
                 )
                 .absolute()
                 .inset_0(),
             )
             // A game takes the whole card; at rest the way to a terminal
-            // sits where the field fades out.
-            .when(phase == SnakePhase::Title, |field| {
-                field.child(self.new_terminal_button(cx))
+            // sits where the field fades out, and it fades with the field.
+            .when(stage < 0.999, |field| {
+                field.child(self.new_terminal_button(cx).opacity(1.0 - stage))
             })
             .into_any_element()
     }

@@ -38,12 +38,38 @@ impl Attract {
     }
 
     /// Cells from head to tail.
-    pub fn body(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+    pub fn body(&self) -> impl Iterator<Item = (i32, i32)> + Clone + '_ {
         self.body.iter().copied()
     }
 
     pub fn food(&self) -> Option<(i32, i32)> {
         (!self.body.is_empty()).then_some(self.food)
+    }
+
+    pub fn heading(&self) -> Heading {
+        self.heading
+    }
+
+    /// Takes over a snake left by a game on a field `columns` by `rows`, so
+    /// the field does not jump when a game ends. Keeps its own snake when the
+    /// game's lies outside the part of the field it plays in.
+    pub fn adopt(&mut self, body: &[(i32, i32)], heading: Heading, columns: i32, rows: i32) {
+        let rows = ((rows as f32 * VISIBLE_SHARE).ceil() as i32).min(rows);
+        let inside = |&(x, y): &(i32, i32)| x >= 0 && y >= 0 && x < columns && y < rows;
+        if body.is_empty() || !body.iter().all(inside) {
+            return;
+        }
+        self.columns = columns;
+        self.rows = rows;
+        self.body = body.iter().copied().collect();
+        self.length = body.len().clamp(START_LENGTH, MAX_LENGTH);
+        while self.body.len() > self.length {
+            self.body.pop_back();
+        }
+        self.heading = heading;
+        if self.body.contains(&self.food) || !inside(&self.food) {
+            self.place_food();
+        }
     }
 
     /// Moves one cell on a field `columns` by `rows`.
@@ -176,6 +202,20 @@ mod tests {
             longest = longest.max(attract.body().count());
         }
         assert!(longest > START_LENGTH, "it found food");
+    }
+
+    #[test]
+    fn it_takes_over_a_game_s_snake_when_it_fits() {
+        let mut attract = Attract::new(9);
+        attract.step(40, 20);
+        attract.adopt(&[(3, 2), (2, 2), (1, 2)], Heading::Right, 40, 20);
+        assert_eq!(attract.body().collect::<Vec<_>>(), [(3, 2), (2, 2), (1, 2)]);
+        attract.step(40, 20);
+        assert_eq!(attract.body().count(), 4, "it carries on from there");
+
+        let before: Vec<_> = attract.body().collect();
+        attract.adopt(&[(3, 19), (2, 19)], Heading::Right, 40, 20);
+        assert_eq!(attract.body().collect::<Vec<_>>(), before, "too low to see");
     }
 
     #[test]

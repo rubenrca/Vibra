@@ -127,6 +127,10 @@ pub struct WorkspaceView {
     arcade_hovered: bool,
     _arcade_step_task: Option<Task<()>>,
     _arcade_rest_task: Option<Task<()>>,
+    /// How far the field has opened into a game (`0.0` at rest … `1.0` open).
+    arcade_stage: f32,
+    arcade_stage_target: f32,
+    _arcade_stage_task: Option<Task<()>>,
     /// The faint snake that plays by itself on the resting field.
     attract: crate::ui::retro::attract::Attract,
     agent_hook_status: Option<AgentHookStatus>,

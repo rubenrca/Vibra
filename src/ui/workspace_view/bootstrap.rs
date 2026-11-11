@@ -293,6 +293,9 @@ impl WorkspaceView {
             arcade_hovered: false,
             _arcade_step_task: None,
             _arcade_rest_task: None,
+            arcade_stage: 0.0,
+            arcade_stage_target: 0.0,
+            _arcade_stage_task: None,
             attract: crate::ui::retro::attract::Attract::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
