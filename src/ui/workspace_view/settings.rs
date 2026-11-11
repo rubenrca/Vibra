@@ -957,6 +957,16 @@ impl WorkspaceView {
             }));
     }
 
+    /// Follows the active palette and the transparency setting, which both
+    /// decide whether the window shows the desktop.
+    pub(super) fn sync_window_backdrop(&mut self, window: &mut Window) {
+        let backdrop = theme::window_background();
+        if self.window_backdrop != Some(backdrop) {
+            window.set_background_appearance(backdrop);
+            self.window_backdrop = Some(backdrop);
+        }
+    }
+
     fn set_theme_id(&mut self, theme_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let theme_id = theme::canonicalize_theme_id(theme_id);
         if self.settings.theme_id == theme_id {
@@ -994,7 +1004,7 @@ impl WorkspaceView {
         }
         self.settings.window_transparency = enabled;
         theme::set_translucent(enabled);
-        window.set_background_appearance(theme::window_background());
+        self.sync_window_backdrop(window);
         for terminal in self.terminals.values() {
             terminal.update(cx, |_, cx| cx.notify());
         }

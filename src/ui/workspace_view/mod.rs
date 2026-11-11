@@ -211,6 +211,9 @@ pub struct WorkspaceView {
     home_directory: Option<PathBuf>,
     /// Subscribed once so system light/dark flips re-resolve the palette.
     _appearance_subscription: Option<Subscription>,
+    /// The native backdrop last set on the window: blurred glass for dark
+    /// palettes, solid for light ones and with transparency off.
+    window_backdrop: Option<gpui::WindowBackgroundAppearance>,
     _activation_subscription: Option<Subscription>,
     _window_bounds_subscription: Option<Subscription>,
     _release_subscription: Subscription,
@@ -709,6 +712,7 @@ impl Render for WorkspaceView {
         self.sync_ripple_clock(cx);
         self.sync_arcade_clock(cx);
         self.ensure_appearance_subscription(window, cx);
+        self.sync_window_backdrop(window);
         self.ensure_activation_subscription(window, cx);
         self.ensure_window_bounds_subscription(window, cx);
         if self.initial_terminal_focus_pending {

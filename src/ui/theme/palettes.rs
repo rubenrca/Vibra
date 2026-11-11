@@ -2,12 +2,12 @@
 
 use std::sync::LazyLock;
 
-use gpui::{rgb, rgba};
+use gpui::{Hsla, Rgba, hsla, rgb, rgba};
 
 use super::legibility::legible;
 use super::{
-    SyntaxColors, Theme, ThemeFamily, mix, relative_luminance, subtle_border, with_alpha,
-    with_floating_frame,
+    FRAME_WASH, SyntaxColors, Theme, ThemeFamily, mix, relative_luminance, subtle_border,
+    with_alpha, with_floating_frame,
 };
 use crate::ports::terminal::TerminalRgb;
 
@@ -271,12 +271,17 @@ pub(crate) fn midnight_light() -> Theme {
 // Workspace presets
 // ---------------------------------------------------------------------------
 
-/// One tone of a workspace preset, with the code colors it ships.
+/// A workspace preset. Its dark surface sets the hue, saturation and dark
+/// lightness of the window; each tone brings its ink, accent and code colors.
 #[derive(Debug, Clone, Copy)]
 struct Workspace {
-    /// The frame around the cards.
     surface: u32,
-    card: u32,
+    light: Tone,
+    dark: Tone,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Tone {
     content: u32,
     accent: u32,
     /// Links and headings in Markdown.
@@ -286,24 +291,52 @@ struct Workspace {
     syntax: [u32; 9],
 }
 
-/// A preset's surfaces, ink, accent and code carry its hue. Status colors
-/// stay one set per tone, and diff rows are emerald and rose at 15% over the
-/// card.
+/// The window color a preset paints: its surface's hue and saturation in
+/// whole degrees and percents, at `light` lightness, or at the surface's own
+/// whole-percent lightness (capped at 30%) in dark.
+fn shell(surface: u32, light: Option<f32>) -> Rgba {
+    let color: Hsla = rgb(surface).into();
+    let lightness = light.unwrap_or_else(|| (color.l * 100.0).round().min(30.0) / 100.0);
+    hsla(
+        (color.h * 360.0).round() / 360.0,
+        (color.s * 100.0).round() / 100.0,
+        lightness,
+        1.0,
+    )
+    .to_rgb()
+}
+
+/// Dark cards are the window color itself and the frame is the same color
+/// with 5% ink over it. Light windows sit at 97% lightness under that same
+/// 5% ink, with white cards. Status colors stay one set per tone, and diff
+/// rows are emerald and rose at 15% over the card.
 fn workspace_theme(preset: Workspace, light: bool) -> Theme {
+    let tone = if light { preset.light } else { preset.dark };
+    let card = if light {
+        rgb(0xffffff)
+    } else {
+        shell(preset.surface, None)
+    };
     let (danger, success, warning) = if light {
         (0xc23b3b, 0x219452, 0xad761c)
     } else {
         (0xdd6b6b, 0x58b87a, 0xd7ad61)
     };
     let mut theme = theme_from_seed(seed(
-        preset.card,
-        preset.content,
-        preset.accent,
+        rgba_to_u32(card),
+        tone.content,
+        tone.accent,
         danger,
         success,
         warning,
     ));
     theme.terminal = theme.background;
+    let base = if light {
+        shell(preset.surface, Some(0.97))
+    } else {
+        theme.background
+    };
+    theme.sidebar = mix(base, theme.foreground, FRAME_WASH);
     theme.diff_added_bg = mix(theme.background, rgb(0x10b981), 0.15);
     theme.diff_deleted_bg = mix(theme.background, rgb(0xf43f5e), 0.15);
     (theme.diff_added, theme.diff_deleted) = if light {
@@ -321,7 +354,7 @@ fn workspace_theme(preset: Workspace, light: bool) -> Theme {
         comment,
         property,
         meta,
-    ] = preset.syntax.map(rgb);
+    ] = tone.syntax.map(rgb);
     theme.syntax = Some(SyntaxColors {
         keyword,
         function,
@@ -332,25 +365,23 @@ fn workspace_theme(preset: Workspace, light: bool) -> Theme {
         comment,
         property,
         meta,
-        heading: rgb(preset.heading),
-        link: rgb(preset.link),
+        heading: rgb(tone.heading),
+        link: rgb(tone.link),
     });
     theme
 }
 
-/// Dark presets keep the standard frame step. Light cards are white, so the
-/// preset's tinted surface becomes the frame and carries its hue; it sits
-/// about the same step off the card. Ink's surface is the card itself.
-fn workspace_family(id: &str, label: &str, [light, dark]: [Workspace; 2]) -> ThemeFamily {
-    let mut light_theme = with_floating_frame(workspace_theme(light, true));
-    if light.surface != light.card {
-        light_theme.sidebar = rgb(light.surface);
-    }
+fn rgba_to_u32(color: Rgba) -> u32 {
+    let channel = |value: f32| (value * 255.0).round().clamp(0.0, 255.0) as u32;
+    (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
+}
+
+fn workspace_family(id: &str, label: &str, preset: Workspace) -> ThemeFamily {
     ThemeFamily {
         id: id.to_string(),
         label: label.to_string(),
-        light: legible(light_theme),
-        dark: legible(with_floating_frame(workspace_theme(dark, false))),
+        light: legible(workspace_theme(preset, true)),
+        dark: legible(workspace_theme(preset, false)),
     }
 }
 
@@ -360,7 +391,7 @@ pub(crate) fn moss_dark() -> Theme {
 }
 
 /// Settings order, after Midnight.
-const WORKSPACE_PRESETS: [(&str, &str, [Workspace; 2]); 10] = [
+const WORKSPACE_PRESETS: [(&str, &str, Workspace); 10] = [
     ("harbor", "Harbor", HARBOR),
     ("moss", "Moss", MOSS),
     ("ember", "Ember", EMBER),
@@ -373,11 +404,9 @@ const WORKSPACE_PRESETS: [(&str, &str, [Workspace; 2]); 10] = [
     ("ink", "Ink", INK),
 ];
 
-// Light first, then dark.
-const HARBOR: [Workspace; 2] = [
-    Workspace {
-        surface: 0xeef2f7,
-        card: 0xffffff,
+const HARBOR: Workspace = Workspace {
+    surface: 0x0b1018,
+    light: Tone {
         content: 0x1b2533,
         accent: 0x2f6fd0,
         link: 0x1f5fbf,
@@ -387,9 +416,7 @@ const HARBOR: [Workspace; 2] = [
             0x006a83,
         ],
     },
-    Workspace {
-        surface: 0x0b1018,
-        card: 0x060a10,
+    dark: Tone {
         content: 0xdbe4f0,
         accent: 0x5b9cf2,
         link: 0x8cc4ff,
@@ -399,11 +426,10 @@ const HARBOR: [Workspace; 2] = [
             0x89ddff,
         ],
     },
-];
-const MOSS: [Workspace; 2] = [
-    Workspace {
-        surface: 0xf1f4ee,
-        card: 0xffffff,
+};
+const MOSS: Workspace = Workspace {
+    surface: 0x0d110e,
+    light: Tone {
         content: 0x1f2a20,
         accent: 0x3d8a45,
         link: 0x2e7a3a,
@@ -413,9 +439,7 @@ const MOSS: [Workspace; 2] = [
             0x6e7a70,
         ],
     },
-    Workspace {
-        surface: 0x0d110e,
-        card: 0x070a08,
+    dark: Tone {
         content: 0xdde5dc,
         accent: 0x6fbf73,
         link: 0x9ad6a0,
@@ -425,11 +449,10 @@ const MOSS: [Workspace; 2] = [
             0x9da9a0,
         ],
     },
-];
-const EMBER: [Workspace; 2] = [
-    Workspace {
-        surface: 0xf7f2ee,
-        card: 0xffffff,
+};
+const EMBER: Workspace = Workspace {
+    surface: 0x120e0c,
+    light: Tone {
         content: 0x2d211b,
         accent: 0xc75c1e,
         link: 0xb4501a,
@@ -439,9 +462,7 @@ const EMBER: [Workspace; 2] = [
             0x665c54,
         ],
     },
-    Workspace {
-        surface: 0x120e0c,
-        card: 0x0a0706,
+    dark: Tone {
         content: 0xecdfd6,
         accent: 0xf08a4b,
         link: 0xf6b07c,
@@ -451,11 +472,10 @@ const EMBER: [Workspace; 2] = [
             0xa89984,
         ],
     },
-];
-const ORCHID: [Workspace; 2] = [
-    Workspace {
-        surface: 0xf4f0f8,
-        card: 0xffffff,
+};
+const ORCHID: Workspace = Workspace {
+    surface: 0x110d16,
+    light: Tone {
         content: 0x261e33,
         accent: 0x8048c8,
         link: 0x6f3bb8,
@@ -465,9 +485,7 @@ const ORCHID: [Workspace; 2] = [
             0x137a85,
         ],
     },
-    Workspace {
-        surface: 0x110d16,
-        card: 0x09070c,
+    dark: Tone {
         content: 0xe6def0,
         accent: 0xb57cf0,
         link: 0xcfa6ff,
@@ -477,11 +495,10 @@ const ORCHID: [Workspace; 2] = [
             0x94e2d5,
         ],
     },
-];
-const TIDEPOOL: [Workspace; 2] = [
-    Workspace {
-        surface: 0xedf5f5,
-        card: 0xffffff,
+};
+const TIDEPOOL: Workspace = Workspace {
+    surface: 0x0a1213,
+    light: Tone {
         content: 0x162a2b,
         accent: 0x138a80,
         link: 0x0f7a71,
@@ -491,9 +508,7 @@ const TIDEPOOL: [Workspace; 2] = [
             0x5b7072,
         ],
     },
-    Workspace {
-        surface: 0x0a1213,
-        card: 0x050a0b,
+    dark: Tone {
         content: 0xd8e8e8,
         accent: 0x3fc1b5,
         link: 0x7fdcd3,
@@ -503,11 +518,10 @@ const TIDEPOOL: [Workspace; 2] = [
             0x8aa3a4,
         ],
     },
-];
-const DUNE: [Workspace; 2] = [
-    Workspace {
-        surface: 0xf6f1e7,
-        card: 0xfffdf8,
+};
+const DUNE: Workspace = Workspace {
+    surface: 0x13110d,
+    light: Tone {
         content: 0x2e2819,
         accent: 0xa57d1e,
         link: 0x8c6914,
@@ -517,9 +531,7 @@ const DUNE: [Workspace; 2] = [
             0x716e61,
         ],
     },
-    Workspace {
-        surface: 0x13110d,
-        card: 0x0b0a07,
+    dark: Tone {
         content: 0xebe3d2,
         accent: 0xd9b25c,
         link: 0xe8cc8a,
@@ -529,11 +541,10 @@ const DUNE: [Workspace; 2] = [
             0xa6a69c,
         ],
     },
-];
-const ROSEWOOD: [Workspace; 2] = [
-    Workspace {
-        surface: 0xf8f0f2,
-        card: 0xffffff,
+};
+const ROSEWOOD: Workspace = Workspace {
+    surface: 0x140e10,
+    light: Tone {
         content: 0x2f1f24,
         accent: 0xc0405c,
         link: 0xa8344f,
@@ -543,9 +554,7 @@ const ROSEWOOD: [Workspace; 2] = [
             0x6e6a86,
         ],
     },
-    Workspace {
-        surface: 0x140e10,
-        card: 0x0b0809,
+    dark: Tone {
         content: 0xefdfe3,
         accent: 0xe7798f,
         link: 0xf2a6b4,
@@ -555,11 +564,10 @@ const ROSEWOOD: [Workspace; 2] = [
             0x908caa,
         ],
     },
-];
-const GLACIER: [Workspace; 2] = [
-    Workspace {
-        surface: 0xf2f5f8,
-        card: 0xffffff,
+};
+const GLACIER: Workspace = Workspace {
+    surface: 0x0e1114,
+    light: Tone {
         content: 0x20262d,
         accent: 0x3a7aa8,
         link: 0x2d6a96,
@@ -569,9 +577,7 @@ const GLACIER: [Workspace; 2] = [
             0x5a6a80,
         ],
     },
-    Workspace {
-        surface: 0x0e1114,
-        card: 0x080a0c,
+    dark: Tone {
         content: 0xe1e7ec,
         accent: 0x7fb4d9,
         link: 0xa7d0ec,
@@ -581,11 +587,10 @@ const GLACIER: [Workspace; 2] = [
             0x7f97b8,
         ],
     },
-];
-const ARCADE: [Workspace; 2] = [
-    Workspace {
-        surface: 0xf5f2fc,
-        card: 0xffffff,
+};
+const ARCADE: Workspace = Workspace {
+    surface: 0x0f0b1a,
+    light: Tone {
         content: 0x231a3a,
         accent: 0xc2189a,
         link: 0x0a7f90,
@@ -595,9 +600,7 @@ const ARCADE: [Workspace; 2] = [
             0x6b6390,
         ],
     },
-    Workspace {
-        surface: 0x0f0b1a,
-        card: 0x08060f,
+    dark: Tone {
         content: 0xece6ff,
         accent: 0xff5fd2,
         link: 0x5ff2ff,
@@ -607,11 +610,10 @@ const ARCADE: [Workspace; 2] = [
             0x8d86c9,
         ],
     },
-];
-const INK: [Workspace; 2] = [
-    Workspace {
-        surface: 0xffffff,
-        card: 0xffffff,
+};
+const INK: Workspace = Workspace {
+    surface: 0x000000,
+    light: Tone {
         content: 0x000000,
         accent: 0x0050d8,
         link: 0x0040b0,
@@ -621,9 +623,7 @@ const INK: [Workspace; 2] = [
             0x6a6a6a,
         ],
     },
-    Workspace {
-        surface: 0x000000,
-        card: 0x000000,
+    dark: Tone {
         content: 0xf5f5f5,
         accent: 0x7aa7ff,
         link: 0x9cc0ff,
@@ -633,7 +633,7 @@ const INK: [Workspace; 2] = [
             0x8f8f8f,
         ],
     },
-];
+};
 
 fn product_family(id: &'static str, label: &'static str, light: Theme, dark: Theme) -> ThemeFamily {
     ThemeFamily {
@@ -996,34 +996,61 @@ mod tests {
         }
     }
 
+    fn preset(id: &str) -> &'static ThemeFamily {
+        built_in_themes()
+            .iter()
+            .find(|family| family.id == id)
+            .unwrap_or_else(|| panic!("missing preset {id}"))
+    }
+
     /// The presets keep their own ink and code colors through the contrast
-    /// floors, and every one paints its cards in its own color.
+    /// floors, and every frame stands apart from its cards.
     #[test]
     fn workspace_presets_keep_their_ink_and_code() {
-        for (id, _, tones) in WORKSPACE_PRESETS {
-            let family = built_in_themes()
-                .iter()
-                .find(|family| family.id == id)
-                .unwrap_or_else(|| panic!("missing preset {id}"));
-            for (preset, theme) in tones.into_iter().zip([family.light, family.dark]) {
-                assert_eq!(theme.foreground, rgb(preset.content), "{id} ink");
-                assert_eq!(theme.terminal, rgb(preset.card), "{id} card");
+        for (id, _, workspace) in WORKSPACE_PRESETS {
+            let family = preset(id);
+            for (tone, theme) in [
+                (workspace.light, family.light),
+                (workspace.dark, family.dark),
+            ] {
+                assert_eq!(theme.foreground, rgb(tone.content), "{id} ink");
                 let syntax = theme.syntax.expect("preset ships code colors");
-                assert_eq!(syntax.keyword, rgb(preset.syntax[0]), "{id} keyword");
-                assert_eq!(syntax.link, rgb(preset.link), "{id} link");
+                assert_eq!(syntax.keyword, rgb(tone.syntax[0]), "{id} keyword");
+                assert_eq!(syntax.link, rgb(tone.link), "{id} link");
                 assert_ne!(theme.sidebar, theme.terminal, "{id} frame");
             }
         }
     }
 
-    /// Light presets show their tinted surface as the frame.
+    /// Dark cards are the window color, the surface to within rounding; the
+    /// frame is that color with 5% ink. Light cards are white on a 97% frame.
     #[test]
-    fn light_presets_frame_with_their_surface() {
-        let harbor = built_in_themes()
-            .iter()
-            .find(|family| family.id == "harbor")
-            .expect("harbor");
-        assert_eq!(harbor.light.sidebar, rgb(HARBOR[0].surface));
-        assert_eq!(harbor.light.terminal, rgb(0xffffff));
+    fn presets_paint_the_window_with_their_surface() {
+        for (id, _, workspace) in WORKSPACE_PRESETS {
+            let family = preset(id);
+            let card = rgba_to_u32(family.dark.terminal);
+            for shift in [16, 8, 0] {
+                let (card, surface) = ((card >> shift) & 0xff, (workspace.surface >> shift) & 0xff);
+                assert!(card.abs_diff(surface) <= 2, "{id} dark card {card:06x}");
+            }
+            assert_eq!(family.dark.background, family.dark.terminal, "{id} base");
+            assert_eq!(
+                family.dark.sidebar,
+                mix(family.dark.terminal, family.dark.foreground, FRAME_WASH),
+                "{id} dark frame"
+            );
+            assert_eq!(family.light.terminal, rgb(0xffffff), "{id} light card");
+            assert_eq!(
+                family.light.sidebar,
+                mix(
+                    shell(workspace.surface, Some(0.97)),
+                    family.light.foreground,
+                    FRAME_WASH
+                ),
+                "{id} light frame"
+            );
+        }
+        assert_eq!(rgba_to_u32(preset("harbor").dark.terminal), 0x0b1018);
+        assert_eq!(rgba_to_u32(preset("ink").dark.terminal), 0x000000);
     }
 }

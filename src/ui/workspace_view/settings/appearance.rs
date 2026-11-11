@@ -555,8 +555,8 @@ impl WorkspaceView {
                                     SettingsToggleRow {
                                         label: "Transparency",
                                         description: concat!(
-                                            "Let your desktop show through the window. ",
-                                            "Turn it off for solid backgrounds.",
+                                            "Let your desktop show through the window in ",
+                                            "dark themes. Turn it off for solid backgrounds.",
                                         ),
                                         enabled: self.settings.window_transparency,
                                         divider: false,

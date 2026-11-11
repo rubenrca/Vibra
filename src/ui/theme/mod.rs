@@ -29,10 +29,13 @@ pub const MONO_FONT: &str = "JetBrains Mono";
 
 static TRANSLUCENT: AtomicBool = AtomicBool::new(true);
 
-/// Whether surfaces let the native backdrop show through. The window setting can
-/// turn it off; platforms without a native backdrop are always opaque.
+/// Whether surfaces let the native backdrop show through. Only dark palettes
+/// do: the desktop washes out light ones. The window setting can turn it off,
+/// and platforms without a native backdrop are always opaque.
 pub fn translucent() -> bool {
-    cfg!(target_os = "macos") && TRANSLUCENT.load(std::sync::atomic::Ordering::Relaxed)
+    cfg!(target_os = "macos")
+        && TRANSLUCENT.load(std::sync::atomic::Ordering::Relaxed)
+        && colors().is_dark()
 }
 
 pub fn set_translucent(enabled: bool) {
@@ -48,12 +51,12 @@ pub fn window_background() -> WindowBackgroundAppearance {
     }
 }
 
-/// Use one continuous window fill with 12% transparency over the native backdrop.
+/// Use one continuous window fill with 15% transparency over the native backdrop.
 /// Keep this separate from floating fills, which need more opacity for readability.
 pub fn window_surface() -> Hsla {
     let mut color: Hsla = colors().background.into();
     if translucent() {
-        color.a *= 0.88;
+        color.a *= 0.85;
     }
     color
 }
@@ -70,13 +73,15 @@ pub fn frame() -> Rgba {
     colors().sidebar
 }
 
+/// How much ink washes over the frame, against the cards.
+pub(super) const FRAME_WASH: f32 = 0.05;
+
 /// Sets the sidebar tone a step off the terminal, so cards read as floating
 /// on it: lighter than the cards in dark palettes, darker in light ones.
 /// Every palette gets the same step, whatever its own sidebar was. The step
 /// stays small so the cards never read as holes in the frame.
 pub(super) fn with_floating_frame(mut theme: Theme) -> Theme {
-    const FRAME_STEP: f32 = 0.05;
-    theme.sidebar = mix(theme.terminal, theme.foreground, FRAME_STEP);
+    theme.sidebar = mix(theme.terminal, theme.foreground, FRAME_WASH);
     theme
 }
 
@@ -662,7 +667,9 @@ mod tests {
         let _guard = ACTIVE_PALETTE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let before = translucent();
+        let before = TRANSLUCENT.load(std::sync::atomic::Ordering::Relaxed);
+        let palette = colors();
+        set_active(midnight_dark());
         let background: Hsla = colors().background.into();
 
         set_translucent(false);
@@ -681,6 +688,14 @@ mod tests {
             assert!(floating_surface(colors().panel).a < colors().panel.a);
             assert!(popover_surface().a < Hsla::from(colors().sidebar).a);
         }
+
+        // Light palettes stay solid with the setting on.
+        set_active(midnight_light());
+        assert!(!translucent());
+        assert_eq!(window_background(), WindowBackgroundAppearance::Opaque);
+        assert_eq!(window_surface().a, 1.0);
+
+        set_active(palette);
         set_translucent(before);
     }
 

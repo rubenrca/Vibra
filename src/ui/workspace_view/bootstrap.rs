@@ -383,6 +383,7 @@ impl WorkspaceView {
             _open_ide_task: None,
             home_directory,
             _appearance_subscription: None,
+            window_backdrop: None,
             _activation_subscription: None,
             _window_bounds_subscription: None,
             _release_subscription: release_subscription,
