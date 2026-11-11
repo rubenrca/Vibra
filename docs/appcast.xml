@@ -3,23 +3,24 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.50</title>
-            <pubDate>Wed, 11 Nov 2026 14:58:28 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.50</link>
-            <sparkle:version>354</sparkle:version>
-            <sparkle:shortVersionString>0.3.50</sparkle:shortVersionString>
+            <title>0.3.51</title>
+            <pubDate>Wed, 11 Nov 2026 18:55:59 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.51</link>
+            <sparkle:version>359</sparkle:version>
+            <sparkle:shortVersionString>0.3.51</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Add Activity under Repository: a read-only monitor of what runs for your spaces. Tiles show the servers listening and the memory in use, the agents and what they need, the fullest agent context, each subscription's five-hour and weekly windows, and today's tokens beside the last seven days. Each space lists its ports (a click opens localhost), its terminals' memory, and its agents with their task, state, and context; servers and agents running outside Vibra are grouped by repository.</li>
-  <li>Open Repository as a tab of its space, after its terminals, closed with ⌘W or its menu and counted by ⌘1–⌘9. History, Pull requests, and Issues move into a segmented control at the top of its list.</li>
-  <li>Mark spaces with a drop and spreading rings, placed and colored by the space's name; the rings move while its agents work and faster while one needs you.</li>
-  <li>Rest an empty space on a quiet field with a snake playing by itself; click it to play Snake on the whole card. The high score is kept.</li>
-  <li>Drop the tabs' buttons and the panes' headers: right-click for the menu and ⌘W to close, and drag a pane by the strip along its top edge.</li>
-  <li>Reach the cards to the window's bottom edge: the usage group sits at the left sidebar's foot and the branch and Keep Awake at the right one's.</li>
-  <li>Show a bare prompt on a terminal's tile instead of a framed icon.</li>
+  <li>Render pull requests and issues in Repository as GitHub does: tables with sized columns, collapsible details, GitHub's HTML, alerts such as NOTE and WARNING, and links for bare URLs, #123, and @user. Images show as links to them.</li>
+  <li>Keep the right sidebar beside Repository and Activity: it stays as it was, and its toggle and the Explorer and Changes tabs work there without leaving the tab.</li>
+  <li>Hide Keep Awake with the right sidebar instead of moving it to the left sidebar's foot.</li>
+  <li>Center the usage chips in their strip, with larger provider marks.</li>
+  <li>Bring back the left sidebar's dividers as lines that fade out toward both ends.</li>
+  <li>Never cut a space's name short in the sidebar: the branch gives way first, and a long name wraps.</li>
+  <li>Keep a space lit while its Repository or Activity tab is in front.</li>
+  <li>Fade the Changes graph into the frame at its foot.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.50/Vibra-0.3.50.dmg" length="16536320" type="application/octet-stream" sparkle:edSignature="JTGneaamV8JN9Q+no5ZlrA28tYY+WxjR8BAWtF4Q0JxDHRTzvXYG0f9CXoA0aQp8YhtqQVKhSoZpiGCAGqzRCA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.51/Vibra-0.3.51.dmg" length="16624484" type="application/octet-stream" sparkle:edSignature="wkMR30b75j93rSY+ToMfI6CYjShTHraqk+KQ6kJsVZCj4CwNu2O4M64gcm/V1XV5vgrZQdR8d7/ssTNMhzgdAA=="/>
         </item>
     </channel>
 </rss>
