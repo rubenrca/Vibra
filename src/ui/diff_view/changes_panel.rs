@@ -6,18 +6,18 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, Context, FocusHandle, KeyDownEvent, SharedString, Task, Window, div,
-    linear_color_stop, linear_gradient, prelude::*, px, relative, svg, uniform_list,
+    AnyElement, Context, FocusHandle, KeyDownEvent, SharedString, Task, UniformListScrollHandle,
+    Window, div, prelude::*, px, relative, svg, uniform_list,
 };
 
 use super::{DiffView, DiffViewEvent, GitPanelMode};
 use crate::ports::git::{GitCommit, GitCommitOptions, GitPort, GitSyncOperation};
 use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
 use crate::ui::text_edit::{TextKeyOutcome, apply_text_key};
-use crate::ui::theme::{colors, frame, frame_hover, frame_selected, surface_tint};
+use crate::ui::theme::{colors, frame_hover, frame_selected, surface_tint};
 
 const GRAPH_ROW_HEIGHT: f32 = 26.0;
-/// The graph's rows fade into the frame over this much of its foot.
+/// The graph's rows fade out over this much of its foot.
 const GRAPH_FADE_HEIGHT: f32 = 32.0;
 /// The graph polls less often than the file list; commits change rarely.
 const GRAPH_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -59,6 +59,8 @@ pub(super) struct ChangesPanelState {
     menu: Option<PanelMenu>,
     graph_open: bool,
     graph_refreshed_at: Option<Instant>,
+    /// Where the graph's rows sit, so each one can fade at the list's foot.
+    graph_scroll: UniformListScrollHandle,
     generating: bool,
     _task: Option<Task<()>>,
     _generate_task: Option<Task<()>>,
@@ -75,6 +77,7 @@ impl ChangesPanelState {
             menu: None,
             graph_open: true,
             graph_refreshed_at: None,
+            graph_scroll: UniformListScrollHandle::new(),
             generating: false,
             _task: None,
             _generate_task: None,
@@ -803,6 +806,7 @@ impl DiffView {
             .selected_commit
             .as_ref()
             .map(|commit| commit.sha.clone());
+        let scroll = self.changes.graph_scroll.clone();
 
         div()
             .w_full()
@@ -864,70 +868,62 @@ impl DiffView {
                 )
             })
             .when(open && count > 0, |section| {
-                // The rows fade into the frame at the panel's foot instead of
-                // stopping at its edge; the list's bottom padding lets the
-                // last commit scroll clear of the fade.
+                // The rows fade out at the panel's foot instead of stopping at
+                // its edge; the list's bottom padding lets the last commit
+                // scroll clear of the fade. Each row fades through its own
+                // opacity rather than under a painted fill, so the fade ends
+                // on whatever shows behind the panel, translucent backdrop
+                // included.
+                let list_scroll = scroll.clone();
                 section.child(
-                    div()
-                        .relative()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .w_full()
-                        .child(
-                            uniform_list(
-                                "git-graph-rows",
-                                count,
-                                cx.processor(
-                                    move |_this, range: std::ops::Range<usize>, _window, cx| {
-                                        let Some(history) = history.as_ref() else {
-                                            return Vec::new();
-                                        };
-                                        range
-                                            .filter_map(|index| {
-                                                let commit = history.commits.get(index)?;
-                                                let is_head = head
-                                                    .as_deref()
-                                                    .is_some_and(|head| commit.sha == head);
-                                                let is_selected = selected.as_deref()
-                                                    == Some(commit.sha.as_str());
-                                                let open_commit = commit.clone();
-                                                Some(
-                                                    graph_row(
-                                                        commit,
-                                                        graph.get(index),
-                                                        graph_width,
-                                                        is_head,
-                                                        is_selected,
-                                                    )
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        this.open_commit_from_graph(
-                                                            open_commit.clone(),
-                                                            cx,
-                                                        );
-                                                    }))
-                                                    .into_any_element(),
-                                                )
-                                            })
-                                            .collect()
-                                    },
-                                ),
-                            )
-                            .size_full()
-                            .pb(px(GRAPH_FADE_HEIGHT)),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .bottom_0()
-                                .h(px(GRAPH_FADE_HEIGHT))
-                                .bg(linear_gradient(
-                                    180.0,
-                                    linear_color_stop(frame(), 0.0).opacity(0.0),
-                                    linear_color_stop(frame(), 1.0),
-                                )),
-                        ),
+                    uniform_list(
+                        "git-graph-rows",
+                        count,
+                        cx.processor(move |_this, range: std::ops::Range<usize>, _window, cx| {
+                            let Some(history) = history.as_ref() else {
+                                return Vec::new();
+                            };
+                            // The list records this frame's bounds and offset
+                            // before it asks for rows.
+                            let (list_height, scroll_top) = {
+                                let state = scroll.0.borrow();
+                                (
+                                    f32::from(state.base_handle.bounds().size.height),
+                                    f32::from(state.base_handle.offset().y),
+                                )
+                            };
+                            range
+                                .filter_map(|index| {
+                                    let commit = history.commits.get(index)?;
+                                    let is_head =
+                                        head.as_deref().is_some_and(|head| commit.sha == head);
+                                    let is_selected =
+                                        selected.as_deref() == Some(commit.sha.as_str());
+                                    let row_top = scroll_top + index as f32 * GRAPH_ROW_HEIGHT;
+                                    let open_commit = commit.clone();
+                                    Some(
+                                        graph_row(
+                                            commit,
+                                            graph.get(index),
+                                            graph_width,
+                                            is_head,
+                                            is_selected,
+                                        )
+                                        .opacity(graph_row_fade(row_top, list_height))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.open_commit_from_graph(open_commit.clone(), cx);
+                                        }))
+                                        .into_any_element(),
+                                    )
+                                })
+                                .collect()
+                        }),
+                    )
+                    .track_scroll(list_scroll)
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .w_full()
+                    .pb(px(GRAPH_FADE_HEIGHT)),
                 )
             })
     }
@@ -1128,6 +1124,14 @@ fn graph_row(
         })
 }
 
+/// Opacity of a graph row whose top sits `row_top` below the top of a list
+/// `list_height` tall: full above the fade, none past the list's edge. A row
+/// takes the fade's value at its middle, the average of a linear fade across it.
+fn graph_row_fade(row_top: f32, list_height: f32) -> f32 {
+    let middle = row_top + GRAPH_ROW_HEIGHT / 2.0;
+    ((list_height - middle) / GRAPH_FADE_HEIGHT).clamp(0.0, 1.0)
+}
+
 fn icon_button(
     id: &'static str,
     icon: &'static str,
@@ -1140,4 +1144,23 @@ fn icon_button(
             .hover(|button| button.bg(frame_hover()))
             .on_click(on_click)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_rows_fade_only_at_the_list_foot() {
+        let height = 300.0;
+        let clear_of_fade = height - GRAPH_FADE_HEIGHT - GRAPH_ROW_HEIGHT;
+        assert_eq!(graph_row_fade(0.0, height), 1.0);
+        assert_eq!(graph_row_fade(clear_of_fade, height), 1.0);
+        assert_eq!(graph_row_fade(height, height), 0.0);
+
+        let resting_at_edge = graph_row_fade(height - GRAPH_ROW_HEIGHT, height);
+        assert!(resting_at_edge > 0.0 && resting_at_edge < 1.0);
+        let lower = graph_row_fade(height - GRAPH_ROW_HEIGHT / 2.0, height);
+        assert!(lower < resting_at_edge);
+    }
 }

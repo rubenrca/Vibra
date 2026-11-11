@@ -46,7 +46,7 @@ In `src/elements/uniform_list.rs`, the last rendered item index counts the
 list's bottom padding, as the first already counts its top padding. Upstream
 stopped rendering at the padded bounds, so while scrolling, rows left a blank
 band in the bottom padding although the content mask covers it. Vibra pads the
-Changes graph so its last commit scrolls clear of a fade laid over the list's foot.
+Changes graph so its last commit scrolls clear of the fade at the list's foot.
 
 ## Vendored footprint
 
