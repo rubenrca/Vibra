@@ -65,6 +65,7 @@ bundled_assets! {
     ("file-icons/file.svg", "FileIcons/file.svg"),
     ("chrome-icons/files.svg", "ChromeIcons/files.svg"),
     ("chrome-icons/terminal.svg", "ChromeIcons/terminal.svg"),
+    ("chrome-icons/prompt.svg", "ChromeIcons/prompt.svg"),
     ("chrome-icons/folder.svg", "ChromeIcons/folder.svg"),
     ("chrome-icons/plus.svg", "ChromeIcons/plus.svg"),
     ("chrome-icons/ellipsis.svg", "ChromeIcons/ellipsis.svg"),
@@ -234,7 +235,7 @@ fn tile(brand: Option<Rgba>, size: f32, mark: AnyElement) -> gpui::Div {
 }
 
 /// An agent's mark on a tile of its own; a terminal without one gets a
-/// neutral tile with a prompt glyph.
+/// neutral tile with a bare prompt glyph, since the tile is already its frame.
 pub fn agent_tile(kind: Option<&str>, size: f32) -> gpui::Div {
     let brand = kind.and_then(tile_color);
     let mark = match kind.and_then(agent_mark) {
@@ -253,8 +254,8 @@ pub fn agent_tile(kind: Option<&str>, size: f32) -> gpui::Div {
             .flex_none()
             .into_any_element(),
         None => svg()
-            .path("chrome-icons/terminal.svg")
-            .size(px(size * 0.6))
+            .path("chrome-icons/prompt.svg")
+            .size(px(size * 0.7))
             .flex_none()
             .text_color(colors().muted)
             .into_any_element(),
