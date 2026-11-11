@@ -282,6 +282,7 @@ impl WorkspaceView {
             agent_notification_requests: HashMap::new(),
             agent_state_since: HashMap::new(),
             _agent_clock_task: None,
+            _ripple_clock_task: None,
             agent_hook_status,
             agent_hook_error,
             window_is_active: true,

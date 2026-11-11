@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 use crate::ui::agent_marks::agent_status_color;
+use crate::ui::space_marks::SpaceActivity;
 use crate::ui::theme::{HOVER_LIFT, colors, frame, frame_hover, frame_selected, lift};
 use crate::{AddProject, GoToProject};
 
@@ -351,6 +352,23 @@ impl WorkspaceView {
         Some((color, presences.len()))
     }
 
+    /// What the space's agents are doing, the most urgent first, for its mark.
+    pub(super) fn space_activity(&self, project_id: Uuid) -> SpaceActivity {
+        let Some(project) = self.snapshot.project(project_id) else {
+            return SpaceActivity::Quiet;
+        };
+        project
+            .terminal_sessions()
+            .filter_map(|session| self.resolved_agent_presence(session.id))
+            .map(|presence| match presence.state {
+                AgentRuntimeState::Waiting => SpaceActivity::NeedsYou,
+                AgentRuntimeState::Working => SpaceActivity::Working,
+                AgentRuntimeState::Idle => SpaceActivity::Idle,
+            })
+            .max()
+            .unwrap_or(SpaceActivity::Quiet)
+    }
+
     pub(super) fn project_sidebar_header(
         &self,
         id: Uuid,
@@ -370,6 +388,7 @@ impl WorkspaceView {
         let branch = self.project_branch(id);
         let fade_controls = diff_stats.is_some() || branch.is_some();
         let activity = self.project_agent_activity(id);
+        let space_activity = self.space_activity(id);
         let drag = ProjectDrag { project_id: id };
         let row_bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
         let ghost = {
@@ -431,7 +450,7 @@ impl WorkspaceView {
                     this.hover_project(source, id, event.bounds, event.event.position, cx);
                 }),
             )
-            .child(space_avatar(&name))
+            .child(space_avatar(&name, space_activity))
             .child(
                 div()
                     .flex_1()
@@ -801,7 +820,7 @@ fn project_drag_ghost(name: String, padding: f32) -> AnyElement {
         .items_center()
         .gap(px(10.0))
         .bg(frame_selected())
-        .child(space_avatar(&name))
+        .child(space_avatar(&name, SpaceActivity::Idle))
         .child(
             div()
                 .flex_1()

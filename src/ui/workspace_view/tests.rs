@@ -1260,6 +1260,57 @@ fn project_diff_counts_follow_folders_and_ignore_removed_projects(cx: &mut gpui:
 }
 
 #[gpui::test]
+fn space_ripples_follow_their_agents_and_tick_only_while_moving(cx: &mut gpui::TestAppContext) {
+    use crate::ui::space_marks::SpaceActivity;
+
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "space-ripples");
+    let project = snapshot.selected_project_id.unwrap();
+    let pane = snapshot.selected_session().unwrap().id;
+    let presence = |state| TerminalViewEvent::AgentPresenceChanged {
+        session_id: pane,
+        presence: Some(TerminalAgentPresence {
+            kind: "Claude".into(),
+            kind_source: TerminalAgentKindSource::Process,
+            state,
+            state_source: TerminalAgentStateSource::Heuristic,
+            attention: None,
+            process_id: Some(7),
+        }),
+    };
+    window
+        .update(cx, |view, window, cx| {
+            view.left_sidebar_progress = 1.0;
+            assert_eq!(view.space_activity(project), SpaceActivity::Quiet);
+            view.sync_ripple_clock(cx);
+            assert!(
+                view._ripple_clock_task.is_none(),
+                "a quiet space never ticks"
+            );
+
+            view.handle_terminal_view_event(&presence(AgentRuntimeState::Working), cx);
+            assert_eq!(view.space_activity(project), SpaceActivity::Working);
+            view.sync_ripple_clock(cx);
+            assert!(view._ripple_clock_task.is_some());
+
+            // Nothing to see with the sidebar hidden.
+            view.left_sidebar_progress = 0.0;
+            view.sync_ripple_clock(cx);
+            assert!(view._ripple_clock_task.is_none());
+            view.left_sidebar_progress = 1.0;
+
+            view.handle_terminal_view_event(&presence(AgentRuntimeState::Waiting), cx);
+            assert_eq!(view.space_activity(project), SpaceActivity::NeedsYou);
+            view.handle_terminal_view_event(&presence(AgentRuntimeState::Idle), cx);
+            assert_eq!(view.space_activity(project), SpaceActivity::Idle);
+            view.sync_ripple_clock(cx);
+            assert!(view._ripple_clock_task.is_none(), "idle rings hold still");
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn sidebar_agents_list_every_space_grouped_by_what_they_need(cx: &mut gpui::TestAppContext) {
     use super::spaces::AgentGroup;
 

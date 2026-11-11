@@ -204,6 +204,12 @@ fn tile_color(kind: &str) -> Option<Rgba> {
     }
 }
 
+/// A tile in `color` with the brand tiles' sheen and rim, holding `mark`.
+/// Spaces use it so their marks sit beside the agents' as the same object.
+pub fn brand_tile(color: Rgba, size: f32, mark: AnyElement) -> gpui::Div {
+    tile(Some(color), size, mark)
+}
+
 /// A rounded tile, like an app icon, holding `mark`. Brand tiles get a soft
 /// top-down sheen and a light rim; neutral tiles stay quiet on any surface.
 fn tile(brand: Option<Rgba>, size: f32, mark: AnyElement) -> gpui::Div {
@@ -261,20 +267,6 @@ pub fn agent_tile(kind: Option<&str>, size: f32) -> gpui::Div {
             .into_any_element(),
     };
     tile(brand, size, mark)
-}
-
-/// An initial on a tile of `color`, for marks that have no artwork.
-pub fn letter_tile(initial: impl Into<SharedString>, color: Rgba, size: f32) -> gpui::Div {
-    tile(
-        Some(color),
-        size,
-        div()
-            .text_size(px(size * 0.55))
-            .font_weight(gpui::FontWeight::BOLD)
-            .text_color(crate::ui::theme::content_on(color))
-            .child(initial.into())
-            .into_any_element(),
-    )
 }
 
 /// A neutral tile around a chrome icon, for tabs that hold no terminal.

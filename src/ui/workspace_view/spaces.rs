@@ -20,7 +20,8 @@ use crate::NewSpace;
 use crate::domain::agents::{AgentAttention, AgentRuntimeState};
 use crate::infrastructure::settings::{MAX_AGENTS_PANEL_HEIGHT, MIN_AGENTS_PANEL_HEIGHT};
 use crate::ports::files::FileSystemPort;
-use crate::ui::agent_marks::{agent_status_color, agent_tile_stack, letter_tile};
+use crate::ui::agent_marks::{agent_status_color, agent_tile_stack};
+use crate::ui::space_marks::{SpaceActivity, ripple_tile};
 use crate::ui::theme::{colors, frame, frame_hover, frame_selected, lift};
 
 use super::chrome::{SIDEBAR_ROW_INSET, sidebar_row_width};
@@ -32,6 +33,9 @@ use super::{
 
 /// Time-in-state labels count minutes, so this is often enough to keep them true.
 const AGENT_CLOCK_TICK: Duration = Duration::from_secs(30);
+/// Moving ripples redraw about 20 times a second: smooth for rings that
+/// travel a few points a second, and far cheaper than every display frame.
+const RIPPLE_TICK: Duration = Duration::from_millis(50);
 /// An agent card and the gap below it.
 const AGENT_CARD_PITCH: f32 = 50.0;
 /// The agent's tile, inset as far from the card's left edge as from its top.
@@ -69,32 +73,12 @@ pub(super) fn locate_space(
     Some((root, name))
 }
 
-/// The space's mark: its initial on a tile colored by its name, so a
-/// repository keeps its color in every space that visits it. It is the same
-/// tile the tabs use, inset as far from the row's top and bottom as from its left edge.
-pub(super) fn space_avatar(name: &str) -> Div {
-    let initial: String = name
-        .chars()
-        .find(|character| character.is_alphanumeric())
-        .or_else(|| name.chars().next())
-        .map(|character| character.to_uppercase().collect())
-        .unwrap_or_default();
-    letter_tile(initial, space_color(name), SIDEBAR_CONTROL_SIZE)
-}
-
-fn space_color(name: &str) -> gpui::Rgba {
-    // FNV-1a keeps the color stable across launches and Rust releases.
-    let hash = name.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-    });
-    let palette = [
-        colors().accent,
-        colors().success,
-        colors().warning,
-        colors().folder,
-        colors().git_deleted,
-    ];
-    palette[hash as usize % palette.len()]
+/// The space's mark: rings from a drop, placed and colored by its name, so a
+/// repository keeps its mark in every space that visits it. The rings move
+/// while its agents work. It is the size of the tabs' tiles, inset as far
+/// from the row's top and bottom as from its left edge.
+pub(super) fn space_avatar(name: &str, activity: SpaceActivity) -> Div {
+    ripple_tile(name, activity, SIDEBAR_CONTROL_SIZE)
 }
 
 /// What an agent needs, which orders the Agents list: most urgent first.
@@ -219,6 +203,34 @@ impl WorkspaceView {
                 }
             }
         }));
+    }
+
+    /// Keeps the spaces' ripples moving while one of them has an agent working
+    /// or waiting and the sidebar shows them; stops the tick otherwise, so an
+    /// idle window does not redraw.
+    pub(super) fn sync_ripple_clock(&mut self, cx: &mut Context<Self>) {
+        let shown = self.workspace_section != WorkspaceSection::Settings
+            && self.left_sidebar_progress > 0.001;
+        let moving = shown
+            && self
+                .snapshot
+                .projects
+                .iter()
+                .any(|project| self.space_activity(project.id).moves());
+        if !moving {
+            self._ripple_clock_task = None;
+            return;
+        }
+        if self._ripple_clock_task.is_none() {
+            self._ripple_clock_task = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    Timer::after(RIPPLE_TICK).await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
     }
 
     /// Every agent in any space, grouped by what it needs, the most recent

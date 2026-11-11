@@ -116,6 +116,8 @@ pub struct WorkspaceView {
     /// When each agent entered its current state, for the sidebar's Agents list.
     agent_state_since: HashMap<Uuid, Instant>,
     _agent_clock_task: Option<Task<()>>,
+    /// Redraws moving ripples while a space's agents work.
+    _ripple_clock_task: Option<Task<()>>,
     agent_hook_status: Option<AgentHookStatus>,
     agent_hook_error: Option<SharedString>,
     window_is_active: bool,
@@ -671,6 +673,7 @@ impl WorkspaceView {
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_terminal_surface_visibility(cx);
+        self.sync_ripple_clock(cx);
         self.ensure_appearance_subscription(window, cx);
         self.ensure_activation_subscription(window, cx);
         self.ensure_window_bounds_subscription(window, cx);
