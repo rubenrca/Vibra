@@ -429,6 +429,8 @@ impl WorkspaceView {
                 .into_any_element()
         } else {
             crate::ui::markdown::markdown_prose(&format!("inbox-body-{}", item.url), body)
+                .references_from(&item.url)
+                .into_any_element()
         });
         if state.is_some_and(|state| state.summary.loading) {
             content = content.child(message("Refreshing conversation…", false));
@@ -701,10 +703,10 @@ impl WorkspaceView {
                             }),
                     )
                     .child(
-                        div()
-                            .px(px(14.0))
-                            .py(px(12.0))
-                            .child(markdown(&format!("comment-{}", comment.id), &comment.body)),
+                        div().px(px(14.0)).py(px(12.0)).child(
+                            markdown(&format!("comment-{}", comment.id), &comment.body)
+                                .references_from(url),
+                        ),
                     )
                     .children(comment.replies.iter().map(|reply| {
                         div()
@@ -731,7 +733,10 @@ impl WorkspaceView {
                                     )
                                     .child(short_time(reply.at)),
                             )
-                            .child(markdown(&format!("reply-body-{}", reply.id), &reply.body))
+                            .child(
+                                markdown(&format!("reply-body-{}", reply.id), &reply.body)
+                                    .references_from(url),
+                            )
                     })),
             )
             .into_any_element()
