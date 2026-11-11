@@ -546,7 +546,7 @@ impl WorkspaceView {
                         .gap_3()
                         .child(self.settings_section_heading(
                             "Window",
-                            "Choose how the window looks and blends with your desktop.",
+                            "Choose how Vibra blends with your desktop.",
                         ))
                         .child(
                             settings_card()
@@ -559,31 +559,13 @@ impl WorkspaceView {
                                             "Turn it off for solid backgrounds.",
                                         ),
                                         enabled: self.settings.window_transparency,
-                                        divider: true,
+                                        divider: false,
                                         id: "settings-window-transparency",
                                     },
                                     cx,
                                     |this, window, cx| {
                                         let enabled = !this.settings.window_transparency;
                                         this.set_window_transparency(enabled, window, cx);
-                                    },
-                                ))
-                                .child(self.settings_toggle_row(
-                                    SettingsToggleRow {
-                                        label: "Hide the tabs",
-                                        description: concat!(
-                                            "Let the terminal take the tabs' place until you ",
-                                            "point at the top of the window. Works while both ",
-                                            "sidebars are open.",
-                                        ),
-                                        enabled: self.settings.auto_hide_tabs,
-                                        divider: false,
-                                        id: "settings-auto-hide-tabs",
-                                    },
-                                    cx,
-                                    |this, _, cx| {
-                                        let enabled = !this.settings.auto_hide_tabs;
-                                        this.set_auto_hide_tabs(enabled, cx);
                                     },
                                 )),
                         ),

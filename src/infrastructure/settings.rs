@@ -52,10 +52,6 @@ pub struct AppSettings {
     /// Let the macOS blur show through the window; off paints solid surfaces.
     #[serde(default = "default_true")]
     pub window_transparency: bool,
-    /// Keep the terminal's tabs out of sight until the pointer reaches the
-    /// top of the window; the terminal takes their place.
-    #[serde(default = "default_true")]
-    pub auto_hide_tabs: bool,
     #[serde(default = "default_window_width")]
     pub window_width: f32,
     #[serde(default = "default_window_height")]
@@ -160,7 +156,6 @@ impl Default for AppSettings {
             appearance_mode: AppearanceMode::System,
             agent_notifications: true,
             window_transparency: true,
-            auto_hide_tabs: true,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             diff_split: false,
@@ -457,15 +452,6 @@ mod tests {
         repository.save(&settings).unwrap();
         assert_eq!(repository.load().unwrap(), settings);
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn tabs_hide_by_default_even_in_older_settings_files() {
-        assert!(AppSettings::default().auto_hide_tabs);
-        let older: AppSettings = serde_json::from_str(r#"{"showHiddenFiles":true}"#).unwrap();
-        assert!(older.auto_hide_tabs);
-        let off: AppSettings = serde_json::from_str(r#"{"autoHideTabs":false}"#).unwrap();
-        assert!(!off.auto_hide_tabs);
     }
 
     #[test]
