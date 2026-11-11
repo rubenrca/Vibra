@@ -30,6 +30,14 @@ measurement of any text that does not wrap, so a truncating flex item that
 shrank after its first measurement kept the full string and was clipped at its
 edge with no ellipsis.
 
+## Uniform list bottom padding
+
+In `src/elements/uniform_list.rs`, the last rendered item index counts the
+list's bottom padding, as the first already counts its top padding. Upstream
+stopped rendering at the padded bounds, so while scrolling, rows left a blank
+band in the bottom padding although the content mask covers it. Vibra pads the
+Changes graph so its last commit scrolls clear of a fade laid over the list's foot.
+
 ## Vendored footprint
 
 The upstream example programs and their assets are omitted, along with their

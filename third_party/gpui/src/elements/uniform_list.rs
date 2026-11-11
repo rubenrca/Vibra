@@ -449,9 +449,12 @@ impl Element for UniformList {
 
                     let first_visible_element_ix =
                         (-(scroll_offset.y + padding.top) / item_height).floor() as usize;
-                    let last_visible_element_ix = ((-scroll_offset.y + padded_bounds.size.height)
-                        / item_height)
-                        .ceil() as usize;
+                    // Items scroll through the bottom padding as they do
+                    // through the top, so the range reaches the bounds' end.
+                    let last_visible_element_ix =
+                        ((-scroll_offset.y + padded_bounds.size.height + padding.bottom)
+                            / item_height)
+                            .ceil() as usize;
 
                     let visible_range = first_visible_element_ix
                         ..cmp::min(last_visible_element_ix, self.item_count);

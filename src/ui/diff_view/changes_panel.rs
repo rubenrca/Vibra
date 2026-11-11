@@ -6,17 +6,19 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, Context, FocusHandle, KeyDownEvent, SharedString, Task, Window, div, prelude::*,
-    px, relative, svg, uniform_list,
+    AnyElement, Context, FocusHandle, KeyDownEvent, SharedString, Task, Window, div,
+    linear_color_stop, linear_gradient, prelude::*, px, relative, svg, uniform_list,
 };
 
 use super::{DiffView, DiffViewEvent, GitPanelMode};
 use crate::ports::git::{GitCommit, GitCommitOptions, GitPort, GitSyncOperation};
 use crate::ui::menu::{MenuRow, menu_panel, menu_separator};
 use crate::ui::text_edit::{TextKeyOutcome, apply_text_key};
-use crate::ui::theme::{colors, frame_hover, frame_selected, surface_tint};
+use crate::ui::theme::{colors, frame, frame_hover, frame_selected, surface_tint};
 
 const GRAPH_ROW_HEIGHT: f32 = 26.0;
+/// The graph's rows fade into the frame over this much of its foot.
+const GRAPH_FADE_HEIGHT: f32 = 32.0;
 /// The graph polls less often than the file list; commits change rarely.
 const GRAPH_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_COMMIT_MESSAGE_CHARS: usize = 10_000;
@@ -862,42 +864,70 @@ impl DiffView {
                 )
             })
             .when(open && count > 0, |section| {
+                // The rows fade into the frame at the panel's foot instead of
+                // stopping at its edge; the list's bottom padding lets the
+                // last commit scroll clear of the fade.
                 section.child(
-                    uniform_list(
-                        "git-graph-rows",
-                        count,
-                        cx.processor(move |_this, range: std::ops::Range<usize>, _window, cx| {
-                            let Some(history) = history.as_ref() else {
-                                return Vec::new();
-                            };
-                            range
-                                .filter_map(|index| {
-                                    let commit = history.commits.get(index)?;
-                                    let is_head =
-                                        head.as_deref().is_some_and(|head| commit.sha == head);
-                                    let is_selected =
-                                        selected.as_deref() == Some(commit.sha.as_str());
-                                    let open_commit = commit.clone();
-                                    Some(
-                                        graph_row(
-                                            commit,
-                                            graph.get(index),
-                                            graph_width,
-                                            is_head,
-                                            is_selected,
-                                        )
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.open_commit_from_graph(open_commit.clone(), cx);
-                                        }))
-                                        .into_any_element(),
-                                    )
-                                })
-                                .collect()
-                        }),
-                    )
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .w_full(),
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .w_full()
+                        .child(
+                            uniform_list(
+                                "git-graph-rows",
+                                count,
+                                cx.processor(
+                                    move |_this, range: std::ops::Range<usize>, _window, cx| {
+                                        let Some(history) = history.as_ref() else {
+                                            return Vec::new();
+                                        };
+                                        range
+                                            .filter_map(|index| {
+                                                let commit = history.commits.get(index)?;
+                                                let is_head = head
+                                                    .as_deref()
+                                                    .is_some_and(|head| commit.sha == head);
+                                                let is_selected = selected.as_deref()
+                                                    == Some(commit.sha.as_str());
+                                                let open_commit = commit.clone();
+                                                Some(
+                                                    graph_row(
+                                                        commit,
+                                                        graph.get(index),
+                                                        graph_width,
+                                                        is_head,
+                                                        is_selected,
+                                                    )
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.open_commit_from_graph(
+                                                            open_commit.clone(),
+                                                            cx,
+                                                        );
+                                                    }))
+                                                    .into_any_element(),
+                                                )
+                                            })
+                                            .collect()
+                                    },
+                                ),
+                            )
+                            .size_full()
+                            .pb(px(GRAPH_FADE_HEIGHT)),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .h(px(GRAPH_FADE_HEIGHT))
+                                .bg(linear_gradient(
+                                    180.0,
+                                    linear_color_stop(frame(), 0.0).opacity(0.0),
+                                    linear_color_stop(frame(), 1.0),
+                                )),
+                        ),
                 )
             })
     }
