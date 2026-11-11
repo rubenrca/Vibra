@@ -469,8 +469,30 @@ impl WorkspaceView {
             }));
     }
 
+    /// The usage group rides at the foot of the left sidebar while it is on screen.
+    fn usage_in_sidebar(&self) -> bool {
+        self.workspace_section != WorkspaceSection::Settings && self.left_sidebar_progress > 0.001
+    }
+
+    /// The branch and Keep Awake ride at the foot of the right sidebar while it is on screen.
+    fn status_controls_in_sidebar(&self) -> bool {
+        self.workspace_section == WorkspaceSection::Workspace && self.right_sidebar_progress > 0.001
+    }
+
     fn sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = self.global_sidebar_content(cx);
+        let content = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(self.global_sidebar_content(cx)),
+            )
+            .child(self.status_row(true, false, cx));
         let full_width = self.left_sidebar_width();
         let width = full_width * self.left_sidebar_progress;
         let show_handle = self.left_sidebar_progress > 0.99;
@@ -512,7 +534,15 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .child(self.utility_mode_tabs(cx))
-            .child(content);
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(content),
+            )
+            .child(self.status_row(false, true, cx));
         clipped_width_panel(width, full_width, content).when(show_handle, |sidebar| {
             sidebar.child(self.sidebar_resize_handle(
                 "resize-right-sidebar",
@@ -524,23 +554,37 @@ impl WorkspaceView {
 
     /// The cards' place on the frame. A gap separates them from each window
     /// edge; beside an open sidebar, its own row inset is gap enough, so the
-    /// margin follows each sidebar's animation.
-    fn floating_area(&self, content: impl IntoElement) -> gpui::Div {
+    /// margin follows each sidebar's animation. The status items live at the
+    /// sidebars' feet, so the cards reach down to the window's bottom gap; only
+    /// the items of a hidden sidebar take a strip under them.
+    fn floating_area(&self, content: impl IntoElement, cx: &mut Context<Self>) -> gpui::Div {
         let right_progress = if self.workspace_section == WorkspaceSection::Workspace {
             self.right_sidebar_progress
         } else {
             0.0
         };
         let margin = |progress: f32| px(PANEL_GAP * (1.0 - progress.clamp(0.0, 1.0)));
+        let usage = !self.usage_in_sidebar();
+        let controls = !self.status_controls_in_sidebar();
         div()
             .flex_1()
             .min_w(px(0.0))
             .h_full()
             .flex()
-            .pl(margin(self.left_sidebar_progress))
-            .pr(margin(right_progress))
-            .pb(px(PANEL_GAP))
-            .child(content)
+            .flex_col()
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .pl(margin(self.left_sidebar_progress))
+                    .pr(margin(right_progress))
+                    .pb(px(PANEL_GAP))
+                    .child(content),
+            )
+            .when(usage || controls, |area| {
+                area.child(self.status_row(usage, controls, cx))
+            })
     }
 
     fn current_banner_errors(&self) -> Vec<SharedString> {
@@ -663,8 +707,9 @@ impl Render for WorkspaceView {
         }
 
         let expanded_review = self.has_project_context() && self.review_visible(cx);
-        // The frame behind the cards. The titlebar and status bar paint the
-        // same tone beside it, never over it, so the tint is applied once.
+        // The frame behind the cards, and behind the status items at the
+        // sidebars' feet. The titlebar paints the same tone beside it, never
+        // over it, so the tint is applied once.
         let mut layout = div()
             .id("workspace-columns")
             .relative()
@@ -700,6 +745,7 @@ impl Render for WorkspaceView {
                                 style.border_2().border_color(colors().accent)
                             })
                             .child(self.diff_view.clone()),
+                        cx,
                     ),
                 );
             } else if expanded_review {
@@ -707,10 +753,10 @@ impl Render for WorkspaceView {
                 let terminal = self.center_panel(window, cx).into_any_element();
                 let review = self.diff_view.clone().into_any_element();
                 let split = self.review_split(terminal, review, cx);
-                layout = layout.child(self.floating_area(split));
+                layout = layout.child(self.floating_area(split, cx));
             } else {
                 let center = self.center_panel(window, cx).into_any_element();
-                layout = layout.child(self.floating_area(center));
+                layout = layout.child(self.floating_area(center, cx));
             }
             if self.right_sidebar_progress > 0.001 {
                 layout = layout.child(self.right_sidebar(cx));
@@ -718,7 +764,7 @@ impl Render for WorkspaceView {
         } else if self.workspace_section == WorkspaceSection::Inbox {
             // Repository lays out its own cards on the frame.
             let content = self.global_section_content(window, cx);
-            layout = layout.child(self.floating_area(content));
+            layout = layout.child(self.floating_area(content, cx));
         } else {
             // Settings: its navigation on the frame, the page on a card.
             let content = self.global_section_content(window, cx);
@@ -743,9 +789,6 @@ impl Render for WorkspaceView {
         }
 
         body = body.child(layout);
-        if self.workspace_section != WorkspaceSection::Settings {
-            body = body.child(self.status_bar(cx));
-        }
         if let Some(popover) = self.inbox_popover(window, cx) {
             body = body.child(popover);
         }

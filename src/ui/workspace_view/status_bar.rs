@@ -3,15 +3,18 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::{AnyElement, Context, Rgba, Timer, div, prelude::*, px, svg};
+use gpui::{AnyElement, Context, Div, Timer, div, prelude::*, px, svg};
 
 use crate::ports::git::GitBranchSummary;
-use crate::ui::theme::{colors, frame_hover, frame_surface};
+use crate::ui::theme::colors;
 
 use super::{RightSidebarMode, WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const STATUS_POLL: Duration = Duration::from_secs(4);
 pub(super) const STATUS_BAR_HEIGHT: f32 = 30.0;
+/// Status items stay flat: hovering one lights its icon and label, never a
+/// box, so nothing solid sits against the window's rounder bottom corners.
+pub(super) const STATUS_ITEM_HEIGHT: f32 = 22.0;
 
 impl WorkspaceView {
     fn toggle_keep_awake(&mut self, cx: &mut Context<Self>) {
@@ -129,23 +132,53 @@ impl WorkspaceView {
             .map(|(_, summary)| summary)
     }
 
-    pub(super) fn status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// A strip of status items on the frame. The usage group sits at the foot
+    /// of the left sidebar and the controls (branch, Keep Awake) at the foot of
+    /// the right one, so the cards between them reach the bottom of the window.
+    /// Items whose sidebar is hidden share a strip under the cards instead.
+    pub(super) fn status_row(
+        &self,
+        usage: bool,
+        controls: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row = div()
+            .h(px(STATUS_BAR_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .px(px(6.0))
+            .gap(px(2.0))
+            // No fill: the frame behind the columns already carries the tint.
+            .text_size(px(11.0))
+            .text_color(colors().muted)
+            .when(usage, |row| row.child(self.usage_tracker(cx)))
+            .child(div().flex_1());
+        if !controls {
+            return row.into_any_element();
+        }
+        self.status_controls(row, cx).into_any_element()
+    }
+
+    /// The branch, which opens Changes, and the Keep Awake toggle.
+    fn status_controls(&self, row: Div, cx: &mut Context<Self>) -> Div {
         let keep_awake = self.keep_awake.is_enabled();
         // GPUI allows a single hover style per element, so styled items start from `base`.
+        // Each item is its own hover group, which its icon follows.
         let base = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(22.0))
+                .group(id)
+                .h(px(STATUS_ITEM_HEIGHT))
                 .px(px(7.0))
-                .rounded(px(6.0))
                 .flex()
                 .items_center()
                 .gap(px(6.0))
                 .cursor_pointer()
         };
-        let item = move |id: &'static str| {
-            base(id).hover(|item| item.bg(frame_hover()).text_color(colors().foreground))
-        };
+        let item =
+            move |id: &'static str| base(id).hover(|item| item.text_color(colors().foreground));
         let icon = |path: &'static str| {
             svg()
                 .path(path)
@@ -163,80 +196,60 @@ impl WorkspaceView {
                 .bg(colors().border_subtle)
         };
 
-        div()
-            .h(px(STATUS_BAR_HEIGHT))
-            .w_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .px(px(6.0))
-            .gap(px(2.0))
-            // Part of the frame, so the cards above float without a seam.
-            .bg(frame_surface())
-            .text_size(px(11.0))
-            .text_color(colors().muted)
-            .child(self.usage_tracker(cx))
-            .child(div().flex_1())
-            .when_some(self.current_branch_summary(), |bar, summary| {
-                bar.child(
-                    item("status-branch")
-                        .tooltip(|_, cx| sidebar_tooltip("Open Changes", cx))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.set_workspace_mode(RightSidebarMode::Diff, cx);
-                            this.focus_selected_terminal(window, cx);
-                        }))
-                        .child(icon("chrome-icons/git-branch.svg"))
-                        .child(summary.branch.clone())
-                        .when(summary.dirty, |item| item.child(dot(colors().warning)))
-                        .when(summary.ahead > 0, |item| {
-                            item.child(format!("↑{}", summary.ahead))
-                        })
-                        .when(summary.behind > 0, |item| {
-                            item.child(format!("↓{}", summary.behind))
+        row.when_some(self.current_branch_summary(), |bar, summary| {
+            bar.child(
+                item("status-branch")
+                    .tooltip(|_, cx| sidebar_tooltip("Open Changes", cx))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.set_workspace_mode(RightSidebarMode::Diff, cx);
+                        this.focus_selected_terminal(window, cx);
+                    }))
+                    .child(
+                        icon("chrome-icons/git-branch.svg").group_hover("status-branch", |icon| {
+                            icon.text_color(colors().foreground)
                         }),
-                )
-                .child(divider())
-            })
-            .child(
-                base("status-keep-awake")
-                    .border_1()
-                    .border_color(gpui::transparent_black())
-                    .map(|item| {
-                        if keep_awake {
-                            // Lit pill reads as a running state rather than a plain link.
-                            let accent = colors().accent;
-                            item.bg(Rgba { a: 0.14, ..accent })
-                                .border_color(Rgba { a: 0.35, ..accent })
-                                .text_color(accent)
-                                .hover(move |item| {
-                                    item.bg(Rgba { a: 0.22, ..accent }).text_color(accent)
-                                })
-                                .child(icon("chrome-icons/coffee-steam.svg").text_color(accent))
-                                .child("Awake")
-                        } else {
-                            item.px(px(5.0))
-                                .group("keep-awake")
-                                .hover(|item| item.bg(frame_hover()))
-                                .child(
-                                    icon("chrome-icons/coffee.svg")
-                                        .group_hover("keep-awake", |icon| {
-                                            icon.text_color(colors().foreground)
-                                        }),
-                                )
-                        }
+                    )
+                    .child(summary.branch.clone())
+                    .when(summary.dirty, |item| item.child(dot(colors().warning)))
+                    .when(summary.ahead > 0, |item| {
+                        item.child(format!("↑{}", summary.ahead))
                     })
-                    .tooltip(move |_, cx| {
-                        sidebar_tooltip(
-                            if keep_awake {
-                                "Keep Awake is on · Click to allow sleep"
-                            } else {
-                                "Keep Awake · Prevent your Mac from sleeping"
-                            },
-                            cx,
-                        )
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_awake(cx))),
+                    .when(summary.behind > 0, |item| {
+                        item.child(format!("↓{}", summary.behind))
+                    }),
             )
-            .into_any_element()
+            .child(divider())
+        })
+        .child(
+            base("status-keep-awake")
+                .map(|item| {
+                    if keep_awake {
+                        // The accent alone marks it as running: a filled pill
+                        // here would sit right in the window's rounded corner.
+                        let accent = colors().accent;
+                        item.text_color(accent)
+                            .child(icon("chrome-icons/coffee-steam.svg").text_color(accent))
+                            .child("Awake")
+                    } else {
+                        item.px(px(5.0)).child(
+                            icon("chrome-icons/coffee.svg")
+                                .group_hover("status-keep-awake", |icon| {
+                                    icon.text_color(colors().foreground)
+                                }),
+                        )
+                    }
+                })
+                .tooltip(move |_, cx| {
+                    sidebar_tooltip(
+                        if keep_awake {
+                            "Keep Awake is on · Click to allow sleep"
+                        } else {
+                            "Keep Awake · Prevent your Mac from sleeping"
+                        },
+                        cx,
+                    )
+                })
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_awake(cx))),
+        )
     }
 }

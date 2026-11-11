@@ -6,10 +6,16 @@ use crate::domain::workspace::WorkspaceSplitAxis;
 use crate::ui::menu::{menu_border, menu_surface};
 use crate::ui::theme::{card_surface, colors, frame_hover};
 
+/// Corner radius of the window itself on macOS 26. Whatever sits in one of its
+/// corners shares the corner's center (concentric corners): its radius is
+/// this minus its inset, so the gap to the window's edge stays even all the
+/// way around the curve instead of pinching at the diagonal.
+pub(crate) const WINDOW_CORNER_RADIUS: f32 = 16.0;
 /// Room between floating cards, and between a card and the window edge.
 pub(crate) const PANEL_GAP: f32 = 6.0;
-/// Corner radius of the cards that hold panes and reviews.
-pub(crate) const CARD_RADIUS: f32 = 10.0;
+/// Corner radius of the cards that hold panes and reviews, concentric with the
+/// window's corners when a card reaches one.
+pub(crate) const CARD_RADIUS: f32 = WINDOW_CORNER_RADIUS - PANEL_GAP;
 /// Sidebar rows keep squared-off corners, like the tabs.
 pub(crate) const SIDEBAR_ROW_RADIUS: f32 = crate::ui::tab_style::TAB_RADIUS;
 // Leave equal room for the status dot and shortcut so tab labels stay centered.

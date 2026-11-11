@@ -23,7 +23,7 @@ use crate::infrastructure::usage::UsageMonitor;
 use crate::ui::agent_marks::{agent_tile, icon_tile};
 use crate::ui::dialog::{DIALOG_RADIUS, dialog_shadow};
 use crate::ui::menu::{menu_border, menu_hover, menu_panel, menu_surface};
-use crate::ui::theme::{colors, frame_hover, mix};
+use crate::ui::theme::{colors, mix};
 
 use super::chrome::ease_out_cubic;
 use super::context_menu::MENU_EDGE_MARGIN;
@@ -33,7 +33,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// Brand marks fill their box, so they sit a step under the bar's 14 px icons.
 const CHIP_MARK_SIZE: f32 = 13.0;
 /// Matches the other status bar items.
-const CHIP_HEIGHT: f32 = 22.0;
+const CHIP_HEIGHT: f32 = super::status_bar::STATUS_ITEM_HEIGHT;
+const USAGE_CHIP_GROUP: &str = "status-usage-chip";
 /// Space between the hover card or modal and the chips that opened it.
 const POPOVER_GAP: f32 = 8.0;
 const HOVER_CARD_WIDTH: f32 = 236.0;
@@ -329,12 +330,16 @@ impl WorkspaceView {
                 |group| {
                     group.child(
                         usage_chip("status-usage-empty".into())
+                            .hover(|chip| chip.text_color(colors().foreground))
                             .child(
                                 svg()
                                     .path("chrome-icons/sparkles.svg")
                                     .size(px(CHIP_MARK_SIZE))
                                     .flex_none()
-                                    .text_color(colors().subtle),
+                                    .text_color(colors().subtle)
+                                    .group_hover(USAGE_CHIP_GROUP, |mark| {
+                                        mark.text_color(colors().foreground)
+                                    }),
                             )
                             .child(div().min_w(px(0.0)).truncate().child("No usage data"))
                             .on_click(
@@ -356,6 +361,10 @@ impl WorkspaceView {
                 let hover_id = id.clone();
                 usage_chip(SharedString::from(format!("status-usage-{id}")))
                     .text_color(color)
+                    // A quota in alert is already lit; the rest light up on hover.
+                    .when(alert.is_none(), |chip| {
+                        chip.hover(|chip| chip.text_color(colors().foreground))
+                    })
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         if *hovered {
                             this.hover_usage_chip(&hover_id, cx);
@@ -366,7 +375,12 @@ impl WorkspaceView {
                             .path(provider_mark(id))
                             .size(px(CHIP_MARK_SIZE))
                             .flex_none()
-                            .text_color(color),
+                            .text_color(color)
+                            .when(alert.is_none(), |mark| {
+                                mark.group_hover(USAGE_CHIP_GROUP, |mark| {
+                                    mark.text_color(colors().foreground)
+                                })
+                            }),
                     )
                     .child(
                         tabular(div())
@@ -581,14 +595,14 @@ fn usage_chip(id: SharedString) -> Stateful<Div> {
         .h(px(CHIP_HEIGHT))
         .flex_none()
         .px(px(6.0))
-        .rounded(px(6.0))
+        // Flat like the other status items: hover lights the mark, not a box.
+        .group(USAGE_CHIP_GROUP)
         .flex()
         .items_center()
         .gap(px(5.0))
         .cursor_pointer()
         .text_size(px(11.0))
         .text_color(colors().muted)
-        .hover(|chip| chip.bg(frame_hover()))
 }
 
 /// The share the status bar shows for a provider: whichever of its session
