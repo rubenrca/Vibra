@@ -1266,34 +1266,44 @@ fn repository_opens_as_a_tab_of_its_space_beside_the_terminals(cx: &mut gpui::Te
     let tab = snapshot.selected_tab().unwrap().id;
     window
         .update(cx, |view, window, cx| {
-            assert!(!view.repository_tab_open());
+            assert!(!view.tool_tab_open(ToolTab::Repository));
             view.select_section(WorkspaceSection::Inbox, window, cx);
-            assert!(view.repository_tab_open(), "Repository opens as a tab");
+            assert!(
+                view.tool_tab_open(ToolTab::Repository),
+                "Repository opens as a tab"
+            );
 
             // A terminal tab comes forward; Repository keeps its tab.
             view.select_tab(tab, window, cx);
             assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
-            assert!(view.repository_tab_open());
+            assert!(view.tool_tab_open(ToolTab::Repository));
 
             // The tab is the space's: another space has none until it opens one.
             let other = view.snapshot.add_project(&root.join("other"));
             view.snapshot.open_tab_in_project(other, true);
             view.reconcile_terminal_views(cx);
             view.select_project(other, window, cx);
-            assert!(!view.repository_tab_open());
+            assert!(!view.tool_tab_open(ToolTab::Repository));
             view.select_project(space, window, cx);
-            assert!(view.repository_tab_open(), "it waits in its own space");
+            assert!(
+                view.tool_tab_open(ToolTab::Repository),
+                "it waits in its own space"
+            );
 
             // Closing it from the strip while a terminal is in front stays there.
-            view.open_context_menu(ContextMenuKind::Repository, 10.0, 10.0, cx);
-            view.run_context_menu_action(ContextMenuAction::CloseRepository, window, cx);
-            assert!(!view.repository_tab_open());
+            view.open_context_menu(ContextMenuKind::Tool(ToolTab::Repository), 10.0, 10.0, cx);
+            view.run_context_menu_action(
+                ContextMenuAction::CloseTool(ToolTab::Repository),
+                window,
+                cx,
+            );
+            assert!(!view.tool_tab_open(ToolTab::Repository));
             assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
 
             // ⌘W in front of Repository closes its tab and shows the terminal.
             view.select_section(WorkspaceSection::Inbox, window, cx);
             view.close_terminal(&CloseTerminal, window, cx);
-            assert!(!view.repository_tab_open());
+            assert!(!view.tool_tab_open(ToolTab::Repository));
             assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
             assert_eq!(view.snapshot.selected_tab().unwrap().id, tab);
 
@@ -1319,13 +1329,63 @@ fn repository_opens_as_a_tab_of_its_space_beside_the_terminals(cx: &mut gpui::Te
             view.select_section(WorkspaceSection::Workspace, window, cx);
             view.settle_space_front(window, cx);
             assert_eq!(view.workspace_section, WorkspaceSection::Inbox);
-            view.close_repository_tab(window, cx);
+            view.close_tool_tab(ToolTab::Repository, window, cx);
             view.settle_space_front(window, cx);
             assert_eq!(
                 view.workspace_section,
                 WorkspaceSection::Workspace,
                 "with no tabs at all, the empty space"
             );
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn activity_opens_as_a_tab_after_repository(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "activity-tab");
+    let tab = snapshot.selected_tab().unwrap().id;
+    window
+        .update(cx, |view, window, cx| {
+            view.select_section(WorkspaceSection::Activity, window, cx);
+            assert!(
+                view.tool_tab_open(ToolTab::Activity),
+                "Activity opens as a tab"
+            );
+            assert!(!view.tool_tab_open(ToolTab::Repository));
+            view.activity_content(cx);
+
+            // Both tools sit after the terminals, Repository first, whatever
+            // order they were opened in.
+            view.select_section(WorkspaceSection::Inbox, window, cx);
+            assert_eq!(
+                view.open_tool_tabs(),
+                vec![ToolTab::Repository, ToolTab::Activity]
+            );
+            view.go_to_tab(&crate::GoToTab { index: 9 }, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Activity);
+            view.go_to_tab(&crate::GoToTab { index: 2 }, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Inbox);
+
+            // ⌘W closes the tool in front, never the other one.
+            view.go_to_tab(&crate::GoToTab { index: 3 }, window, cx);
+            view.close_terminal(&CloseTerminal, window, cx);
+            assert!(!view.tool_tab_open(ToolTab::Activity));
+            assert!(view.tool_tab_open(ToolTab::Repository));
+            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
+            assert_eq!(view.snapshot.selected_tab().unwrap().id, tab);
+
+            // Its menu closes it too.
+            view.select_section(WorkspaceSection::Activity, window, cx);
+            view.open_context_menu(ContextMenuKind::Tool(ToolTab::Activity), 10.0, 10.0, cx);
+            view.run_context_menu_action(
+                ContextMenuAction::CloseTool(ToolTab::Activity),
+                window,
+                cx,
+            );
+            assert!(!view.tool_tab_open(ToolTab::Activity));
+            assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
             window.remove_window();
         })
         .unwrap();

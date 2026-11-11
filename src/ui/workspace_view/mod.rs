@@ -3,6 +3,7 @@
 //! None of them introduces a second workspace model.
 
 mod actions;
+mod activity;
 mod automation;
 mod bootstrap;
 mod chrome;
@@ -173,8 +174,9 @@ pub struct WorkspaceView {
     settings_page: SettingsPage,
     theme_query: String,
     context_menu: Option<ContextMenuState>,
-    /// Spaces whose strip holds a Repository tab, after their own tabs.
-    repository_tabs: HashSet<Uuid>,
+    /// The tool tabs each space's strip holds, after its own tabs.
+    tool_tabs: HashSet<(Uuid, ToolTab)>,
+    activity: activity::ActivityState,
     ide_menu_open: bool,
     ide_discovering: bool,
     installed_editors: Vec<InstalledEditor>,
@@ -792,8 +794,8 @@ impl Render for WorkspaceView {
             if self.right_sidebar_progress > 0.001 {
                 layout = layout.child(self.right_sidebar(cx));
             }
-        } else if self.workspace_section == WorkspaceSection::Inbox {
-            // Repository lays out its own cards on the frame.
+        } else if ToolTab::of(self.workspace_section).is_some() {
+            // Repository and Activity lay out their own cards on the frame.
             let content = self.global_section_content(window, cx);
             layout = layout.child(self.floating_area(content, cx));
         } else {

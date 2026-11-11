@@ -750,6 +750,9 @@ impl TerminalHandle for GhosttyTerminal {
     fn foreground_process_id(&self) -> Option<u32> {
         self.foreground()
     }
+    fn shell_process_id(&self) -> Option<u32> {
+        self.alive.load(Ordering::Acquire).then_some(self.pid)
+    }
     fn program_status(&self) -> Option<TerminalProgramStatus> {
         self.program_status
             .lock()

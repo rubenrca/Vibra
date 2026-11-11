@@ -19,7 +19,49 @@ pub(super) struct PaneIdentity {
 pub(super) enum WorkspaceSection {
     Workspace,
     Inbox,
+    Activity,
     Settings,
+}
+
+/// A tool that opens as a tab of its space, after the space's own tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum ToolTab {
+    Repository,
+    Activity,
+}
+
+impl ToolTab {
+    /// Their order in the strip.
+    pub(super) const ALL: [Self; 2] = [Self::Repository, Self::Activity];
+
+    pub(super) fn of(section: WorkspaceSection) -> Option<Self> {
+        match section {
+            WorkspaceSection::Inbox => Some(Self::Repository),
+            WorkspaceSection::Activity => Some(Self::Activity),
+            WorkspaceSection::Workspace | WorkspaceSection::Settings => None,
+        }
+    }
+
+    pub(super) fn section(self) -> WorkspaceSection {
+        match self {
+            Self::Repository => WorkspaceSection::Inbox,
+            Self::Activity => WorkspaceSection::Activity,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Repository => "Repository",
+            Self::Activity => "Activity",
+        }
+    }
+
+    pub(super) fn icon(self) -> &'static str {
+        match self {
+            Self::Repository => "chrome-icons/repository.svg",
+            Self::Activity => "chrome-icons/activity.svg",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,8 +116,8 @@ pub(super) enum ContextMenuKind {
     },
     /// The review's tab in the strip.
     Review,
-    /// Repository's tab in the strip.
-    Repository,
+    /// A tool's tab in the strip.
+    Tool(ToolTab),
     Project {
         project_id: Uuid,
     },
@@ -125,7 +167,7 @@ pub(super) enum ContextMenuAction {
     ClosePane,
     CloseTab,
     CloseReview,
-    CloseRepository,
+    CloseTool(ToolTab),
     SplitRight,
     SplitDown,
     ToggleZoom,

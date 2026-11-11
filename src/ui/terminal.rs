@@ -426,6 +426,13 @@ impl TerminalView {
             .and_then(|handle| handle.foreground_process_name())
     }
 
+    /// The terminal's shell while it runs; everything started here descends from it.
+    pub fn shell_process_id(&self) -> Option<u32> {
+        self.handle
+            .as_ref()
+            .and_then(|handle| handle.shell_process_id())
+    }
+
     pub fn apply_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
         self.update_font_size(size, false, cx);
     }

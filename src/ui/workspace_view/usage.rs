@@ -209,6 +209,57 @@ impl UsageState {
     }
 }
 
+/// A provider's quota windows at a glance, for Activity.
+pub(super) struct QuotaGlance {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) session: Option<f64>,
+    pub(super) weekly: Option<f64>,
+    pub(super) reset: Option<String>,
+    pub(super) stale: bool,
+}
+
+impl UsageState {
+    /// Each provider with a session or weekly window, in the status bar's order.
+    pub(super) fn glances(&self) -> Vec<QuotaGlance> {
+        let now = now_timestamp();
+        let offset = local_utc_offset(now);
+        self.snapshot
+            .providers
+            .iter()
+            .filter_map(|(id, provider)| {
+                let percent = |key: &str| {
+                    provider
+                        .resources
+                        .get(key)
+                        .and_then(|resource| resource.percent_used())
+                };
+                let (session, weekly) = (percent("session"), percent("weekly"));
+                if session.is_none() && weekly.is_none() {
+                    return None;
+                }
+                let window = if session.is_some() {
+                    "session"
+                } else {
+                    "weekly"
+                };
+                Some(QuotaGlance {
+                    id: id.clone(),
+                    name: provider.display_name.clone(),
+                    session,
+                    weekly,
+                    reset: provider
+                        .resources
+                        .get(window)
+                        .and_then(|resource| resource.resets_at.as_deref())
+                        .map(|reset| reset_label(reset, now, offset)),
+                    stale: self.provider_stale(id, provider, now),
+                })
+            })
+            .collect()
+    }
+}
+
 impl WorkspaceView {
     pub(super) fn start_usage_poll(&mut self, cx: &mut Context<Self>) {
         // Workspace tests must not consult the user's installed apps.
@@ -636,7 +687,7 @@ fn quota_alert(percent: Option<f64>) -> Option<Rgba> {
 }
 
 /// The agent a provider's subscription is for, named as its tabs name it.
-fn provider_kind(id: &str) -> Option<&'static str> {
+pub(super) fn provider_kind(id: &str) -> Option<&'static str> {
     [("claude", "Claude"), ("codex", "Codex"), ("grok", "Grok")]
         .into_iter()
         .find(|(prefix, _)| id.starts_with(prefix))

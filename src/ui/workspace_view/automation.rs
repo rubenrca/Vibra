@@ -40,7 +40,7 @@ pub(super) struct ResolvedAgentPresence {
     kind_source: &'static str,
     state_source: &'static str,
     process_id: Option<u32>,
-    session_id: Option<String>,
+    pub(super) session_id: Option<String>,
 }
 
 fn turn_started(previous: Option<AgentRuntimeState>, current: AgentRuntimeState) -> bool {

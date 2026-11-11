@@ -133,6 +133,11 @@ impl super::WorkspaceView {
                     "",
                     PaletteAction::ShowSection(WorkspaceSection::Inbox),
                 ),
+                (
+                    "Activity: Open",
+                    "",
+                    PaletteAction::ShowSection(WorkspaceSection::Activity),
+                ),
                 ("Settings: Open", "⌘,", PaletteAction::ShowSettings),
             ]
             .into_iter()
@@ -141,6 +146,9 @@ impl super::WorkspaceView {
                 detail: match action {
                     PaletteAction::ShowSection(WorkspaceSection::Inbox) => {
                         "History, pull requests, issues, and agent activity".into()
+                    }
+                    PaletteAction::ShowSection(WorkspaceSection::Activity) => {
+                        "Servers, memory, agent context, and tokens".into()
                     }
                     _ => String::new(),
                 },
@@ -430,7 +438,9 @@ fn palette_icon(action: &PaletteAction) -> &'static str {
         PaletteAction::TogglePaneZoom => "chrome-icons/maximize.svg",
         PaletteAction::ToggleWorkspacePanel => "chrome-icons/panel-right.svg",
         PaletteAction::ShowFiles => "chrome-icons/files.svg",
-        PaletteAction::ShowSection(_) => "chrome-icons/repository.svg",
+        PaletteAction::ShowSection(section) => super::ToolTab::of(*section)
+            .map(super::ToolTab::icon)
+            .unwrap_or("chrome-icons/repository.svg"),
         PaletteAction::ShowSettings => "chrome-icons/settings.svg",
         PaletteAction::OpenFile(_) => "file-icons/file.svg",
     }

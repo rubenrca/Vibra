@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod automation;
 pub mod clock;
 pub mod commit_message;

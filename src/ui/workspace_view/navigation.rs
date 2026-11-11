@@ -10,7 +10,7 @@ use crate::ui::theme::{colors, frame_hover, frame_selected, surface_tint};
 use super::chrome::SIDEBAR_ROW_INSET;
 
 use super::{
-    ContextMenuKind, PaletteMode, RightSidebarMode, WorkspaceSection, WorkspaceView,
+    ContextMenuKind, PaletteMode, RightSidebarMode, ToolTab, WorkspaceSection, WorkspaceView,
     sidebar_tooltip,
 };
 
@@ -108,11 +108,16 @@ impl WorkspaceView {
         }
         self.usage.open = false;
         self.workspace_section = section;
+        // A tool's tab belongs to the space it was opened from.
+        if let (Some(tool), Some(project_id)) =
+            (ToolTab::of(section), self.snapshot.selected_project_id)
+        {
+            self.tool_tabs.insert((project_id, tool));
+        }
+        if section == WorkspaceSection::Activity {
+            self.start_activity_poll(cx);
+        }
         if section == WorkspaceSection::Inbox {
-            // The tab belongs to the space Repository was opened from.
-            if let Some(project_id) = self.snapshot.selected_project_id {
-                self.repository_tabs.insert(project_id);
-            }
             if entering_inbox {
                 self.scope_inbox_to_active_project();
             }
@@ -156,11 +161,7 @@ impl WorkspaceView {
             .iter()
             .map(|project| (project.id, project.name.clone()))
             .partition(|(id, _)| self.settings.pinned_project_ids.contains(id));
-        let nav_items = [(
-            WorkspaceSection::Inbox,
-            "Repository",
-            "chrome-icons/repository.svg",
-        )];
+        let nav_items = ToolTab::ALL.map(|tool| (tool.section(), tool.label(), tool.icon()));
         let space_count = self.snapshot.projects.len();
         div()
             .size_full()
@@ -348,6 +349,7 @@ impl WorkspaceView {
     ) -> AnyElement {
         match self.workspace_section {
             WorkspaceSection::Inbox => self.inbox_content(cx),
+            WorkspaceSection::Activity => self.activity_content(cx),
             WorkspaceSection::Settings => self.settings_content(window, cx),
             WorkspaceSection::Workspace => unreachable!("workspace renders its terminal canvas"),
         }

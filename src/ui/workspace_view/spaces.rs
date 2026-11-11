@@ -490,7 +490,7 @@ impl WorkspaceView {
 }
 
 /// Fits beside the space on the card's second line.
-fn agent_state_short_label(
+pub(super) fn agent_state_short_label(
     state: AgentRuntimeState,
     attention: Option<AgentAttention>,
 ) -> &'static str {
@@ -503,7 +503,7 @@ fn agent_state_short_label(
 }
 
 /// `<1m`, `5m`, `3h`, `2d`.
-fn elapsed_label(elapsed: Duration) -> String {
+pub(super) fn elapsed_label(elapsed: Duration) -> String {
     let minutes = elapsed.as_secs() / 60;
     match minutes {
         0 => "<1m".into(),

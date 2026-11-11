@@ -386,6 +386,11 @@ pub trait TerminalHandle: Send + Sync {
     fn foreground_process_id(&self) -> Option<u32> {
         None
     }
+    /// The shell the terminal started, while it runs: the root of every
+    /// process started from the terminal.
+    fn shell_process_id(&self) -> Option<u32> {
+        None
+    }
     /// Text from the bottom of the terminal buffer, independent of the user's
     /// current scroll position. Implementations may fall back to `None`.
     fn recent_text(&self, _lines: usize) -> Option<String> {

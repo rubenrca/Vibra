@@ -113,6 +113,7 @@ bundled_assets! {
     ("chrome-icons/rows.svg", "ChromeIcons/rows.svg"),
     ("chrome-icons/worktree.svg", "ChromeIcons/worktree.svg"),
     ("chrome-icons/repository.svg", "ChromeIcons/repository.svg"),
+    ("chrome-icons/activity.svg", "ChromeIcons/activity.svg"),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

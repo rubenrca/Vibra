@@ -104,11 +104,14 @@ impl super::WorkspaceView {
         };
         let right_open = right_progress > 0.5;
         let show_tab_selector = self.workspace_section != WorkspaceSection::Settings
-            && (!self.visible_tab_order(cx).is_empty() || self.repository_tab_open());
+            && (!self.visible_tab_order(cx).is_empty() || !self.open_tool_tabs().is_empty());
         // A space without tabs leaves the bar blank: the sidebar already names
-        // it. Repository needs no name: its tabs sit where a space's tabs would.
+        // it. Repository and Activity need no name: their tabs sit where a
+        // space's tabs would.
         let section_label = match self.workspace_section {
-            WorkspaceSection::Workspace | WorkspaceSection::Inbox => None,
+            WorkspaceSection::Workspace | WorkspaceSection::Inbox | WorkspaceSection::Activity => {
+                None
+            }
             WorkspaceSection::Settings => Some("Settings"),
         };
         let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();

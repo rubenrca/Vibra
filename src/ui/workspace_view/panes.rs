@@ -265,8 +265,9 @@ impl super::WorkspaceView {
         // occupy a separate position in the strip.
         let terminal_hidden = self.review_covers_terminal(cx);
         let tab_ids = self.visible_tab_order(cx);
-        // Repository's tab, when the space has one, is numbered last.
-        let tab_count = tab_ids.len() + usize::from(self.repository_tab_open());
+        // The tool tabs (Repository, Activity) the space holds are numbered last.
+        let tools = self.open_tool_tabs();
+        let tab_count = tab_ids.len() + tools.len();
         let slots = self.tab_strip_slots(cx);
         self.tab_motion
             .update(&slots, self.tab_width.get() + px(TAB_GAP));
@@ -480,9 +481,9 @@ impl super::WorkspaceView {
                     .children(self.tab_drag_zone(item, cx))
                     .map(|tab| super::slide_into_place(tab, slide, "tab", false))
             }))
-            .when(self.repository_tab_open(), |list| {
-                list.child(self.repository_strip_tab(tab_ids.len(), tab_count, cx))
-            })
+            .children(tools.into_iter().enumerate().map(|(offset, tool)| {
+                self.tool_strip_tab(tool, tab_ids.len() + offset, tab_count, cx)
+            }))
             .child(self.tab_strip_end_target(cx));
         let tab_list = self.tab_strip_drop_area(tab_list, cx);
 

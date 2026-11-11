@@ -17,7 +17,7 @@ use crate::ui::theme::{MONO_FONT, colors};
 
 use super::{
     ContextMenuAction, ContextMenuAnchor, ContextMenuKind, ContextMenuState, RenamePrompt,
-    RenamePromptKind, WorkspaceView,
+    RenamePromptKind, ToolTab, WorkspaceView,
 };
 
 /// Space between the sidebar's edge and a menu opened beside it.
@@ -267,8 +267,8 @@ impl WorkspaceView {
             (ContextMenuKind::Review, ContextMenuAction::CloseReview) => {
                 self.close_review(window, cx);
             }
-            (ContextMenuKind::Repository, ContextMenuAction::CloseRepository) => {
-                self.close_repository_tab(window, cx);
+            (ContextMenuKind::Tool(_), ContextMenuAction::CloseTool(tool)) => {
+                self.close_tool_tab(tool, window, cx);
             }
             _ => cx.notify(),
         }
@@ -285,7 +285,7 @@ impl WorkspaceView {
             ContextMenuKind::Project { .. }
             | ContextMenuKind::SidebarBackground
             | ContextMenuKind::Review
-            | ContextMenuKind::Repository => None,
+            | ContextMenuKind::Tool(_) => None,
         };
         let row = |label: &'static str, icon: &'static str, action| {
             Some((MenuRow::new(label).icon(icon), action))
@@ -357,14 +357,15 @@ impl WorkspaceView {
                     .map(|(item, action)| (item.shortcut("⌘W"), action)),
                 ]
             }
-            ContextMenuKind::Repository => vec![
-                row(
-                    "Close Repository",
-                    "chrome-icons/close.svg",
-                    ContextMenuAction::CloseRepository,
-                )
-                .map(|(item, action)| (item.shortcut("⌘W"), action)),
-            ],
+            ContextMenuKind::Tool(tool) => vec![Some((
+                MenuRow::new(match tool {
+                    ToolTab::Repository => "Close Repository",
+                    ToolTab::Activity => "Close Activity",
+                })
+                .icon("chrome-icons/close.svg")
+                .shortcut("⌘W"),
+                ContextMenuAction::CloseTool(*tool),
+            ))],
             ContextMenuKind::SidebarBackground => vec![
                 row(
                     "New space",

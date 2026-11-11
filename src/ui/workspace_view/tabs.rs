@@ -2,8 +2,8 @@
 //! between tabs and projects, and the resizable terminal/review split.
 
 use gpui::{
-    AnyElement, Context, DragMoveEvent, MouseButton, MouseDownEvent, Window, div, prelude::*, px,
-    relative, svg,
+    AnyElement, Context, DragMoveEvent, MouseButton, MouseDownEvent, SharedString, Window, div,
+    prelude::*, px, relative, svg,
 };
 use uuid::Uuid;
 
@@ -18,8 +18,8 @@ use super::panes::{
     card_header_button, tab_drag_ghost, tab_shortcut, titlebar_tab_style,
 };
 use super::{
-    ContextMenuKind, DragGhost, PANEL_GAP, ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView,
-    card,
+    ContextMenuKind, DragGhost, PANEL_GAP, ReorderDrag, TabDrag, ToolTab, WorkspaceSection,
+    WorkspaceView, card,
 };
 
 const MAX_NAVIGATION_HISTORY: usize = 50;
@@ -376,15 +376,20 @@ impl WorkspaceView {
             return;
         }
         let order = self.visible_tab_order(cx);
-        // Repository's tab counts too, after the space's own tabs.
-        let count = order.len() + usize::from(self.repository_tab_open());
+        // The tool tabs count too, after the space's own tabs.
+        let tools = self.open_tool_tabs();
+        let count = order.len() + tools.len();
         let Some(index) = numbered_navigation_index(action.index, count) else {
             return;
         };
         match order.get(index) {
             Some(WorkspaceTabId::Review) => self.activate_review_tab(window, cx),
             Some(WorkspaceTabId::Terminal(tab_id)) => self.select_tab(*tab_id, window, cx),
-            None => self.select_section(WorkspaceSection::Inbox, window, cx),
+            None => {
+                if let Some(tool) = tools.get(index - order.len()) {
+                    self.select_section(tool.section(), window, cx);
+                }
+            }
         }
     }
 
@@ -465,18 +470,23 @@ impl WorkspaceView {
             })
     }
 
-    /// Repository's tab, after the space's tabs. It belongs to its space and
-    /// stays in the strip while terminals are in front, until it is closed.
-    pub(super) fn repository_strip_tab(
+    /// A tool's tab (Repository, Activity), after the space's tabs. It
+    /// belongs to its space and stays in the strip while terminals are in
+    /// front, until it is closed.
+    pub(super) fn tool_strip_tab(
         &self,
+        tool: ToolTab,
         index: usize,
         count: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let selected = self.workspace_section == WorkspaceSection::Inbox;
+        let selected = self.workspace_section == tool.section();
         let shortcut = tab_shortcut_label(index, count);
         div()
-            .id("repository-strip-tab")
+            .id(SharedString::from(format!(
+                "{}-strip-tab",
+                tool.label().to_ascii_lowercase()
+            )))
             .relative()
             .group("title-tab")
             .min_w(px(0.0))
@@ -489,20 +499,20 @@ impl WorkspaceView {
             .map(|tab| titlebar_tab_style(tab, selected))
             // Tabs own their clicks; only the empty bar moves the window.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.select_section(WorkspaceSection::Inbox, window, cx);
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_section(tool.section(), window, cx);
             }))
             // Like the other tabs: no close button, a menu on right-click, ⌘W.
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                     let x: f32 = event.position.x.into();
                     let y: f32 = event.position.y.into();
-                    this.open_context_menu(ContextMenuKind::Repository, x, y, cx);
+                    this.open_context_menu(ContextMenuKind::Tool(tool), x, y, cx);
                     cx.stop_propagation();
                 }),
             )
-            .child(icon_tile("chrome-icons/repository.svg", TAB_TILE_SIZE))
+            .child(icon_tile(tool.icon(), TAB_TILE_SIZE))
             .child(
                 div()
                     .flex_1()
@@ -514,39 +524,52 @@ impl WorkspaceView {
                     } else {
                         gpui::FontWeight::NORMAL
                     })
-                    .child("Repository"),
+                    .child(tool.label()),
             )
             .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
             .into_any_element()
     }
 
-    /// Whether the selected space's strip holds a Repository tab. Without a
-    /// space, Repository shows its tab only while it is in front.
-    pub(super) fn repository_tab_open(&self) -> bool {
+    /// Whether the selected space's strip holds `tool`'s tab. Without a
+    /// space, a tool shows its tab only while it is in front.
+    pub(super) fn tool_tab_open(&self, tool: ToolTab) -> bool {
         match self.snapshot.selected_project_id {
-            Some(project_id) => self.repository_tabs.contains(&project_id),
-            None => self.workspace_section == WorkspaceSection::Inbox,
+            Some(project_id) => self.tool_tabs.contains(&(project_id, tool)),
+            None => self.workspace_section == tool.section(),
         }
     }
 
-    /// A space whose only tab is Repository shows Repository, never the
+    /// The tool tabs in the selected space's strip, in strip order.
+    pub(super) fn open_tool_tabs(&self) -> Vec<ToolTab> {
+        ToolTab::ALL
+            .into_iter()
+            .filter(|tool| self.tool_tab_open(*tool))
+            .collect()
+    }
+
+    /// A space whose only tabs are tools shows the first of them, never the
     /// empty space: the empty space is for a space with no tabs at all.
     pub(super) fn settle_space_front(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.workspace_section == WorkspaceSection::Workspace
             && self.snapshot.selected_tab().is_none()
             && !self.review_visible(cx)
-            && self.repository_tab_open()
+            && let Some(tool) = self.open_tool_tabs().first().copied()
         {
-            self.select_section(WorkspaceSection::Inbox, window, cx);
+            self.select_section(tool.section(), window, cx);
         }
     }
 
-    /// Takes Repository's tab out of the space's strip, back to its terminals.
-    pub(super) fn close_repository_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Takes a tool's tab out of the space's strip, back to its terminals.
+    pub(super) fn close_tool_tab(
+        &mut self,
+        tool: ToolTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(project_id) = self.snapshot.selected_project_id {
-            self.repository_tabs.remove(&project_id);
+            self.tool_tabs.remove(&(project_id, tool));
         }
-        if self.workspace_section == WorkspaceSection::Inbox {
+        if self.workspace_section == tool.section() {
             self.select_section(WorkspaceSection::Workspace, window, cx);
         } else {
             cx.notify();

@@ -39,8 +39,8 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.workspace_section == WorkspaceSection::Inbox {
-            self.close_repository_tab(window, cx);
+        if let Some(tool) = ToolTab::of(self.workspace_section) {
+            self.close_tool_tab(tool, window, cx);
             return;
         }
         if self.workspace_section != WorkspaceSection::Workspace {
