@@ -3,20 +3,17 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.52</title>
-            <pubDate>Wed, 11 Nov 2026 19:33:08 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.52</link>
-            <sparkle:version>364</sparkle:version>
-            <sparkle:shortVersionString>0.3.52</sparkle:shortVersionString>
+            <title>0.3.53</title>
+            <pubDate>Wed, 11 Nov 2026 20:05:14 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.53</link>
+            <sparkle:version>367</sparkle:version>
+            <sparkle:shortVersionString>0.3.53</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Add ten workspace presets after Midnight in Appearance: Harbor, Moss, Ember, Orchid, Tidepool, Dune, Rosewood, Glacier, Arcade, and Ink, each with a dark and a light tone. A preset paints the window, cards, ink, and accent in its hue, and ships its own code colors and Markdown headings and links.</li>
-  <li>Retire Cinder, Violet, and Bloom; a saved choice moves to Ember, Orchid, and Rosewood.</li>
-  <li>Let the desktop show through the window in dark themes only, since it washes light ones out, and slightly more than before.</li>
-  <li>Keep a space's name on one line in agent cards instead of painting it a letter per line.</li>
+  <li>Fade the Changes graph's foot into whatever shows behind the panel, so it no longer ends in a dark band when the desktop shows through the window.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.52/Vibra-0.3.52.dmg" length="16628065" type="application/octet-stream" sparkle:edSignature="urBQLTfHVnGQfFS+hfsZOztSOIVzSV5tjK/7rQzxs5eeWWiyFB4FspjXQup9ME975t7mvhWK0cT8d+7YVdFGDA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.53/Vibra-0.3.53.dmg" length="16628410" type="application/octet-stream" sparkle:edSignature="hvdyFT3M9YCIPEo+0v75p8Bu/ZN4VZ7LdBblUoS2RECohOouzbo4/6kstxYHSTJF43CvKD5EL+UU6Jbz7GYICA=="/>
         </item>
     </channel>
 </rss>
