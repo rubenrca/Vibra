@@ -3,17 +3,23 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.49</title>
-            <pubDate>Fri, 06 Nov 2026 14:57:15 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.49</link>
-            <sparkle:version>341</sparkle:version>
-            <sparkle:shortVersionString>0.3.49</sparkle:shortVersionString>
+            <title>0.3.50</title>
+            <pubDate>Wed, 11 Nov 2026 14:58:28 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.50</link>
+            <sparkle:version>354</sparkle:version>
+            <sparkle:shortVersionString>0.3.50</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Keep a space open when its last terminal closes: it stays in the sidebar with its folder, name, and pin, and ⌘T opens a new terminal there. Close space closes an empty space without asking.</li>
+  <li>Add Activity under Repository: a read-only monitor of what runs for your spaces. Tiles show the servers listening and the memory in use, the agents and what they need, the fullest agent context, each subscription's five-hour and weekly windows, and today's tokens beside the last seven days. Each space lists its ports (a click opens localhost), its terminals' memory, and its agents with their task, state, and context; servers and agents running outside Vibra are grouped by repository.</li>
+  <li>Open Repository as a tab of its space, after its terminals, closed with ⌘W or its menu and counted by ⌘1–⌘9. History, Pull requests, and Issues move into a segmented control at the top of its list.</li>
+  <li>Mark spaces with a drop and spreading rings, placed and colored by the space's name; the rings move while its agents work and faster while one needs you.</li>
+  <li>Rest an empty space on a quiet field with a snake playing by itself; click it to play Snake on the whole card. The high score is kept.</li>
+  <li>Drop the tabs' buttons and the panes' headers: right-click for the menu and ⌘W to close, and drag a pane by the strip along its top edge.</li>
+  <li>Reach the cards to the window's bottom edge: the usage group sits at the left sidebar's foot and the branch and Keep Awake at the right one's.</li>
+  <li>Show a bare prompt on a terminal's tile instead of a framed icon.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.49/Vibra-0.3.49.dmg" length="16219657" type="application/octet-stream" sparkle:edSignature="0GDKeXSDTFCyGaR3ah215z0zFkeguJdxZBSE/+16WrIhHoFJsU+LL7xMKiqEQ7apR9jVqDkh3v7uEdaQ1wF1Dg=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.50/Vibra-0.3.50.dmg" length="16536320" type="application/octet-stream" sparkle:edSignature="JTGneaamV8JN9Q+no5ZlrA28tYY+WxjR8BAWtF4Q0JxDHRTzvXYG0f9CXoA0aQp8YhtqQVKhSoZpiGCAGqzRCA=="/>
         </item>
     </channel>
 </rss>
