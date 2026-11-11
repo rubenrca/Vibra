@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.51 — 2026-11-11
+
+- Render pull requests and issues in Repository as GitHub does: tables with sized columns, collapsible details, GitHub's HTML, alerts such as NOTE and WARNING, and links for bare URLs, #123, and @user. Images show as links to them.
+- Keep the right sidebar beside Repository and Activity: it stays as it was, and its toggle and the Explorer and Changes tabs work there without leaving the tab.
+- Hide Keep Awake with the right sidebar instead of moving it to the left sidebar's foot.
+- Center the usage chips in their strip, with larger provider marks.
+- Bring back the left sidebar's dividers as lines that fade out toward both ends.
+- Never cut a space's name short in the sidebar: the branch gives way first, and a long name wraps.
+- Keep a space lit while its Repository or Activity tab is in front.
+- Fade the Changes graph into the frame at its foot.
+
 ## 0.3.50 — 2026-11-11
 
 - Add Activity under Repository: a read-only monitor of what runs for your spaces. Tiles show the servers listening and the memory in use, the agents and what they need, the fullest agent context, each subscription's five-hour and weekly windows, and today's tokens beside the last seven days. Each space lists its ports (a click opens localhost), its terminals' memory, and its agents with their task, state, and context; servers and agents running outside Vibra are grouped by repository.
