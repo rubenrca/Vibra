@@ -283,6 +283,21 @@ impl WorkspaceView {
             agent_state_since: HashMap::new(),
             _agent_clock_task: None,
             _ripple_clock_task: None,
+            snake: crate::ui::retro::snake::Snake::new(
+                settings.snake_best,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |elapsed| elapsed.subsec_nanos()),
+            ),
+            arcade_bounds: Default::default(),
+            arcade_hovered: false,
+            _arcade_step_task: None,
+            _arcade_rest_task: None,
+            attract: crate::ui::retro::attract::Attract::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(7, |elapsed| elapsed.subsec_nanos().rotate_left(7)),
+            ),
             agent_hook_status,
             agent_hook_error,
             window_is_active: true,

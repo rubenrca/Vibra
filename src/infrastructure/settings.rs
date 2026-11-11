@@ -52,6 +52,9 @@ pub struct AppSettings {
     /// Let the macOS blur show through the window; off paints solid surfaces.
     #[serde(default = "default_true")]
     pub window_transparency: bool,
+    /// Snake's high score, kept across launches.
+    #[serde(default)]
+    pub snake_best: u32,
     #[serde(default = "default_window_width")]
     pub window_width: f32,
     #[serde(default = "default_window_height")]
@@ -156,6 +159,7 @@ impl Default for AppSettings {
             appearance_mode: AppearanceMode::System,
             agent_notifications: true,
             window_transparency: true,
+            snake_best: 0,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             diff_split: false,

@@ -105,17 +105,12 @@ impl super::WorkspaceView {
         let right_open = right_progress > 0.5;
         let show_tab_selector = self.workspace_section == WorkspaceSection::Workspace
             && !self.visible_tab_order(cx).is_empty();
-        // Without a space the titlebar stays blank rather than naming the app.
-        // Repository needs no name: its tabs sit where a space's tabs would.
+        // A space without tabs leaves the bar blank: the sidebar already names
+        // it. Repository needs no name: its tabs sit where a space's tabs would.
         let section_label = match self.workspace_section {
-            WorkspaceSection::Workspace => self
-                .snapshot
-                .selected_project()
-                .map(|project| project.name.as_str()),
-            WorkspaceSection::Inbox => None,
+            WorkspaceSection::Workspace | WorkspaceSection::Inbox => None,
             WorkspaceSection::Settings => Some("Settings"),
-        }
-        .map(str::to_owned);
+        };
         let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();
         if show_tab_selector {
             center_chrome = center_chrome.child(self.tab_bar(cx));

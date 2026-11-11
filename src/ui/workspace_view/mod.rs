@@ -8,6 +8,7 @@ mod bootstrap;
 mod chrome;
 mod context_menu;
 mod drag;
+mod empty_space;
 mod explorer;
 mod files;
 mod input;
@@ -118,6 +119,16 @@ pub struct WorkspaceView {
     _agent_clock_task: Option<Task<()>>,
     /// Redraws moving ripples while a space's agents work.
     _ripple_clock_task: Option<Task<()>>,
+    /// The game hidden in an empty space's field of tiles.
+    snake: crate::ui::retro::snake::Snake,
+    /// Where the field was last laid out, to size the board.
+    arcade_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    /// The pointer is over the field, which lifts it a little.
+    arcade_hovered: bool,
+    _arcade_step_task: Option<Task<()>>,
+    _arcade_rest_task: Option<Task<()>>,
+    /// The faint snake that plays by itself on the resting field.
+    attract: crate::ui::retro::attract::Attract,
     agent_hook_status: Option<AgentHookStatus>,
     agent_hook_error: Option<SharedString>,
     window_is_active: bool,
@@ -674,6 +685,7 @@ impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_terminal_surface_visibility(cx);
         self.sync_ripple_clock(cx);
+        self.sync_arcade_clock(cx);
         self.ensure_appearance_subscription(window, cx);
         self.ensure_activation_subscription(window, cx);
         self.ensure_window_bounds_subscription(window, cx);

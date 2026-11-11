@@ -9,6 +9,7 @@ mod git_graph;
 pub mod idle;
 mod markdown;
 pub mod menu;
+pub mod retro;
 pub mod space_marks;
 pub mod syntax;
 pub mod tab_style;

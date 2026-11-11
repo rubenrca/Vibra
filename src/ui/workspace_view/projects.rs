@@ -750,64 +750,6 @@ impl WorkspaceView {
         }
         cx.notify();
     }
-
-    pub(super) fn empty_project_content(&self, cx: &mut Context<Self>) -> AnyElement {
-        let project = self.snapshot.selected_project();
-        let name = project
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "No space open".into());
-        let path = project.and_then(|p| p.directory()).map(PathBuf::from);
-        let button = if project.is_some() {
-            "New terminal · ⌘T"
-        } else {
-            "New space · ⌘N"
-        };
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .child(
-                div()
-                    .text_size(px(16.0))
-                    .text_color(colors().foreground)
-                    .child(name),
-            )
-            .when_some(path, |content, path| {
-                content.child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(colors().subtle)
-                        .child(path.display().to_string()),
-                )
-            })
-            .child(div().text_size(px(12.0)).text_color(colors().muted).child(
-                if project.is_some() {
-                    "Open a terminal in this space to get started"
-                } else {
-                    "A space opens a terminal in your home folder and follows it"
-                },
-            ))
-            .child(
-                div()
-                    .id("empty-project-new-tab")
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .bg(colors().elevated)
-                    .text_size(px(12.0))
-                    .text_color(colors().foreground)
-                    .hover(|s| s.bg(colors().hover))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_terminal_tab_in_project(window, cx)
-                    }))
-                    .child(button),
-            )
-            .into_any_element()
-    }
 }
 
 /// The row as it looks while selected, without controls that cannot be used mid-drag.

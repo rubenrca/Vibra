@@ -139,6 +139,16 @@ impl super::WorkspaceView {
             }
             return;
         }
+        // The empty space's game, only while nothing else holds the keyboard,
+        // so typing elsewhere (a commit message, a filter) never steers it.
+        if allows_text_input
+            && self.focus_handle.is_focused(window)
+            && self.arcade_shown(cx)
+            && self.arcade_key(&key, cx)
+        {
+            cx.stop_propagation();
+            return;
+        }
         if self.handle_inbox_key(event, window, cx) {
             cx.stop_propagation();
         }

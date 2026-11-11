@@ -1260,6 +1260,123 @@ fn project_diff_counts_follow_folders_and_ignore_removed_projects(cx: &mut gpui:
 }
 
 #[gpui::test]
+fn snake_hides_in_the_field_of_an_empty_space_and_pauses_out_of_sight(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::ui::retro::snake::SnakePhase;
+
+    let (root, _, _, window) = open_recording_workspace(cx, "snake");
+    window
+        .update(cx, |view, window, cx| {
+            view.window_is_active = true;
+            view.arcade_bounds.set(gpui::Bounds::new(
+                gpui::point(gpui::px(0.0), gpui::px(0.0)),
+                gpui::size(gpui::px(800.0), gpui::px(280.0)),
+            ));
+            assert!(!view.arcade_shown(cx), "terminals cover the field");
+
+            let tabs: Vec<Uuid> = view
+                .snapshot
+                .selected_workspace()
+                .unwrap()
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect();
+            for tab in tabs {
+                view.close_tab(tab, window, cx);
+            }
+            assert!(view.arcade_shown(cx));
+            assert_eq!(view.snake.phase(), SnakePhase::Title);
+            view.sync_arcade_clock(cx);
+            assert!(
+                view._arcade_step_task.is_none(),
+                "the resting field takes no steps"
+            );
+            assert!(view._arcade_rest_task.is_some(), "but it twinkles");
+
+            // The resting field is a picture: keys leave it alone.
+            assert!(!view.arcade_key("w", cx));
+            assert!(!view.arcade_key("space", cx));
+            view.start_snake();
+            assert_eq!(view.snake.phase(), SnakePhase::Playing);
+            assert_eq!(view.snake.grid(), (57, 20), "the board fills the field");
+            assert!(view.arcade_key("down", cx));
+            view.sync_arcade_clock(cx);
+            assert!(view._arcade_step_task.is_some(), "a game steps");
+            assert!(
+                view._arcade_rest_task.is_none(),
+                "the board does not twinkle"
+            );
+
+            // A background window pauses the game and stops its steps.
+            view.window_is_active = false;
+            view.sync_arcade_clock(cx);
+            assert_eq!(view.snake.phase(), SnakePhase::Paused);
+            assert!(view._arcade_step_task.is_none());
+            assert!(view._arcade_rest_task.is_none());
+
+            view.window_is_active = true;
+            assert!(view.arcade_key("escape", cx), "escape leaves a paused game");
+            assert_eq!(view.snake.phase(), SnakePhase::Title);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn snake_keys_never_reach_the_game_while_something_else_holds_the_keyboard(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::ui::retro::snake::SnakePhase;
+
+    let (root, _, _, window) = open_recording_workspace(cx, "snake-focus");
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), cx);
+    window
+        .update(&mut cx, |view, window, cx| {
+            let tabs: Vec<Uuid> = view
+                .snapshot
+                .selected_workspace()
+                .unwrap()
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect();
+            for tab in tabs {
+                view.close_tab(tab, window, cx);
+            }
+            view.focus_handle.focus(window);
+            view.start_snake();
+            view.snake.pause();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_keystrokes("escape");
+    window
+        .update(&mut cx, |view, window, _| {
+            assert_eq!(
+                view.snake.phase(),
+                SnakePhase::Title,
+                "escape leaves the game"
+            );
+            view.start_snake();
+            view.snake.pause();
+            // With something else holding the keyboard, the game hears nothing.
+            window.blur();
+        })
+        .unwrap();
+    cx.simulate_keystrokes("escape");
+    window
+        .update(&mut cx, |view, window, _| {
+            assert_eq!(view.snake.phase(), SnakePhase::Paused);
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn space_ripples_follow_their_agents_and_tick_only_while_moving(cx: &mut gpui::TestAppContext) {
     use crate::ui::space_marks::SpaceActivity;
 
