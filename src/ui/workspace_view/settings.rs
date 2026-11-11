@@ -983,6 +983,16 @@ impl WorkspaceView {
         self.persist_settings(cx);
     }
 
+    fn set_auto_hide_tabs(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.settings.auto_hide_tabs == enabled {
+            return;
+        }
+        self.settings.auto_hide_tabs = enabled;
+        self.tabs_revealed = false;
+        cx.notify();
+        self.persist_settings(cx);
+    }
+
     fn set_window_transparency(
         &mut self,
         enabled: bool,

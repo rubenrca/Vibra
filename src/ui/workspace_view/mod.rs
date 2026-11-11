@@ -23,6 +23,7 @@ mod tab_drag;
 mod tabs;
 mod terminals;
 mod titlebar;
+mod titlebar_reveal;
 mod types;
 mod usage;
 mod work_inbox;
@@ -118,6 +119,13 @@ pub struct WorkspaceView {
     _agent_clock_task: Option<Task<()>>,
     /// Redraws moving ripples while a space's agents work.
     _ripple_clock_task: Option<Task<()>>,
+    /// How much of the tab strip is on screen (`0.0` under the card … `1.0` shown).
+    tabs_progress: f32,
+    tabs_slide_target: f32,
+    /// The pointer brought the auto-hiding tabs out.
+    tabs_revealed: bool,
+    _tabs_slide_task: Option<Task<()>>,
+    _tabs_watch_task: Option<Task<()>>,
     agent_hook_status: Option<AgentHookStatus>,
     agent_hook_error: Option<SharedString>,
     window_is_active: bool,
@@ -568,6 +576,7 @@ impl WorkspaceView {
         let margin = |progress: f32| px(PANEL_GAP * (1.0 - progress.clamp(0.0, 1.0)));
         let usage = !self.usage_in_sidebar();
         let controls = !self.status_controls_in_sidebar();
+        let lift = self.tabs_lift();
         div()
             .flex_1()
             .min_w(px(0.0))
@@ -581,6 +590,11 @@ impl WorkspaceView {
                     .flex()
                     .pl(margin(self.left_sidebar_progress))
                     .pr(margin(right_progress))
+                    // With the tabs away the cards rise over their strip, a gap
+                    // short of the top edge, and keep the tabs' clicks to themselves.
+                    .mt(px(-lift))
+                    .when(lift > 0.0, |area| area.block_mouse_except_scroll())
+                    .debug_selector(|| "center-cards".into())
                     .pb(px(PANEL_GAP))
                     .child(content),
             )
@@ -674,6 +688,7 @@ impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_terminal_surface_visibility(cx);
         self.sync_ripple_clock(cx);
+        self.sync_tabs_reveal(cx);
         self.ensure_appearance_subscription(window, cx);
         self.ensure_activation_subscription(window, cx);
         self.ensure_window_bounds_subscription(window, cx);
@@ -792,6 +807,9 @@ impl Render for WorkspaceView {
         }
 
         body = body.child(layout);
+        if let Some(zone) = self.tabs_reveal_zone(cx) {
+            body = body.child(zone);
+        }
         if let Some(popover) = self.inbox_popover(window, cx) {
             body = body.child(popover);
         }

@@ -13,6 +13,7 @@ use crate::ui::menu::{menu_heading, menu_hover, menu_panel};
 use crate::ui::tab_style::lifted_tab;
 use crate::ui::theme::{colors, frame, frame_hover, frame_surface};
 
+use super::titlebar_reveal::TAB_RISE;
 use super::{
     RightSidebarMode, TITLEBAR_CHROME_COLLAPSED, TITLEBAR_HEIGHT, TITLEBAR_RIGHT_CHROME_COLLAPSED,
     WorkspaceSection, sidebar_tooltip,
@@ -117,8 +118,30 @@ impl super::WorkspaceView {
         }
         .map(str::to_owned);
         let mut center_chrome = div().h_full().flex_1().min_w(px(0.0)).flex().items_center();
-        if show_tab_selector {
+        let tabs_shown = self.tabs_progress;
+        if show_tab_selector && tabs_shown >= 0.999 {
             center_chrome = center_chrome.child(self.tab_bar(cx));
+        } else if show_tab_selector && tabs_shown > 0.001 {
+            // The tabs fade and drift up as the card rises over them.
+            center_chrome = center_chrome.child(
+                div()
+                    .h_full()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .items_center()
+                    .relative()
+                    .top(px(-TAB_RISE * (1.0 - tabs_shown)))
+                    .opacity(tabs_shown)
+                    .child(self.tab_bar(cx)),
+            );
+        } else if show_tab_selector {
+            // Under the card: the strip above it still moves the window.
+            center_chrome = center_chrome
+                .window_control_area(WindowControlArea::Drag)
+                .on_mouse_down(MouseButton::Left, |_, _, _| {
+                    crate::infrastructure::window::start_drag();
+                });
         } else if self.workspace_section == WorkspaceSection::Inbox {
             center_chrome = center_chrome.child(self.repository_tabs(cx));
         } else {
