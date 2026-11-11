@@ -374,15 +374,30 @@ impl TextLayout {
                         (None, "".into())
                     };
 
+                // Vibra patch: the max-content size of wrapping text is its
+                // unwrapped size. Reusing a layout wrapped at a definite width,
+                // such as the 0px of a min-content pass, handed the flex
+                // algorithm that stale size, and a short label was laid out a
+                // letter per line.
+                let measures_max_content = text_style.white_space == WhiteSpace::Normal
+                    && wrap_width.is_none()
+                    && matches!(available_space.width, crate::AvailableSpace::MaxContent);
+                let mut keeps_wrapped_layout = false;
                 if let Some(text_layout) = element_state.0.borrow().as_ref()
                     && text_layout.size.is_some()
-                    && (wrap_width.is_none() || wrap_width == text_layout.wrap_width)
                     // Vibra patch: truncated text is shaped again for the width
                     // it finally gets. Otherwise a flex item that shrinks keeps
                     // its untruncated layout and is clipped with no ellipsis.
                     && truncate_width == text_layout.truncate_width
                 {
-                    return text_layout.size.unwrap();
+                    if wrap_width == text_layout.wrap_width
+                        || (wrap_width.is_none() && !measures_max_content)
+                    {
+                        return text_layout.size.unwrap();
+                    }
+                    // Vibra patch: the wrapped layout stays the one painted;
+                    // this measurement only answers the size.
+                    keeps_wrapped_layout = measures_max_content;
                 }
 
                 let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
@@ -409,6 +424,9 @@ impl TextLayout {
                     )
                     .log_err()
                 else {
+                    if keeps_wrapped_layout {
+                        return Size::default();
+                    }
                     element_state.0.borrow_mut().replace(TextLayoutInner {
                         lines: Default::default(),
                         len: 0,
@@ -426,6 +444,10 @@ impl TextLayout {
                     let line_size = line.size(line_height);
                     size.height += line_size.height;
                     size.width = size.width.max(line_size.width).ceil();
+                }
+
+                if keeps_wrapped_layout {
+                    return size;
                 }
 
                 element_state.0.borrow_mut().replace(TextLayoutInner {

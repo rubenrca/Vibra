@@ -2297,3 +2297,59 @@ fn clicking_a_space_leaves_nothing_to_reorder_when_agents_is_resized(
         .unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[gpui::test]
+fn an_agent_card_keeps_a_short_space_name_on_one_line(cx: &mut gpui::TestAppContext) {
+    use gpui::px;
+
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "agent-card-space");
+    let pane = snapshot.selected_session().unwrap().id;
+    let space = snapshot.selected_project_id.unwrap();
+    let selector: &'static str = Box::leak(format!("sidebar-agent-space-{pane}").into_boxed_str());
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), cx);
+    window
+        .update(&mut cx, |view, _, cx| {
+            let project = view
+                .snapshot
+                .projects
+                .iter_mut()
+                .find(|project| project.id == space)
+                .unwrap();
+            project.name = "Vibra".into();
+            let directory = project.directory().unwrap().to_owned();
+            // The branch beside the name made the row lay its text out at
+            // min-content first, which used to leave the name 0px wide.
+            view.project_branches
+                .insert(directory.into(), "main".into());
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: pane,
+                    presence: Some(TerminalAgentPresence {
+                        kind: "Claude".into(),
+                        kind_source: TerminalAgentKindSource::Process,
+                        state: AgentRuntimeState::Idle,
+                        state_source: TerminalAgentStateSource::Heuristic,
+                        attention: None,
+                        process_id: Some(7),
+                    }),
+                },
+                cx,
+            );
+            cx.notify();
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let name = cx
+        .debug_bounds(selector)
+        .expect("the agent card names its space");
+    assert!(name.size.width > px(20.0), "the name has room: {name:?}");
+    assert!(
+        name.size.height < px(24.0),
+        "the name is one line: {name:?}"
+    );
+    window
+        .update(&mut cx, |_, window, _| window.remove_window())
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}

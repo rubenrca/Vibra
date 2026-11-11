@@ -30,6 +30,16 @@ measurement of any text that does not wrap, so a truncating flex item that
 shrank after its first measurement kept the full string and was clipped at its
 edge with no ellipsis.
 
+## Max-content size of wrapping text
+
+In the same function, a max-content measurement of text that wraps no longer
+reuses a layout wrapped at a definite width; it shapes the unwrapped line and
+answers that size, leaving the wrapped layout as the one painted. Upstream reused
+any earlier layout for a measurement without a width. When a flex row was first
+laid out at min-content, the 0px layout of its text came back as the text's
+max-content size, so the flex base size was 0 and a short label (a space name on
+an agent card) was painted a letter per line.
+
 ## Uniform list bottom padding
 
 In `src/elements/uniform_list.rs`, the last rendered item index counts the

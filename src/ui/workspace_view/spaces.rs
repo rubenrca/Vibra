@@ -470,7 +470,12 @@ impl WorkspaceView {
                                     .child(div().flex_none().child("·"))
                             })
                             // The space is never cut; the branch gives way.
-                            .child(div().min_w(px(0.0)).child(space))
+                            .child(
+                                div()
+                                    .debug_selector(|| format!("sidebar-agent-space-{session_id}"))
+                                    .min_w(px(0.0))
+                                    .child(space),
+                            )
                             .when_some(branch, |line, branch| {
                                 line.child(
                                     svg()
