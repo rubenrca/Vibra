@@ -69,8 +69,14 @@ pub(super) struct PaletteItem {
 
 #[derive(Debug, Clone)]
 pub(super) enum ContextMenuKind {
-    Pane { session_id: Uuid },
-    Project { project_id: Uuid },
+    Pane {
+        session_id: Uuid,
+    },
+    /// The review's tab in the strip.
+    Review,
+    Project {
+        project_id: Uuid,
+    },
     SidebarBackground,
 }
 
@@ -116,6 +122,7 @@ pub(super) enum ContextMenuAction {
     ToggleProjectPin,
     ClosePane,
     CloseTab,
+    CloseReview,
     SplitRight,
     SplitDown,
     ToggleZoom,

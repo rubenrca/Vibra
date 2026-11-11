@@ -264,6 +264,9 @@ impl WorkspaceView {
             (ContextMenuKind::Pane { session_id }, ContextMenuAction::ToggleZoom) => {
                 self.toggle_pane_zoom_for(session_id, window, cx);
             }
+            (ContextMenuKind::Review, ContextMenuAction::CloseReview) => {
+                self.close_review(window, cx);
+            }
             _ => cx.notify(),
         }
     }
@@ -276,7 +279,9 @@ impl WorkspaceView {
         let menu = self.context_menu.clone()?;
         let pane_identity = match &menu.kind {
             ContextMenuKind::Pane { session_id } => self.pane_identity_by_id(*session_id, cx),
-            ContextMenuKind::Project { .. } | ContextMenuKind::SidebarBackground => None,
+            ContextMenuKind::Project { .. }
+            | ContextMenuKind::SidebarBackground
+            | ContextMenuKind::Review => None,
         };
         let row = |label: &'static str, icon: &'static str, action| {
             Some((MenuRow::new(label).icon(icon), action))
@@ -331,6 +336,21 @@ impl WorkspaceView {
                         ContextMenuAction::RemoveProject,
                     )
                     .map(|(item, action)| (item.danger(), action)),
+                ]
+            }
+            ContextMenuKind::Review => {
+                let label = if self.diff_view.read(cx).preview_path().is_some() {
+                    "Close file"
+                } else {
+                    "Close review"
+                };
+                vec![
+                    row(
+                        label,
+                        "chrome-icons/close.svg",
+                        ContextMenuAction::CloseReview,
+                    )
+                    .map(|(item, action)| (item.shortcut("⌘W"), action)),
                 ]
             }
             ContextMenuKind::SidebarBackground => vec![

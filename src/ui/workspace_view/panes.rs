@@ -13,7 +13,7 @@ use crate::domain::workspace::{
     PaneBranch, PaneFocusDirection, PaneLayoutSnapshot, PaneResizeDirection, PaneSplitDirection,
     WorkspaceSplitAxis, WorkspaceTabId,
 };
-use crate::ui::agent_marks::{agent_compact_badge, agent_tile_stack, agent_tile_stack_shuffle};
+use crate::ui::agent_marks::{agent_tile_stack, agent_tile_stack_shuffle};
 use crate::ui::tab_style::{self, lifted_tab};
 use crate::ui::terminal::TerminalDragPreview;
 use crate::ui::theme::{MONO_FONT, colors, frame, lift, mix, surface_tint};
@@ -34,6 +34,8 @@ pub(super) const TAB_TILE_INSET: f32 = (TAB_HEIGHT - TAB_TILE_SIZE) / 2.0;
 const TAB_GAP: f32 = 4.0;
 /// Pane headers sit inside their card, so they need no divider of their own.
 pub(super) const PANE_HEADER_HEIGHT: f32 = 30.0;
+/// Room between a terminal card's top edge and its first row, which grips the pane.
+const PANE_GRIP_HEIGHT: f32 = 6.0;
 
 /// A titlebar tab on the frame, its leading tile inset as far from the left
 /// edge as from the top and bottom.
@@ -101,38 +103,6 @@ pub(super) fn card_header_button(
                 .flex_none()
                 .text_color(colors().subtle)
                 .group_hover("card-action", |icon| icon.text_color(colors().foreground)),
-        )
-}
-
-/// The control at a tab's end: the selected tab's menu, or a close button
-/// that appears while another tab is hovered.
-pub(super) fn tab_trailing_button(
-    id: impl Into<SharedString>,
-    icon: &'static str,
-    label: &'static str,
-    visible: bool,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id.into())
-        .group("tab-trailing")
-        .size(px(20.0))
-        .flex_none()
-        .rounded(px(5.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .opacity(if visible { 1.0 } else { 0.0 })
-        .group_hover("title-tab", |button| button.opacity(1.0))
-        .hover(|button| button.bg(Hsla::from(colors().foreground).opacity(0.08)))
-        .tooltip(move |_, cx| super::sidebar_tooltip(label, cx))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(
-            svg()
-                .path(icon)
-                .size(px(14.0))
-                .text_color(colors().subtle)
-                .group_hover("tab-trailing", |icon| icon.text_color(colors().foreground)),
         )
 }
 
@@ -209,14 +179,6 @@ fn rolling_title(
             direction * TITLE_ROLL * (1.0 - progress),
             progress,
         ))
-}
-
-#[derive(Clone, Copy)]
-struct PaneHeaderState {
-    highlighted: bool,
-    zoomed: bool,
-    can_drag: bool,
-    can_zoom: bool,
 }
 
 impl super::WorkspaceView {
@@ -510,45 +472,8 @@ impl super::WorkspaceView {
                         ))
                     })
                     .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
+                    // Tabs carry no buttons: right-click for the menu, ⌘W to close.
                     .children(self.tab_drag_zone(item, cx))
-                    // The selected tab offers its menu; the others close from a hover.
-                    .map(|tab| match (selected, session_id) {
-                        (true, Some(session_id)) => tab.child(
-                            tab_trailing_button(
-                                format!("tab-menu-{tab_id}"),
-                                "chrome-icons/ellipsis.svg",
-                                "More",
-                                true,
-                            )
-                            .on_click(cx.listener(
-                                move |this, event: &gpui::ClickEvent, window, cx| {
-                                    this.select_terminal(session_id, window, cx);
-                                    let position = event.position();
-                                    this.open_context_menu(
-                                        ContextMenuKind::Pane { session_id },
-                                        position.x.into(),
-                                        position.y.into(),
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                },
-                            )),
-                        ),
-                        _ => tab.child(
-                            tab_trailing_button(
-                                format!("close-tab-{tab_id}"),
-                                "chrome-icons/close.svg",
-                                "Close tab",
-                                selected,
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.close_tab(tab_id, window, cx);
-                                    cx.stop_propagation();
-                                },
-                            )),
-                        ),
-                    })
                     .map(|tab| super::slide_into_place(tab, slide, "tab", false))
             }))
             .child(self.tab_strip_end_target(cx));
@@ -607,22 +532,8 @@ impl super::WorkspaceView {
                         .unwrap_or_else(|| "Terminal".into()),
                     preview: drag_preview,
                 };
-                // Every pane is a card with its own header: title, split, zoom, close.
-                let zoomed = self
-                    .snapshot
-                    .selected_tab()
-                    .is_some_and(|tab| tab.zoomed_session_id == Some(session_id));
-                let header = self.pane_header(
-                    session_id,
-                    PaneHeaderState {
-                        highlighted,
-                        zoomed,
-                        can_drag,
-                        can_zoom: pane_count > 1,
-                    },
-                    drag,
-                    cx,
-                );
+                // Every pane is a bare card; its top edge is the grip.
+                let grip = self.pane_grip(session_id, can_drag, pane_count > 1, drag, cx);
                 card(colors().terminal)
                     .id(SharedString::from(format!("pane-{session_id}")))
                     .size_full()
@@ -652,7 +563,7 @@ impl super::WorkspaceView {
                             cx.stop_propagation();
                         }),
                     )
-                    .child(header)
+                    .child(grip)
                     .when_some(terminal, |pane, terminal| {
                         pane.child(
                             div()
@@ -782,55 +693,24 @@ impl super::WorkspaceView {
         }
     }
 
-    fn pane_header(
+    /// The strip above the terminal: no title or buttons, but it still drags
+    /// the pane (to swap it or make it a tab) and zooms it on a double click.
+    /// Split, zoom, and close live in the right-click menu and their shortcuts.
+    fn pane_grip(
         &self,
         session_id: Uuid,
-        state: PaneHeaderState,
+        can_drag: bool,
+        can_zoom: bool,
         drag: PaneDrag,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let PaneHeaderState {
-            highlighted,
-            zoomed,
-            can_drag,
-            can_zoom,
-        } = state;
-        let identity = self.pane_identity_by_id(session_id, cx);
-        let title = identity
-            .as_ref()
-            .map(|identity| identity.title.clone())
-            .unwrap_or_else(|| "Terminal".to_owned());
-        let detail = identity
-            .as_ref()
-            .and_then(|identity| identity.detail.clone());
-        let button = |id: String, icon: &'static str, label: &'static str| {
-            card_header_button(id, icon, label, colors().terminal)
-        };
-        let split_button =
-            |id: String, icon: &'static str, label: &'static str, direction: PaneSplitDirection| {
-                button(id, icon, label).on_click(cx.listener(move |this, _, window, cx| {
-                    this.select_terminal(session_id, window, cx);
-                    this.split_pane(direction, window, cx);
-                }))
-            };
         div()
-            .id(SharedString::from(format!("pane-header-{session_id}")))
-            .h(px(PANE_HEADER_HEIGHT))
+            .id(SharedString::from(format!("pane-grip-{session_id}")))
+            .h(px(PANE_GRIP_HEIGHT))
             .w_full()
             .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .pl(px(10.0))
-            .pr(px(5.0))
-            .text_color(if highlighted {
-                colors().foreground
-            } else {
-                colors().muted
-            })
-            .when(can_drag, |header| {
-                header
-                    .cursor_move()
+            .when(can_drag, |grip| {
+                grip.cursor_move()
                     .on_drag(drag, |drag, offset, _, cx| drag.preview(offset, cx))
             })
             .on_mouse_down(
@@ -843,87 +723,6 @@ impl super::WorkspaceView {
                         this.toggle_pane_zoom_for(session_id, window, cx);
                     }
                 }),
-            )
-            .child(agent_compact_badge(
-                identity
-                    .as_ref()
-                    .and_then(|identity| identity.agent_kind.as_deref()),
-                identity.as_ref().and_then(|identity| identity.agent_state),
-                identity
-                    .as_ref()
-                    .and_then(|identity| identity.agent_attention),
-                highlighted,
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .flex()
-                    .items_baseline()
-                    .gap(px(6.0))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .max_w(relative(0.7))
-                            .truncate()
-                            .text_size(px(12.5))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .when_some(detail, |label, detail| {
-                        label.child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .text_size(px(12.0))
-                                .text_color(colors().subtle)
-                                .child(detail),
-                        )
-                    }),
-            )
-            .child(split_button(
-                format!("pane-split-right-{session_id}"),
-                "chrome-icons/split-view.svg",
-                "Split right · ⌘D",
-                PaneSplitDirection::Right,
-            ))
-            .child(split_button(
-                format!("pane-split-down-{session_id}"),
-                "chrome-icons/rows.svg",
-                "Split down · ⇧⌘D",
-                PaneSplitDirection::Down,
-            ))
-            .when(can_zoom, |header| {
-                header.child(
-                    button(
-                        format!("pane-zoom-{session_id}"),
-                        if zoomed {
-                            "chrome-icons/minimize.svg"
-                        } else {
-                            "chrome-icons/maximize.svg"
-                        },
-                        if zoomed {
-                            "Restore pane · ⇧⌘↵"
-                        } else {
-                            "Zoom pane · ⇧⌘↵"
-                        },
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.toggle_pane_zoom_for(session_id, window, cx);
-                    })),
-                )
-            })
-            .child(
-                button(
-                    format!("pane-close-{session_id}"),
-                    "chrome-icons/close.svg",
-                    "Close pane",
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_pane(session_id, window, cx);
-                })),
             )
             .into_any_element()
     }

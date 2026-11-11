@@ -2,7 +2,8 @@
 //! between tabs and projects, and the resizable terminal/review split.
 
 use gpui::{
-    AnyElement, Context, DragMoveEvent, MouseButton, Window, div, prelude::*, px, relative, svg,
+    AnyElement, Context, DragMoveEvent, MouseButton, MouseDownEvent, Window, div, prelude::*, px,
+    relative, svg,
 };
 use uuid::Uuid;
 
@@ -14,9 +15,12 @@ use crate::{GoToTab, NavigateBack, NavigateForward};
 
 use super::panes::{
     PANE_HEADER_HEIGHT, TAB_MAX_WIDTH, TAB_RADIUS, TAB_TEXT_SIZE, TAB_TILE_SIZE,
-    card_header_button, tab_drag_ghost, tab_shortcut, tab_trailing_button, titlebar_tab_style,
+    card_header_button, tab_drag_ghost, tab_shortcut, titlebar_tab_style,
 };
-use super::{DragGhost, PANEL_GAP, ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView, card};
+use super::{
+    ContextMenuKind, DragGhost, PANEL_GAP, ReorderDrag, TabDrag, WorkspaceSection, WorkspaceView,
+    card,
+};
 
 const MAX_NAVIGATION_HISTORY: usize = 50;
 
@@ -392,11 +396,6 @@ impl WorkspaceView {
         let diff = self.diff_view.read(cx);
         let title = diff.review_title();
         let icon = diff.review_icon();
-        let close_label = if diff.preview_path().is_some() {
-            "Close file · ⌘W"
-        } else {
-            "Close review · ⌘W"
-        };
         let shortcut = tab_shortcut_label(index, count);
         let drag = TabDrag {
             tab_id: WorkspaceTabId::Review,
@@ -431,6 +430,16 @@ impl WorkspaceView {
             .child(ghost.measure())
             .on_drag(drag, move |_, _, _, cx| ghost.preview(cx))
             .on_click(cx.listener(|this, _, window, cx| this.activate_review_tab(window, cx)))
+            // Like the terminal tabs: no close button, a menu on right-click, ⌘W.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    let x: f32 = event.position.x.into();
+                    let y: f32 = event.position.y.into();
+                    this.open_context_menu(ContextMenuKind::Review, x, y, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .child(icon_tile(icon, TAB_TILE_SIZE))
             .child(
                 div()
@@ -447,18 +456,6 @@ impl WorkspaceView {
             )
             .when_some(shortcut, |tab, shortcut| tab.child(tab_shortcut(shortcut)))
             .children(self.tab_drag_zone(WorkspaceTabId::Review, cx))
-            .child(
-                tab_trailing_button(
-                    "close-review-tab",
-                    "chrome-icons/close.svg",
-                    close_label,
-                    selected,
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.close_review(window, cx);
-                })),
-            )
             .map(|tab| {
                 let slide = self.tab_motion.slide(WorkspaceTabId::Review);
                 super::slide_into_place(tab, slide, "tab", false)

@@ -846,8 +846,8 @@ fn explorer_creates_entries_inside_the_project(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn pane_header_enlarges_restores_and_closes_panes(cx: &mut gpui::TestAppContext) {
-    let (root, snapshot, _, window) = open_recording_workspace(cx, "pane-header");
+fn panes_enlarge_restore_and_close(cx: &mut gpui::TestAppContext) {
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "pane-zoom-close");
     let panes: Vec<Uuid> = snapshot
         .selected_tab()
         .unwrap()
@@ -903,6 +903,28 @@ fn review_tab_survives_panel_and_section_changes(cx: &mut gpui::TestAppContext) 
             assert!(!view.review_visible(cx));
             view.select_section(WorkspaceSection::Workspace, window, cx);
             assert!(view.review_visible(cx));
+            window.remove_window();
+        })
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn review_tab_closes_from_its_context_menu(cx: &mut gpui::TestAppContext) {
+    let (root, _, _, window) = open_recording_workspace(cx, "review-tab-menu");
+    window
+        .update(cx, |view, _, cx| {
+            view.diff_view
+                .update(cx, |diff, cx| diff.set_review_expanded(true, cx));
+        })
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.review_visible(cx));
+            view.open_context_menu(ContextMenuKind::Review, 10.0, 10.0, cx);
+            view.run_context_menu_action(ContextMenuAction::CloseReview, window, cx);
+            assert!(view.context_menu.is_none());
+            assert!(!view.review_visible(cx));
             window.remove_window();
         })
         .unwrap();
