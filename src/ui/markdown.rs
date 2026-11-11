@@ -1867,7 +1867,7 @@ fn text_runs(inline: &Inline, weight: FontWeight, color: Hsla) -> Vec<TextRun> {
             ..font(UI_FONT)
         },
         color: if style.link {
-            colors().accent.into()
+            colors().link().into()
         } else {
             color
         },

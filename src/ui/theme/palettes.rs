@@ -6,7 +6,8 @@ use gpui::{rgb, rgba};
 
 use super::legibility::legible;
 use super::{
-    Theme, ThemeFamily, mix, relative_luminance, subtle_border, with_alpha, with_floating_frame,
+    SyntaxColors, Theme, ThemeFamily, mix, relative_luminance, subtle_border, with_alpha,
+    with_floating_frame,
 };
 use crate::ports::terminal::TerminalRgb;
 
@@ -125,6 +126,7 @@ pub(super) fn theme_from_seed(spec: ThemeSeed) -> Theme {
         git_added: success,
         git_deleted: danger,
         terminal_colors: None,
+        syntax: None,
     };
     if let Some(ansi) = spec.ansi {
         let mut palette = theme.synthesize_terminal_palette();
@@ -265,250 +267,373 @@ pub(crate) fn midnight_light() -> Theme {
     theme
 }
 
+// ---------------------------------------------------------------------------
+// Workspace presets
+// ---------------------------------------------------------------------------
+
+/// One tone of a workspace preset, with the code colors it ships.
+#[derive(Debug, Clone, Copy)]
+struct Workspace {
+    /// The frame around the cards.
+    surface: u32,
+    card: u32,
+    content: u32,
+    accent: u32,
+    /// Links and headings in Markdown.
+    link: u32,
+    heading: u32,
+    /// Keyword, function, string, type, tag, number, comment, property, meta.
+    syntax: [u32; 9],
+}
+
+/// A preset's surfaces, ink, accent and code carry its hue. Status colors
+/// stay one set per tone, and diff rows are emerald and rose at 15% over the
+/// card.
+fn workspace_theme(preset: Workspace, light: bool) -> Theme {
+    let (danger, success, warning) = if light {
+        (0xc23b3b, 0x219452, 0xad761c)
+    } else {
+        (0xdd6b6b, 0x58b87a, 0xd7ad61)
+    };
+    let mut theme = theme_from_seed(seed(
+        preset.card,
+        preset.content,
+        preset.accent,
+        danger,
+        success,
+        warning,
+    ));
+    theme.terminal = theme.background;
+    theme.diff_added_bg = mix(theme.background, rgb(0x10b981), 0.15);
+    theme.diff_deleted_bg = mix(theme.background, rgb(0xf43f5e), 0.15);
+    (theme.diff_added, theme.diff_deleted) = if light {
+        (rgb(0x047857), rgb(0xbe123c))
+    } else {
+        (rgb(0x6ee7b7), rgb(0xfda4af))
+    };
+    let [
+        keyword,
+        function,
+        string,
+        type_name,
+        tag,
+        number,
+        comment,
+        property,
+        meta,
+    ] = preset.syntax.map(rgb);
+    theme.syntax = Some(SyntaxColors {
+        keyword,
+        function,
+        string,
+        type_name,
+        tag,
+        number,
+        comment,
+        property,
+        meta,
+        heading: rgb(preset.heading),
+        link: rgb(preset.link),
+    });
+    theme
+}
+
+/// Dark presets keep the standard frame step. Light cards are white, so the
+/// preset's tinted surface becomes the frame and carries its hue; it sits
+/// about the same step off the card. Ink's surface is the card itself.
+fn workspace_family(id: &str, label: &str, [light, dark]: [Workspace; 2]) -> ThemeFamily {
+    let mut light_theme = with_floating_frame(workspace_theme(light, true));
+    if light.surface != light.card {
+        light_theme.sidebar = rgb(light.surface);
+    }
+    ThemeFamily {
+        id: id.to_string(),
+        label: label.to_string(),
+        light: legible(light_theme),
+        dark: legible(with_floating_frame(workspace_theme(dark, false))),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn moss_dark() -> Theme {
-    with_diff_surfaces(
-        product_theme(
-            seed(0x121916, 0xd6e6dc, 0x3fcab7, 0xe07a72, 0x5ecf8a, 0xd4b05a),
-            ProductChrome {
-                sidebar: 0x16201b,
-                panel: 0x1a2620,
-                elevated: 0x1f2d26,
-                hover: 0x25362e,
-                selection: 0x2c4036,
-                muted: 0x91ad9b,
-                subtle: 0x728c7c,
-                gutter: 0x141c18,
-                folder: 0x7a9a88,
-                indent_guide: 0x3a4a4255,
-                terminal: None,
-            },
-        ),
-        0x1a3326ff,
-        0x3a2220ff,
-        0x16261fff,
-    )
+    workspace_family("moss", "Moss", MOSS).dark
 }
 
-fn moss_light() -> Theme {
-    let theme = with_diff_surfaces(
-        product_theme(
-            seed(0xf1f7f3, 0x1a2b22, 0x127367, 0xb83a34, 0x1f8a4c, 0x9a6f18),
-            ProductChrome {
-                sidebar: 0xe4efe8,
-                panel: 0xffffff,
-                elevated: 0xffffff,
-                hover: 0xdcebe2,
-                selection: 0xcfe0d5,
-                muted: 0x4a6656,
-                subtle: 0x678275,
-                gutter: 0xeaf3ed,
-                folder: 0x4a7a60,
-                indent_guide: 0x7a9a8855,
-                terminal: Some(0xf7fbf8),
-            },
-        ),
-        0xd2efdcff,
-        0xf3d6d4ff,
-        0xdfece4ff,
-    );
-    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xaf312c)
-}
+/// Settings order, after Midnight.
+const WORKSPACE_PRESETS: [(&str, &str, [Workspace; 2]); 10] = [
+    ("harbor", "Harbor", HARBOR),
+    ("moss", "Moss", MOSS),
+    ("ember", "Ember", EMBER),
+    ("orchid", "Orchid", ORCHID),
+    ("tidepool", "Tidepool", TIDEPOOL),
+    ("dune", "Dune", DUNE),
+    ("rosewood", "Rosewood", ROSEWOOD),
+    ("glacier", "Glacier", GLACIER),
+    ("arcade", "Arcade", ARCADE),
+    ("ink", "Ink", INK),
+];
 
-fn harbor_dark() -> Theme {
-    with_diff_surfaces(
-        product_theme(
-            seed(0x11161d, 0xd5deea, 0x5ea8ef, 0xe0727a, 0x55c48a, 0xd4a85a),
-            ProductChrome {
-                sidebar: 0x151b24,
-                panel: 0x1a212c,
-                elevated: 0x1f2734,
-                hover: 0x253040,
-                selection: 0x2c3a4d,
-                muted: 0x92a4bc,
-                subtle: 0x73859d,
-                gutter: 0x131820,
-                folder: 0x7a90aa,
-                indent_guide: 0x3a4a5a55,
-                terminal: None,
-            },
-        ),
-        0x173328ff,
-        0x3a1e24ff,
-        0x161e2aff,
-    )
-}
-
-fn harbor_light() -> Theme {
-    let theme = with_diff_surfaces(
-        product_theme(
-            seed(0xf0f4f9, 0x182230, 0x2563b8, 0xb83a48, 0x1f8a54, 0x9a6f18),
-            ProductChrome {
-                sidebar: 0xe2eaf3,
-                panel: 0xffffff,
-                elevated: 0xffffff,
-                hover: 0xd8e3ef,
-                selection: 0xc9d8ea,
-                muted: 0x4a5c74,
-                subtle: 0x687a90,
-                gutter: 0xe8eef5,
-                folder: 0x4a6a90,
-                indent_guide: 0x7a90aa55,
-                terminal: Some(0xf7fafc),
-            },
-        ),
-        0xd0eddcff,
-        0xf3d6daff,
-        0xdfe8f4ff,
-    );
-    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xaf3141)
-}
-
-fn cinder_dark() -> Theme {
-    with_diff_surfaces(
-        product_theme(
-            seed(0x1a1412, 0xeadfd6, 0xef8a52, 0xe86a62, 0x6bcf8e, 0xe0a84a),
-            ProductChrome {
-                sidebar: 0x201916,
-                panel: 0x261e1a,
-                elevated: 0x2c241f,
-                hover: 0x352c26,
-                selection: 0x40352d,
-                muted: 0xb29c8a,
-                subtle: 0x8e7e70,
-                gutter: 0x1c1614,
-                folder: 0xa08878,
-                indent_guide: 0x4a3a3255,
-                terminal: None,
-            },
-        ),
-        0x1f3324ff,
-        0x3a1e1cff,
-        0x241a16ff,
-    )
-}
-
-fn cinder_light() -> Theme {
-    let theme = with_diff_surfaces(
-        product_theme(
-            seed(0xfaf4ef, 0x2a1e18, 0xb55320, 0xc23b34, 0x2a8648, 0x9c6c11),
-            ProductChrome {
-                sidebar: 0xf2e6dc,
-                panel: 0xffffff,
-                elevated: 0xffffff,
-                hover: 0xeadcd0,
-                selection: 0xe0d0c0,
-                muted: 0x6a5244,
-                subtle: 0x8a7061,
-                gutter: 0xf5ece4,
-                folder: 0x8a6a50,
-                indent_guide: 0xa0887855,
-                terminal: Some(0xfffaf6),
-            },
-        ),
-        0xd8efdcff,
-        0xf5d6d4ff,
-        0xf0e6dcff,
-    );
-    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xb42d28)
-}
-
-fn violet_dark() -> Theme {
-    with_diff_surfaces(
-        product_theme(
-            seed(0x15121c, 0xe0d8f0, 0xa88cf0, 0xe07290, 0x5ecf8a, 0xd4a85a),
-            ProductChrome {
-                sidebar: 0x1a1624,
-                panel: 0x1f1a2a,
-                elevated: 0x252032,
-                hover: 0x2c273c,
-                selection: 0x352f48,
-                muted: 0xa393c3,
-                subtle: 0x8276a2,
-                gutter: 0x17131f,
-                folder: 0x9080b0,
-                indent_guide: 0x4a3a6055,
-                terminal: None,
-            },
-        ),
-        0x1a2e28ff,
-        0x3a1e2aff,
-        0x1c1828ff,
-    )
-}
-
-fn violet_light() -> Theme {
-    let theme = with_diff_surfaces(
-        product_theme(
-            seed(0xf5f2fb, 0x221a30, 0x6a48b8, 0xb83a58, 0x128345, 0x956a0f),
-            ProductChrome {
-                sidebar: 0xeae4f5,
-                panel: 0xffffff,
-                elevated: 0xffffff,
-                hover: 0xe0d8f0,
-                selection: 0xd4c8ea,
-                muted: 0x5a4c78,
-                subtle: 0x796b96,
-                gutter: 0xeee8f6,
-                folder: 0x6a5890,
-                indent_guide: 0x9080b055,
-                terminal: Some(0xfaf8fd),
-            },
-        ),
-        0xd2efdcff,
-        0xf3d6e0ff,
-        0xe8e0f4ff,
-    );
-    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xae3050)
-}
-
-fn bloom_dark() -> Theme {
-    with_diff_surfaces(
-        product_theme(
-            seed(0x1a141a, 0xf0e4ee, 0xdb5a9a, 0xe5756d, 0x5ecf8a, 0xd4a85a),
-            ProductChrome {
-                sidebar: 0x211820,
-                panel: 0x281e27,
-                elevated: 0x2f2430,
-                hover: 0x382c39,
-                selection: 0x443644,
-                muted: 0xbb9bb3,
-                subtle: 0x977d95,
-                gutter: 0x1c161c,
-                folder: 0xa080a0,
-                indent_guide: 0x4a3a4a55,
-                terminal: None,
-            },
-        ),
-        0x1a2e28ff,
-        0x3a1e20ff,
-        0x221822ff,
-    )
-}
-
-fn bloom_light() -> Theme {
-    let theme = with_diff_surfaces(
-        product_theme(
-            seed(0xfbf4f9, 0x3a1840, 0xc02670, 0xbd3936, 0x148446, 0x966b11),
-            ProductChrome {
-                sidebar: 0xf3e4ef,
-                panel: 0xffffff,
-                elevated: 0xffffff,
-                hover: 0xead6e4,
-                selection: 0xe0c8da,
-                muted: 0x7a4068,
-                subtle: 0x936484,
-                gutter: 0xf6eaf2,
-                folder: 0x8a5080,
-                indent_guide: 0xa080a055,
-                terminal: Some(0xfef8fc),
-            },
-        ),
-        0xd2efdcff,
-        0xf5d6d6ff,
-        0xf2e0ecff,
-    );
-    with_diff_text(theme, LIGHT_DIFF_ADDED, 0xb32f2d)
-}
+// Light first, then dark.
+const HARBOR: [Workspace; 2] = [
+    Workspace {
+        surface: 0xeef2f7,
+        card: 0xffffff,
+        content: 0x1b2533,
+        accent: 0x2f6fd0,
+        link: 0x1f5fbf,
+        heading: 0x3b4fb8,
+        syntax: [
+            0x7847bd, 0x2e7de9, 0x587539, 0x007197, 0xc64343, 0xb15c00, 0x6c7594, 0x387068,
+            0x006a83,
+        ],
+    },
+    Workspace {
+        surface: 0x0b1018,
+        card: 0x060a10,
+        content: 0xdbe4f0,
+        accent: 0x5b9cf2,
+        link: 0x8cc4ff,
+        heading: 0xa3b6ff,
+        syntax: [
+            0xbb9af7, 0x7aa2f7, 0x9ece6a, 0x2ac3de, 0xf7768e, 0xff9e64, 0x6b7599, 0x73daca,
+            0x89ddff,
+        ],
+    },
+];
+const MOSS: [Workspace; 2] = [
+    Workspace {
+        surface: 0xf1f4ee,
+        card: 0xffffff,
+        content: 0x1f2a20,
+        accent: 0x3d8a45,
+        link: 0x2e7a3a,
+        heading: 0x5d7a1c,
+        syntax: [
+            0xe0444a, 0x5f7a00, 0x9a7400, 0x2b8a65, 0xc4621a, 0xa3529b, 0x7a8778, 0x2f7fae,
+            0x6e7a70,
+        ],
+    },
+    Workspace {
+        surface: 0x0d110e,
+        card: 0x070a08,
+        content: 0xdde5dc,
+        accent: 0x6fbf73,
+        link: 0x9ad6a0,
+        heading: 0xc3d98a,
+        syntax: [
+            0xe67e80, 0xa7c080, 0xdbbc7f, 0x83c092, 0xe69875, 0xd699b6, 0x859289, 0x7fbbb3,
+            0x9da9a0,
+        ],
+    },
+];
+const EMBER: [Workspace; 2] = [
+    Workspace {
+        surface: 0xf7f2ee,
+        card: 0xffffff,
+        content: 0x2d211b,
+        accent: 0xc75c1e,
+        link: 0xb4501a,
+        heading: 0xa8461f,
+        syntax: [
+            0xaf3a03, 0x427b58, 0x79740e, 0xb57614, 0x9d0006, 0x8f3f71, 0x7c6f64, 0x076678,
+            0x665c54,
+        ],
+    },
+    Workspace {
+        surface: 0x120e0c,
+        card: 0x0a0706,
+        content: 0xecdfd6,
+        accent: 0xf08a4b,
+        link: 0xf6b07c,
+        heading: 0xf3a37a,
+        syntax: [
+            0xfe8019, 0x8ec07c, 0xb8bb26, 0xfabd2f, 0xfb4934, 0xd3869b, 0x928374, 0x83a598,
+            0xa89984,
+        ],
+    },
+];
+const ORCHID: [Workspace; 2] = [
+    Workspace {
+        surface: 0xf4f0f8,
+        card: 0xffffff,
+        content: 0x261e33,
+        accent: 0x8048c8,
+        link: 0x6f3bb8,
+        heading: 0xa83a85,
+        syntax: [
+            0x8839ef, 0x1e66f5, 0x2f7d1e, 0xb06a00, 0xd20f39, 0xc94f05, 0x7c7f93, 0x5a65d6,
+            0x137a85,
+        ],
+    },
+    Workspace {
+        surface: 0x110d16,
+        card: 0x09070c,
+        content: 0xe6def0,
+        accent: 0xb57cf0,
+        link: 0xcfa6ff,
+        heading: 0xf2a2d6,
+        syntax: [
+            0xcba6f7, 0x89b4fa, 0xa6e3a1, 0xf9e2af, 0xf38ba8, 0xfab387, 0x7f849c, 0xb4befe,
+            0x94e2d5,
+        ],
+    },
+];
+const TIDEPOOL: [Workspace; 2] = [
+    Workspace {
+        surface: 0xedf5f5,
+        card: 0xffffff,
+        content: 0x162a2b,
+        accent: 0x138a80,
+        link: 0x0f7a71,
+        heading: 0x1d6f8f,
+        syntax: [
+            0xc2502b, 0x0b7a8a, 0x3c7d2a, 0x8a6500, 0x0f7a71, 0x6b4fc4, 0x6b8285, 0x1d6f8f,
+            0x5b7072,
+        ],
+    },
+    Workspace {
+        surface: 0x0a1213,
+        card: 0x050a0b,
+        content: 0xd8e8e8,
+        accent: 0x3fc1b5,
+        link: 0x7fdcd3,
+        heading: 0x8ad0e8,
+        syntax: [
+            0xf28f6b, 0x5fd4e0, 0xa8e6a1, 0xffd580, 0x7fdcd3, 0xc4a7ff, 0x6f8d8f, 0x8ad0e8,
+            0x8aa3a4,
+        ],
+    },
+];
+const DUNE: [Workspace; 2] = [
+    Workspace {
+        surface: 0xf6f1e7,
+        card: 0xfffdf8,
+        content: 0x2e2819,
+        accent: 0xa57d1e,
+        link: 0x8c6914,
+        heading: 0x9c5a1c,
+        syntax: [
+            0x624c83, 0x4d699b, 0x6f894e, 0x597b75, 0xc84053, 0xb35b79, 0x7d7465, 0x8c6914,
+            0x716e61,
+        ],
+    },
+    Workspace {
+        surface: 0x13110d,
+        card: 0x0b0a07,
+        content: 0xebe3d2,
+        accent: 0xd9b25c,
+        link: 0xe8cc8a,
+        heading: 0xe5a86c,
+        syntax: [
+            0x957fb8, 0x7e9cd8, 0x98bb6c, 0x7aa89f, 0xe46876, 0xd27e99, 0x8a8170, 0xe6c384,
+            0xa6a69c,
+        ],
+    },
+];
+const ROSEWOOD: [Workspace; 2] = [
+    Workspace {
+        surface: 0xf8f0f2,
+        card: 0xffffff,
+        content: 0x2f1f24,
+        accent: 0xc0405c,
+        link: 0xa8344f,
+        heading: 0xa3502a,
+        syntax: [
+            0xb4637a, 0xb0605c, 0xa86a0f, 0x286983, 0xc0405c, 0x9a4d2a, 0x797593, 0x7a5f9b,
+            0x6e6a86,
+        ],
+    },
+    Workspace {
+        surface: 0x140e10,
+        card: 0x0b0809,
+        content: 0xefdfe3,
+        accent: 0xe7798f,
+        link: 0xf2a6b4,
+        heading: 0xf0b38a,
+        syntax: [
+            0xeb6f92, 0xebbcba, 0xf6c177, 0x9ccfd8, 0xe7798f, 0xea9a97, 0x7d7891, 0xc4a7e7,
+            0x908caa,
+        ],
+    },
+];
+const GLACIER: [Workspace; 2] = [
+    Workspace {
+        surface: 0xf2f5f8,
+        card: 0xffffff,
+        content: 0x20262d,
+        accent: 0x3a7aa8,
+        link: 0x2d6a96,
+        heading: 0x44598f,
+        syntax: [
+            0x3a6d9f, 0x2b7a8c, 0x4f7a34, 0x2a7a76, 0xb25a2e, 0x7b4f8a, 0x6b7689, 0x44598f,
+            0x5a6a80,
+        ],
+    },
+    Workspace {
+        surface: 0x0e1114,
+        card: 0x080a0c,
+        content: 0xe1e7ec,
+        accent: 0x7fb4d9,
+        link: 0xa7d0ec,
+        heading: 0xb9c8e8,
+        syntax: [
+            0x81a1c1, 0x88c0d0, 0xa3be8c, 0x8fbcbb, 0xd08770, 0xb48ead, 0x7b88a1, 0xa7c2dc,
+            0x7f97b8,
+        ],
+    },
+];
+const ARCADE: [Workspace; 2] = [
+    Workspace {
+        surface: 0xf5f2fc,
+        card: 0xffffff,
+        content: 0x231a3a,
+        accent: 0xc2189a,
+        link: 0x0a7f90,
+        heading: 0x9a6608,
+        syntax: [
+            0xc2189a, 0x0a7f90, 0x8a5a00, 0x6a3fd1, 0xc2410c, 0xc2304a, 0x7a6f99, 0x0f7a55,
+            0x6b6390,
+        ],
+    },
+    Workspace {
+        surface: 0x0f0b1a,
+        card: 0x08060f,
+        content: 0xece6ff,
+        accent: 0xff5fd2,
+        link: 0x5ff2ff,
+        heading: 0xffd35f,
+        syntax: [
+            0xff5fd2, 0x5ff2ff, 0xffd35f, 0xb38cff, 0xff8f5f, 0xf97e72, 0x7d71a8, 0x72f1b8,
+            0x8d86c9,
+        ],
+    },
+];
+const INK: [Workspace; 2] = [
+    Workspace {
+        surface: 0xffffff,
+        card: 0xffffff,
+        content: 0x000000,
+        accent: 0x0050d8,
+        link: 0x0040b0,
+        heading: 0x000000,
+        syntax: [
+            0x0050d8, 0x000000, 0x5a5a5a, 0x333333, 0x0050d8, 0x0040b0, 0x767676, 0x2a2a2a,
+            0x6a6a6a,
+        ],
+    },
+    Workspace {
+        surface: 0x000000,
+        card: 0x000000,
+        content: 0xf5f5f5,
+        accent: 0x7aa7ff,
+        link: 0x9cc0ff,
+        heading: 0xffffff,
+        syntax: [
+            0x7aa7ff, 0xffffff, 0xa8a8a8, 0xd6d6d6, 0x7aa7ff, 0x9cc0ff, 0x7a7a7a, 0xd6d6d6,
+            0x8f8f8f,
+        ],
+    },
+];
 
 fn product_family(id: &'static str, label: &'static str, light: Theme, dark: Theme) -> ThemeFamily {
     ThemeFamily {
@@ -557,19 +682,17 @@ const VESPER: ThemeSeed = seed(0x101010, 0xffffff, 0xffc799, 0xff8080, 0x99ffe4,
     ]);
 
 fn build_catalog() -> Vec<ThemeFamily> {
-    let mut catalog = vec![
-        product_family(
-            DEFAULT_THEME_ID,
-            "Midnight",
-            midnight_light(),
-            midnight_dark(),
-        ),
-        product_family("moss", "Moss", moss_light(), moss_dark()),
-        product_family("harbor", "Harbor", harbor_light(), harbor_dark()),
-        product_family("cinder", "Cinder", cinder_light(), cinder_dark()),
-        product_family("violet", "Violet", violet_light(), violet_dark()),
-        product_family("bloom", "Bloom", bloom_light(), bloom_dark()),
-    ];
+    let mut catalog = vec![product_family(
+        DEFAULT_THEME_ID,
+        "Midnight",
+        midnight_light(),
+        midnight_dark(),
+    )];
+    catalog.extend(
+        WORKSPACE_PRESETS
+            .into_iter()
+            .map(|(id, label, tones)| workspace_family(id, label, tones)),
+    );
     // Popular palettes with authentic ANSI from upstream schemes / Warp YAML.
     catalog.extend([
         family(
@@ -864,16 +987,6 @@ mod tests {
         for (id, theme) in [
             ("midnight light", midnight_light()),
             ("midnight dark", midnight_dark()),
-            ("moss light", moss_light()),
-            ("moss dark", moss_dark()),
-            ("harbor light", harbor_light()),
-            ("harbor dark", harbor_dark()),
-            ("cinder light", cinder_light()),
-            ("cinder dark", cinder_dark()),
-            ("violet light", violet_light()),
-            ("violet dark", violet_dark()),
-            ("bloom light", bloom_light()),
-            ("bloom dark", bloom_dark()),
         ] {
             assert_eq!(
                 legible(theme),
@@ -881,5 +994,36 @@ mod tests {
                 "{id} relies on automatic corrections"
             );
         }
+    }
+
+    /// The presets keep their own ink and code colors through the contrast
+    /// floors, and every one paints its cards in its own color.
+    #[test]
+    fn workspace_presets_keep_their_ink_and_code() {
+        for (id, _, tones) in WORKSPACE_PRESETS {
+            let family = built_in_themes()
+                .iter()
+                .find(|family| family.id == id)
+                .unwrap_or_else(|| panic!("missing preset {id}"));
+            for (preset, theme) in tones.into_iter().zip([family.light, family.dark]) {
+                assert_eq!(theme.foreground, rgb(preset.content), "{id} ink");
+                assert_eq!(theme.terminal, rgb(preset.card), "{id} card");
+                let syntax = theme.syntax.expect("preset ships code colors");
+                assert_eq!(syntax.keyword, rgb(preset.syntax[0]), "{id} keyword");
+                assert_eq!(syntax.link, rgb(preset.link), "{id} link");
+                assert_ne!(theme.sidebar, theme.terminal, "{id} frame");
+            }
+        }
+    }
+
+    /// Light presets show their tinted surface as the frame.
+    #[test]
+    fn light_presets_frame_with_their_surface() {
+        let harbor = built_in_themes()
+            .iter()
+            .find(|family| family.id == "harbor")
+            .expect("harbor");
+        assert_eq!(harbor.light.sidebar, rgb(HARBOR[0].surface));
+        assert_eq!(harbor.light.terminal, rgb(0xffffff));
     }
 }

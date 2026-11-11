@@ -210,11 +210,37 @@ pub struct Theme {
     pub git_deleted: Rgba,
     /// Authentic terminal colors when the palette ships them.
     pub terminal_colors: Option<TerminalPalette>,
+    /// Code colors when the palette ships them; otherwise they derive from
+    /// the accent and status roles.
+    pub syntax: Option<SyntaxColors>,
+}
+
+/// Code and Markdown colors a palette ships with its surfaces.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SyntaxColors {
+    pub keyword: Rgba,
+    pub function: Rgba,
+    pub string: Rgba,
+    pub type_name: Rgba,
+    /// Markup element names.
+    pub tag: Rgba,
+    pub number: Rgba,
+    pub comment: Rgba,
+    pub property: Rgba,
+    /// Attributes, decorators and annotations.
+    pub meta: Rgba,
+    pub heading: Rgba,
+    pub link: Rgba,
 }
 
 impl Theme {
     pub fn is_dark(self) -> bool {
         relative_luminance(self.background) < 0.5
+    }
+
+    /// Links in rendered Markdown: the palette's own link color, or its accent.
+    pub fn link(self) -> Rgba {
+        self.syntax.map_or(self.accent, |syntax| syntax.link)
     }
 
     pub fn overlay(self) -> Rgba {
@@ -418,7 +444,19 @@ fn theme_from_scheme(scheme: &ImportedScheme) -> Theme {
     legibility::legible(with_floating_frame(theme_from_seed(spec)))
 }
 
+/// Palettes retired for the workspace presets, each mapped to its closest one
+/// so a saved choice keeps its hue.
+const RETIRED_THEMES: [(&str, &str); 3] = [
+    ("cinder", "ember"),
+    ("violet", "orchid"),
+    ("bloom", "rosewood"),
+];
+
 fn find_family(id: &str) -> Option<ThemeFamily> {
+    let id = RETIRED_THEMES
+        .iter()
+        .find_map(|&(retired, preset)| (retired == id).then_some(preset))
+        .unwrap_or(id);
     built_in_themes()
         .iter()
         .find(|family| family.id == id)
@@ -555,6 +593,10 @@ mod tests {
             assert!(!family.id.starts_with("user:"));
         }
         assert_eq!(canonicalize_theme_id("missing"), DEFAULT_THEME_ID);
+        for (retired, preset) in RETIRED_THEMES {
+            assert!(!seen.contains(retired), "{retired} is still listed");
+            assert_eq!(available_theme_id(retired).as_deref(), Some(preset));
+        }
         assert_eq!(
             resolve(DEFAULT_THEME_ID, AppearanceMode::Dark, true).background,
             midnight_dark().background

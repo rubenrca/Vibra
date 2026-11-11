@@ -9,7 +9,7 @@ use std::ops::Range;
 use gpui::{FontStyle, FontWeight, HighlightStyle, Rgba, rgb};
 
 use crate::ports::git::{GitDiffRow, GitDiffRowKind};
-use crate::ui::theme::{colors, mix};
+use crate::ui::theme::{SyntaxColors, colors, mix};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -1143,6 +1143,9 @@ pub fn language_from_path(path: &str) -> Language {
 impl SyntaxKind {
     pub fn color(self) -> Rgba {
         let theme = colors();
+        if let Some(color) = theme.syntax.and_then(|syntax| self.shipped(syntax)) {
+            return color;
+        }
         let dark = theme.is_dark();
         match self {
             Self::Keyword | Self::Macro => mix(
@@ -1191,6 +1194,27 @@ impl SyntaxKind {
             ),
             Self::Strong | Self::Emphasis | Self::Default => theme.foreground,
         }
+    }
+
+    /// The color a palette ships for this kind. Operators, punctuation and
+    /// prose keep the derived colors.
+    fn shipped(self, syntax: SyntaxColors) -> Option<Rgba> {
+        Some(match self {
+            Self::Keyword | Self::Macro => syntax.keyword,
+            Self::Function => syntax.function,
+            Self::String => syntax.string,
+            Self::Type => syntax.type_name,
+            Self::Attribute => syntax.meta,
+            Self::Number | Self::Constant => syntax.number,
+            Self::Comment => syntax.comment,
+            Self::Property => syntax.property,
+            Self::Tag => syntax.tag,
+            Self::Heading => syntax.heading,
+            Self::Link => syntax.link,
+            Self::Operator | Self::Punctuation | Self::Strong | Self::Emphasis | Self::Default => {
+                return None;
+            }
+        })
     }
 
     pub fn highlight_style(self) -> HighlightStyle {
