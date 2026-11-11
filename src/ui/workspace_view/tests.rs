@@ -461,9 +461,20 @@ fn switching_tabs_and_workspaces_hides_offscreen_terminals(cx: &mut gpui::TestAp
             );
             assert_eq!(view.snapshot, retained_snapshot);
 
-            // The right-sidebar shortcut also returns keyboard focus to the
-            // terminal when invoked from a global page, even if tools were open.
+            // Repository keeps the right sidebar as it was, and its shortcut
+            // hides and shows it there without leaving Repository.
             view.select_section(WorkspaceSection::Inbox, window, cx);
+            assert!(view.settings.right_sidebar_visible);
+            view.toggle_right_sidebar(&ToggleRightSidebar, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Inbox);
+            assert!(!view.settings.right_sidebar_visible);
+            view.toggle_right_sidebar(&ToggleRightSidebar, window, cx);
+            assert_eq!(view.workspace_section, WorkspaceSection::Inbox);
+            assert!(view.settings.right_sidebar_visible);
+
+            // From Settings, the shortcut returns keyboard focus to the
+            // terminal, even if tools were open.
+            view.select_section(WorkspaceSection::Settings, window, cx);
             view.toggle_right_sidebar(&ToggleRightSidebar, window, cx);
             assert_eq!(view.workspace_section, WorkspaceSection::Workspace);
             assert!(view.settings.right_sidebar_visible);

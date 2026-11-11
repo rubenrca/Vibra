@@ -134,6 +134,13 @@ impl WorkspaceView {
             &diff_view,
             |this, _diff_view, event: &DiffViewEvent, cx| match event {
                 DiffViewEvent::ReviewOpened => {
+                    // Opened from the right sidebar beside Repository or
+                    // Activity: the review shows in the space.
+                    if ToolTab::of(this.workspace_section).is_some() {
+                        this.workspace_section = WorkspaceSection::Workspace;
+                        this.sync_git_panel_visibility(cx);
+                        this.sync_files_watcher(cx);
+                    }
                     this.sync_review_docking(cx);
                     if let Some(tab_id) = this.review_dock_owner() {
                         this.snapshot.select_tab(tab_id);

@@ -85,7 +85,7 @@ impl super::WorkspaceView {
         if self.workspace_section == WorkspaceSection::Settings {
             return self.settings_titlebar();
         }
-        let right_progress = if self.workspace_section == WorkspaceSection::Workspace {
+        let right_progress = if self.right_sidebar_allowed() {
             self.right_sidebar_progress
         } else {
             0.0
@@ -257,7 +257,7 @@ impl super::WorkspaceView {
                 .text_size(px(12.0))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.set_workspace_mode(item_mode, cx);
+                    this.set_right_sidebar_mode(item_mode, cx);
                     this.focus_selected_terminal(window, cx);
                 }))
                 .child(label)
@@ -275,8 +275,7 @@ impl super::WorkspaceView {
         let open = if left {
             self.settings.left_sidebar_visible
         } else {
-            self.workspace_section == WorkspaceSection::Workspace
-                && self.settings.right_sidebar_visible
+            self.right_sidebar_allowed() && self.settings.right_sidebar_visible
         };
         let icon = if left {
             "chrome-icons/panel-left.svg"

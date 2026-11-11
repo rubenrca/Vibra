@@ -24,6 +24,14 @@ pub(crate) const SIDEBAR_ROW_RADIUS: f32 = crate::ui::tab_style::TAB_RADIUS;
 pub(crate) const SIDEBAR_ROW_INSET: f32 = 10.0;
 pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
 
+/// Makes text beside a space's name give way first: it truncates down to
+/// nothing before the name, which the sidebar never cuts, loses a letter.
+pub(crate) fn yield_to_space_name(text: Div) -> Div {
+    let mut text = text.min_w(px(0.0)).truncate();
+    text.style().flex_shrink = Some(1000.0);
+    text
+}
+
 pub(crate) fn sidebar_row_width(panel_width: f32) -> f32 {
     panel_width - 2.0 * SIDEBAR_ROW_INSET
 }

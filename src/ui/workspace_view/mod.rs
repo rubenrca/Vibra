@@ -227,12 +227,16 @@ pub struct WorkspaceDependencies {
 }
 
 impl WorkspaceView {
+    /// The right sidebar stays as it was when Repository or Activity comes
+    /// forward; only Settings, which takes the whole window, sets it aside.
+    pub(super) fn right_sidebar_allowed(&self) -> bool {
+        self.workspace_section != WorkspaceSection::Settings
+    }
+
     fn sync_git_panel_visibility(&self, cx: &mut Context<Self>) {
-        let visible = self.has_project_context()
-            && self.workspace_section == WorkspaceSection::Workspace
-            && (self.review_visible(cx)
-                || self.settings.right_sidebar_visible
-                || self.right_sidebar_progress > 0.001);
+        let sidebar = self.right_sidebar_allowed()
+            && (self.settings.right_sidebar_visible || self.right_sidebar_progress > 0.001);
+        let visible = self.has_project_context() && (self.review_visible(cx) || sidebar);
         self.diff_view
             .update(cx, |diff_view, cx| diff_view.set_panel_visible(visible, cx));
     }
@@ -271,7 +275,7 @@ impl WorkspaceView {
     }
 
     fn toggle_workspace_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.workspace_section != WorkspaceSection::Workspace {
+        if !self.right_sidebar_allowed() {
             self.set_workspace_mode(self.right_sidebar_mode, cx);
             self.focus_selected_terminal(window, cx);
             return;
@@ -498,7 +502,7 @@ impl WorkspaceView {
 
     /// The branch and Keep Awake ride at the foot of the right sidebar while it is on screen.
     fn status_controls_in_sidebar(&self) -> bool {
-        self.workspace_section == WorkspaceSection::Workspace && self.right_sidebar_progress > 0.001
+        self.right_sidebar_allowed() && self.right_sidebar_progress > 0.001
     }
 
     /// The status items at the left sidebar's foot, the right sidebar's foot,
@@ -590,7 +594,7 @@ impl WorkspaceView {
     /// sidebars' feet, so the cards reach down to the window's bottom gap; only
     /// with the left sidebar hidden do they take a strip under them.
     fn floating_area(&self, content: impl IntoElement, cx: &mut Context<Self>) -> gpui::Div {
-        let right_progress = if self.workspace_section == WorkspaceSection::Workspace {
+        let right_progress = if self.right_sidebar_allowed() {
             self.right_sidebar_progress
         } else {
             0.0
@@ -795,9 +799,13 @@ impl Render for WorkspaceView {
                 layout = layout.child(self.right_sidebar(cx));
             }
         } else if ToolTab::of(self.workspace_section).is_some() {
-            // Repository and Activity lay out their own cards on the frame.
+            // Repository and Activity lay out their own cards on the frame,
+            // beside the space's right sidebar when it is open.
             let content = self.global_section_content(window, cx);
             layout = layout.child(self.floating_area(content, cx));
+            if self.right_sidebar_progress > 0.001 {
+                layout = layout.child(self.right_sidebar(cx));
+            }
         } else {
             // Settings: its navigation on the frame, the page on a card.
             let content = self.global_section_content(window, cx);

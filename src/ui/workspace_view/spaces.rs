@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, Bounds, Context, Div, DragMoveEvent, MouseButton, MouseDownEvent, Pixels,
-    SharedString, Timer, Window, div, prelude::*, px, relative, svg,
+    SharedString, Timer, Window, div, prelude::*, px, svg,
 };
 use uuid::Uuid;
 
@@ -24,8 +24,8 @@ use crate::ui::agent_marks::{agent_status_color, agent_tile_stack};
 use crate::ui::space_marks::{SpaceActivity, ripple_tile};
 use crate::ui::theme::{colors, frame, frame_hover, frame_selected, lift};
 
-use super::chrome::{SIDEBAR_ROW_INSET, sidebar_row_width};
-use super::navigation::section_label;
+use super::chrome::{SIDEBAR_ROW_INSET, sidebar_row_width, yield_to_space_name};
+use super::navigation::{section_divider, section_label};
 use super::{
     ContextMenuKind, PaneIdentity, SIDEBAR_CONTROL_SIZE, SidebarResizeDragView, WorkspaceSection,
     WorkspaceView, sidebar_tooltip,
@@ -46,7 +46,7 @@ const MIN_SPACES_HEIGHT: f32 = 96.0;
 /// Grab area of the line between the spaces and Agents.
 const AGENTS_RESIZE_HANDLE: f32 = 7.0;
 
-/// Drag payload of the edge between the spaces and the Agents list.
+/// Drag payload of the line between the spaces and the Agents list.
 #[derive(Clone, Copy)]
 pub(super) struct AgentsResizeDrag;
 
@@ -285,6 +285,7 @@ impl WorkspaceView {
             .flex_shrink()
             .flex()
             .flex_col()
+            .child(section_divider())
             .child(
                 div()
                     .id("agents-resize-handle")
@@ -294,7 +295,7 @@ impl WorkspaceView {
                     .right_0()
                     .top(px(-AGENTS_RESIZE_HANDLE / 2.0))
                     .h(px(AGENTS_RESIZE_HANDLE))
-                    // No line marks the edge; pointing at it shows where to drag.
+                    // Over the line; pointing at it shows where to drag.
                     .rounded(px(AGENTS_RESIZE_HANDLE / 2.0))
                     .hover(|handle| handle.bg(frame_hover()))
                     .cursor_ns_resize()
@@ -373,7 +374,9 @@ impl WorkspaceView {
             .id(SharedString::from(format!("sidebar-agent-{session_id}")))
             .relative()
             .w(px(sidebar_row_width(self.left_sidebar_width())))
-            .h(px(AGENT_CARD_PITCH - 2.0))
+            // A long space name may wrap and grow the card past its pitch.
+            .min_h(px(AGENT_CARD_PITCH - 2.0))
+            .py(px(6.0))
             .flex_none()
             .mb(px(2.0))
             .px(px(AGENT_TILE_INSET))
@@ -455,7 +458,7 @@ impl WorkspaceView {
                     )
                     .child(
                         div()
-                            .h(px(16.0))
+                            .min_h(px(16.0))
                             .min_w(px(0.0))
                             .flex()
                             .items_center()
@@ -466,13 +469,8 @@ impl WorkspaceView {
                                 line.child(div().flex_none().text_color(status_color).child(status))
                                     .child(div().flex_none().child("·"))
                             })
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .max_w(relative(0.5))
-                                    .truncate()
-                                    .child(space),
-                            )
+                            // The space is never cut; the branch gives way.
+                            .child(div().min_w(px(0.0)).child(space))
                             .when_some(branch, |line, branch| {
                                 line.child(
                                     svg()
@@ -481,7 +479,7 @@ impl WorkspaceView {
                                         .flex_none()
                                         .text_color(colors().subtle),
                                 )
-                                .child(div().min_w(px(0.0)).truncate().child(branch))
+                                .child(yield_to_space_name(div()).child(branch))
                             }),
                     ),
             )

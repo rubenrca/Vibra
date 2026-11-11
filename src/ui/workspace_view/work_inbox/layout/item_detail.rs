@@ -744,6 +744,9 @@ impl WorkspaceView {
 
     fn inbox_agent_panel(&self, item: &WorkItem, cx: &mut Context<Self>) -> AnyElement {
         let ask = self.work_inbox.discussion_open;
+        // An open right sidebar takes its width from the detail's room.
+        let room =
+            self.settings.window_width - self.right_sidebar_width() * self.right_sidebar_progress;
         let mut panel = div()
             .w(px(440.0))
             .flex_none()
@@ -753,9 +756,7 @@ impl WorkspaceView {
             .border_l_1()
             .border_color(colors().border_subtle)
             .bg(surface(colors().background))
-            .when(self.settings.window_width < 1200.0, |panel| {
-                panel.absolute().inset_0().w_full()
-            })
+            .when(room < 1200.0, |panel| panel.absolute().inset_0().w_full())
             .child(
                 div()
                     .h(px(44.0))

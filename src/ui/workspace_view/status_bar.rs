@@ -8,17 +8,17 @@ use gpui::{AnyElement, Context, Div, Timer, div, prelude::*, px, svg};
 use crate::ports::git::GitBranchSummary;
 use crate::ui::theme::colors;
 
-use super::{RightSidebarMode, WorkspaceSection, WorkspaceView, sidebar_tooltip};
+use super::{RightSidebarMode, WorkspaceView, sidebar_tooltip};
 
 const STATUS_POLL: Duration = Duration::from_secs(4);
 pub(super) const STATUS_BAR_HEIGHT: f32 = 30.0;
 
 /// Which status items a strip holds. The usage group sits at the foot of the
 /// left sidebar, the branch and Keep Awake at the foot of the right one, so
-/// the cards between them reach the bottom of the window. With the right
-/// sidebar hidden, Keep Awake joins the usage group and the branch, which the
-/// space's row already shows, steps aside; Repository shows neither. Only
-/// with the left sidebar hidden do the items take a strip under the cards.
+/// the cards between them reach the bottom of the window. Keep Awake belongs
+/// to the right sidebar and hides with it. Only with the left sidebar hidden
+/// does usage take a strip under the cards, joined by the branch when the
+/// right sidebar is hidden too, except beside Repository or Activity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct StatusItems {
     pub(super) usage: bool,
@@ -34,7 +34,7 @@ impl StatusItems {
 
 /// Where the status items go given which sidebars are on screen: the left
 /// sidebar's foot, the right sidebar's foot, and the strip under the cards.
-/// Without `controls` (Repository), the branch and Keep Awake are left out.
+/// Without `controls` (Repository, Activity), the strip leaves the branch out.
 pub(super) fn status_layout(left: bool, right: bool, controls: bool) -> [StatusItems; 3] {
     let none = StatusItems {
         usage: false,
@@ -44,7 +44,7 @@ pub(super) fn status_layout(left: bool, right: bool, controls: bool) -> [StatusI
     let left_foot = StatusItems {
         usage: true,
         branch: false,
-        keep_awake: controls && !right,
+        keep_awake: false,
     };
     let right_foot = StatusItems {
         usage: false,
@@ -54,7 +54,7 @@ pub(super) fn status_layout(left: bool, right: bool, controls: bool) -> [StatusI
     let strip = StatusItems {
         usage: !left,
         branch: controls && !left && !right,
-        keep_awake: controls && !left && !right,
+        keep_awake: false,
     };
     [
         if left { left_foot } else { none },
@@ -85,9 +85,8 @@ impl WorkspaceView {
         self._status_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 let Ok((target, roots, port)) = this.update(cx, |this, _| {
-                    let target = (this.workspace_section == WorkspaceSection::Workspace
-                        && this.has_project_context())
-                    .then(|| this.project_root());
+                    let target = (this.right_sidebar_allowed() && this.has_project_context())
+                        .then(|| this.project_root());
                     let mut roots = this
                         .snapshot
                         .projects
@@ -190,7 +189,14 @@ impl WorkspaceView {
             branch,
             keep_awake,
         } = items;
-        let row = div()
+        let controls = div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(2.0));
+        let controls = self.status_controls(controls, branch, keep_awake, cx);
+        div()
             .h(px(STATUS_BAR_HEIGHT))
             .w_full()
             .flex_none()
@@ -201,17 +207,25 @@ impl WorkspaceView {
             // No fill: the frame behind the columns already carries the tint.
             .text_size(px(11.0))
             .text_color(colors().muted)
-            .when(usage, |row| row.child(self.usage_tracker(cx)))
-            .child(div().flex_1());
-        if !keep_awake {
-            return row.into_any_element();
-        }
-        self.status_controls(row, branch, cx).into_any_element()
+            // Usage sits in the middle of the strip: the halves either side
+            // share what is left, so the controls only push it aside when
+            // they need the room.
+            .when(usage, |row| {
+                row.child(div().flex_1()).child(self.usage_tracker(cx))
+            })
+            .child(controls)
+            .into_any_element()
     }
 
-    /// The branch, which opens Changes, when `branch` asks for it, and the
-    /// Keep Awake toggle.
-    fn status_controls(&self, row: Div, branch: bool, cx: &mut Context<Self>) -> Div {
+    /// The branch, which opens Changes, and the Keep Awake toggle, each when
+    /// asked for, added to `row` at the strip's end.
+    fn status_controls(
+        &self,
+        row: Div,
+        branch: bool,
+        show_keep_awake: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let keep_awake = self.keep_awake.is_enabled();
         // GPUI allows a single hover style per element, so styled items start from `base`.
         // Each item is its own hover group, which its icon follows.
@@ -251,7 +265,7 @@ impl WorkspaceView {
                 item("status-branch")
                     .tooltip(|_, cx| sidebar_tooltip("Open Changes", cx))
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.set_workspace_mode(RightSidebarMode::Diff, cx);
+                        this.set_right_sidebar_mode(RightSidebarMode::Diff, cx);
                         this.focus_selected_terminal(window, cx);
                     }))
                     .child(
@@ -268,39 +282,41 @@ impl WorkspaceView {
                         item.child(format!("↓{}", summary.behind))
                     }),
             )
-            .child(divider())
+            .when(show_keep_awake, |bar| bar.child(divider()))
         })
-        .child(
-            base("status-keep-awake")
-                .map(|item| {
-                    if keep_awake {
-                        // The accent alone marks it as running: a filled pill
-                        // here would sit right in the window's rounded corner.
-                        let accent = colors().accent;
-                        item.text_color(accent)
-                            .child(icon("chrome-icons/coffee-steam.svg").text_color(accent))
-                            .child("Awake")
-                    } else {
-                        item.px(px(5.0)).child(
-                            icon("chrome-icons/coffee.svg")
-                                .group_hover("status-keep-awake", |icon| {
-                                    icon.text_color(colors().foreground)
-                                }),
-                        )
-                    }
-                })
-                .tooltip(move |_, cx| {
-                    sidebar_tooltip(
+        .when(show_keep_awake, |row| {
+            row.child(
+                base("status-keep-awake")
+                    .map(|item| {
                         if keep_awake {
-                            "Keep Awake is on · Click to allow sleep"
+                            // The accent alone marks it as running: a filled pill
+                            // here would sit right in the window's rounded corner.
+                            let accent = colors().accent;
+                            item.text_color(accent)
+                                .child(icon("chrome-icons/coffee-steam.svg").text_color(accent))
+                                .child("Awake")
                         } else {
-                            "Keep Awake · Prevent your Mac from sleeping"
-                        },
-                        cx,
-                    )
-                })
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_awake(cx))),
-        )
+                            item.px(px(5.0)).child(
+                                icon("chrome-icons/coffee.svg")
+                                    .group_hover("status-keep-awake", |icon| {
+                                        icon.text_color(colors().foreground)
+                                    }),
+                            )
+                        }
+                    })
+                    .tooltip(move |_, cx| {
+                        sidebar_tooltip(
+                            if keep_awake {
+                                "Keep Awake is on · Click to allow sleep"
+                            } else {
+                                "Keep Awake · Prevent your Mac from sleeping"
+                            },
+                            cx,
+                        )
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_awake(cx))),
+            )
+        })
     }
 }
 
@@ -315,9 +331,9 @@ mod tests {
         assert!(right.branch && right.keep_awake);
         assert!(!strip.any(), "the cards reach the bottom");
 
-        // A space with its right sidebar closed.
+        // A space with its right sidebar closed: Keep Awake goes with it.
         let [left, right, strip] = status_layout(true, false, true);
-        assert!(left.usage && left.keep_awake && !left.branch);
+        assert!(left.usage && !left.keep_awake && !left.branch);
         assert!(!right.any());
         assert!(!strip.any(), "the cards still reach the bottom");
 
@@ -327,9 +343,9 @@ mod tests {
 
         let [left, right, strip] = status_layout(false, false, true);
         assert!(!left.any() && !right.any());
-        assert!(strip.usage && strip.branch && strip.keep_awake);
+        assert!(strip.usage && strip.branch && !strip.keep_awake);
 
-        // Repository leaves the branch and Keep Awake out altogether.
+        // Repository leaves the branch out altogether.
         let [left, _, strip] = status_layout(true, false, false);
         assert!(left.usage && !left.keep_awake);
         assert!(!strip.any());

@@ -316,13 +316,13 @@ fn run_files_watcher(
 
 impl super::WorkspaceView {
     fn files_sidebar_active(&self) -> bool {
-        self.workspace_section == super::WorkspaceSection::Workspace
+        self.right_sidebar_allowed()
             && self.settings.right_sidebar_visible
             && self.right_sidebar_mode == RightSidebarMode::Files
     }
 
     pub(super) fn sync_files_watcher(&mut self, cx: &mut Context<Self>) {
-        if self.workspace_section != super::WorkspaceSection::Workspace
+        if !self.right_sidebar_allowed()
             || !self.settings.right_sidebar_visible
             || !self.has_project_context()
         {

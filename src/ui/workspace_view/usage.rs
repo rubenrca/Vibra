@@ -1,4 +1,4 @@
-//! Subscription usage: a group at the start of the status bar with each
+//! Subscription usage: a group in the middle of the status bar with each
 //! provider's mark and the share used of the quota closest to its limit.
 //! Hovering one lists its quotas in a card above the bar, which eases in and
 //! glides between providers; clicking opens a modal listing every subscription.
@@ -30,8 +30,8 @@ use super::context_menu::MENU_EDGE_MARGIN;
 use super::{WorkspaceView, sidebar_tooltip};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
-/// Brand marks fill their box, so they sit a step under the bar's 14 px icons.
-const CHIP_MARK_SIZE: f32 = 13.0;
+/// The provider marks lead the strip, a step over the bar's 14 px icons.
+const CHIP_MARK_SIZE: f32 = 15.0;
 /// Matches the other status bar items.
 const CHIP_HEIGHT: f32 = super::status_bar::STATUS_ITEM_HEIGHT;
 const USAGE_CHIP_GROUP: &str = "status-usage-chip";
@@ -303,16 +303,19 @@ impl WorkspaceView {
         }));
     }
 
-    /// Where the hover card and the modal hang from: just above the chips,
-    /// level with their left edge.
-    fn usage_popover_anchor(&self) -> Point<Pixels> {
+    /// Where a hover card or modal `width` wide hangs from: just above the
+    /// chips, centered over them like the group in its strip.
+    fn usage_popover_anchor(&self, width: f32) -> Point<Pixels> {
         let bounds = self.usage.tracker_bounds.get();
-        point(bounds.left(), bounds.top() - px(POPOVER_GAP))
+        point(
+            bounds.center().x - px(width / 2.0),
+            bounds.top() - px(POPOVER_GAP),
+        )
     }
 
     /// Opens the modal, rising from the status bar above the chips.
     fn open_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.usage.anchor = self.usage_popover_anchor();
+        self.usage.anchor = self.usage_popover_anchor(MODAL_WIDTH);
         self.usage.open = true;
         self.usage.cancel_hover(Instant::now());
         self.context_menu = None;
@@ -468,7 +471,7 @@ impl WorkspaceView {
         let now = now_timestamp();
         let card = self.usage.card(id, provider, now, local_utc_offset(now));
         let width = HOVER_CARD_WIDTH;
-        let position = self.usage_popover_anchor();
+        let position = self.usage_popover_anchor(width);
         Some(
             div()
                 .absolute()
@@ -1587,12 +1590,16 @@ mod tests {
                 // A refresh in flight keeps the test away from the user's real logins.
                 view.usage.loading = true;
                 view.usage.tracker_bounds.set(Bounds::new(
-                    point(px(6.0), px(1480.0)),
+                    point(px(400.0), px(1480.0)),
                     gpui::size(px(180.0), px(22.0)),
                 ));
                 view.open_usage(window, cx);
                 assert!(view.usage.open);
-                assert_eq!(view.usage.anchor, point(px(6.0), px(1480.0 - POPOVER_GAP)));
+                // Centered over the chips.
+                assert_eq!(
+                    view.usage.anchor,
+                    point(px(490.0 - MODAL_WIDTH / 2.0), px(1480.0 - POPOVER_GAP))
+                );
                 assert!(view.usage_modal(cx).is_some());
                 window.remove_window();
             })

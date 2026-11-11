@@ -18,11 +18,12 @@ use crate::ui::space_marks::SpaceActivity;
 use crate::ui::theme::{HOVER_LIFT, colors, frame, frame_hover, frame_selected, lift};
 use crate::{AddProject, GoToProject};
 
-use super::chrome::sidebar_row_width;
+use super::chrome::{sidebar_row_width, yield_to_space_name};
 use super::spaces::space_avatar;
 use super::{
     ContextMenuKind, DragGhost, ProjectDrag, ReorderDrag, ReorderSlot, RightSidebarMode,
-    SIDEBAR_CONTROL_SIZE, SIDEBAR_ROW_RADIUS, WorkspaceSection, WorkspaceView, sidebar_tooltip,
+    SIDEBAR_CONTROL_SIZE, SIDEBAR_ROW_RADIUS, ToolTab, WorkspaceSection, WorkspaceView,
+    sidebar_tooltip,
 };
 
 /// A space row and the gap below it.
@@ -377,8 +378,11 @@ impl WorkspaceView {
     ) -> AnyElement {
         let row_width = sidebar_row_width(self.left_sidebar_width());
         let controls_width = SIDEBAR_CONTROL_SIZE;
+        // Repository and Activity open as tabs of the selected space, so the
+        // space stays lit while they are in front; only Settings leaves it.
         let selected = self.snapshot.selected_project_id == Some(id)
-            && self.workspace_section == WorkspaceSection::Workspace;
+            && (self.workspace_section == WorkspaceSection::Workspace
+                || ToolTab::of(self.workspace_section).is_some());
         let project_padding = 6.0;
         let diff_stats = self
             .project_diff_stats(id)
@@ -404,7 +408,8 @@ impl WorkspaceView {
             .relative()
             .w(px(row_width))
             .mb(px(2.0))
-            .h(px(32.0))
+            .min_h(px(32.0))
+            .py(px(7.0))
             .pl(px(project_padding))
             .pr(px(project_padding))
             .rounded(px(SIDEBAR_ROW_RADIUS))
@@ -451,11 +456,12 @@ impl WorkspaceView {
                 }),
             )
             .child(space_avatar(&name, space_activity))
+            // The name is never cut: the branch gives way first, and a name
+            // wider than the row wraps onto another line.
             .child(
                 div()
-                    .flex_1()
+                    .flex_grow()
                     .min_w(px(0.0))
-                    .truncate()
                     .text_size(px(13.0))
                     .line_height(px(18.0))
                     .font_weight(if selected {
@@ -475,11 +481,8 @@ impl WorkspaceView {
             )
             .when_some(branch, |row, branch| {
                 row.child(
-                    div()
-                        .flex_shrink()
-                        .min_w(px(0.0))
+                    yield_to_space_name(div())
                         .max_w(relative(0.45))
-                        .truncate()
                         .text_size(px(12.0))
                         .text_color(colors().subtle)
                         .child(branch),
@@ -755,7 +758,8 @@ impl WorkspaceView {
 /// The row as it looks while selected, without controls that cannot be used mid-drag.
 fn project_drag_ghost(name: String, padding: f32) -> AnyElement {
     div()
-        .h(px(32.0))
+        .min_h(px(32.0))
+        .py(px(7.0))
         .px(px(padding))
         .rounded(px(SIDEBAR_ROW_RADIUS))
         .flex()
@@ -767,7 +771,6 @@ fn project_drag_ghost(name: String, padding: f32) -> AnyElement {
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                .truncate()
                 .text_size(px(13.0))
                 .line_height(px(18.0))
                 .font_weight(gpui::FontWeight::MEDIUM)

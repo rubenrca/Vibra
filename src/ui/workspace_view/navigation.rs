@@ -1,7 +1,8 @@
 //! Global navigation and the project-scoped workspace rail.
 
 use gpui::{
-    AnyElement, Context, Div, MouseButton, SharedString, Stateful, Window, div, prelude::*, px, svg,
+    AnyElement, Context, Div, MouseButton, SharedString, Stateful, Window, div, linear_color_stop,
+    linear_gradient, prelude::*, px, svg,
 };
 use uuid::Uuid;
 
@@ -72,12 +73,10 @@ pub(super) fn keycap(label: &'static str) -> Div {
 }
 
 /// Sidebar section heading with room for a trailing action.
-/// A section's title. It is the only separator in the sidebar, so it keeps
-/// clear room above it.
 pub(super) fn section_label(label: &'static str) -> Div {
     div()
         .h(px(28.0))
-        .mt(px(14.0))
+        .mt(px(10.0))
         .pl(px(8.0))
         .pr(px(4.0))
         .flex()
@@ -90,6 +89,27 @@ pub(super) fn section_label(label: &'static str) -> Div {
                 .text_color(colors().subtle)
                 .child(label),
         )
+}
+
+/// The line between the left sidebar's sections: solid through its middle
+/// third and fading out over the outer thirds, so it never meets the edges.
+pub(super) fn section_divider() -> Div {
+    let color = colors().border_subtle;
+    let fade = |from: f32, to: f32| {
+        div().flex_1().h_full().bg(linear_gradient(
+            90.0,
+            linear_color_stop(color, 0.0).opacity(from),
+            linear_color_stop(color, 1.0).opacity(to),
+        ))
+    };
+    div()
+        .h(px(1.0))
+        .mx(px(SIDEBAR_ROW_INSET))
+        .flex_none()
+        .flex()
+        .child(fade(0.0, 1.0))
+        .child(div().flex_1().h_full().bg(color))
+        .child(fade(1.0, 0.0))
 }
 
 impl WorkspaceView {
@@ -139,6 +159,16 @@ impl WorkspaceView {
 
     pub(super) fn set_workspace_mode(&mut self, mode: RightSidebarMode, cx: &mut Context<Self>) {
         self.workspace_section = WorkspaceSection::Workspace;
+        self.set_right_sidebar_mode(mode, cx);
+    }
+
+    /// Opens the right sidebar on `mode` without leaving the tab in front,
+    /// so Repository and Activity keep their place.
+    pub(super) fn set_right_sidebar_mode(
+        &mut self,
+        mode: RightSidebarMode,
+        cx: &mut Context<Self>,
+    ) {
         self.right_sidebar_mode = mode;
         self.set_right_sidebar_visible(true, true, cx);
         self.sync_terminal_surface_visibility(cx);
@@ -167,13 +197,11 @@ impl WorkspaceView {
             .size_full()
             .flex()
             .flex_col()
-            // No dividers: each section's title, with room above it,
-            // separates it from the one before.
             .child(
                 div()
                     .px(px(SIDEBAR_ROW_INSET))
                     .pt(px(10.0))
-                    .pb(px(4.0))
+                    .pb(px(8.0))
                     .flex()
                     .flex_col()
                     .gap(px(3.0))
@@ -233,8 +261,9 @@ impl WorkspaceView {
                             .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
                     })),
             )
-            // Spaces above, Agents below; dragging the edge above Agents'
-            // title resizes it.
+            .child(section_divider())
+            // Spaces above, Agents below; dragging the line between them
+            // resizes Agents.
             .child(
                 div()
                     .id("sidebar-body")
