@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.53 — 2026-11-11
+
+- Fade the Changes graph's foot into whatever shows behind the panel, so it no longer ends in a dark band when the desktop shows through the window.
+
 ## 0.3.52 — 2026-11-11
 
 - Add ten workspace presets after Midnight in Appearance: Harbor, Moss, Ember, Orchid, Tidepool, Dune, Rosewood, Glacier, Arcade, and Ink, each with a dark and a light tone. A preset paints the window, cards, ink, and accent in its hue, and ships its own code colors and Markdown headings and links.
