@@ -39,6 +39,89 @@ pub(super) fn command_output_until_limit(
     capture_command(command, None, limits, true)
 }
 
+/// One exchange with a line-oriented server. `input` is written and stdin then
+/// stays open, because these servers stop at end of input. Each stdout line goes
+/// to `accept` until it returns a reply, the server exits (`None`), or a limit
+/// is reached. The process group is stopped on every path.
+pub(super) fn command_reply<T>(
+    command: &mut Command,
+    input: &[u8],
+    limits: CommandLimits,
+    mut accept: impl FnMut(&[u8]) -> Option<T>,
+) -> Result<Option<T>> {
+    let child = command
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Could not start the command.")?;
+    let mut process = ProcessGroup {
+        child,
+        stopped: false,
+    };
+    let mut stdout = process
+        .child
+        .stdout
+        .take()
+        .context("Command stdout unavailable.")?;
+    let mut stdin = process
+        .child
+        .stdin
+        .take()
+        .context("Command stdin unavailable.")?;
+    make_nonblocking(&stdout)?;
+    make_nonblocking(&stdin)?;
+    let started = Instant::now();
+    let mut pending = input;
+    let mut line = Vec::new();
+    let mut received = 0_usize;
+    let mut buffer = [0; 8192];
+    loop {
+        if started.elapsed() >= limits.timeout {
+            anyhow::bail!(
+                "The command timed out after {} seconds.",
+                limits.timeout.as_secs()
+            );
+        }
+        while !pending.is_empty() {
+            match stdin.write(pending) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero).into()),
+                Ok(count) => pending = &pending[count..],
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                // The server left; whatever it wrote first is still read below.
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => pending = &[],
+                Err(error) => return Err(error).context("Could not write the command input."),
+            }
+        }
+        match stdout.read(&mut buffer) {
+            Ok(0) => return Ok(None),
+            Ok(count) => {
+                received = received.saturating_add(count);
+                if received > limits.stdout {
+                    anyhow::bail!("The command reply exceeds its size limit.");
+                }
+                let mut rest = &buffer[..count];
+                while let Some(end) = rest.iter().position(|byte| *byte == b'\n') {
+                    line.extend_from_slice(&rest[..end]);
+                    if let Some(reply) = accept(&line) {
+                        return Ok(Some(reply));
+                    }
+                    line.clear();
+                    rest = &rest[end + 1..];
+                }
+                line.extend_from_slice(rest);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                poll_pipe(&stdout, libc::POLLIN);
+            }
+            Err(error) => return Err(error).context("Could not read the command reply."),
+        }
+    }
+}
+
 fn capture_command(
     command: &mut Command,
     input: Option<Vec<u8>>,
@@ -389,5 +472,37 @@ mod tests {
         let output = command_output(&mut command, Some(vec![b'x'; 128 * 1024]), limits()).unwrap();
         assert_eq!(output.status.code(), Some(7));
         assert_eq!(output.stderr, b"failed");
+    }
+
+    #[test]
+    fn reply_stops_a_server_that_keeps_running_and_reports_exit_and_timeout() {
+        let accept = |line: &[u8]| line.strip_prefix(b"got:").map(<[u8]>::to_vec);
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "read line; echo noise; echo \"got:$line\"; sleep 30"]);
+        let started = Instant::now();
+        let reply = command_reply(&mut command, b"ping\n", limits(), accept).unwrap();
+        assert_eq!(reply.as_deref(), Some(b"ping".as_slice()));
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "echo noise"]);
+        assert_eq!(
+            command_reply(&mut command, b"ping\n", limits(), accept).unwrap(),
+            None
+        );
+
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        let error = command_reply(
+            &mut command,
+            b"ping\n",
+            CommandLimits {
+                timeout: Duration::from_millis(100),
+                ..limits()
+            },
+            accept,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
     }
 }

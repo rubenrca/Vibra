@@ -94,7 +94,7 @@ fn parse_response(mut bytes: &[u8]) -> Result<Value, UsageFailure> {
                 return serde_json::from_slice(bytes).map_err(|_| UsageFailure::invalid_response());
             }
             401 | 403 => {
-                return Err(UsageFailure::new(
+                return Err(UsageFailure::session(
                     "The session cannot query quotas. Open the CLI and sign in again.",
                 ));
             }
@@ -104,10 +104,7 @@ fn parse_response(mut bytes: &[u8]) -> Result<Value, UsageFailure> {
                     .filter_map(|line| line.split_once(':'))
                     .find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
                     .and_then(|(_, value)| retry_after(value.trim(), now_timestamp()));
-                return Err(UsageFailure {
-                    message: "The service rate-limited requests. Vibra will retry later.".into(),
-                    retry_after: Some(retry.unwrap_or(900).max(300)),
-                });
+                return Err(UsageFailure::rate_limited(retry.unwrap_or(900).max(300)));
             }
             _ => {
                 return Err(UsageFailure::new(format!(
@@ -139,6 +136,8 @@ mod tests {
         assert_eq!(data["ok"], true);
         let error = parse_response(b"HTTP/2 401\r\n\r\nprivate-token-and-account").unwrap_err();
         assert!(!error.message.contains("private-token"));
+        assert!(error.session);
+        assert!(!parse_response(b"HTTP/2 500\r\n\r\n").unwrap_err().session);
         assert!(parse_response(b"HTTP/2 302\r\nLocation: https://example.com\r\n\r\n").is_err());
     }
 

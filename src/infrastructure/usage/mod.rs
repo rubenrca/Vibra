@@ -1,7 +1,9 @@
 //! Vibra's subscription monitor: current CLI credentials, direct provider reads,
-//! isolated caches and bounded retries. No companion usage app or local daemon.
+//! isolated caches and bounded retries. When the stored login has expired, the
+//! provider's CLI is asked instead. No companion usage app or local daemon.
 
 mod auth;
+mod cli;
 mod http;
 mod providers;
 
@@ -38,6 +40,8 @@ impl Provider {
 struct UsageFailure {
     message: String,
     retry_after: Option<u64>,
+    /// The stored login is expired or was rejected; only the CLI can renew it.
+    session: bool,
 }
 
 impl UsageFailure {
@@ -45,6 +49,19 @@ impl UsageFailure {
         Self {
             message: message.into(),
             retry_after: None,
+            session: false,
+        }
+    }
+    fn session(message: impl Into<String>) -> Self {
+        Self {
+            session: true,
+            ..Self::new(message)
+        }
+    }
+    fn rate_limited(retry_after: u64) -> Self {
+        Self {
+            retry_after: Some(retry_after),
+            ..Self::new("The service rate-limited requests. Vibra will retry later.")
         }
     }
     fn invalid_response() -> Self {
@@ -136,11 +153,18 @@ impl UsageMonitor {
             if cached.prepare(credential.fingerprint(), now, manual) {
                 let response = providers::fetch(provider, &credential, now);
                 // A login may have changed while the request was in flight.
-                match auth::load(provider, false) {
-                    Ok(Some(current)) if current.fingerprint() == credential.fingerprint() => {
-                        cached.apply(response, now_timestamp())
+                let current = auth::load(provider, false)
+                    .map(|current| current.map(|current| current.fingerprint()));
+                match (current, response) {
+                    // The CLI answered for the login it has now, renewed or not.
+                    (Ok(Some(current)), Ok(reading)) if reading.from_cli => {
+                        cached.fingerprint = current;
+                        cached.apply(Ok(reading.usage), now_timestamp())
                     }
-                    Ok(_) => {
+                    (Ok(Some(current)), response) if current == credential.fingerprint() => {
+                        cached.apply(response.map(|reading| reading.usage), now_timestamp())
+                    }
+                    (Ok(_), _) => {
                         self.cache.remove(&provider);
                         result.errors.push(UsageError {
                             provider_id: provider.id().into(),
@@ -148,7 +172,7 @@ impl UsageMonitor {
                         });
                         continue;
                     }
-                    Err(error) => {
+                    (Err(error), _) => {
                         self.cache.remove(&provider);
                         result
                             .providers
@@ -203,13 +227,7 @@ mod tests {
     fn providers_have_independent_backoff_and_manual_refresh_respects_429() {
         let mut cache = CachedProvider::default();
         cache.prepare("a".into(), 100, false);
-        cache.apply(
-            Err(UsageFailure {
-                message: "Rate limited".into(),
-                retry_after: Some(3600),
-            }),
-            100,
-        );
+        cache.apply(Err(UsageFailure::rate_limited(3600)), 100);
         assert!(!cache.prepare("a".into(), 3699, true));
         assert!(cache.prepare("a".into(), 3700, false));
         let mut other = CachedProvider::default();
@@ -230,5 +248,33 @@ mod tests {
             !snapshot.providers.is_empty(),
             "No supported CLI logins found"
         );
+    }
+
+    #[test]
+    #[ignore = "Explicit opt-in: starts the installed CLIs, which contact their quota services"]
+    fn live_expired_session_probe() {
+        // An expired login is never sent anywhere: the CLI has to answer instead.
+        let expired = auth::Credential {
+            token: "expired".into(),
+            account_id: None,
+            plan: None,
+            expires_at: Some(0),
+        };
+        let mut answered = 0;
+        for provider in Provider::ALL {
+            match providers::fetch(provider, &expired, now_timestamp()) {
+                Ok(reading) => {
+                    assert!(reading.from_cli);
+                    answered += 1;
+                    println!(
+                        "{}: {} quota metrics",
+                        provider.id(),
+                        reading.usage.resources.len()
+                    );
+                }
+                Err(error) => println!("{}: {}", provider.id(), error.message),
+            }
+        }
+        assert!(answered > 0, "No CLI reported its quota");
     }
 }

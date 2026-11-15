@@ -4,22 +4,63 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use super::{Provider, UsageFailure, auth::Credential, http};
+use super::{Provider, UsageFailure, auth::Credential, cli, http};
 use crate::domain::usage::{ProviderUsage, UsageResource, timestamp};
 
 pub(super) const CACHE_SECONDS: i64 = 300;
+
+pub(super) struct Reading {
+    pub usage: ProviderUsage,
+    /// The CLI answered for its current login, which it may have renewed to do so.
+    pub from_cli: bool,
+}
 
 pub(super) fn fetch(
     provider: Provider,
     credential: &Credential,
     now: i64,
-) -> Result<ProviderUsage, UsageFailure> {
-    if credential.is_expired() {
-        return Err(UsageFailure::new(format!(
+) -> Result<Reading, UsageFailure> {
+    let direct = if credential.is_expired() {
+        Err(UsageFailure::session(format!(
             "The session expired. Open {} to renew it, then click Refresh.",
             provider.name()
-        )));
+        )))
+    } else {
+        fetch_direct(provider, credential, now)
+    };
+    let (mut usage, from_cli) = match direct {
+        Ok(usage) => (usage, false),
+        // The stored token no longer works. The CLI can still renew its own login.
+        Err(failure) if failure.session => match from_cli(provider, now) {
+            Some(usage) => (usage, true),
+            None => return Err(failure),
+        },
+        Err(failure) => return Err(failure),
+    };
+    if usage.plan.is_none() {
+        usage.plan = credential.plan.clone();
     }
+    Ok(Reading { usage, from_cli })
+}
+
+fn from_cli(provider: Provider, now: i64) -> Option<ProviderUsage> {
+    let reading = cli::read(provider)?;
+    match provider {
+        Provider::Claude => {
+            let mut usage = claude(&reading["rate_limits"], now).ok()?;
+            usage.plan = reading["subscription_type"].as_str().map(str::to_owned);
+            Some(usage)
+        }
+        Provider::Codex => codex_app_server(&reading, now).ok(),
+        Provider::Grok => grok(&reading, now).ok(),
+    }
+}
+
+fn fetch_direct(
+    provider: Provider,
+    credential: &Credential,
+    now: i64,
+) -> Result<ProviderUsage, UsageFailure> {
     let authorization = format!("Bearer {}", credential.token);
     let mut headers = vec![("Authorization", authorization.as_str())];
     let url = match provider {
@@ -39,15 +80,11 @@ pub(super) fn fetch(
         }
     };
     let value = http::get_json(url, &headers)?;
-    let mut usage = match provider {
-        Provider::Claude => claude(&value, now)?,
-        Provider::Codex => codex(&value, now)?,
-        Provider::Grok => grok(&value, now)?,
-    };
-    if usage.plan.is_none() {
-        usage.plan = credential.plan.clone();
+    match provider {
+        Provider::Claude => claude(&value, now),
+        Provider::Codex => codex(&value, now),
+        Provider::Grok => grok(&value, now),
     }
-    Ok(usage)
 }
 
 pub(super) fn empty_provider(provider: Provider) -> ProviderUsage {
@@ -187,28 +224,92 @@ fn codex_windows(
         let Some(percent) = optional_number(&window["used_percent"])? else {
             continue;
         };
-        let duration = optional_number(&window["limit_window_seconds"])?;
-        let key = match duration {
-            Some(604800.0) => "weekly".to_owned(),
-            Some(86400.0) => "daily".to_owned(),
-            Some(seconds) if seconds > 0.0 && seconds <= 18000.0 => "session".to_owned(),
-            Some(seconds) if seconds > 0.0 => format!("{:.0} h window", seconds / 3600.0),
-            _ => fallback.into(),
-        };
-        let key = if prefix.is_empty() {
-            key
-        } else {
-            format!("{prefix} · {}", crate::domain::usage::resource_label(&key))
-        };
         let reset = window["reset_at"].as_i64().or_else(|| {
             window["reset_after_seconds"]
                 .as_i64()
                 .map(|after| now.saturating_add(after))
         });
+        let seconds = optional_number(&window["limit_window_seconds"])?;
+        codex_window(usage, prefix, fallback, percent, seconds, reset)?;
+    }
+    Ok(())
+}
+
+/// The same reading as `codex`, as `codex app-server` answers `account/rateLimits/read`.
+fn codex_app_server(body: &Value, now: i64) -> Result<ProviderUsage, UsageFailure> {
+    let limits = &body["rateLimits"];
+    if !limits.is_object() {
+        return Err(UsageFailure::invalid_response());
+    }
+    let mut usage = snapshot(Provider::Codex, now);
+    usage.plan = limits["planType"].as_str().map(str::to_owned);
+    codex_app_server_windows(&mut usage, limits, "")?;
+    if let Some(additional) = body["rateLimitsByLimitId"].as_object() {
+        let own = limits["limitId"].as_str().unwrap_or("codex");
+        for (id, limit) in additional {
+            if id != own {
+                let name = limit["limitName"].as_str().unwrap_or(id);
+                codex_app_server_windows(&mut usage, limit, name)?;
+            }
+        }
+    }
+    if let Some(balance) = optional_number(&limits["credits"]["balance"])? {
         usage
             .resources
-            .insert(key, quota(percent, reset.and_then(iso))?);
+            .insert("credits".into(), balance_resource(balance, "credits"));
+    } else if limits["credits"]["hasCredits"] == false {
+        usage
+            .resources
+            .insert("credits".into(), balance_resource(0.0, "credits"));
     }
+    if let Some(count) = optional_number(&body["rateLimitResetCredits"]["availableCount"])? {
+        usage
+            .resources
+            .insert("rateLimitResets".into(), balance_resource(count, "resets"));
+    }
+    Ok(usage)
+}
+
+fn codex_app_server_windows(
+    usage: &mut ProviderUsage,
+    limits: &Value,
+    prefix: &str,
+) -> Result<(), UsageFailure> {
+    for (slot, fallback) in [("primary", "session"), ("secondary", "weekly")] {
+        let window = &limits[slot];
+        let Some(percent) = optional_number(&window["usedPercent"])? else {
+            continue;
+        };
+        let seconds = optional_number(&window["windowDurationMins"])?.map(|minutes| minutes * 60.0);
+        let reset = window["resetsAt"].as_i64();
+        codex_window(usage, prefix, fallback, percent, seconds, reset)?;
+    }
+    Ok(())
+}
+
+fn codex_window(
+    usage: &mut ProviderUsage,
+    prefix: &str,
+    fallback: &str,
+    percent: f64,
+    seconds: Option<f64>,
+    reset: Option<i64>,
+) -> Result<(), UsageFailure> {
+    let key = match seconds {
+        Some(604800.0) => "weekly".to_owned(),
+        Some(86400.0) => "daily".to_owned(),
+        Some(seconds) if seconds > 0.0 && seconds <= 18000.0 => "session".to_owned(),
+        Some(seconds) if seconds > 0.0 => format!("{:.0} h window", seconds / 3600.0),
+        _ => fallback.into(),
+    };
+    let key = if prefix.is_empty() {
+        key
+    } else {
+        format!("{prefix} · {}", crate::domain::usage::resource_label(&key))
+    };
+    usage
+        .resources
+        .insert(key, quota(percent, reset.and_then(iso))?);
     Ok(())
 }
 
@@ -356,6 +457,53 @@ mod tests {
         assert_eq!(usage.resources["credits"].available, Some(0.0));
         assert_eq!(usage.resources["rateLimitResets"].available, Some(2.0));
         assert_eq!(usage.resources["Spark · 5 hours"].percent_used(), Some(5.0));
+    }
+
+    #[test]
+    fn codex_app_server_reading_maps_to_the_same_quotas_as_the_direct_one() {
+        let usage = codex_app_server(
+            &json!({
+                "rateLimits": {
+                    "limitId": "codex",
+                    "primary": {
+                        "usedPercent": 12,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1800000010
+                    },
+                    "secondary": {
+                        "usedPercent": 71,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1800000020
+                    },
+                    "credits": { "hasCredits": false, "balance": "0" },
+                    "planType": "plus"
+                },
+                "rateLimitsByLimitId": {
+                    "codex": {
+                        "primary": { "usedPercent": 12, "windowDurationMins": 300 }
+                    },
+                    "spark": {
+                        "limitName": "Spark",
+                        "primary": { "usedPercent": 5, "windowDurationMins": 300 }
+                    }
+                },
+                "rateLimitResetCredits": { "availableCount": 3 }
+            }),
+            1800000000,
+        )
+        .unwrap();
+        assert_eq!(usage.plan.as_deref(), Some("plus"));
+        assert_eq!(usage.resources["session"].percent_used(), Some(12.0));
+        assert_eq!(usage.resources["weekly"].percent_used(), Some(71.0));
+        assert_eq!(
+            usage.resources["weekly"].resets_at.as_deref(),
+            Some("2027-01-15T08:00:20Z")
+        );
+        assert_eq!(usage.resources["credits"].available, Some(0.0));
+        assert_eq!(usage.resources["rateLimitResets"].available, Some(3.0));
+        assert_eq!(usage.resources["Spark · 5 hours"].percent_used(), Some(5.0));
+        assert_eq!(usage.resources.len(), 5);
+        assert!(codex_app_server(&json!({ "rateLimits": null }), 0).is_err());
     }
 
     #[test]
