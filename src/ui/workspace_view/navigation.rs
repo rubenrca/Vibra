@@ -126,7 +126,6 @@ impl WorkspaceView {
             self.theme_query.clear();
             crate::ui::theme::refresh_user_themes();
         }
-        self.usage.open = false;
         self.workspace_section = section;
         // A tool's tab belongs to the space it was opened from.
         if let (Some(tool), Some(project_id)) =

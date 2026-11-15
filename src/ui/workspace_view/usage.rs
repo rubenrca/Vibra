@@ -1,7 +1,8 @@
 //! Subscription usage: a group in the middle of the status bar with each
 //! provider's mark and the share used of the quota closest to its limit.
 //! Hovering one lists its quotas in a card above the bar, which eases in and
-//! glides between providers; clicking opens a modal listing every subscription.
+//! glides between providers; clicking opens Activity, which lists every
+//! subscription in full.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -10,9 +11,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     Animation, AnimationExt, AnyElement, Bounds, Context, Corner, Div, Font, FontFeatures,
-    FontStyle, FontWeight, Hsla, MouseButton, Pixels, Point, Rgba, SharedString, Stateful, Task,
-    Timer, Transformation, Window, div, ease_out_quint, percentage, point, prelude::*, px,
-    relative, svg,
+    FontStyle, FontWeight, Hsla, Pixels, Point, Rgba, SharedString, Stateful, Task, Timer,
+    Transformation, Window, div, percentage, point, prelude::*, px, relative, svg,
 };
 
 use crate::domain::usage::{
@@ -21,13 +21,12 @@ use crate::domain::usage::{
 use crate::infrastructure::clock::local_utc_offset;
 use crate::infrastructure::usage::UsageMonitor;
 use crate::ui::agent_marks::{agent_tile, icon_tile};
-use crate::ui::dialog::{DIALOG_RADIUS, dialog_shadow};
-use crate::ui::menu::{menu_border, menu_hover, menu_panel, menu_surface};
+use crate::ui::menu::menu_panel;
 use crate::ui::theme::{colors, mix};
 
 use super::chrome::ease_out_cubic;
 use super::context_menu::MENU_EDGE_MARGIN;
-use super::{WorkspaceView, sidebar_tooltip};
+use super::{WorkspaceSection, WorkspaceView, sidebar_tooltip};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// The provider marks lead the strip, a step over the bar's 14 px icons.
@@ -35,22 +34,33 @@ const CHIP_MARK_SIZE: f32 = 15.0;
 /// Matches the other status bar items.
 const CHIP_HEIGHT: f32 = super::status_bar::STATUS_ITEM_HEIGHT;
 const USAGE_CHIP_GROUP: &str = "status-usage-chip";
-/// Space between the hover card or modal and the chips that opened it.
+/// Space between the hover card and the chips it hangs over.
 const POPOVER_GAP: f32 = 8.0;
 const HOVER_CARD_WIDTH: f32 = 236.0;
+/// The hover card keeps this far inside the strip that holds the chips, so
+/// in a sidebar it never reaches over the pane beside it.
+const POPOVER_INSET: f32 = 8.0;
+/// It never gets narrower than this, however narrow the strip.
+const POPOVER_MIN_WIDTH: f32 = 160.0;
+/// Padding of the hover card.
+const CARD_PADDING: f32 = 12.0;
+/// A quota needs this much width to name its reset beside its value; with
+/// less, the reset goes under the bar.
+const INLINE_RESET_WIDTH: f32 = 200.0;
 /// The card opens once the pointer rests on a chip this long, so crossing
 /// the status bar does not flash it over the terminal.
 const HOVER_CARD_DELAY: Duration = Duration::from_millis(350);
-const MODAL_WIDTH: f32 = 330.0;
-/// Past this the modal scrolls, so it never covers the whole window.
-const MODAL_MAX_HEIGHT: f32 = 460.0;
-/// Space between the modal's edge and the cards inside it.
-const MODAL_INSET: f32 = 10.0;
-/// Subscription cards keep their corners concentric with the modal's.
-const CARD_RADIUS: f32 = DIALOG_RADIUS - MODAL_INSET / 2.0;
+/// A subscription's card in Activity: they share a row while each has this
+/// much, and one alone does not stretch its bars across the page.
+const SECTION_CARD_MIN_WIDTH: f32 = 260.0;
+const SECTION_CARD_MAX_WIDTH: f32 = 420.0;
+/// Matches Activity's tiles.
+const SECTION_CARD_RADIUS: f32 = 12.0;
 /// The agent tile beside each provider's name.
 const HEADING_TILE_SIZE: f32 = 24.0;
-const QUOTA_BAR_HEIGHT: f32 = 3.0;
+const QUOTA_BAR_HEIGHT: f32 = 4.0;
+/// Percentages end on one edge and share this width, so they read as a column.
+const QUOTA_VALUE_WIDTH: f32 = 34.0;
 /// The hover card fades in while rising this far into place.
 const HOVER_CARD_RISE: f32 = 4.0;
 const HOVER_CARD_ENTER: Duration = Duration::from_millis(100);
@@ -58,9 +68,6 @@ const HOVER_CARD_ENTER: Duration = Duration::from_millis(100);
 const HOVER_COUNT_UP: Duration = Duration::from_millis(400);
 /// …and glide to the next provider's values when the pointer moves on.
 const HOVER_SWITCH: Duration = Duration::from_millis(240);
-/// The modal fades in while rising this far into place, like other dialogs.
-const MODAL_RISE: f32 = 6.0;
-const MODAL_ENTER: Duration = Duration::from_millis(200);
 /// One turn of the refresh icon while quotas are being checked.
 const REFRESH_SPIN: Duration = Duration::from_millis(900);
 
@@ -70,11 +77,11 @@ pub(super) struct UsageState {
     snapshot: UsageSnapshot,
     error: Option<String>,
     loading: bool,
+    /// Whether a reading the user waits for is in flight: the first one, or
+    /// one they asked for. The poll's own readings change nothing on screen.
+    checking: bool,
     /// Whether a first reading has finished; until then there is nothing to say.
     loaded: bool,
-    pub open: bool,
-    /// Bottom-left corner of the modal, just above the chips that opened it.
-    anchor: Point<Pixels>,
     /// Provider whose chip the pointer last entered, until it leaves the group.
     hovered: Option<String>,
     /// How the hover card got to what it shows, while it shows anything.
@@ -85,8 +92,11 @@ pub(super) struct UsageState {
     /// a delayed opening only lands for the chip still under the pointer.
     hover_intent: u64,
     _hover_task: Option<Task<()>>,
-    /// Where the chips sit in the window, to hang the hover card and modal above them.
+    /// Where the chips sit in the window, to hang the hover card above them.
     tracker_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The strip the chips sit in: a sidebar's foot, or the bar under the
+    /// cards. The hover card stays within its sides.
+    pub(super) strip_bounds: Rc<Cell<Bounds<Pixels>>>,
     _poll_task: Option<Task<()>>,
     _refresh_task: Option<Task<()>>,
 }
@@ -94,6 +104,7 @@ pub(super) struct UsageState {
 impl UsageState {
     fn apply(&mut self, result: anyhow::Result<UsageSnapshot>) {
         self.loading = false;
+        self.checking = false;
         self.loaded = true;
         match result {
             Ok(snapshot) => {
@@ -157,17 +168,12 @@ impl UsageState {
     }
 
     fn card(&self, id: &str, provider: &ProviderUsage, now: i64, utc_offset: i32) -> UsageCard {
-        // Bounded quotas first; balances are context, not a limit.
-        let bounded = provider
-            .resources
-            .iter()
-            .filter(|(_, resource)| resource.kind != "balance");
-        let balances = provider
-            .resources
-            .iter()
-            .filter(|(_, resource)| resource.kind == "balance");
-        let rows = bounded
-            .chain(balances)
+        // The windows that block work first, shortest first, then the model
+        // and spend quotas; balances are context, not a limit.
+        let mut resources = provider.resources.iter().collect::<Vec<_>>();
+        resources.sort_by_key(|(key, resource)| quota_rank(key, &resource.kind));
+        let rows = resources
+            .into_iter()
             .map(|(key, resource)| UsageCardRow {
                 label: resource_label(key).to_owned(),
                 value: resource.compact_value_label(),
@@ -185,18 +191,16 @@ impl UsageState {
             .filter(|error| error.provider_id == id)
             .map(|error| error.message.clone())
             .collect();
-        let status = if self.loading {
-            Some("Checking quotas…".to_owned())
-        } else {
-            provider
-                .fetched_at
-                .as_deref()
-                .and_then(timestamp)
-                .map(|fetched| match now.saturating_sub(fetched).max(0) / 60 {
-                    0 => "Updated just now".to_owned(),
-                    minutes => format!("Updated {minutes} min ago"),
-                })
-        };
+        // The refresh icon says a reading is in flight; this line keeps saying
+        // how old the values on screen are.
+        let status = provider
+            .fetched_at
+            .as_deref()
+            .and_then(timestamp)
+            .map(|fetched| match now.saturating_sub(fetched).max(0) / 60 {
+                0 => "Updated just now".to_owned(),
+                minutes => format!("Updated {minutes} min ago"),
+            });
         UsageCard {
             id: id.to_owned(),
             name: provider.display_name.clone(),
@@ -281,12 +285,17 @@ impl WorkspaceView {
     }
 
     fn refresh_usage(&mut self, manual: bool, cx: &mut Context<Self>) {
+        // Only a reading someone waits for shows as one. A click during the
+        // poll's reading adopts it rather than starting a second.
+        if (manual || !self.usage.loaded) && !self.usage.checking {
+            self.usage.checking = true;
+            cx.notify();
+        }
         if self.usage.loading {
             return;
         }
         self.usage.loading = true;
         let monitor = self.usage.monitor.clone();
-        cx.notify();
         self.usage._refresh_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -303,24 +312,30 @@ impl WorkspaceView {
         }));
     }
 
-    /// Where a hover card or modal `width` wide hangs from: just above the
-    /// chips, centered over them like the group in its strip.
-    fn usage_popover_anchor(&self, width: f32) -> Point<Pixels> {
-        let bounds = self.usage.tracker_bounds.get();
-        point(
-            bounds.center().x - px(width / 2.0),
-            bounds.top() - px(POPOVER_GAP),
-        )
+    /// Where the hover card hangs, and how wide: just above the chips and
+    /// centered over them like the group in its strip, but within the strip's
+    /// sides, narrower than `width` when the strip is. In a sidebar that
+    /// keeps it over the sidebar.
+    fn usage_popover_frame(&self, width: f32) -> (Point<Pixels>, f32) {
+        let chips = self.usage.tracker_bounds.get();
+        let strip = self.usage.strip_bounds.get();
+        let top = chips.top() - px(POPOVER_GAP);
+        let center: f32 = chips.center().x.into();
+        // The strip has not been laid out yet.
+        if strip.size.width <= px(0.0) {
+            return (point(px(center - width / 2.0), top), width);
+        }
+        let left = f32::from(strip.left()) + POPOVER_INSET;
+        let right = f32::from(strip.right()) - POPOVER_INSET;
+        let width = width.min(right - left).max(POPOVER_MIN_WIDTH);
+        let x = (center - width / 2.0).clamp(left, (right - width).max(left));
+        (point(px(x), top), width)
     }
 
-    /// Opens the modal, rising from the status bar above the chips.
-    fn open_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.usage.anchor = self.usage_popover_anchor(MODAL_WIDTH);
-        self.usage.open = true;
+    /// Opens Activity, which lists every subscription in full.
+    fn show_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.usage.cancel_hover(Instant::now());
-        self.context_menu = None;
-        self.ide_menu_open = false;
-        self.focus_handle.focus(window);
+        self.select_section(WorkspaceSection::Activity, window, cx);
         self.refresh_usage(false, cx);
         cx.notify();
     }
@@ -341,9 +356,7 @@ impl WorkspaceView {
         self.usage._hover_task = Some(cx.spawn(async move |this, cx| {
             delay.await;
             let _ = this.update(cx, |this, cx| {
-                if this.usage.hover_intent == intent
-                    && !this.usage.open
-                    && this.usage.hover(Some(&id), Instant::now())
+                if this.usage.hover_intent == intent && this.usage.hover(Some(&id), Instant::now())
                 {
                     cx.notify();
                 }
@@ -351,15 +364,9 @@ impl WorkspaceView {
         }));
     }
 
-    pub(super) fn close_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.usage.open = false;
-        self.focus_selected_terminal(window, cx);
-        cx.notify();
-    }
-
     /// The status bar's usage group. Each provider shows its mark and the share
     /// used of its tightest window; hovering one lists every quota and clicking
-    /// any of them opens every subscription.
+    /// any of them opens Activity, with every subscription.
     pub(super) fn usage_tracker(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = now_timestamp();
         let snapshot = &self.usage.snapshot;
@@ -397,7 +404,7 @@ impl WorkspaceView {
                             )
                             .child(div().min_w(px(0.0)).truncate().child("No usage data"))
                             .on_click(
-                                cx.listener(|this, _, window, cx| this.open_usage(window, cx)),
+                                cx.listener(|this, _, window, cx| this.show_usage(window, cx)),
                             ),
                     )
                 },
@@ -446,7 +453,7 @@ impl WorkspaceView {
                             })
                             .child(percent_label(percent)),
                     )
-                    .on_click(cx.listener(|this, _, window, cx| this.open_usage(window, cx)))
+                    .on_click(cx.listener(|this, _, window, cx| this.show_usage(window, cx)))
             }))
             .into_any_element()
     }
@@ -454,8 +461,7 @@ impl WorkspaceView {
     /// Quotas of the provider under the pointer, in a card hanging above the
     /// status bar, level with the usage group.
     pub(super) fn usage_hover_card(&self) -> Option<AnyElement> {
-        if self.usage.open
-            || self.context_menu.is_some()
+        if self.context_menu.is_some()
             || self.palette_mode.is_some()
             || self.rename_prompt.is_some()
         {
@@ -470,8 +476,7 @@ impl WorkspaceView {
         }
         let now = now_timestamp();
         let card = self.usage.card(id, provider, now, local_utc_offset(now));
-        let width = HOVER_CARD_WIDTH;
-        let position = self.usage_popover_anchor(width);
+        let (position, width) = self.usage_popover_frame(HOVER_CARD_WIDTH);
         Some(
             div()
                 .absolute()
@@ -499,40 +504,65 @@ impl WorkspaceView {
         )
     }
 
-    pub(super) fn usage_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.usage.open || self.palette_mode.is_some() || self.rename_prompt.is_some() {
-            return None;
-        }
+    /// Every subscription in full, for Activity: a card each with its plan,
+    /// when it was read, its quotas with their resets, and its balances, under
+    /// a heading that carries the refresh control.
+    pub(super) fn usage_section(&self, cx: &mut Context<Self>) -> Div {
         let now = now_timestamp();
         let utc_offset = local_utc_offset(now);
-        // It rises from its anchor, so the room above limits its height, and
-        // past a point it scrolls instead of covering the window.
-        let available: f32 = self.usage.anchor.y.into();
-        let max_height = (available - MENU_EDGE_MARGIN).clamp(100.0, MODAL_MAX_HEIGHT);
         let snapshot = &self.usage.snapshot;
-        let loading = self.usage.loading;
-        let refresh_tooltip = if loading {
+        let checking = self.usage.checking;
+        let refresh_tooltip = if checking {
             "Checking quotas…"
         } else {
-            "Refresh usage · May request Keychain access"
+            "Refresh usage · Reads every 5 min · May request Keychain access"
         };
         let empty = snapshot.providers.is_empty() && self.usage.error.is_none();
-        let content = div()
-            .id("usage-provider-list")
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .px(px(MODAL_INSET))
-            .pb(px(MODAL_INSET))
+        let heading = super::activity::section_heading("Subscriptions", snapshot.providers.len())
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id("usage-refresh")
+                    .group("usage-refresh")
+                    .size(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.0))
+                    .when(!checking, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|button| button.bg(foreground(0.06)))
+                    })
+                    .tooltip(move |_, cx| sidebar_tooltip(refresh_tooltip, cx))
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_usage(true, cx)))
+                    .child(refresh_icon(checking)),
+            );
+        div()
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .when_some(self.usage.error.clone(), |content, error| {
-                content.child(warning_callout(None, error))
+            .text_size(px(12.0))
+            .text_color(colors().foreground)
+            .child(heading)
+            .when_some(self.usage.error.clone(), |section, error| {
+                section.child(usage_note(None, &error))
             })
-            .when(empty, |content| content.child(usage_empty_state(loading)))
-            .children(snapshot.providers.iter().map(|(id, provider)| {
-                provider_section(&self.usage.card(id, provider, now, utc_offset))
-            }))
+            .when(empty, |section| {
+                section.child(super::activity::empty_note(if checking {
+                    "Checking quotas…"
+                } else {
+                    "No subscriptions found. Sign in with Claude Code, Codex, or Grok Build, \
+                     then refresh."
+                }))
+            })
+            .when(!snapshot.providers.is_empty(), |section| {
+                section.child(div().flex().flex_wrap().gap(px(10.0)).children(
+                    snapshot.providers.iter().map(|(id, provider)| {
+                        provider_section(&self.usage.card(id, provider, now, utc_offset))
+                    }),
+                ))
+            })
             // Failures for a provider that has nothing to list would otherwise vanish.
             .children(
                 snapshot
@@ -540,104 +570,12 @@ impl WorkspaceView {
                     .iter()
                     .filter(|error| !snapshot.providers.contains_key(&error.provider_id))
                     .map(|error| {
-                        warning_callout(
+                        usage_note(
                             Some(&error.provider_id),
-                            format!("{}: {}", provider_name(&error.provider_id), error.message),
+                            &format!("{}: {}", provider_name(&error.provider_id), error.message),
                         )
                     }),
-            );
-
-        let header = div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(10.0))
-            .pl(px(MODAL_INSET + 4.0))
-            .pr(px(MODAL_INSET - 2.0))
-            .pt(px(10.0))
-            .pb(px(8.0))
-            .child(
-                div()
-                    .id("usage-title")
-                    .flex_1()
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .tooltip(|_, cx| {
-                        sidebar_tooltip("Subscription usage · Refreshes every 5 min", cx)
-                    })
-                    .child("Usage"),
             )
-            .child(
-                div()
-                    .id("usage-refresh")
-                    .group("usage-refresh")
-                    .size(px(26.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(6.0))
-                    .when(!loading, |button| {
-                        button
-                            .cursor_pointer()
-                            .hover(|button| button.bg(menu_hover()))
-                    })
-                    .tooltip(move |_, cx| sidebar_tooltip(refresh_tooltip, cx))
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh_usage(true, cx)))
-                    .child(refresh_icon(loading)),
-            );
-
-        // The same lifted panel as the other dialogs, with a card per subscription.
-        let panel = div()
-            .id("usage-modal")
-            .w(px(MODAL_WIDTH))
-            .max_h(px(max_height))
-            .flex()
-            .flex_col()
-            .rounded(px(DIALOG_RADIUS))
-            .border_1()
-            .border_color(menu_border())
-            .bg(menu_surface())
-            .shadow(dialog_shadow())
-            .text_size(px(12.0))
-            .text_color(colors().foreground)
-            .overflow_hidden()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .child(header)
-            .child(content)
-            // Settles into place like the other dialogs; the anchor never sees it move.
-            .with_animation(
-                "usage-modal-enter",
-                Animation::new(MODAL_ENTER).with_easing(ease_out_quint()),
-                |panel, delta| {
-                    panel
-                        .opacity(delta)
-                        .relative()
-                        .top(px(MODAL_RISE * (1.0 - delta)))
-                },
-            );
-
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.close_usage(window, cx)),
-                )
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(|this, _, window, cx| this.close_usage(window, cx)),
-                )
-                .child(
-                    gpui::anchored()
-                        .anchor(Corner::BottomLeft)
-                        .position(self.usage.anchor)
-                        .snap_to_window_with_margin(px(MENU_EDGE_MARGIN))
-                        .child(panel),
-                )
-                .into_any_element(),
-        )
     }
 }
 
@@ -657,6 +595,21 @@ fn usage_chip(id: SharedString) -> Stateful<Div> {
         .cursor_pointer()
         .text_size(px(11.0))
         .text_color(colors().muted)
+}
+
+/// Where a quota goes in its provider's list: the session, day, week and month
+/// windows, then quotas scoped to a model or feature, then spend against a
+/// cap, then balances. Equal ranks keep the order of their keys.
+fn quota_rank(key: &str, kind: &str) -> u8 {
+    match key {
+        _ if kind == "balance" => 6,
+        "session" => 0,
+        "daily" => 1,
+        "weekly" => 2,
+        "monthly" => 3,
+        "extraUsage" | "onDemand" | "totalUsage" => 5,
+        _ => 4,
+    }
 }
 
 /// The share the status bar shows for a provider: whichever of its session
@@ -723,7 +676,7 @@ struct UsageCardRow {
     reset: Option<String>,
 }
 
-/// Everything the modal shows about one provider.
+/// Everything the hover card and Activity show about one provider.
 #[derive(Clone, Debug, PartialEq)]
 struct UsageCard {
     id: String,
@@ -736,13 +689,16 @@ struct UsageCard {
 }
 
 impl UsageCard {
-    /// The plan and when the reading was taken, for the line under the name.
-    fn detail(&self) -> Option<String> {
-        let parts = [self.plan.as_deref(), self.status.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        (!parts.is_empty()).then(|| parts.join(" · "))
+    /// Whether the card shows values that may no longer be current. Without
+    /// values there is nothing to call outdated; the note says what failed.
+    fn outdated(&self) -> bool {
+        self.stale && !self.rows.is_empty()
+    }
+
+    /// Whether the quota list has something to say: quotas, or that there are
+    /// none when no note already explains why.
+    fn lists_quotas(&self) -> bool {
+        !self.rows.is_empty() || self.warnings.is_empty()
     }
 
     /// Quotas close to blocking work stand out; an outdated reading fades.
@@ -810,7 +766,8 @@ impl HoverMotion {
         CardFrame {
             id: card.id.clone(),
             name: card.name.clone(),
-            detail: card.detail(),
+            plan: card.plan.clone(),
+            status: card.status.clone(),
             rows: card
                 .rows
                 .iter()
@@ -833,7 +790,8 @@ fn elapsed_share(start: Instant, now: Instant, duration: Duration) -> f32 {
 struct CardFrame {
     id: String,
     name: String,
-    detail: Option<String>,
+    plan: Option<String>,
+    status: Option<String>,
     rows: Vec<QuotaFrame>,
 }
 
@@ -950,9 +908,15 @@ fn tile_crossfade(id: &str, previous: Option<&str>, progress: f32, size: f32) ->
         })
 }
 
-/// A provider's tile beside its name, with its plan and when it was read
-/// below. While `progress` runs to 1 it crossfades from `from`.
+/// A provider's tile beside its name and plan, with when it was read below,
+/// in the warning color once the values are outdated. While `progress` runs
+/// to 1 it crossfades from `from`.
 fn provider_heading(card: &UsageCard, from: Option<&CardFrame>, progress: f32) -> Div {
+    let status_color = if card.outdated() {
+        colors().warning
+    } else {
+        colors().subtle
+    };
     div()
         .flex()
         .items_center()
@@ -972,89 +936,125 @@ fn provider_heading(card: &UsageCard, from: Option<&CardFrame>, progress: f32) -
                 .gap(px(1.0))
                 .child(
                     div()
-                        .text_size(px(12.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(crossfade(
-                            card.name.clone(),
-                            from.map(|from| from.name.clone()),
-                            progress,
-                        )),
+                        .flex()
+                        .items_baseline()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(crossfade(
+                                    card.name.clone(),
+                                    from.map(|from| from.name.clone()),
+                                    progress,
+                                )),
+                        )
+                        .when_some(card.plan.clone(), |line, plan| {
+                            line.child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .flex_1()
+                                    .text_size(px(11.0))
+                                    .text_color(colors().subtle)
+                                    .child(crossfade(
+                                        plan,
+                                        from.and_then(|from| from.plan.clone()),
+                                        progress,
+                                    )),
+                            )
+                        }),
                 )
-                .when_some(card.detail(), |text, detail| {
-                    text.child(div().text_size(px(11.0)).text_color(colors().subtle).child(
-                        crossfade(detail, from.and_then(|from| from.detail.clone()), progress),
-                    ))
+                .when_some(card.status.clone(), |text, status| {
+                    text.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(status_color)
+                            .child(crossfade(
+                                status,
+                                from.and_then(|from| from.status.clone()),
+                                progress,
+                            )),
+                    )
                 }),
         )
-        .when(card.stale, |heading| heading.child(outdated_badge()))
 }
 
-/// A reading that may no longer be current.
-fn outdated_badge() -> Div {
-    let warning = colors().warning;
-    div()
-        .flex_none()
-        .h(px(18.0))
-        .px(px(6.0))
-        .flex()
-        .items_center()
-        .rounded(px(5.0))
-        .bg(Rgba { a: 0.12, ..warning })
-        .text_size(px(10.5))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(warning)
-        .child("Outdated")
+/// Whether a quota `width` wide puts its reset under its bar rather than
+/// beside its value.
+fn stacks_resets(width: f32) -> bool {
+    width - 2.0 * (CARD_PADDING + 1.0) < INLINE_RESET_WIDTH
 }
 
 /// A provider's quotas: the ones with a limit over their bars, then balances
-/// and other plain values below a hairline. Resets crossfade from `from`
-/// while `progress` runs to 1.
-fn quota_list(rows: Vec<QuotaFrame>, from: Option<&CardFrame>, progress: f32) -> Div {
-    // Plain values trail the quotas, so the hairline goes after the last bar.
-    let first_plain = rows
-        .iter()
-        .rposition(|row| row.percent.is_some())
-        .map_or(0, |last| last + 1);
+/// and other plain values in a tighter group below a hairline. Resets
+/// crossfade from `from` while `progress` runs to 1.
+fn quota_list(
+    rows: Vec<QuotaFrame>,
+    from: Option<&CardFrame>,
+    progress: f32,
+    stacked: bool,
+) -> Div {
+    let empty = rows.is_empty();
+    let (bounded, plain): (Vec<_>, Vec<_>) =
+        rows.into_iter().partition(|row| row.percent.is_some());
+    let divided = !bounded.is_empty();
+    let row = |row: QuotaFrame| {
+        let previous_reset = from
+            .and_then(|from| from.row(&row.label))
+            .and_then(|previous| previous.reset.clone());
+        quota_row(row, previous_reset, progress, stacked)
+    };
     div()
         .flex()
         .flex_col()
         .gap(px(10.0))
-        .when(rows.is_empty(), |list| {
+        .when(empty, |list| {
             list.child(
                 div()
                     .text_color(colors().muted)
                     .child("No quotas available"),
             )
         })
-        .children(rows.into_iter().enumerate().map(|(index, row)| {
-            let previous_reset = from
-                .and_then(|from| from.row(&row.label))
-                .and_then(|previous| previous.reset.clone());
-            quota_row(row, previous_reset, progress).when(
-                index > 0 && index == first_plain,
-                |row| {
-                    row.pt(px(10.0))
-                        .border_t_1()
-                        .border_color(colors().border_subtle)
-                },
+        .children(bounded.into_iter().map(row))
+        .when(!plain.is_empty(), |list| {
+            list.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .when(divided, |group| {
+                        group
+                            .pt(px(9.0))
+                            .border_t_1()
+                            .border_color(colors().border_subtle)
+                    })
+                    .children(plain.into_iter().map(row)),
             )
-        }))
+        })
 }
 
-/// One quota on two lines: its label, when it resets, and its value, then
-/// its bar when it has a limit. A value close to blocking work takes the
-/// bar's color.
-fn quota_row(row: QuotaFrame, previous_reset: Option<String>, progress: f32) -> Div {
+/// One quota. With a limit it reads as its name, when it resets, and the
+/// share used in a column on the right, over its bar; a value close to
+/// blocking work takes the bar's color. Without a limit it is a quieter
+/// line of name and value. `stacked` moves the reset under the bar, for a
+/// card too narrow to hold it beside the value.
+fn quota_row(row: QuotaFrame, previous_reset: Option<String>, progress: f32, stacked: bool) -> Div {
+    let bounded = row.percent.is_some();
     let reset = row.reset.map(|reset| {
         div()
-            .flex_1()
             .min_w(px(0.0))
-            .truncate()
             .text_size(px(11.0))
             .text_color(colors().subtle)
             .child(crossfade(reset, previous_reset, progress))
     });
-    let has_reset = reset.is_some();
+    // Beside the value, the reset takes the room the name leaves and ends there.
+    let (inline_reset, stacked_reset) = if stacked {
+        (None, reset)
+    } else {
+        (reset.map(|reset| reset.flex_1().text_right()), None)
+    };
+    let fills = inline_reset.is_none();
     div()
         .flex()
         .flex_col()
@@ -1064,27 +1064,37 @@ fn quota_row(row: QuotaFrame, previous_reset: Option<String>, progress: f32) -> 
                 .flex()
                 .items_center()
                 .gap(px(8.0))
+                .when(!bounded, |line| line.text_size(px(11.5)))
                 .child(
                     div()
                         .min_w(px(0.0))
-                        .when(!has_reset, |label| label.flex_1())
+                        .when(fills, |label| label.flex_1())
                         .truncate()
-                        .text_color(colors().muted)
+                        .text_color(if bounded {
+                            foreground(0.86)
+                        } else {
+                            colors().muted.into()
+                        })
                         .child(row.label),
                 )
-                .children(reset)
+                .children(inline_reset)
                 .child(
                     tabular(div())
                         .flex_none()
+                        .when(bounded, |value| {
+                            value.min_w(px(QUOTA_VALUE_WIDTH)).text_right()
+                        })
                         .font_weight(if row.emphasized {
                             FontWeight::SEMIBOLD
                         } else {
                             FontWeight::MEDIUM
                         })
                         .text_color(if row.emphasized {
-                            row.color
+                            row.color.into()
+                        } else if bounded {
+                            Hsla::from(colors().foreground)
                         } else {
-                            colors().foreground
+                            foreground(0.72)
                         })
                         .child(row.value),
                 ),
@@ -1092,65 +1102,37 @@ fn quota_row(row: QuotaFrame, previous_reset: Option<String>, progress: f32) -> 
         .when_some(row.percent, |quota, percent| {
             quota.child(quota_bar(percent, row.color, QUOTA_BAR_HEIGHT))
         })
+        .children(stacked_reset)
 }
 
-fn provider_warning(warning: &str) -> Div {
-    div()
-        .text_size(px(11.5))
-        .text_color(colors().warning)
-        .child(warning.to_owned())
-}
-
-/// A tinted note for a failure, with the provider's tile when it has one.
-fn warning_callout(provider: Option<&str>, message: impl Into<SharedString>) -> Div {
+/// Why a reading is missing or old, and what to do about it: a quiet tinted
+/// note with a warning dot, rather than a line of colored text. It closes a
+/// provider's card, or stands alone with the provider's tile when the
+/// provider has no card.
+fn usage_note(provider: Option<&str>, message: &str) -> Div {
     let warning = colors().warning;
     div()
         .flex_none()
         .flex()
-        .items_center()
+        .items_start()
         .gap(px(8.0))
-        .px(px(10.0))
-        .py(px(8.0))
-        .rounded(px(CARD_RADIUS))
-        .border_1()
-        .border_color(Rgba { a: 0.25, ..warning })
-        .bg(Rgba { a: 0.08, ..warning })
-        .text_color(warning)
-        .when_some(provider, |callout, id| {
-            callout.child(provider_tile(id, 18.0))
+        .px(px(9.0))
+        .py(px(7.0))
+        .rounded(px(7.0))
+        .bg(Rgba { a: 0.09, ..warning })
+        .text_size(px(11.5))
+        .text_color(foreground(0.82))
+        .child(match provider {
+            Some(id) => provider_tile(id, 18.0),
+            // Level with the first line of the message.
+            None => div()
+                .flex_none()
+                .mt(px(6.0))
+                .size(px(6.0))
+                .rounded_full()
+                .bg(warning),
         })
-        .child(div().min_w(px(0.0)).flex_1().child(message.into()))
-}
-
-/// What the modal shows before any subscription has reported.
-fn usage_empty_state(loading: bool) -> Div {
-    div()
-        .flex_none()
-        .py(px(20.0))
-        .px(px(12.0))
-        .flex()
-        .flex_col()
-        .items_center()
-        .gap(px(8.0))
-        .child(icon_tile("chrome-icons/sparkles.svg", 32.0))
-        .child(
-            div()
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(if loading {
-                    "Checking quotas…"
-                } else {
-                    "No subscriptions found"
-                }),
-        )
-        .when(!loading, |state| {
-            state.child(
-                div()
-                    .text_center()
-                    .text_color(colors().muted)
-                    .child("Sign in with Claude Code, Codex, or Grok Build, then refresh."),
-            )
-        })
+        .child(div().min_w(px(0.0)).flex_1().child(message.to_owned()))
 }
 
 /// The hover card at `now`: the provider's heading, then each quota as label
@@ -1173,20 +1155,23 @@ fn usage_hover_content(
         .opacity(entrance)
         .min_w(px(0.0))
         .w(px(width))
-        .p(px(12.0))
+        .p(px(CARD_PADDING))
         .gap(px(12.0))
         .text_size(px(12.0))
         .text_color(colors().foreground)
         .child(provider_heading(card, from, progress))
-        .child(quota_list(frame.rows, from, progress))
+        .when(card.lists_quotas(), |content| {
+            content.child(quota_list(frame.rows, from, progress, stacks_resets(width)))
+        })
         .children(
             card.warnings
                 .iter()
-                .map(|warning| provider_warning(warning)),
+                .map(|warning| usage_note(None, warning)),
         )
 }
 
-/// One subscription in the modal: a card with its heading and quotas.
+/// One subscription in Activity: a card with its heading, its quotas with
+/// the reset beside each value, its balances, and why a reading failed.
 fn provider_section(card: &UsageCard) -> impl IntoElement + use<> {
     let rows = card
         .rows
@@ -1194,21 +1179,25 @@ fn provider_section(card: &UsageCard) -> impl IntoElement + use<> {
         .map(|row| QuotaFrame::of(card, row))
         .collect();
     div()
-        .flex_none()
+        .flex_1()
+        .min_w(px(SECTION_CARD_MIN_WIDTH))
+        .max_w(px(SECTION_CARD_MAX_WIDTH))
         .flex()
         .flex_col()
         .gap(px(12.0))
-        .p(px(12.0))
-        .rounded(px(CARD_RADIUS))
+        .p(px(14.0))
+        .rounded(px(SECTION_CARD_RADIUS))
         .border_1()
-        .border_color(foreground(0.07))
+        .border_color(colors().border_subtle)
         .bg(foreground(0.03))
         .child(provider_heading(card, None, 1.0))
-        .child(quota_list(rows, None, 1.0))
+        .when(card.lists_quotas(), |section| {
+            section.child(quota_list(rows, None, 1.0, false))
+        })
         .children(
             card.warnings
                 .iter()
-                .map(|warning| provider_warning(warning)),
+                .map(|warning| usage_note(None, warning)),
         )
 }
 
@@ -1299,14 +1288,6 @@ mod tests {
         assert!(!card.stale);
         assert!(card.warnings.is_empty());
         assert_eq!(card.status.as_deref(), Some("Updated 3 min ago"));
-        // The line under the name carries both; without either there is none.
-        assert_eq!(card.detail().as_deref(), Some("Plus · Updated 3 min ago"));
-        let bare = UsageCard {
-            plan: None,
-            status: None,
-            ..card
-        };
-        assert_eq!(bare.detail(), None);
     }
 
     #[test]
@@ -1334,14 +1315,92 @@ mod tests {
         assert!(card.rows.is_empty());
         assert_eq!(card.warnings, ["Rate limited"]);
         assert_eq!(card.status, None);
+        // With no values, the note stands in for the badge and the empty list.
+        assert!(!card.outdated());
+        assert!(!card.lists_quotas());
+        let kept = UsageCard {
+            rows: vec![UsageCardRow {
+                label: "Week".into(),
+                value: "27%".into(),
+                percent: Some(27.0),
+                reset: None,
+            }],
+            ..card.clone()
+        };
+        assert!(kept.outdated() && kept.lists_quotas());
+        let unread = UsageCard {
+            warnings: Vec::new(),
+            ..card
+        };
+        assert!(unread.lists_quotas());
+        // A reading in flight never replaces how old the values are.
         state.loading = true;
+        state.checking = true;
         assert_eq!(
-            state
-                .card("claude", provider, now_timestamp(), 0)
-                .status
-                .as_deref(),
-            Some("Checking quotas…")
+            state.card("claude", provider, now_timestamp(), 0).status,
+            None
         );
+    }
+
+    #[test]
+    fn quotas_list_blocking_windows_first_then_scoped_ones_spend_and_balances() {
+        let mut state = UsageState::default();
+        let quota = r#"{"kind":"consumption","unit":"percent","used":10,"limit":100}"#;
+        state.apply(Ok(snapshot(&format!(
+            r#"{{"providers":{{"claude":{{"displayName":"Claude","resources":{{
+                "Spark · 5 hours":{quota},"credits":{{"kind":"balance","unit":"credits","available":4}},
+                "extraUsage":{{"kind":"consumption","unit":"usd","used":5,"limit":50}},
+                "fable":{quota},"monthly":{quota},"session":{quota},"sonnet":{quota},
+                "weekly":{quota},"daily":{quota}}}}}}}}}"#
+        ))));
+        let provider = &state.snapshot.providers["claude"];
+        let labels = state
+            .card("claude", provider, now_timestamp(), 0)
+            .rows
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            [
+                "5 hours",
+                "Day",
+                "Week",
+                "Month",
+                "Spark · 5 hours",
+                "Fable",
+                "Sonnet",
+                "Extra usage",
+                "Credits"
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn only_readings_someone_waits_for_show_as_checking(cx: &mut gpui::TestAppContext) {
+        let (root, _, _, window) =
+            super::super::tests::open_recording_workspace(cx, "usage-checking");
+        window
+            .update(cx, |view, window, cx| {
+                // A reading in flight keeps the test away from the user's real logins.
+                view.usage.loading = true;
+                view.usage.loaded = true;
+                view.refresh_usage(false, cx);
+                assert!(!view.usage.checking);
+                // A click adopts the reading in flight, and its end clears the mark.
+                view.refresh_usage(true, cx);
+                assert!(view.usage.checking);
+                view.usage.apply(Ok(UsageSnapshot::default()));
+                assert!(!view.usage.checking && !view.usage.loading);
+                // Before the first reading, there is nothing else to show.
+                view.usage.loading = true;
+                view.usage.loaded = false;
+                view.refresh_usage(false, cx);
+                assert!(view.usage.checking);
+                window.remove_window();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1493,13 +1552,13 @@ mod tests {
                     point(px(6.0), px(904.0)),
                     gpui::size(px(180.0), px(22.0)),
                 ));
-                // The modal takes over from the card, and opening it clears the hover.
-                view.usage.open = true;
-                assert!(view.usage_hover_card().is_none());
+                // A click leaves for Activity, which clears the hover.
                 view.usage.loading = true;
-                view.open_usage(window, cx);
+                view.show_usage(window, cx);
+                assert_eq!(view.workspace_section, WorkspaceSection::Activity);
                 assert_eq!(view.usage.hovered, None);
                 assert!(view.usage.hover_motion.is_none());
+                assert!(view.usage_hover_card().is_none());
                 window.remove_window();
             })
             .unwrap();
@@ -1547,22 +1606,21 @@ mod tests {
     }
 
     #[gpui::test]
-    fn usage_modal_can_open_during_refresh(cx: &mut gpui::TestAppContext) {
+    fn usage_section_builds_in_every_state(cx: &mut gpui::TestAppContext) {
         let (root, _, _, window) =
-            super::super::tests::open_recording_workspace(cx, "usage-refresh");
+            super::super::tests::open_recording_workspace(cx, "usage-section");
         window
             .update(cx, |view, window, cx| {
-                assert!(view.usage_modal(cx).is_none());
-                view.usage.open = true;
-                for loading in [false, true, false] {
-                    view.usage.loading = loading;
-                    assert!(view.usage_modal(cx).is_some());
+                // Nothing read yet, a reading in flight, and one that found nothing.
+                for checking in [false, true, false] {
+                    view.usage.checking = checking;
+                    view.usage_section(cx);
                 }
                 view.usage.snapshot = snapshot(
                     r#"{"providers":{"codex":{"displayName":"Codex","resources":{}}},
                         "errors":[{"providerId":"grok","message":"Signed out"}]}"#,
                 );
-                assert!(view.usage_modal(cx).is_some());
+                view.usage_section(cx);
                 // Quotas with bars and resets, a balance below them, and a monitor failure.
                 view.usage.snapshot = snapshot(
                     r#"{"providers":{"claude":{"displayName":"Claude","plan":"max",
@@ -1572,9 +1630,26 @@ mod tests {
                             "credits":{"kind":"balance","unit":"credits","available":40}}}}}"#,
                 );
                 view.usage.error = Some("Could not refresh the quota monitor.".into());
-                assert!(view.usage_modal(cx).is_some());
-                view.close_usage(window, cx);
-                assert!(view.usage_modal(cx).is_none());
+                view.usage_section(cx);
+                // An outdated reading closes with its note; one never read is only the note.
+                view.usage.snapshot.errors = snapshot(
+                    r#"{"providers":{},"errors":[
+                        {"providerId":"claude","message":"Rate limited"}]}"#,
+                )
+                .errors;
+                view.usage_section(cx);
+                view.usage
+                    .snapshot
+                    .providers
+                    .get_mut("claude")
+                    .unwrap()
+                    .resources
+                    .clear();
+                view.usage_section(cx);
+                // Activity carries the section.
+                view.usage.loading = true;
+                view.select_section(WorkspaceSection::Activity, window, cx);
+                view.activity_content(cx);
                 window.remove_window();
             })
             .unwrap();
@@ -1582,25 +1657,55 @@ mod tests {
     }
 
     #[gpui::test]
-    fn usage_modal_rises_from_the_status_bar_chips(cx: &mut gpui::TestAppContext) {
+    fn usage_hover_card_stays_within_the_strip_that_holds_the_chips(cx: &mut gpui::TestAppContext) {
         let (root, _, _, window) =
-            super::super::tests::open_recording_workspace(cx, "usage-anchor");
+            super::super::tests::open_recording_workspace(cx, "usage-contained");
         window
-            .update(cx, |view, window, cx| {
-                // A refresh in flight keeps the test away from the user's real logins.
-                view.usage.loading = true;
-                view.usage.tracker_bounds.set(Bounds::new(
-                    point(px(400.0), px(1480.0)),
-                    gpui::size(px(180.0), px(22.0)),
+            .update(cx, |view, window, _| {
+                let chips =
+                    Bounds::new(point(px(40.0), px(900.0)), gpui::size(px(150.0), px(22.0)));
+                view.usage.tracker_bounds.set(chips);
+                // A sidebar 210 wide: the card takes its width, less the inset each side.
+                view.usage.strip_bounds.set(Bounds::new(
+                    point(px(0.0), px(896.0)),
+                    gpui::size(px(210.0), px(30.0)),
                 ));
-                view.open_usage(window, cx);
-                assert!(view.usage.open);
-                // Centered over the chips.
+                let (anchor, width) = view.usage_popover_frame(HOVER_CARD_WIDTH);
+                assert_eq!(anchor, point(px(POPOVER_INSET), px(900.0 - POPOVER_GAP)));
+                assert_eq!(width, 210.0 - 2.0 * POPOVER_INSET);
+                assert!(stacks_resets(width));
+                // A wide sidebar: full width, centered over the chips, held at the sides.
+                view.usage.strip_bounds.set(Bounds::new(
+                    point(px(0.0), px(896.0)),
+                    gpui::size(px(300.0), px(30.0)),
+                ));
                 assert_eq!(
-                    view.usage.anchor,
-                    point(px(490.0 - MODAL_WIDTH / 2.0), px(1480.0 - POPOVER_GAP))
+                    view.usage_popover_frame(HOVER_CARD_WIDTH),
+                    (point(px(POPOVER_INSET), px(892.0)), HOVER_CARD_WIDTH)
                 );
-                assert!(view.usage_modal(cx).is_some());
+                assert!(!stacks_resets(HOVER_CARD_WIDTH));
+                view.usage.tracker_bounds.set(Bounds::new(
+                    point(px(250.0), px(900.0)),
+                    gpui::size(px(40.0), px(22.0)),
+                ));
+                let (anchor, width) = view.usage_popover_frame(HOVER_CARD_WIDTH);
+                assert_eq!(anchor.x + px(width), px(300.0 - POPOVER_INSET));
+                // Under the cards there is room to center it.
+                view.usage.strip_bounds.set(Bounds::new(
+                    point(px(0.0), px(896.0)),
+                    gpui::size(px(1200.0), px(30.0)),
+                ));
+                view.usage.tracker_bounds.set(Bounds::new(
+                    point(px(500.0), px(900.0)),
+                    gpui::size(px(200.0), px(22.0)),
+                ));
+                assert_eq!(
+                    view.usage_popover_frame(HOVER_CARD_WIDTH),
+                    (
+                        point(px(600.0 - HOVER_CARD_WIDTH / 2.0), px(892.0)),
+                        HOVER_CARD_WIDTH
+                    )
+                );
                 window.remove_window();
             })
             .unwrap();

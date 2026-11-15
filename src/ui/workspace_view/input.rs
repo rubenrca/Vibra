@@ -25,13 +25,6 @@ impl super::WorkspaceView {
             cx.stop_propagation();
             return;
         }
-        if self.usage.open && self.palette_mode.is_none() && self.rename_prompt.is_none() {
-            if matches!(key.as_str(), "escape" | "esc") {
-                self.close_usage(window, cx);
-            }
-            cx.stop_propagation();
-            return;
-        }
         if self.ide_menu_open {
             if matches!(key.as_str(), "escape" | "esc") {
                 self.ide_menu_open = false;

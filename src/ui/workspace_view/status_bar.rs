@@ -211,7 +211,11 @@ impl WorkspaceView {
             // share what is left, so the controls only push it aside when
             // they need the room.
             .when(usage, |row| {
-                row.child(div().flex_1()).child(self.usage_tracker(cx))
+                // The hover card and modal stay within this strip's sides.
+                row.relative()
+                    .child(super::measure_bounds(self.usage.strip_bounds.clone()))
+                    .child(div().flex_1())
+                    .child(self.usage_tracker(cx))
             })
             .child(controls)
             .into_any_element()

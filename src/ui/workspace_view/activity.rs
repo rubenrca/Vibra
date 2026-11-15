@@ -1,7 +1,7 @@
 //! Activity: what runs for the spaces, read-only, like a small activity
 //! monitor. Tiles sum up the servers, the agents, the fullest context, the
-//! quotas and today's tokens; below them, each space with its servers,
-//! memory and agents, then what runs outside Vibra. Sampling runs only while
+//! quotas and today's tokens; below them, every subscription in full, each
+//! space with its servers, memory and agents, then what runs outside Vibra. Sampling runs only while
 //! Activity is in front.
 
 use std::collections::HashMap;
@@ -262,6 +262,7 @@ impl WorkspaceView {
             .flex_col()
             .gap(px(22.0))
             .child(self.activity_tiles(&spaces, &outside))
+            .child(self.usage_section(cx))
             .child(self.spaces_section(spaces, cx))
             .when(!outside.is_empty(), |body| {
                 body.child(self.outside_section(outside))
@@ -969,7 +970,7 @@ fn memory_column(memory: Option<u64>) -> Div {
         .child(memory.map_or_else(|| "–".to_owned(), memory_label))
 }
 
-fn section_heading(title: &'static str, count: usize) -> Div {
+pub(super) fn section_heading(title: &'static str, count: usize) -> Div {
     div()
         .px(px(10.0))
         .flex()
@@ -986,7 +987,7 @@ fn section_heading(title: &'static str, count: usize) -> Div {
         )
 }
 
-fn empty_note(text: &'static str) -> Div {
+pub(super) fn empty_note(text: &'static str) -> Div {
     div()
         .px(px(10.0))
         .text_size(px(12.0))

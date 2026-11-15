@@ -456,7 +456,6 @@ impl WorkspaceView {
         if self.workspace_section != WorkspaceSection::Workspace
             || self.review_covers_terminal(cx)
             || self.palette_mode.is_some()
-            || self.usage.open
             || self.rename_prompt.is_some()
             || self
                 .snapshot

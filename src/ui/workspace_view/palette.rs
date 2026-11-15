@@ -18,7 +18,6 @@ use super::{PaletteAction, PaletteItem, PaletteMode, RightSidebarMode, Workspace
 
 impl super::WorkspaceView {
     pub(super) fn open_palette(&mut self, mode: PaletteMode, cx: &mut Context<Self>) {
-        self.usage.open = false;
         self.close_palette(cx);
         self.palette_mode = Some(mode);
         self.context_menu = None;

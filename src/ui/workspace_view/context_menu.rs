@@ -83,7 +83,6 @@ impl WorkspaceView {
         anchor: ContextMenuAnchor,
         cx: &mut Context<Self>,
     ) {
-        self.usage.open = false;
         self.context_menu = Some(ContextMenuState { kind, anchor });
         self.rename_prompt = None;
         cx.notify();
@@ -96,7 +95,6 @@ impl WorkspaceView {
     }
 
     pub(super) fn begin_rename_prompt(&mut self, kind: RenamePromptKind, cx: &mut Context<Self>) {
-        self.usage.open = false;
         let value = match kind {
             RenamePromptKind::Pane { session_id } => self
                 .pane_names
