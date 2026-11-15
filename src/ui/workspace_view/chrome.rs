@@ -25,7 +25,7 @@ pub(crate) const SIDEBAR_ROW_INSET: f32 = 10.0;
 pub(crate) const SIDEBAR_CONTROL_SIZE: f32 = 20.0;
 
 /// Makes text beside a space's name give way first: it truncates down to
-/// nothing before the name, which the sidebar never cuts, loses a letter.
+/// nothing before the name, which only then ends in an ellipsis, loses a letter.
 pub(crate) fn yield_to_space_name(text: Div) -> Div {
     let mut text = text.min_w(px(0.0)).truncate();
     text.style().flex_shrink = Some(1000.0);

@@ -456,12 +456,14 @@ impl WorkspaceView {
                 }),
             )
             .child(space_avatar(&name, space_activity))
-            // The name is never cut: the branch gives way first, and a name
-            // wider than the row wraps onto another line.
+            // The name stays on one line: the branch gives way first, and a
+            // name still wider than the row ends in an ellipsis.
             .child(
                 div()
+                    .debug_selector(move || format!("space-name-{id}"))
                     .flex_grow()
                     .min_w(px(0.0))
+                    .truncate()
                     .text_size(px(13.0))
                     .line_height(px(18.0))
                     .font_weight(if selected {
@@ -771,6 +773,7 @@ fn project_drag_ghost(name: String, padding: f32) -> AnyElement {
             div()
                 .flex_1()
                 .min_w(px(0.0))
+                .truncate()
                 .text_size(px(13.0))
                 .line_height(px(18.0))
                 .font_weight(gpui::FontWeight::MEDIUM)

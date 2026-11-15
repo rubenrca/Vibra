@@ -374,7 +374,6 @@ impl WorkspaceView {
             .id(SharedString::from(format!("sidebar-agent-{session_id}")))
             .relative()
             .w(px(sidebar_row_width(self.left_sidebar_width())))
-            // A long space name may wrap and grow the card past its pitch.
             .min_h(px(AGENT_CARD_PITCH - 2.0))
             .py(px(6.0))
             .flex_none()
@@ -469,11 +468,13 @@ impl WorkspaceView {
                                 line.child(div().flex_none().text_color(status_color).child(status))
                                     .child(div().flex_none().child("·"))
                             })
-                            // The space is never cut; the branch gives way.
+                            // The branch gives way first; a space still too
+                            // long ends in an ellipsis rather than wrapping.
                             .child(
                                 div()
                                     .debug_selector(|| format!("sidebar-agent-space-{session_id}"))
                                     .min_w(px(0.0))
+                                    .truncate()
                                     .child(space),
                             )
                             .when_some(branch, |line, branch| {

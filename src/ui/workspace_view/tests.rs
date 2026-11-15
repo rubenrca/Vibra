@@ -2353,3 +2353,65 @@ fn an_agent_card_keeps_a_short_space_name_on_one_line(cx: &mut gpui::TestAppCont
         .unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[gpui::test]
+fn a_long_space_name_is_cut_rather_than_wrapped(cx: &mut gpui::TestAppContext) {
+    use gpui::px;
+
+    let (root, snapshot, _, window) = open_recording_workspace(cx, "space-name-cut");
+    let pane = snapshot.selected_session().unwrap().id;
+    let space = snapshot.selected_project_id.unwrap();
+    let row: &'static str = Box::leak(format!("space-row-{space}").into_boxed_str());
+    let name: &'static str = Box::leak(format!("space-name-{space}").into_boxed_str());
+    let card: &'static str = Box::leak(format!("sidebar-agent-space-{pane}").into_boxed_str());
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), cx);
+    window
+        .update(&mut cx, |view, _, cx| {
+            let project = view
+                .snapshot
+                .projects
+                .iter_mut()
+                .find(|project| project.id == space)
+                .unwrap();
+            project.name = "A space whose name is far too long for the sidebar".into();
+            let directory = project.directory().unwrap().to_owned();
+            view.project_branches
+                .insert(directory.into(), "main".into());
+            view.handle_terminal_view_event(
+                &TerminalViewEvent::AgentPresenceChanged {
+                    session_id: pane,
+                    presence: Some(TerminalAgentPresence {
+                        kind: "Claude".into(),
+                        kind_source: TerminalAgentKindSource::Process,
+                        state: AgentRuntimeState::Idle,
+                        state_source: TerminalAgentStateSource::Heuristic,
+                        attention: None,
+                        process_id: Some(7),
+                    }),
+                },
+                cx,
+            );
+            cx.notify();
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let row = cx.debug_bounds(row).expect("the space row is drawn");
+    let name = cx.debug_bounds(name).expect("the row names its space");
+    assert!(
+        row.size.height < px(40.0),
+        "the row keeps its height: {row:?}"
+    );
+    assert!(name.size.height < px(24.0), "one line: {name:?}");
+    assert!(name.size.width > px(20.0), "the name has room: {name:?}");
+    assert!(name.right() <= row.right(), "inside the row: {name:?}");
+    let card = cx
+        .debug_bounds(card)
+        .expect("the agent card names its space");
+    assert!(card.size.height < px(24.0), "one line: {card:?}");
+    assert!(card.size.width > px(20.0), "the name has room: {card:?}");
+    window
+        .update(&mut cx, |_, window, _| window.remove_window())
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
