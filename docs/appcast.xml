@@ -3,17 +3,22 @@
     <channel>
         <title>Vibra</title>
         <item>
-            <title>0.3.53</title>
-            <pubDate>Wed, 11 Nov 2026 20:05:14 -0300</pubDate>
-            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.53</link>
-            <sparkle:version>367</sparkle:version>
-            <sparkle:shortVersionString>0.3.53</sparkle:shortVersionString>
+            <title>0.3.54</title>
+            <pubDate>Mon, 16 Nov 2026 15:55:32 -0300</pubDate>
+            <link>https://github.com/rubenrca/Vibra/releases/tag/v0.3.54</link>
+            <sparkle:version>372</sparkle:version>
+            <sparkle:shortVersionString>0.3.54</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <description><![CDATA[<ul>
-  <li>Fade the Changes graph's foot into whatever shows behind the panel, so it no longer ends in a dark band when the desktop shows through the window.</li>
+  <li>Keep subscription quotas readable after a CLI's stored session expires: Vibra now asks the CLI itself (Claude, Codex, or Grok) for its quotas, which renews its own login, instead of showing "The session expired" until that CLI runs again. No prompt is sent and no hooks run.</li>
+  <li>Open Activity from the usage chips instead of a modal: it gains a Subscriptions section with a card per provider showing its plan, when it was read, each quota with its bar and reset, its balances, and the refresh control.</li>
+  <li>Keep the usage hover card within the strip that holds the chips, so in a sidebar it takes the sidebar's width.</li>
+  <li>List quotas as session, day, week, and month windows first, then the ones scoped to a model, then spend and balances. Show a failed reading as a tinted note, and color the "Updated" line as a warning instead of an "Outdated" badge.</li>
+  <li>Spin the refresh icon only for a reading someone waits for; the 30-second poll no longer flips every card to "Checking quotas…".</li>
+  <li>Keep a space's name on one line in the Spaces list, in agent cards, and while dragged, ending it with an ellipsis when it does not fit.</li>
 </ul>
 ]]></description>
-            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.53/Vibra-0.3.53.dmg" length="16628410" type="application/octet-stream" sparkle:edSignature="hvdyFT3M9YCIPEo+0v75p8Bu/ZN4VZ7LdBblUoS2RECohOouzbo4/6kstxYHSTJF43CvKD5EL+UU6Jbz7GYICA=="/>
+            <enclosure url="https://github.com/rubenrca/Vibra/releases/download/v0.3.54/Vibra-0.3.54.dmg" length="16675288" type="application/octet-stream" sparkle:edSignature="02o1OasabD8BxBZfNVXAWaZzz4o3lEvdrUUxVWvcXfGl/4Q666MG6RFMbyY/QZH248qzse//Z2IvSKvmA/sKCw=="/>
         </item>
     </channel>
 </rss>
