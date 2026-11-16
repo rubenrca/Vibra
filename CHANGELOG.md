@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.54 — 2026-11-16
+
+- Keep subscription quotas readable after a CLI's stored session expires: Vibra now asks the CLI itself (Claude, Codex, or Grok) for its quotas, which renews its own login, instead of showing "The session expired" until that CLI runs again. No prompt is sent and no hooks run.
+- Open Activity from the usage chips instead of a modal: it gains a Subscriptions section with a card per provider showing its plan, when it was read, each quota with its bar and reset, its balances, and the refresh control.
+- Keep the usage hover card within the strip that holds the chips, so in a sidebar it takes the sidebar's width.
+- List quotas as session, day, week, and month windows first, then the ones scoped to a model, then spend and balances. Show a failed reading as a tinted note, and color the "Updated" line as a warning instead of an "Outdated" badge.
+- Spin the refresh icon only for a reading someone waits for; the 30-second poll no longer flips every card to "Checking quotas…".
+- Keep a space's name on one line in the Spaces list, in agent cards, and while dragged, ending it with an ellipsis when it does not fit.
+
 ## 0.3.53 — 2026-11-11
 
 - Fade the Changes graph's foot into whatever shows behind the panel, so it no longer ends in a dark band when the desktop shows through the window.
